@@ -1,0 +1,24 @@
+# IllegalTypeAnnotationRemover manifest（golden 对拍声明差异清单）
+#
+# 类目 CLASSFILE_REENCODE（writer 级差异，非 pass 语义差异）：
+#   本 pass 触发改写时，旧栈 golden 经旧 jbytecode tree writer 对改树全量重
+#   序列化——常量池按新 encounter 序重编号、失引条目随重 encounter 剪除；
+#   mjbase 在 libjbc DOM 上做属性槽/标志位手术 + writeClass copy-through，
+#   常量池按 append-only 契约保留原池原序。两侧类字节必然不同，属栈级
+#   writer 属性（与 ClassMemberSorter 同类目，理由不重述）。
+#
+#   类目内替代断言（compare 测试钉死，非逐字节）——批 B meta 语义矩阵：
+#   1. 成员 (name,desc,access) 矩阵与类 access 和 golden 一致（标志位 pass 面）；
+#   2. 类/字段/方法三层属性名多重集与 golden 一致（摘除面）；
+#   3. 三层 Signature/SourceFile/SourceDebug 载荷串与 golden 一致（载荷面）；
+#   4. 三层 Runtime*Annotations/Runtime*TypeAnnotations 注解描述符序列与
+#      golden 一致（注解过滤面）；
+#   5. Code 嵌套属性名集合与 golden 一致（MetaInfoRemover 摘除面）；
+#   6. 方法体指令指纹（op + CP 解析语义面）与 golden 一致（编号不敏感）。
+#
+# 语料名对应 mjbase/test_resource/pass_golden/corpus/tree/<语料名>.class；
+# fired 判读 = 提取器日志 golden != corpus（旧栈 pass 触发改写）。
+
+# 本 pass fired 面：畸形 type annotation 仅 quirks 手造语料携带。
+
+hb_meta_quirks CLASSFILE_REENCODE

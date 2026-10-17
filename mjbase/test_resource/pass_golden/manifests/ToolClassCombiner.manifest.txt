@@ -1,0 +1,29 @@
+# ToolClassCombiner manifest（golden 对拍声明差异清单）
+#
+# 行格式：`语料名 类目码`。类目定义：
+#
+# CC_NOTMODELED_KEPT：
+#   语料 hb_cc_wide 的候选方法体含 LDC2_W 宽常量（long）。libjbc 成员级搬移
+#   对 ldc 宽常量（Long/Float/Double/MethodType/MethodHandle/Dynamic）与
+#   invokedynamic 显式 Err(NotModeled)（libjbc design.md §34.3(5) fail-closed），
+#   本 pass 按旧栈「不支持范围保持原资源」的口径把这类候选整体落选、原类
+#   原样保留；旧栈无此限制、正常合并——语义面差异，属迁移声明的保守化
+#   （pass 头注偏差点第一条），非 writer 级。类目内替代断言（compare 测试
+#   钉死）：供体资源在场且与语料逐位一致；其成员不出现在任何输出宿主；
+#   golden 中该供体独占的宿主缺席（成员集合配对面容差恰为这一宿主）。
+#
+# CLASSFILE_REENCODE：
+#   旧栈 combiner 对幸存类全量经 tree writer 重序列化（CP 按新 encounter 序
+#   重编号、失引条目剪除），新栈走 remapper 面 + copy-through（保留原池，
+#   未触碰区段字节保真）——消费面语料 hb_cc_consumer 的 owner 重映射输出
+#   与 golden 必然字节不同，writer 级差异。类目内替代断言 = 指令语义指纹
+#   对拍（逐方法 op 序列 + CP 引用语义面不变）。其余幸存类（拒绝矩阵）
+#   旧栈为 tree 不动点 == 新栈不动，逐字节对拍。
+#
+# 宿主类（me/canrad/morpher/ToolClassMergedClass_N）不占语料条目：两侧都
+# 是新合成类但 writer/属性面不同源——旧栈 tree writer 无 CP 前身且丢
+# StackMapTable；新栈从零会话（A5 writer 从零分支）+ copy-through + 分支体
+# SMT 再生（libjbc §34.3(4)(b) 消费者义务）。对拍落宿主语义面：成员集合
+# 配对 + 骨架矩阵 + 指令指纹 + 帧方向钉死（golden 无帧、输出有帧）。
+hb_cc_wide CC_NOTMODELED_KEPT
+hb_cc_consumer CLASSFILE_REENCODE

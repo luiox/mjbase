@@ -1,0 +1,22 @@
+# UnusedFieldRemover manifest（golden 对拍声明差异清单）
+#
+# 类目 CLASSFILE_REENCODE（writer 级差异，非 pass 语义差异）：
+#   旧栈删除字段后经旧 tree writer 对改树全量重序列化——常量池按 encounter 序
+#   重编号，实测失引条目（"dead" 字段名/desc Utf8）不被剪除而是随重 encounter
+#   落到池尾（旧 writer 全池重排非精剪）；mjbase 在 libjbc 低层 DOM 上 erase
+#   MemberInfo + writeClass，常量池按 append-only 契约保留原池原序不压缩。两侧
+#   类字节必然不同。
+#
+#   类目内替代断言（compare 测试钉死，非逐字节）：
+#   1. 幸存类保留/删除集与 golden 一致（golden 缺席类 = 必删）；
+#   2. 改写类成员 (name,desc,access) 矩阵与 golden 一致（只删不改余成员）；
+#   3. 方法体指令指纹（op + CP 解析语义面）与 golden 一致（编号不敏感）；
+#   4. JVM 真跑门另在 unused_member_remover_jvm_test 钉死（改写类可加载可执行）。
+#
+#   同族对照：GlobalUnusedMethodRemover 的 um 语料 golden 与 mjbase 输出逐字节
+#   一致（该语料上旧 writer 池序未扰动），故无 manifest 声明；其余语料形状下
+#   若重编码差异再现，按声明流程补条目。
+#
+# 常量池不压缩属 mjbase 载体契约（append-only），失引条目由下游 writer 级压缩
+# 面统一收口，不在 pass 域补齐。
+hb_um_used

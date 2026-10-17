@@ -1,0 +1,28 @@
+# ClassMemberSorter golden 对拍声明清单（默认零差异；本文件只钉死确有正当差异的类目）
+# 格式：<语料名> <类目码>；'#' 后为注释；行首段对应
+# mjbase/test_resource/pass_golden/corpus/tree/<语料名>.class。
+# 声明由对拍测试（test/unittest/pass/golden/pass_golden_compare_test.cpp）消费：
+# 命中条目改跑声明的替代断言（成员序语义比较），未命中条目一律逐字节比较。
+#
+# 类目 CLASSFILE_REENCODE —— writer 级差异，非 pass 语义差异：
+#   重排发生时，旧栈 golden 经旧 jbytecode ClassWriter 全量重序列化：常量池按
+#   新 encounter 序重编号，未触碰区不复字节保真；mjbase 按新底座 copy-through
+#   写回，保留语料原池、仅重排成员区。两者语义等价（同为合法 classfile、成员
+#   序一致、方法体内容不变），但字节不同。该差异是「旧栈全量重编码 writer vs
+#   新栈保真 writer」的栈级属性，后续所有重排型 pass 复用本类目，不随 pass
+#   逐一重述理由。
+# A 批扩段语料（hb_nop_seq / hb_pop_pairs / hb_char_arr / hb_unused_check）：
+#   方法名非 sorter 目标序（触发面优先），sorter 对它们发生重排，同属
+#   CLASSFILE_REENCODE 类目（理由同上，不重述）。
+# 批 B 扩段语料（hb_meta_quirks）：meta 怪癖矩阵类成员序非 sorter 目标序，
+#   发生重排，同属 CLASSFILE_REENCODE 类目（理由同上，不重述）；
+#   hb_meta_minimal 已序，零声明逐字节。
+hb_char_arr CLASSFILE_REENCODE
+hb_nop_seq CLASSFILE_REENCODE
+hb_pop_pairs CLASSFILE_REENCODE
+hb_unused_check CLASSFILE_REENCODE
+hb_tighten_owner CLASSFILE_REENCODE
+jdk5_enum_class CLASSFILE_REENCODE
+jdk8_all_structures CLASSFILE_REENCODE
+mbase_constant_folder1 CLASSFILE_REENCODE
+hb_meta_quirks CLASSFILE_REENCODE

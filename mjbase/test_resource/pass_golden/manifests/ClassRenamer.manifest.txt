@@ -1,0 +1,23 @@
+# ClassRenamer manifest（golden 对拍声明差异清单）
+#
+# 类目 RENAME_TA_NESTED_NO_GOLDEN（原 RENAME_FAILCLOSED_UNMODELED_CODE_NESTED_ATTRS）：
+#   语料类的方法体 Code 属性携带 Runtime{Visible,Invisible}TypeAnnotations。
+#   libjbc relocation contract 封闭集（libjbc design.md §33）落地前，remapper
+#   面对这类方法做操作数改写会触发 lower 预检 fail-closed（RelocationNot-
+#   Modeled），pass 原子放弃、golden 无从比对；落地后 TA 已补建模并随布局
+#   改动重定位，pass 在全语料上正常完成。
+#
+#   该类仍不入 golden 逐字节对拍：旧栈 golden 对它的重序列化未重定位 TA
+#   （错的），不可当仲裁。类目内替代断言（compare 测试钉死，非逐字节）：
+#   1. 全语料容器运行正常完成（不再抛出），声明类按全语料编号契约改名
+#     （资源 URI 随新名改写）；
+#   2. 改写前后 Code 嵌套 TA（typed 判型）条数一致，输出全解码重读恒等；
+#   3. 缩减语料（剔除本类目）上重命名成功，剩余类与 golden 按排序位置配对，
+#      逐类骨架矩阵（this/super/接口/access/成员序）+ 方法体指令指纹一致。
+#
+# 对拍驱动约束（非语义差异声明）：缩减对拍集剔除「排序在首个声明类目之后」
+# 的全部语料（现为 mbase_constant_folder1 与批 B meta 语料 zz/Meta* 对）——
+# golden 基线冻结自全语料，缩减集保持全排序的前缀，保留类编号才与 golden
+# 一致（中间类剔除会让全局递增编号位移、golden 新名与输出新名错位）。殿后
+# 类的迁移覆盖由单测（默认包/嵌套命名）与 JVM 门（双类互调）补足。
+jdk8_all_structures

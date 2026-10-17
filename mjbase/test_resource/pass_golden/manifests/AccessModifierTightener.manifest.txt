@@ -1,0 +1,12 @@
+# AccessModifierTightener golden 对拍声明清单（默认零差异；本文件只钉死确有
+# 正当差异的类目）。格式：<语料名> <类目码>；'#' 后为注释；行首段对应
+# mjbase/test_resource/pass_golden/corpus/tree/<语料名>.class。
+# 声明由对拍测试（test/unittest/pass/golden/pass_golden_compare_test.cpp）消费：
+# 命中条目改跑声明的替代断言（成员 access 语义比较），未命中条目一律逐字节。
+#
+# 类目 TREE_SKIP_FRAMES_REENCODE —— 旧栈实现的数据丢失怪癖，新栈语义更完整：
+#   旧栈经 loadRecoverClasses（ClassReader SKIP_FRAMES）读入普查，被收紧的类
+#   重写时 StackMapTable 整体丢失（V1_8 类丢帧 = JVM 验证器拒绝的产物）；
+#   mjbase copy-through 保帧，输出含完整 StackMapTable。两者收紧矩阵一致
+#   （access 语义相同），字节不同仅因帧区（golden 14823B vs 输出 15104B）。
+mbase_constant_folder1 TREE_SKIP_FRAMES_REENCODE

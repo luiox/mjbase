@@ -1,0 +1,13 @@
+# UnusedCheckCleaner golden 对拍声明清单（默认零差异；本文件只钉死确有正当差异的类目）。
+# 格式：<语料名> <类目码>；'#' 后为注释；行首段对应
+# mjbase/test_resource/pass_golden/corpus/tree/<语料名>.class。
+# 声明由对拍测试（test/unittest/pass/golden/pass_golden_compare_test.cpp）消费：
+# 命中条目改跑指令语义指纹对拍（逐方法指令序列 + LDC 常量字面 / INVOKE member
+# 三段），未命中条目一律逐字节比较。
+#
+# 类目 CLASSFILE_REENCODE —— writer 级差异，非 pass 语义差异：
+#   本 pass 删除/替换的指令携带 CP 引用；旧栈 golden 由旧 jbytecode writer 对
+#   改树全量重序列化——常量池按新 encounter 序重编号、未引用条目连带剪除；
+#   mjbase copy-through 保留语料原池（保真契约）。两者 pass 语义等价（指令
+#   指纹一致），字节必然不同。与 ClassMemberSorter.manifest 的同类目同根因。
+hb_unused_check CLASSFILE_REENCODE
