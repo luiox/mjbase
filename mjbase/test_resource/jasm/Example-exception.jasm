@@ -1,0 +1,26 @@
+.super java/lang/Object
+.class public super Example {
+    .method public exampleMethod ()LExample; {
+        parameters: { this },
+        exceptions: {
+            { A, B, B, * }
+        },
+        code: {
+        A:
+            iconst_1
+            istore value
+            iload value
+            ifeq C
+            new java/lang/Throwable
+            dup
+            invokespecial java/lang/Throwable.<init> ()V
+            athrow
+        B:
+            astore ex
+        C:
+            aload this
+            areturn
+        D:
+        }
+    }
+}

@@ -21,7 +21,7 @@
 /// 修法见提交 f8e204acc）。调用方须保证 `index` 存活到 `reachability.build`
 /// 之后。
 ///
-/// ## 档位语义（ PUBLIC / PUBLIC_PROTECTED）
+/// ## 档位语义（PUBLIC / PUBLIC_PROTECTED 档位）
 ///
 /// 档位是规则之外的整体开关——不看名字，只看访问标志：
 ///

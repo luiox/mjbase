@@ -2,7 +2,7 @@
 /// @brief       keep 规则面：行式 DSL、类/成员 glob 匹配、保守 keep 预设模式库。
 ///
 /// 审计 P0-1/P0-2（mbase/doc_ai/opt-pass-completeness-audit.md §6）的落地件：
-/// 对标  27 trim 的 trimExclude 脚本与 DEFAULT_TRIM_EXCLUDE 保守模式库，
+/// 对标 商业化 trim 工具 的 trimExclude 脚本与 DEFAULT_TRIM_EXCLUDE 保守模式库，
 /// 为全局收缩家族（unused_member_remover 四件）提供可配置的保留策略。
 ///
 /// ## 设计定位
@@ -35,7 +35,7 @@
 /// 解析 fail-loud：任一非法行返回 `Err`（带 1-based 行号与原因码），不静默跳过
 /// ——配置错误必须稳定失败，对齐仓内「配置错误稳定失败」纪律。
 ///
-/// ## 预设模式库（ DEFAULT_TRIM_EXCLUDE 的**命名模式**等价子集）
+/// ## 预设模式库（商业化 trim 工具的默认排除表 的**命名模式**等价子集）
 ///
 /// 每个预设是一条纯数据表（名字/描述符 glob），不含层级谓词（`extends`/
 /// `implements`）与注解谓词（`@Foo`）——那两类需要 ReferenceIndex 的层级与
@@ -137,7 +137,7 @@ const char* to_string(KeepPreset preset) noexcept;
 /// （可选前导 `+`，大小写敏感）；空串与未知名字 `Err(UnknownPreset)`。
 Result<KeepPreset, KeepRuleErrorCode> keepPresetFrom(std::string_view text);
 
-/// @brief keep 档位：按访问标志整体保留对外 API 面（ PUBLIC / PUBLIC_PROTECTED）。
+/// @brief keep 档位：按访问标志整体保留对外 API 面（PUBLIC / PUBLIC_PROTECTED 档位）。
 ///
 /// 档位是规则之外的整体开关——不看名字，只看成员的访问标志：
 /// - `Public`：public 类 + public 成员入根（外部可链接面的最小集）；

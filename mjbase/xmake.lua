@@ -52,6 +52,14 @@ target("mjbase")
     add_files("src/mjbase/pass/**.cpp")
     add_files("src/mjbase/asm/classpath/resolved_call_graph.cpp")
     add_files("src/mjbase/asm/remapper/**.cpp")
+    -- 批 4：mcp 与 mjt-py 的直接消费面——renamer、workspace、jasm、log、cli。
+    -- workspace 依赖 jasm，故 jasm 从批 5 提前到本批；cli 只收源码（文案表
+    -- .lang 的规则在上方始终保留）。
+    add_files("src/mjbase/renamer/**.cpp")
+    add_files("src/mjbase/jasm/**.cpp")
+    add_files("src/mjbase/log/**.cpp")
+    add_files("src/mjbase/workspace/**.cpp")
+    add_files("src/mjbase/cli/*.cpp")
     -- cli 的 ArgParser 文案单源表（i18n_setup 静态注册，public include 供下游覆盖）。
     -- 批 1 不含 cli 源码，但 i18n.hpp 依赖其生成头，故规则始终保留。
     add_files("src/mjbase/cli/translations/*.lang", {rules = "libca.i18n.embed-lang"})
@@ -108,6 +116,12 @@ target("mjbase_unittest")
     add_files("test/unittest/spi/*_test.cpp")
     add_files("test/unittest/pass/*_test.cpp")
     add_files("test/unittest/asm/remapper/*_test.cpp")
+    -- 批 4：与上面 src 的 renamer/jasm/log/workspace/cli 一一对应。
+    add_files("test/unittest/renamer/*_test.cpp")
+    add_files("test/unittest/jasm/*_test.cpp")
+    add_files("test/unittest/log/*_test.cpp")
+    add_files("test/unittest/workspace/*_test.cpp")
+    add_files("test/unittest/cli/*_test.cpp")
     add_includedirs("src")
     -- 共享测试夹具目录（test/unittest/shared/）：跨模块单测共用的头文件面，
     -- 消费形如 #include "shared/xxx.hpp"（structural_pass_util 升格共享 util）。
