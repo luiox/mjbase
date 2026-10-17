@@ -4,6 +4,10 @@ mjbase 是基于 libjbc 的跨类程序分析与变换库，按模块逐步重�
 mbase 不在本仓（语义来源见 mjt 仓的 mbase 分叉），只作语义参考与对拍 oracle；
 mjbase 不做兼容 shim。
 
+**改动前必读 [`../doc_ai/migration-boundary.md`](../doc_ai/migration-boundary.md)**：
+公私边界红线（mjt-deobf 与家族设施不进公开仓）、按消费方驱动的迁移切片顺序，
+以及迁移与重构逐批交替的解耦纪律。
+
 ## 边界
 
 - libjbc：单类/单方法（classfile DOM、CodeDom、CodeEditor、帧/域引擎）。
