@@ -1,0 +1,310 @@
+/// @file        call_graph.cpp
+/// @brief       直接调用图实现：构建两遍扫描 + 正反向索引 + 可达闭包。
+#include "call_graph.hpp"
+
+#include <unordered_set>
+
+#include "mjbase/util.hpp"
+
+namespace mjbase::asm_classpath {
+
+bool invokeKindOf(jbc::core::Op op, InvokeKind& out) noexcept
+{
+    using Op = jbc::core::Op;
+    switch (op) {
+    case Op::INVOKEVIRTUAL: out = InvokeKind::Virtual; return true;
+    case Op::INVOKESPECIAL: out = InvokeKind::Special; return true;
+    case Op::INVOKESTATIC: out = InvokeKind::Static; return true;
+    case Op::INVOKEINTERFACE: out = InvokeKind::Interface; return true;
+    case Op::INVOKEDYNAMIC: out = InvokeKind::Dynamic; return true;
+    default: return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CallGraph 查询面
+// ---------------------------------------------------------------------------
+
+const CallGraph::Node* CallGraph::nodeOf(MemberKey m) const noexcept
+{
+    const auto it = nodeIndexOf_.find(m);
+    return it == nodeIndexOf_.end() ? nullptr : &nodes_[it->second];
+}
+
+ca::u32 CallGraph::internNode(MemberKey m)
+{
+    const auto it = nodeIndexOf_.find(m);
+    if (it != nodeIndexOf_.end()) {
+        return it->second;
+    }
+    const ca::u32 index = static_cast<ca::u32>(nodes_.size());
+    nodes_.push_back(Node{m, 0, false, {}, {}});
+    nodeIndexOf_.emplace(m, index);
+    return index;
+}
+
+bool CallGraph::contains(MemberKey m) const noexcept
+{
+    return nodeIndexOf_.find(m) != nodeIndexOf_.end();
+}
+
+bool CallGraph::isDeclared(MemberKey m) const noexcept
+{
+    const Node* n = nodeOf(m);
+    return n != nullptr && n->declared;
+}
+
+ca::u32 CallGraph::accessOf(MemberKey m) const noexcept
+{
+    const Node* n = nodeOf(m);
+    return n != nullptr ? n->access : 0;
+}
+
+std::vector<CallSite> CallGraph::outgoingSitesOf(MemberKey caller) const
+{
+    std::vector<CallSite> out;
+    const Node* n = nodeOf(caller);
+    if (n == nullptr) {
+        return out;
+    }
+    out.reserve(n->outSites.size());
+    for (const ca::u32 si : n->outSites) {
+        out.push_back(sites_[si]);
+    }
+    return out;
+}
+
+std::vector<CallSite> CallGraph::incomingSitesOf(MemberKey callee) const
+{
+    std::vector<CallSite> out;
+    const Node* n = nodeOf(callee);
+    if (n == nullptr) {
+        return out;
+    }
+    out.reserve(n->inSites.size());
+    for (const ca::u32 si : n->inSites) {
+        out.push_back(sites_[si]);
+    }
+    return out;
+}
+
+ca::usize CallGraph::callSiteCountOf(MemberKey m) const noexcept
+{
+    const Node* n = nodeOf(m);
+    return n != nullptr ? n->inSites.size() : 0;
+}
+
+std::vector<MemberKey> CallGraph::calleesOf(MemberKey caller) const
+{
+    std::vector<MemberKey> out;
+    const Node* n = nodeOf(caller);
+    if (n == nullptr) {
+        return out;
+    }
+    std::unordered_set<MemberKey, MemberKeyHash> seen;
+    for (const ca::u32 si : n->outSites) {
+        if (seen.insert(sites_[si].callee).second) {
+            out.push_back(sites_[si].callee);
+        }
+    }
+    return out;
+}
+
+std::vector<MemberKey> CallGraph::callersOf(MemberKey callee) const
+{
+    std::vector<MemberKey> out;
+    const Node* n = nodeOf(callee);
+    if (n == nullptr) {
+        return out;
+    }
+    std::unordered_set<MemberKey, MemberKeyHash> seen;
+    for (const ca::u32 si : n->inSites) {
+        if (seen.insert(sites_[si].caller).second) {
+            out.push_back(sites_[si].caller);
+        }
+    }
+    return out;
+}
+
+std::shared_ptr<const jbc::ir::ClassSession> CallGraph::sessionOf(const CallSite& site) const
+{
+    if (site.session >= sessions_.size()) {
+        return nullptr;
+    }
+    return sessions_[site.session];
+}
+
+std::shared_ptr<const jbc::ir::ClassSession> CallGraph::sessionOfClass(ClassKey cls) const
+{
+    const auto it = classToSession_.find(cls.id);
+    if (it == classToSession_.end() || it->second >= sessions_.size()) {
+        return nullptr;
+    }
+    return sessions_[it->second];
+}
+
+std::vector<MemberKey> CallGraph::reachableClosure(const std::vector<MemberKey>& entries,
+                                                   bool skipLibraryClasses) const
+{
+    std::vector<MemberKey> result;
+    if (entries.empty()) {
+        return result;
+    }
+
+    // 入口先入结果（图中存在者），再沿出边传播；seen 同时充当栈去重。
+    std::vector<ca::u8> seen(nodes_.size(), 0);
+    std::vector<ca::u32> stack;
+    for (const MemberKey e : entries) {
+        const auto it = nodeIndexOf_.find(e);
+        if (it == nodeIndexOf_.end()) {
+            continue;
+        }
+        if (seen[it->second] == 0) {
+            seen[it->second] = 1;
+            result.push_back(nodes_[it->second].key);
+            stack.push_back(it->second);
+        }
+    }
+
+    while (!stack.empty()) {
+        const Node& n = nodes_[stack.back()];
+        stack.pop_back();
+        for (const ca::u32 si : n.outSites) {
+            const MemberKey target = sites_[si].callee;
+            if (skipLibraryClasses && util::isLibraryClass(pool_.str(target.cls))) {
+                continue;
+            }
+            const auto it = nodeIndexOf_.find(target);
+            if (it == nodeIndexOf_.end()) {
+                continue;   // 建边时目标必建节点，防御式兜底
+            }
+            if (seen[it->second] == 0) {
+                seen[it->second] = 1;
+                result.push_back(target);
+                stack.push_back(it->second);
+            }
+        }
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// CallGraphBuilder
+// ---------------------------------------------------------------------------
+
+Result<void, jbc::ir::SessionError> CallGraphBuilder::addClassBytes(jbc::core::ByteView bytes)
+{
+    auto r = jbc::ir::makeSessionFromBytes(bytes);
+    if (r.is_err()) {
+        return Err(r.unwrap_err());
+    }
+    sessions_.push_back(std::move(r).unwrap());
+    return Ok();
+}
+
+void CallGraphBuilder::addSession(std::shared_ptr<jbc::ir::ClassSession> session)
+{
+    if (session == nullptr) {
+        return;
+    }
+    for (const auto& existing : sessions_) {
+        if (existing.get() == session.get()) {
+            return;   // 同一会话重复喂入幂等
+        }
+    }
+    sessions_.push_back(std::move(session));
+}
+
+Result<CallGraph, BuildError> CallGraphBuilder::build()
+{
+    CallGraph g;
+    // 图持有全部会话的保活副本：调用点的 InsnId 依赖会话 CodeDom 存活。
+    g.sessions_ = sessions_;
+
+    // ---- 第一遍：扫描集合中声明的方法建节点（含无代码方法） ----
+    for (ca::usize si = 0; si < sessions_.size(); ++si) {
+        const jbc::ir::ClassUnit& u = sessions_[si]->unit();
+        const jbc::ir::SymbolPool& syms = u.symbols();
+        const ClassKey owner = classKeyOf(g.pool(), syms.str(u.thisClass));
+        g.classToSession_.emplace(owner.id, static_cast<ca::u32>(si));
+        for (const jbc::ir::MethodUnit& m : u.methods) {
+            // 下标寻址：后续 push_back 扩容不失效。
+            CallGraph::Node& node = g.nodes_[g.internNode(
+                memberKeyOf(g.pool(), owner, syms.str(m.name), syms.str(m.desc)))];
+            node.declared = true;
+            node.access   = m.access;
+        }
+    }
+
+    // ---- 第二遍：逐方法升格，遍历 CodeDom 提取 invoke 调用点 ----
+    for (ca::usize si = 0; si < sessions_.size(); ++si) {
+        jbc::ir::ClassSession& s = *sessions_[si];
+        const jbc::ir::ClassUnit& u = s.unit();
+        const jbc::ir::SymbolPool& syms = u.symbols();
+        const std::string_view className = syms.str(u.thisClass);
+        const ClassKey owner = classKeyOf(g.pool(), className);
+
+        const std::vector<jbc::ir::CodeVisit> visits = jbc::ir::collectCodeUnits(s);
+        for (const jbc::ir::CodeVisit& v : visits) {
+            const jbc::ir::MethodUnit& mu = u.methods[v.methodIdx];
+            const std::string_view methodName = syms.str(mu.name);
+            const std::string_view methodDesc = syms.str(mu.desc);
+
+            if (v.kind == jbc::ir::CodeVisit::Kind::Failed) {
+                return Err(BuildError{BuildError::Stage::Promote, v.error, 0,
+                                      className, methodName, methodDesc});
+            }
+            if (v.kind != jbc::ir::CodeVisit::Kind::Ok) {
+                continue;   // abstract/native：第一遍已建节点，无调用边
+            }
+
+            const MemberKey callerKey =
+                memberKeyOf(g.pool(), owner, methodName, methodDesc);
+            const ca::u32 callerIdx = g.internNode(callerKey);
+
+            const jbc::ir::CodeDom& dom = v.unit->dom;
+            for (const jbc::ir::InsnId id : dom.order()) {
+                const jbc::ir::Insn* in = dom.peek(id);
+                if (in == nullptr) {
+                    continue;
+                }
+                InvokeKind kind;
+                if (!invokeKindOf(in->op, kind)) {
+                    continue;
+                }
+                jbc::ir::ClassSession::MemberSem sem;
+                if (!s.memberOf(*in, sem)) {
+                    return Err(BuildError{BuildError::Stage::Operand,
+                                          jbc::ir::PromoteError::Ok, id.slot,
+                                          className, methodName, methodDesc});
+                }
+
+                // indy 的 CP 操作数无 owner（memberOf 置空视图）→ 驻留空串。
+                const MemberKey calleeKey =
+                    sem.kind == jbc::ir::ClassSession::MemberSem::Kind::InvokeDynamic
+                        ? MemberKey{g.pool().intern(std::string_view{"", 0}),
+                                    g.pool().intern(sem.name),
+                                    g.pool().intern(sem.desc)}
+                        : memberKeyOf(g.pool(), classKeyOf(g.pool(), sem.owner),
+                                      sem.name, sem.desc);
+
+                // 外部目标丢弃：未声明的 callee 不建节点、调用点不落
+                //（与旧版 includeExternalTargets=false 语义一致：节点不存在）。
+                if (!g.contains(calleeKey) && !options_.includeExternalTargets) {
+                    continue;
+                }
+                const ca::u32 calleeIdx = g.internNode(calleeKey);
+
+                const ca::u32 siteIdx = static_cast<ca::u32>(g.sites_.size());
+                g.sites_.push_back(
+                    CallSite{callerKey, calleeKey, id, kind, static_cast<ca::u32>(si)});
+                g.nodes_[callerIdx].outSites.push_back(siteIdx);
+                g.nodes_[calleeIdx].inSites.push_back(siteIdx);
+            }
+        }
+    }
+
+    return Ok(std::move(g));
+}
+
+}   // namespace mjbase::asm_classpath

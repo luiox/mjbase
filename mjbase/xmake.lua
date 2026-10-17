@@ -30,6 +30,18 @@ target("mjbase")
     add_files("src/mjbase/model/**.cpp")
     add_files("src/mjbase/project/**.cpp")
     add_files("src/mjbase/consumer/**.cpp")
+    -- 批 2：asm 指令工程域（零内依赖的六个子目录）+ hierarchy（只依赖 keys）。
+    -- asm/classpath 只收 call_graph：resolved_call_graph 语义上属 reference
+    -- （module-map 第五批），留在批 3 与 analysis/reference 一同落仓，
+    -- 否则 asm → reference 的越层边会把环带进来。
+    add_files("src/mjbase/asm/analyzer/**.cpp")
+    add_files("src/mjbase/asm/cfg/**.cpp")
+    add_files("src/mjbase/asm/evaluator/**.cpp")
+    add_files("src/mjbase/asm/insn/**.cpp")
+    add_files("src/mjbase/asm/matcher/**.cpp")
+    add_files("src/mjbase/asm/tmatcher/**.cpp")
+    add_files("src/mjbase/asm/classpath/call_graph.cpp")
+    add_files("src/mjbase/hierarchy/**.cpp")
     -- cli 的 ArgParser 文案单源表（i18n_setup 静态注册，public include 供下游覆盖）。
     -- 批 1 不含 cli 源码，但 i18n.hpp 依赖其生成头，故规则始终保留。
     add_files("src/mjbase/cli/translations/*.lang", {rules = "libca.i18n.embed-lang"})
@@ -71,6 +83,15 @@ target("mjbase_unittest")
     add_files("test/unittest/model/*_test.cpp")
     add_files("test/unittest/project/*_test.cpp")
     add_files("test/unittest/consumer/*_test.cpp")
+    -- 批 2：与上面 src 的 asm 子目录、hierarchy 一一对应。
+    add_files("test/unittest/asm/analyzer/*_test.cpp")
+    add_files("test/unittest/asm/cfg/*_test.cpp")
+    add_files("test/unittest/asm/classpath/*_test.cpp")
+    add_files("test/unittest/asm/evaluator/*_test.cpp")
+    add_files("test/unittest/asm/insn/*_test.cpp")
+    add_files("test/unittest/asm/matcher/*_test.cpp")
+    add_files("test/unittest/asm/tmatcher/*_test.cpp")
+    add_files("test/unittest/hierarchy/*_test.cpp")
     add_includedirs("src")
     -- 共享测试夹具目录（test/unittest/shared/）：跨模块单测共用的头文件面，
     -- 消费形如 #include "shared/xxx.hpp"（structural_pass_util 升格共享 util）。
