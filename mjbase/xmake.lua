@@ -42,6 +42,16 @@ target("mjbase")
     add_files("src/mjbase/asm/tmatcher/**.cpp")
     add_files("src/mjbase/asm/classpath/call_graph.cpp")
     add_files("src/mjbase/hierarchy/**.cpp")
+    -- 批 3：analysis / reference / spi / pass，连同上面推迟的 resolved_call_graph
+    -- 与 remapper。本批含两个实锤环（asm⇄analysis⇄reference 余下部分、
+    -- pass⇄spi），单 target 内可构建；拆 target 前必须先破环，见
+    -- doc_ai/migration-boundary.md 的批次表。
+    add_files("src/mjbase/analysis/**.cpp")
+    add_files("src/mjbase/reference/**.cpp")
+    add_files("src/mjbase/spi/**.cpp")
+    add_files("src/mjbase/pass/**.cpp")
+    add_files("src/mjbase/asm/classpath/resolved_call_graph.cpp")
+    add_files("src/mjbase/asm/remapper/**.cpp")
     -- cli 的 ArgParser 文案单源表（i18n_setup 静态注册，public include 供下游覆盖）。
     -- 批 1 不含 cli 源码，但 i18n.hpp 依赖其生成头，故规则始终保留。
     add_files("src/mjbase/cli/translations/*.lang", {rules = "libca.i18n.embed-lang"})
@@ -92,6 +102,12 @@ target("mjbase_unittest")
     add_files("test/unittest/asm/matcher/*_test.cpp")
     add_files("test/unittest/asm/tmatcher/*_test.cpp")
     add_files("test/unittest/hierarchy/*_test.cpp")
+    -- 批 3：与上面 src 的 analysis/reference/spi/pass 及 remapper 一一对应。
+    add_files("test/unittest/analysis/*_test.cpp")
+    add_files("test/unittest/reference/*_test.cpp")
+    add_files("test/unittest/spi/*_test.cpp")
+    add_files("test/unittest/pass/*_test.cpp")
+    add_files("test/unittest/asm/remapper/*_test.cpp")
     add_includedirs("src")
     -- 共享测试夹具目录（test/unittest/shared/）：跨模块单测共用的头文件面，
     -- 消费形如 #include "shared/xxx.hpp"（structural_pass_util 升格共享 util）。
