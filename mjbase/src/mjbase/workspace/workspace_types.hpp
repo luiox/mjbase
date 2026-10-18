@@ -8,6 +8,8 @@
 #include "libca/core/datatype.hpp"
 #include "libca/core/result.hpp"
 
+#include "mjbase/asm/remapper/member_remap_plan.hpp"
+#include "mjbase/asm/remapper/member_remapper.hpp"
 #include "mjbase/jasm/jvm_jasm_service.hpp"
 
 namespace mjbase::workspace {
@@ -19,11 +21,14 @@ namespace mjbase::workspace {
 /// 实现共同使用。移植自 mbase/workspace/workspace_types（语义照旧），类型面按
 /// mjbase 约定重定型：
 /// - 错误通道：ca::Status/StatusOr → WorkspaceError + WorkspaceResult<T>
-///   （mjbase 错误走 Result 值语义的总约定）；
-/// - 诊断：jasm::Diagnostic 即 mjbase::jasm::Diagnostic（同形迁移）。
-/// 依赖旧栈 remapper/renamer/pass-registry 的 DTO（MemberRemapPlan/RemapPolicy、
-/// RenameRequest 族、PipelineRequest 族、WorkflowRequest 族）不随迁——对应设施
-/// 未在 mjbase 落地，接口面见 i_workspace.hpp 的范围说明。
+///   （mjbase 错误走 Result 值语义的总约定）；DTO 内嵌的 ca::Status 字段
+///   同步改 WorkspaceErrorInfo；
+/// - 诊断：jasm::Diagnostic 即 mjbase::jasm::Diagnostic（同形迁移）；
+/// - 重映射契约类型：RemapPolicy/MemberRemapPlan 取 mjbase::asm_remapper 域
+///   （KeyPool 驻留 + MemberKey 建键版）。
+/// RenameRequest 族、PipelineRequest 族、WorkflowRequest 族随工作区 remap/
+/// rename/pipeline 事务面一起迁入（mjt-mcp 为第二个管线消费方，触发装配层
+/// 定型，见 pass-contract §9）。
 
 /// @brief workspace 模块错误码。与旧 ca::StatusCode 用点的映射：
 ///        InvalidArgument/NotFound/AlreadyExists/FailedPrecondition/
@@ -468,6 +473,155 @@ struct ClassRelations final
     std::vector<std::string> allSubclasses;
     std::vector<std::string> implementors;
     std::vector<ClassRelationSource> sources;
+};
+
+/// @brief 影响分析中的一项预期或已应用映射。
+struct RenameMapping final
+{
+    std::string kind;
+    std::string before;
+    std::string after;
+};
+
+/// @brief 工作区重命名操作的目标种类。
+enum class RenameKind : ca::u8
+{
+    Class,
+    Package,
+    Field,
+    Method,
+    Local,
+};
+
+/// @brief 一个 class/package/member/local 重命名请求。
+struct RenameRequest final
+{
+    RenameKind  kind = RenameKind::Class;
+    std::string owner;
+    std::string methodName;
+    std::string name;
+    std::string descriptor;
+    std::string newName;
+    ca::i32     localIndex = -1;
+    bool        cascadeOverrides = false;
+    asm_remapper::RemapPolicy policy = asm_remapper::RemapPolicy::all();
+};
+
+/// @brief 对候选映射变更的前后影响和验证结果。
+struct ImpactAnalysis final
+{
+    WorkspaceErrorInfo           status;
+    bool                         exportable = false;
+    std::vector<ReferenceImpact> beforeReferences;
+    std::vector<ReferenceImpact> afterReferences;
+    std::vector<ByteDiff>        byteDiffs;
+    std::vector<jasm::Diagnostic> diagnostics;
+    std::vector<std::string>     risks;
+};
+
+/// @brief 重命名预览，包括方法 override 组件和可供审阅的映射表。
+struct RenameAnalysis final
+{
+    WorkspaceErrorInfo              status;
+    bool                            readyToApply = false;
+    bool                            requiresOverrideReview = false;
+    std::vector<RenameMapping>      mappings;
+    std::vector<MethodOverrideInfo> overrideComponent;
+    ImpactAnalysis                  impact;
+};
+
+/// @brief 一个可由工作区执行的已注册 pass 摘要。
+struct PassDescription final
+{
+    std::string name;
+    std::string description;
+    std::string scope;
+};
+
+/// @brief 一个可由工作区执行的已注册 pipeline 摘要。
+struct PipelineDescription final
+{
+    std::string name;
+    std::string description;
+};
+
+/// @brief 在工作区候选副本上执行 pass 或 pipeline 的请求。
+///
+/// passNames 与 pipeline 互斥；两者均为空时使用 `default-optimize`。jdkPath 非空时会
+/// 扫描 JDK 类路径并以 COMPUTE_MAXS | COMPUTE_FRAMES 写回候选 class。
+struct PipelineRequest final
+{
+    std::vector<std::string> passNames;
+    std::string              pipeline;
+    std::string              jdkPath;
+};
+
+/// @brief 工作流中要在候选副本前后执行的精确引用查询种类。
+enum class WorkflowReferenceKind : ca::u8
+{
+    Class,
+    Field,
+    Method,
+};
+
+/// @brief 一个可重放工作流的精确 xref 查询。
+struct WorkflowReferenceQuery final
+{
+    WorkflowReferenceKind kind = WorkflowReferenceKind::Class;
+    std::string           owner;
+    std::string           name;
+    std::string           descriptor;
+};
+
+/// @brief 一个 xref 查询在工作流输入和候选输出中的稳定结果。
+struct WorkflowReferenceReport final
+{
+    WorkflowReferenceQuery     query;
+    std::vector<ReferenceInfo> before;
+    std::vector<ReferenceInfo> after;
+};
+
+/// @brief 工作流中一个已执行阶段的状态。
+struct WorkflowStageResult final
+{
+    std::string        name;
+    WorkspaceErrorInfo status;
+};
+
+/// @brief 一次工作区候选事务的组合请求。
+///
+/// remapPlan 为调用期间借用的已解析计划，必须在 runWorkflow 返回前保持有效。若设置
+/// runPipeline，mapping 和 pipeline 都在同一候选副本中运行；任一阶段失败都不会提交工作区。
+struct WorkflowRequest final
+{
+    const asm_remapper::MemberRemapPlan* remapPlan = nullptr;
+    asm_remapper::RemapPolicy            remapPolicy = asm_remapper::RemapPolicy::bytecodeOnly();
+    bool                                 runPipeline = false;
+    PipelineRequest                      pipeline;
+    std::vector<WorkflowReferenceQuery>  referenceQueries;
+    /// @brief 非空时将已验证的候选副本原子导出到此前不存在的 JAR 路径。
+    /// @note dryRun 只校验导出目标，不创建输出文件。
+    std::string                          exportPath;
+    /// @brief 在验证完成后接收一次性候选 JAR 快照的只读阶段。
+    /// @note 回调返回前必须完成读取，快照会立刻删除；返回错误时不导出或提交 Workspace。
+    std::function<WorkspaceErrorInfo(const std::string&)> candidateJarConsumer;
+    std::string                          candidateJarStageName;
+};
+
+/// @brief 可重放工作流的机器可读报告。
+///
+/// inputFingerprint 和 candidateFingerprint 为按资源 URI 和字节内容计算的稳定 FNV-1a-64 摘要。
+/// mutation 复用所有 Workspace 编辑的 revision、diagnostics 和 byte diff 契约；dryRun 时仅
+/// 返回候选报告，成功提交时最多增加一个 revision。
+struct WorkflowResult final
+{
+    MutationResult                       mutation;
+    std::string                          inputFingerprint;
+    std::string                          candidateFingerprint;
+    std::string                          exportPath;
+    bool                                 exported = false;
+    std::vector<WorkflowStageResult>     stages;
+    std::vector<WorkflowReferenceReport> references;
 };
 
 /// @brief 一项可由 JAR 修复事务处理的资源问题。
