@@ -58,10 +58,10 @@ mjt-mcp 与 mjt-py 实际 include 什么，就迁什么。
 | 批次 | 模块 | 落仓时要处理的环 |
 |---|---|---|
 | 1（已落） | keys / util / expr / jar / mapping / model / project / consumer | 无（零内依赖叶子） |
-| 2 | asm 域 + hierarchy | 环 1 的 asm 侧 |
-| 3 | reference + analysis + spi + pass | 环 1 余下 + 环 2（主战场） |
-| 4 | renamer + workspace | 无新增 |
-| 5 | jasm / cli / log / air / sir | 环 3 |
+| 2（已落） | asm 域 + hierarchy | 环 1 的 asm 侧 |
+| 3（已落） | reference + analysis + spi + pass | 环 1 余下 + 环 2（主战场）；reference_scan 先落直写切片，class-string 反射事实已随 mjt-mcp 契约补齐，反射事实族其余（成员查找/handle/lambda bootstrap/别名）待主线落 |
+| 4（已落） | renamer + workspace | 无新增；workspace 的 remap/rename/pipeline/workflow 方法族随 mjt-mcp 消费面补齐 |
+| 5（部分落） | jasm / cli / log 已落；air / sir 未落 | 环 3 |
 
 include 全走 `mjbase/<mod>/...` 全限定形式，所以**分 target 不需要改动任何
 include**，边界由构建图强制——这正是本仓此前缺失的 gate。
