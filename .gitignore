@@ -59,6 +59,13 @@ report.html
 *.tiny
 *.pyc
 
+### Test fixtures（夹具随仓走）###
+# 上面的构建产物排除规则会误伤 test_resource 下的测试夹具（optimize/hello.jar、
+# pass_golden/corpus 的 *.class）：本地有磁盘残留掩盖，CI 全新 checkout 缺文件
+# 直接挂用例（MjJarReaderTest.readHelloJar 首装暴露）。负规则整体回收该目录，
+# 夹具随仓分发保证 CI 与本地同一用例面。
+!mjbase/test_resource/**
+
 ### Logs and dumps ###
 *.log
 *.dump
