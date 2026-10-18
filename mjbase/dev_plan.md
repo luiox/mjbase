@@ -36,9 +36,12 @@
 mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收" = 新载体
 语义下无独立变换面，登记后从迁移清单除名。体量实测（mbase cpp 行数）已注。
 
-- [ ] **StackOperationSimplifier**（stack_operation.cpp 内，方法级窗口折叠）：
+- [x] **StackOperationSimplifier**（stack_operation.cpp 内，方法级窗口折叠）：
   `dup;pop`→∅、`pop;pop`→`pop2`、`ldc;dup`→`ldc;ldc` 等规则迭代到不动点，
   cat1/cat2 分槽；消费 asm/matcher 底座（已迁）。**样板批首选**。
+  → 已落地（2bb8d81）：32 规则 1:1 对齐，CodeDom 载体；wide ldc 与
+  Err 保守停机两处声明见头注释；19 单测 + 全量 1228 绿。golden 对拍
+  待批（extractor 段 + corpus + compare test）。
 - [ ] StackOperationExpander：OriginalSource 帧分析展开常量 producer 上的
   DUP 族，依赖帧面，随帧链接线批次。
 - [ ] **FixPatternSimplifier**（236 行）：位运算固定模式 / 六种 `IF_ICMP*`
