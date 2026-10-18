@@ -31,6 +31,37 @@
   同步消除、StringBuilder 链化简）待批。
 - [ ] B 批 meta_info_remover 家族迁移（scope:class，在途）。
 
+## opt pass 余量批次裁决（W0 备料，mjt-deobf 消费面缺口对账）
+
+mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收" = 新载体
+语义下无独立变换面，登记后从迁移清单除名。体量实测（mbase cpp 行数）已注。
+
+- [ ] **StackOperationSimplifier**（stack_operation.cpp 内，方法级窗口折叠）：
+  `dup;pop`→∅、`pop;pop`→`pop2`、`ldc;dup`→`ldc;ldc` 等规则迭代到不动点，
+  cat1/cat2 分槽；消费 asm/matcher 底座（已迁）。**样板批首选**。
+- [ ] StackOperationExpander：OriginalSource 帧分析展开常量 producer 上的
+  DUP 族，依赖帧面，随帧链接线批次。
+- [ ] **FixPatternSimplifier**（236 行）：位运算固定模式 / 六种 `IF_ICMP*`
+  安全折叠（非零偏移保留）/ 同 slot store/load 重写（clone producer）；
+  matcher 底座已迁。样板批次选。
+- [ ] ExpressionSimplifier（409 行）：表达式形状折叠。
+- [ ] TypeCastSimplifier（328 行）：冗余 checkcast 消除，需类型分析面。
+- [ ] ConsJumpOptimizer / ConstantSwitchFolder / ConstantStateMachineEliminator
+  （628 行）：常量分支/switch/状态机折叠，依赖 asm/evaluator（已迁）。
+- [ ] RedundantJumpRemover / GotoRearranger / ContinuousLabelMerger
+  （449 行）：label 布局族——新载体无标签节点，逐件载体重论证（部分可能
+  结构性吸收或改形为边界句柄重排），未论证前不迁。
+- [ ] UnreachableInsnRemover（dead_code_remover.cpp 1594 行内非 NopRemover
+  部分）：帧可达性证明删不可达指令；mjbase cfg/evaluator 面齐，最大单件，
+  独立批。NopRemover 已由方法级四件批收口。
+- [ ] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
+  字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
+  候选（双面落盘纪律）。
+- [x] UnusedLabelRemover：**结构性吸收**（裁决 2026-10-18）——新栈 CodeDom
+  无标签节点，标签是按引用物化的边界句柄；LNT/LVT 锚定指令位（AIR
+  originalOffset 批三），旧栈「孤立 LabelNode」在新载体无可序列化形态，
+  无对拍对象。从迁移清单除名，不实现。
+
 ## 待办
 
 - model / jar / mapping / project 批次：零旧栈依赖，直迁或按需重设计。
