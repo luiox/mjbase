@@ -10,7 +10,15 @@
 #include "mjbase/workspace/i_workspace.hpp"
 #include "mjbase/workspace/workspace_types.hpp"
 
-namespace mjbase::workspace {
+namespace mjbase {
+
+class KeyPool;   ///< 驻留池（keys.hpp；此处仅前置声明）
+
+namespace hierarchy {
+class ClassHierarchy;   ///< 层次图（hierarchy 模块；此处仅前置声明）
+}   // namespace hierarchy
+
+namespace workspace {
 
 /// @file workspace.hpp
 /// @brief WorkspaceBase：可回滚的、单线程持有的 class/JAR 分析与编辑工作区（基础实现）。
@@ -349,4 +357,15 @@ private:
     ca::u64      nextSupportingId_ = 1;
 };
 
-}   // namespace mjbase::workspace
+/// @brief 递归扫描 JDK 目录下的 .jar/.zip/.jmod，把层次摘要灌入 @p hierarchy。
+///
+/// 旧栈 CommonSuperClassProvider::scan 的对应物（pipeline jdkPath 语义）：
+/// 单归档导入失败 fail-open 跳过；单类 fail-open（环检查拒绝等）；jimage
+/// 模块镜像不扫描（与旧栈同口径）。配合 spi::CommonSuperClassResolver +
+/// StrictTypeResolverAdapter 注入 PassPipelineOptions::typeResolver 使用；
+/// 调用方保证 pool/hierarchy 存活覆盖管线 build+run 全程。
+void scanJdkHierarchy(const std::string& jdkPath, mjbase::hierarchy::ClassHierarchy& hierarchy,
+                      mjbase::KeyPool& pool);
+
+}   // namespace workspace
+}   // namespace mjbase
