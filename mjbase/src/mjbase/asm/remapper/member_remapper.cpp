@@ -1072,7 +1072,9 @@ bool remapInsn(const RemapCtx& ctx, Insn& in)
     return false;
 }
 
-// ── 反射字符串改写（线性状态机 + alias 数据流双轨）──────────────────────────
+}   // namespace
+
+// ── 反射类名形态（导出面：xref 元数据事实与 remap 改写候选共用同一语法）──────
 
 /// @brief 反射类名形态判定（旧栈 looksLikeClassName 照迁）。
 bool looksLikeClassName(std::string_view value) noexcept
@@ -1102,6 +1104,9 @@ std::string toInternalReflectionName(std::string_view value)
     }
     return internal;
 }
+
+namespace
+{
 
 /// @brief 按原始串形态恢复改写结果（点分/描述符外壳，旧栈同函数照迁）。
 std::string restoreReflectionNameShape(std::string_view original, std::string_view mapped)

@@ -573,6 +573,43 @@ TEST(MjWorkspaceCoreTest, ProvidesStructuredQueriesAndSupportingResources)
     EXPECT_EQ(WorkspaceError::DataLoss, damaged.unwrap_err().code);
 }
 
+TEST(MjWorkspaceCoreTest, SurfacesReflectionClassStringsAsTypeReferences)
+{
+    // class-string 元数据事实：形态合法的字符串常量按 remapper 反射语法识别为
+    // 类型引用候选（remap 改的 xref 必须可见，xref_class 契约 "metadata
+    // references" 的 mjbase 对应物）。点分形态归一为内部名。
+    model::ResourceContainer container;
+    container.addResource("workspace/Reflector.class",
+                          std::make_unique<model::ClassResource>(
+                              "workspace/Reflector.class",
+                              assembleSource("workspace/Reflector",
+                                             ".super java/lang/Object\n"
+                                             ".class public super workspace/Reflector {\n"
+                                             "  .method public static load ()V {\n"
+                                             "    code: {\n"
+                                             "      ldc \"workspace.Subject\"\n"
+                                             "      invokestatic java/lang/Class.forName "
+                                             "(Ljava/lang/String;)Ljava/lang/Class;\n"
+                                             "      pop\n"
+                                             "      return\n"
+                                             "    }\n"
+                                             "  }\n"
+                                             "}\n")));
+    const auto path = test::getTempOutPath("mjbase_workspace_reflection_input.jar");
+    model::ResourceHelper::exportToJar(container, path.string());
+
+    WorkspaceBase workspace;
+    ASSERT_TRUE(workspace.openJar(path.string()).is_ok());
+    auto xrefs = workspace.xrefsToClass("workspace/Subject");
+    ASSERT_TRUE(xrefs.is_ok());
+    const auto values = std::move(xrefs).unwrap();
+    ASSERT_EQ(1U, values.size());
+    EXPECT_EQ("workspace/Reflector", values[0].sourceClass);
+    EXPECT_EQ("workspace/Subject", values[0].target);
+    EXPECT_EQ("type", values[0].kind);
+    EXPECT_EQ("load", values[0].sourceMethod);
+}
+
 TEST(MjWorkspaceCoreTest, KeepsLargeSignaturesOutOfClassSummaries)
 {
     const std::string signature =

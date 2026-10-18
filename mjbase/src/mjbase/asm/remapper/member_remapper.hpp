@@ -79,6 +79,13 @@ enum class RemapError : ca::u8
 /// @brief 错误码 → 短名（诊断输出用）。
 const char* to_string(RemapError error) noexcept;
 
+/// @brief 反射类名形态判定（含 '/' 或 '.'、无空白/括号；改写候选与 xref
+///        元数据事实共用同一语法，两处口径不得漂移）。
+bool looksLikeClassName(std::string_view value) noexcept;
+
+/// @brief 反射类名 → 内部名：剥 L..; 外壳、点分换斜杠。
+std::string toInternalReflectionName(std::string_view value);
+
 /// @brief 把重映射计划应用到一个类会话。
 ///
 /// @param session 已按类字节构建的会话（backing + IR 同生共死）；改写在

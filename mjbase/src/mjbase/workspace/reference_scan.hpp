@@ -2,12 +2,14 @@
 /// @brief       工作区内直写引用扫描：字节码编码事实（方法/字段/类型）。
 ///
 /// mbase ReferenceIndex 的 mjbase 直迁切片：只回答「哪些扫描过的 class 和方法体
-/// 直接引用给定的 method/field/type」。旧栈索引的反射事实族（class-string 反射、
-/// 常量反射成员查找、method handle、lambda bootstrap、别名传播）与注解/签名/结构
-/// 元数据类型引用未随迁——那些是独立的共享分析设施，待主线落（见批次报告）。
+/// 直接引用给定的 method/field/type」。旧栈索引的反射事实族中 class-string 形态
+/// 事实已随迁（字符串常量按 remapper 反射语法识别为类型引用候选）；常量反射
+/// 成员查找、method handle、lambda bootstrap、别名传播与注解/签名/结构元数据
+/// 类型引用未随迁——那些是独立的共享分析设施，待主线落（见批次报告）。
 /// 本扫描件覆盖：方法调用（invoke 家族）、字段访问（get/put 家族）、显式类型指令
-/// （new/checkcast/instanceof/anewarray/multianewarray）、LDC class 常量、member
-/// owner 类型引用与 class 头声明（super/interfaces）。
+/// （new/checkcast/instanceof/anewarray/multianewarray）、LDC class 常量、
+/// LDC class-string 反射候选、member owner 类型引用与 class 头声明
+/// （super/interfaces）。
 ///
 /// 底座：类字节经 jbc 会话建面，逐方法 promote 后遍历 CodeDom 程序顺序，invoke/
 /// 字段族操作数经 ClassSession::memberOf 解析。site.insnIndex 为方法体内代码指令

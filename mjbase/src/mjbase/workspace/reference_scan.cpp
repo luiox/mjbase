@@ -6,6 +6,7 @@
 #include "jbc/ir/units.hpp"
 
 #include "mjbase/analysis/cp_refs.hpp"
+#include "mjbase/asm/remapper/member_remapper.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/spi/class_file_sanitize.hpp"
 #include "mjbase/workspace/classfile_support.hpp"
@@ -117,13 +118,21 @@ void ReferenceScan::build(const model::ResourceContainer& container)
                 }
                 if (insn->op == Op::LDC || insn->op == Op::LDC_W) {
                     jbc::ir::ClassSession::ConstSem constant;
-                    if (held->constOf(*insn, constant) &&
-                        constant.kind == jbc::ir::ClassSession::ConstSem::Kind::Class &&
+                    if (!held->constOf(*insn, constant)) continue;
+                    if (constant.kind == jbc::ir::ClassSession::ConstSem::Kind::Class &&
                         !constant.str.empty()) {
                         // 数组形态的 class 常量提取元素对象类型（LDC "[Lfoo/Bar;" → foo/Bar）。
                         const auto element = support::objectClassFromArrayDescriptor(constant.str);
                         types_.push_back({element.empty() ? std::string{constant.str}
                                                           : std::move(element),
+                                          at});
+                        continue;
+                    }
+                    // class-string 元数据事实：形态合法的字符串常量是反射引用候选
+                    //（与 remapper 反射改写候选同一语法，remap 改的 xref 必须可见）。
+                    if (constant.kind == jbc::ir::ClassSession::ConstSem::Kind::String &&
+                        asm_remapper::looksLikeClassName(constant.str)) {
+                        types_.push_back({asm_remapper::toInternalReflectionName(constant.str),
                                           at});
                     }
                     continue;
