@@ -23,9 +23,11 @@ namespace mjbase::workspace {
 ///   两阶段写回）；
 /// - 错误通道为 WorkspaceError + WorkspaceResult（旧 ca::Status/StatusOr 的映射见
 ///   workspace_types.hpp）；
-/// - 旧栈 remapper/renamer/pass-registry 依赖面（analyzeRemap/applyRemap/analyzeRename/
-///   applyRename/validatePipeline/applyPipeline/availablePasses/availablePipelines/
-///   runWorkflow）不随迁，见 i_workspace.hpp 范围说明。
+/// - remap/rename/pipeline/workflow 方法族落在 spi 协作面上：管线组装经
+///   spi::PipelineBuilder/applyTo（pass-contract §9 装配层），重映射经
+///   asm_remapper::applyResourceRemapPlan，帧重算经
+///   spi::CommonSuperClassResolver + StrictTypeResolverAdapter（jdkPath 层次
+///   图由本类扫描 JDK 归档构建）。
 class WorkspaceBase : public IWorkspace
 {
 public:
@@ -36,6 +38,12 @@ public:
     WorkspaceBase& operator=(const WorkspaceBase&) = delete;
     WorkspaceBase(WorkspaceBase&&)                 = delete;
     WorkspaceBase& operator=(WorkspaceBase&&)      = delete;
+
+    /// @brief 已注册 pass 摘要（静态查询：无工作区状态，不进接口）。
+    static std::vector<PassDescription> availablePasses();
+
+    /// @brief 已注册 pipeline 摘要（静态查询：无工作区状态，不进接口）。
+    static std::vector<PipelineDescription> availablePipelines();
 
     /// @brief 打开主 JAR 并建立不可变原始快照与可修改工作副本。
     WorkspaceResult<void> openJar(const std::string& path) override;
@@ -217,6 +225,34 @@ public:
     /// @brief 返回当前工作副本中相对打开时原始快照已变化的 class。
     WorkspaceResult<std::vector<ModifiedClassInfo>> modifiedClasses() const override;
 
+    /// @brief 在不提交候选副本的情况下分析一个显式 MemberRemapPlan 的影响。
+    ImpactAnalysis analyzeRemap(const asm_remapper::MemberRemapPlan& plan,
+                                const asm_remapper::RemapPolicy& policy) const override;
+
+    /// @brief 原子应用一个显式 MemberRemapPlan。
+    MutationResult applyRemap(const asm_remapper::MemberRemapPlan& plan,
+                              const asm_remapper::RemapPolicy&   policy,
+                              const MutationRequest& request = {}) override;
+
+    /// @brief 生成重命名映射和风险报告，不修改工作副本。
+    RenameAnalysis analyzeRename(const RenameRequest& request) const override;
+
+    /// @brief 原子应用一个已通过 override 风险检查的重命名请求。
+    MutationResult applyRename(const RenameRequest& request,
+                               const MutationRequest& requestOptions = {}) override;
+
+    /// @brief 在不提交候选副本的情况下运行 pass/pipeline 并返回验证和 byte diff。
+    MutationResult validatePipeline(const PipelineRequest& pipeline,
+                                    const MutationRequest& request = {}) override;
+
+    /// @brief 原子执行 pass/pipeline；dryRun 时与 validatePipeline 返回同一类结果。
+    MutationResult applyPipeline(const PipelineRequest& pipeline,
+                                 const MutationRequest& request = {}) override;
+
+    /// @brief 在一个候选事务中执行 remap、可选 pipeline、验证和候选 xref。
+    WorkflowResult runWorkflow(const WorkflowRequest& workflow,
+                               const MutationRequest& request = {}) override;
+
     /// @brief 导入一个私有工作流候选 JAR，并按当前 revision 验证、导出和提交。
     /// @warning candidateJarPath 仅限受控后台事务生成的 JAR；提交失败会移除本次创建的 exportPath。
     WorkflowCandidateCommitResult commitWorkflowCandidateJar(
@@ -282,6 +318,17 @@ private:
                                                        const std::string& uriOrInternalName) const;
     WorkspaceErrorInfo validateCandidate(const model::ResourceContainer& candidate,
                                          std::vector<jasm::Diagnostic>& diagnostics) const;
+    /// @brief 在候选副本上组装并运行 pass/pipeline（runWorkflow 前置协议见
+    ///        i_workspace.hpp：pipeline/passNames 互斥，均空取 default-optimize）。
+    WorkspaceErrorInfo runPipeline(model::ResourceContainer& candidate,
+                                   const PipelineRequest& request) const;
+    /// @brief 把重命名请求展开为重映射计划 + 审阅映射表 + 风险清单
+    ///        （analyzeRename/applyRename 共用的展开面）。
+    WorkspaceErrorInfo buildRenamePlan(const RenameRequest& request,
+                                       asm_remapper::MemberRemapPlan&     plan,
+                                       std::vector<RenameMapping>&        mappings,
+                                       std::vector<MethodOverrideInfo>&   overrides,
+                                       std::vector<std::string>&          risks) const;
     /// @brief 引用结果来源装饰：sourceClass 落在 supporting JAR 时填 supporting/supportId。
     void annotateSupportingSources(std::vector<ReferenceInfo>& references) const;
     std::unordered_map<std::string, std::string> supportingClassIds() const;

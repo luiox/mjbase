@@ -15,15 +15,15 @@ namespace mjbase::workspace {
 /// 在候选副本；只有候选完成严格验证（spi::sanitizeClassFile 引用语义预检 + Jasm
 /// 验证）后才替换工作副本并增加 revision。调用方用 expectedRevision 可拒绝过期写入。
 ///
-/// 本批未随迁的旧接口面（依赖的共享设施未在 mjbase 落地，待主线裁决后补）：
-/// - analyzeRemap / applyRemap（依赖 MemberRemapPlan/RemapPolicy 重映射器）；
-/// - analyzeRename / applyRename 的 class/package/field/method 形态（依赖
-///   renamer 引擎；Local 形态的能力由 ClassMutationKind::RenameLocal 承载）；
-/// - validatePipeline / applyPipeline / availablePasses / availablePipelines
-///   （依赖 mbase pass-registry 内置 pass 面；mjbase spi 域只有编排骨架，
-///   pass-contract §9 明确内置分析/pass 注册表未随迁）；
-/// - runWorkflow（remap+pipeline 组合事务；候选 JAR 的导入-验证-导出-提交
-///   契约由 commitWorkflowCandidateJar 承载）。
+/// remap / rename / pipeline / workflow 方法族（旧栈同款契约）：
+/// - 候选副本语义贯穿：analyze* 与 validate* 不触碰工作副本，apply* 与
+///   runWorkflow 验证通过才原子提交并递增 revision；
+/// - pipeline 组成以 mjbase 自有 pass 集为准（spi::PassRegistry 内置表），
+///   "default-optimize" 等同名的组成与旧栈不逐 pass 对齐，消费方经
+///   availablePasses/availablePipelines 枚举，不假定与旧栈一致；
+/// - PipelineRequest.jdkPath 非空时扫描 JDK 归档建层次图，经
+///   spi::StrictTypeResolverAdapter 接入帧重算（旧栈 COMPUTE_MAXS|FRAMES 的
+///   对应物；libjbc 写回面无 COMPUTE_*S 旗标）。
 class IWorkspace
 {
 public:
@@ -216,6 +216,34 @@ public:
 
     /// @brief 返回当前工作副本中相对打开时原始快照已变化的 class。
     virtual WorkspaceResult<std::vector<ModifiedClassInfo>> modifiedClasses() const = 0;
+
+    /// @brief 在不提交候选副本的情况下分析一个显式 MemberRemapPlan 的影响。
+    virtual ImpactAnalysis analyzeRemap(const asm_remapper::MemberRemapPlan& plan,
+                                        const asm_remapper::RemapPolicy& policy) const = 0;
+
+    /// @brief 原子应用一个显式 MemberRemapPlan。
+    virtual MutationResult applyRemap(const asm_remapper::MemberRemapPlan& plan,
+                                      const asm_remapper::RemapPolicy&   policy,
+                                      const MutationRequest& request = {}) = 0;
+
+    /// @brief 生成重命名映射和风险报告，不修改工作副本。
+    virtual RenameAnalysis analyzeRename(const RenameRequest& request) const = 0;
+
+    /// @brief 原子应用一个已通过 override 风险检查的重命名请求。
+    virtual MutationResult applyRename(const RenameRequest& request,
+                                       const MutationRequest& requestOptions = {}) = 0;
+
+    /// @brief 在不提交候选副本的情况下运行 pass/pipeline 并返回验证和 byte diff。
+    virtual MutationResult validatePipeline(const PipelineRequest& pipeline,
+                                            const MutationRequest& request = {}) = 0;
+
+    /// @brief 原子执行 pass/pipeline；dryRun 时与 validatePipeline 返回同一类结果。
+    virtual MutationResult applyPipeline(const PipelineRequest& pipeline,
+                                         const MutationRequest& request = {}) = 0;
+
+    /// @brief 在一个候选事务中执行 remap、可选 pipeline、验证和候选 xref。
+    virtual WorkflowResult runWorkflow(const WorkflowRequest& workflow,
+                                       const MutationRequest& request = {}) = 0;
 
     /// @brief 导入一个私有工作流候选 JAR，并按当前 revision 验证、导出和提交。
     /// @warning candidateJarPath 仅限受控后台事务生成的 JAR；提交失败会移除本次创建的 exportPath。

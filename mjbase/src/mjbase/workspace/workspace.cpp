@@ -1,7 +1,9 @@
 #include "mjbase/workspace/workspace.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
@@ -24,6 +26,9 @@
 
 #include "mjbase/hierarchy/class_hierarchy.hpp"
 #include "mjbase/hierarchy/summary.hpp"
+#include "mjbase/analysis/class_scan.hpp"
+#include "mjbase/asm/remapper/member_remap_plan.hpp"
+#include "mjbase/asm/remapper/resource_remapper.hpp"
 #include "mjbase/jar/jar_reader.hpp"
 #include "mjbase/jasm/jvm_jasm_service.hpp"
 #include "mjbase/jasm/resource_jasm_service.hpp"
@@ -32,6 +37,14 @@
 #include "mjbase/model/resource_helper.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/spi/class_file_sanitize.hpp"
+#include "mjbase/spi/common_super_resolver.hpp"
+#include "mjbase/spi/job_context.hpp"
+#include "mjbase/spi/pass_manager.hpp"
+#include "mjbase/spi/pass_name_registry.hpp"
+#include "mjbase/spi/pass_pipeline.hpp"
+#include "mjbase/spi/pass_registry.hpp"
+#include "mjbase/spi/pipeline_builder.hpp"
+#include "mjbase/spi/strict_type_resolver.hpp"
 #include "mjbase/workspace/class_mutation_service.hpp"
 #include "mjbase/workspace/classfile_support.hpp"
 #include "mjbase/workspace/reference_scan.hpp"
@@ -1345,6 +1358,30 @@ bool WorkspaceBase::isDirty() const
 bool WorkspaceBase::canExport() const noexcept
 {
     return isLoaded();
+}
+
+std::vector<PassDescription> WorkspaceBase::availablePasses()
+{
+    std::vector<PassDescription> result;
+    for (const auto& pass : spi::defaultPassRegistry().list()) {
+        // scope 输出小写（mbase 契约照迁）；mjbase 第四 scope Cf 无默认种子，
+        // 仅为穷尽 switch 兜底。
+        const std::string scope = pass.scope == spi::PassScope::Method   ? "method"
+                                  : pass.scope == spi::PassScope::Class  ? "class"
+                                  : pass.scope == spi::PassScope::Global ? "global"
+                                                                         : "cf";
+        result.push_back({std::string(pass.name), std::string(pass.description), scope});
+    }
+    return result;
+}
+
+std::vector<PipelineDescription> WorkspaceBase::availablePipelines()
+{
+    spi::registerBuiltinPipelines();
+    std::vector<PipelineDescription> result;
+    for (const auto& pipeline : spi::PassRegistry::instance().listPipelines())
+        result.push_back({pipeline.name, pipeline.description});
+    return result;
 }
 
 WorkspaceErrorInfo WorkspaceBase::ensureLoaded(const std::string& operation) const
@@ -2988,6 +3025,639 @@ WorkspaceErrorInfo WorkspaceBase::validateCandidate(
                            "class did not pass validation: " + std::string(uri));
     });
     return status;
+}
+
+// ── workflow 事务助手（mbase 语义照迁，错误通道换 WorkspaceErrorInfo）─────
+
+void removeWorkflowExport(const WorkflowResult& result)
+{
+    if (!result.exported || result.exportPath.empty()) return;
+    std::error_code filesystemError;
+    std::filesystem::remove(fsPath(result.exportPath), filesystemError);
+}
+
+WorkspaceResult<std::filesystem::path> createWorkflowCandidateJarPath()
+{
+    namespace fs = std::filesystem;
+    static std::atomic<ca::u64> sequence{0};
+    std::error_code             filesystemError;
+    const auto                  root = fs::temp_directory_path(filesystemError);
+    if (filesystemError) {
+        return ca::core::Err(error(WorkspaceError::Internal, "workflow candidate artifact",
+                                   filesystemError.message()));
+    }
+    for (ca::usize attempt = 0; attempt < 16; ++attempt) {
+        const auto id = std::to_string(
+                            std::chrono::steady_clock::now().time_since_epoch().count()) +
+                        "-" + std::to_string(sequence.fetch_add(1));
+        const auto path = root / ("mjbase-workflow-candidate-" + id + ".jar");
+        if (!fs::exists(path)) return ca::core::Ok(path);
+    }
+    return ca::core::Err(error(WorkspaceError::AlreadyExists, "workflow candidate artifact",
+                               "cannot allocate a unique temporary JAR"));
+}
+
+/// RAII 守卫：作用域结束删除候选 JAR 快照（一次性消费契约的兜底清理面）。
+class ScopedWorkflowCandidateJar final
+{
+public:
+    explicit ScopedWorkflowCandidateJar(std::filesystem::path path)
+        : path_(std::move(path))
+    {}
+
+    ~ScopedWorkflowCandidateJar()
+    {
+        std::error_code filesystemError;
+        std::filesystem::remove(path_, filesystemError);
+    }
+
+    ScopedWorkflowCandidateJar(const ScopedWorkflowCandidateJar&)            = delete;
+    ScopedWorkflowCandidateJar& operator=(const ScopedWorkflowCandidateJar&) = delete;
+
+    const std::filesystem::path& path() const noexcept { return path_; }
+
+private:
+    std::filesystem::path path_;
+};
+
+WorkspaceErrorInfo validateWorkflowReferenceQuery(const WorkflowReferenceQuery& query)
+{
+    if (query.owner.empty()) {
+        return error(WorkspaceError::InvalidArgument, "workflow xref", "owner is required");
+    }
+    if (query.kind == WorkflowReferenceKind::Class) return WorkspaceErrorInfo{};
+    if (query.name.empty() || query.descriptor.empty()) {
+        return error(WorkspaceError::InvalidArgument, "workflow xref",
+                     "member name and descriptor are required");
+    }
+    return WorkspaceErrorInfo{};
+}
+
+/// @brief 对任意容器（工作副本或候选）执行精确 xref 查询。
+///
+/// 渲染口径与 workspace 自有 xref 族一致（"type"/"direct"，owner.name:desc 拼接）；
+/// 不走 analysisScanContainer——候选容器是独立的纯容器，无 supporting 叠加面。
+WorkspaceResult<std::vector<ReferenceInfo>> workflowReferences(
+    const model::ResourceContainer& container, const WorkflowReferenceQuery& query)
+{
+    const WorkspaceErrorInfo status = validateWorkflowReferenceQuery(query);
+    if (status.is_err()) return ca::core::Err(status);
+    try {
+        ReferenceScan scan;
+        scan.build(container);
+        std::vector<ReferenceInfo> result;
+        switch (query.kind) {
+        case WorkflowReferenceKind::Class:
+            for (const auto& reference : scan.typeReferencesTo(query.owner)) {
+                result.push_back(referenceInfo(reference.site, reference.targetType, "type"));
+            }
+            break;
+        case WorkflowReferenceKind::Field:
+            for (const auto& reference :
+                 scan.fieldReferencesTo(query.owner, query.name, query.descriptor)) {
+                result.push_back(referenceInfo(
+                    reference.site,
+                    reference.target.owner + "." + reference.target.name +
+                        reference.target.descriptor,
+                    "direct"));
+            }
+            break;
+        case WorkflowReferenceKind::Method:
+            for (const auto& reference :
+                 scan.methodReferencesTo(query.owner, query.name, query.descriptor)) {
+                result.push_back(referenceInfo(
+                    reference.site,
+                    reference.target.owner + "." + reference.target.name +
+                        reference.target.descriptor,
+                    "direct"));
+            }
+            break;
+        }
+        sortReferences(result);
+        return ca::core::Ok(std::move(result));
+    }
+    catch (const std::exception& exception) {
+        return ca::core::Err(error(WorkspaceError::Internal, "workflow xref", exception.what()));
+    }
+}
+
+/// @brief 扫描 JDK 归档（.jar/.zip/.jmod，递归）建层次图。
+///
+/// mbase CommonSuperClassProvider::scan 的 mjbase 对应物：resolver 的数据获取
+/// 是调用方的事，管线只消费已建好的图（pass-contract §9）。逐归档逐类
+/// fail-open——解析不了的归档/类不贡献层次事实（mbase 扫描口径一致），层次
+/// 缺口由 CommonSuperClassResolver 的回退路径兜住。jimage（lib/modules）不是
+/// zip 容器，不在扫描集（与 mbase 行为一致）。
+void scanJdkHierarchy(const std::string& jdkPath, mjbase::hierarchy::ClassHierarchy& hierarchy,
+                      mjbase::KeyPool& pool)
+{
+    namespace fs = std::filesystem;
+    std::error_code filesystemError;
+    fs::recursive_directory_iterator it(fsPath(jdkPath), fs::directory_options::skip_permission_denied,
+                                        filesystemError);
+    if (filesystemError) return;
+    for (const fs::directory_entry& entry = *it; it != fs::end(it); it.increment(filesystemError)) {
+        if (filesystemError) break;
+        if (!entry.is_regular_file(filesystemError) || filesystemError) {
+            filesystemError.clear();
+            continue;
+        }
+        std::string extension = entry.path().extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (extension != ".jar" && extension != ".zip" && extension != ".jmod") continue;
+
+        model::ResourceContainer archive;
+        auto imported = model::ResourceHelper::importFromJar(archive, pathToUtf8(entry.path()));
+        if (imported.is_err()) continue;   // 单归档 fail-open
+        for (const auto& scanned : analysis::scanClassResources(archive)) {
+            auto summary = hierarchy::fillSummary(*scanned.session, pool);
+            (void)hierarchy.addClass(std::move(summary));   // 单类 fail-open（环检查拒绝等）
+        }
+    }
+}
+
+// ── remap / rename / pipeline / workflow 方法族 ─────────────────────────
+
+WorkspaceErrorInfo WorkspaceBase::runPipeline(model::ResourceContainer& candidate,
+                                              const PipelineRequest& request) const
+{
+    if (!request.pipeline.empty() && !request.passNames.empty()) {
+        return error(WorkspaceError::InvalidArgument, "run pipeline",
+                     "pipeline and passNames are mutually exclusive");
+    }
+
+    spi::registerBuiltinPipelines();
+    spi::PipelineBuilder builder;
+    if (!request.pipeline.empty()) {
+        if (!spi::PassRegistry::instance().hasPipeline(request.pipeline)) {
+            return error(WorkspaceError::NotFound, "run pipeline", request.pipeline);
+        }
+        builder = spi::PassRegistry::instance().getPipeline(request.pipeline);
+    }
+    else if (!request.passNames.empty()) {
+        for (const auto& name : request.passNames) {
+            if (name.empty() || spi::applyTo(spi::defaultPassRegistry(), name, builder).is_err()) {
+                return error(WorkspaceError::NotFound, "run pass", name);
+            }
+        }
+    }
+    else {
+        builder = spi::PassRegistry::instance().getPipeline("default-optimize");
+    }
+
+    // jdkPath 非空：扫描 JDK 归档建层次图，Strict resolver 接入帧重算（旧栈
+    // COMPUTE_MAXS|COMPUTE_FRAMES 的对应物）。resolver 链的生命周期必须覆盖
+    // buildNestedPipeline + runContainerPipeline 全程，故在 job 之前构造。
+    mjbase::KeyPool                        jdkPool;
+    mjbase::hierarchy::ClassHierarchy      jdkHierarchy{jdkPool};
+    mjbase::spi::CommonSuperClassResolver  superResolver{jdkHierarchy};
+    mjbase::spi::StrictTypeResolverAdapter typeResolver{superResolver};
+    spi::PassPipelineOptions               options;
+    if (!request.jdkPath.empty()) {
+        std::error_code filesystemError;
+        if (!std::filesystem::is_directory(fsPath(request.jdkPath), filesystemError) ||
+            filesystemError) {
+            return error(WorkspaceError::NotFound, "run pipeline", "JDK path does not exist");
+        }
+        scanJdkHierarchy(request.jdkPath, jdkHierarchy, jdkPool);
+        options.typeResolver = &typeResolver;
+    }
+
+    spi::PassJobContext  job;
+    spi::GlobalPassManager pipeline = builder.buildNestedPipeline(job, nullptr, nullptr, options);
+    auto ran = spi::runContainerPipeline(candidate, pipeline, job);
+    if (ran.is_err()) {
+        auto pipelineError = std::move(ran).unwrap_err();
+        return error(WorkspaceError::Internal, "run pipeline",
+                     std::string(spi::to_string(pipelineError.stage)) + " " +
+                         pipelineError.target + ": " + pipelineError.detail);
+    }
+    return WorkspaceErrorInfo{};
+}
+
+ImpactAnalysis WorkspaceBase::analyzeRemap(const asm_remapper::MemberRemapPlan& plan,
+                                           const asm_remapper::RemapPolicy& policy) const
+{
+    ImpactAnalysis result;
+    auto loaded = ensureLoaded("analyze remap");
+    if (loaded.is_err()) {
+        result.status = std::move(loaded);
+        return result;
+    }
+    try {
+        auto candidate = cloneWorking();
+        auto remapped  = asm_remapper::applyResourceRemapPlan(*candidate, plan, policy);
+        if (remapped.is_err()) {
+            result.status = error(WorkspaceError::Internal, "analyze remap",
+                                  std::string("remap failed: ") +
+                                      asm_remapper::to_string(std::move(remapped).unwrap_err()));
+            return result;
+        }
+        result.status = validateCandidate(*candidate, result.diagnostics);
+        if (result.status.is_err()) return result;
+        result.byteDiffs         = diffContainers(*working_, *candidate);
+        const auto beforeClasses = changedClassNames(*working_, result.byteDiffs);
+        const auto afterClasses  = changedClassNames(*candidate, result.byteDiffs);
+        result.beforeReferences  = collectImpacts(*working_, beforeClasses);
+        result.afterReferences   = collectImpacts(*candidate, afterClasses);
+        for (const auto& diff : result.byteDiffs) {
+            if (diff.uri.find(".class") == std::string::npos)
+                result.risks.push_back("resource changed: " + diff.uri);
+        }
+        result.exportable = true;
+        return result;
+    }
+    catch (const std::exception& exception) {
+        result.status = error(WorkspaceError::Internal, "analyze remap", exception.what());
+        return result;
+    }
+}
+
+MutationResult WorkspaceBase::applyRemap(const asm_remapper::MemberRemapPlan& plan,
+                                         const asm_remapper::RemapPolicy&    policy,
+                                         const MutationRequest&              request)
+{
+    auto loaded = ensureLoaded("apply remap");
+    if (loaded.is_err()) return stateFailure(std::move(loaded));
+    if (!accepts(request)) return revisionConflict();
+    if (request.dryRun) {
+        auto analysis = analyzeRemap(plan, policy);
+        MutationResult result;
+        result.status             = std::move(analysis.status);
+        result.revision           = revision_;
+        result.exportable         = analysis.exportable;
+        result.diagnostics        = std::move(analysis.diagnostics);
+        result.byteDiffs          = std::move(analysis.byteDiffs);
+        result.affectedReferences = std::move(analysis.afterReferences);
+        result.affectedClasses    = changedClassNames(*working_, result.byteDiffs);
+        return result;
+    }
+    try {
+        auto candidate = cloneWorking();
+        auto remapped  = asm_remapper::applyResourceRemapPlan(*candidate, plan, policy);
+        if (remapped.is_err()) {
+            return stateFailure(error(WorkspaceError::Internal, "apply remap",
+                                      std::string("remap failed: ") +
+                                          asm_remapper::to_string(std::move(remapped).unwrap_err())));
+        }
+        std::vector<jasm::Diagnostic> diagnostics;
+        auto status = validateCandidate(*candidate, diagnostics);
+        if (status.is_err()) {
+            MutationResult result;
+            result.status      = std::move(status);
+            result.revision    = revision_;
+            result.exportable  = canExport();
+            result.diagnostics = std::move(diagnostics);
+            return result;
+        }
+        return commit(std::move(candidate), std::move(diagnostics), request);
+    }
+    catch (const std::exception& exception) {
+        return stateFailure(error(WorkspaceError::Internal, "apply remap", exception.what()));
+    }
+}
+
+MutationResult WorkspaceBase::validatePipeline(const PipelineRequest& pipeline,
+                                               const MutationRequest& request)
+{
+    auto loaded = ensureLoaded("validate pipeline");
+    if (loaded.is_err()) return stateFailure(std::move(loaded));
+    if (!accepts(request)) return revisionConflict();
+    try {
+        auto candidate = cloneWorking();
+        auto status    = runPipeline(*candidate, pipeline);
+        if (status.is_err()) return stateFailure(std::move(status));
+
+        MutationResult result;
+        result.revision   = revision_;
+        result.exportable = canExport();
+        result.status     = validateCandidate(*candidate, result.diagnostics);
+        if (result.status.is_err()) return result;
+        result.byteDiffs          = diffContainers(*working_, *candidate);
+        result.affectedClasses    = changedClassNames(*candidate, result.byteDiffs);
+        result.affectedReferences = collectImpacts(*candidate, result.affectedClasses);
+        return result;
+    }
+    catch (const std::exception& exception) {
+        return stateFailure(error(WorkspaceError::Internal, "validate pipeline", exception.what()));
+    }
+}
+
+MutationResult WorkspaceBase::applyPipeline(const PipelineRequest& pipeline,
+                                            const MutationRequest& request)
+{
+    if (request.dryRun) return validatePipeline(pipeline, request);
+    auto loaded = ensureLoaded("apply pipeline");
+    if (loaded.is_err()) return stateFailure(std::move(loaded));
+    if (!accepts(request)) return revisionConflict();
+    try {
+        auto candidate = cloneWorking();
+        auto status    = runPipeline(*candidate, pipeline);
+        if (status.is_err()) return stateFailure(std::move(status));
+
+        std::vector<jasm::Diagnostic> diagnostics;
+        status = validateCandidate(*candidate, diagnostics);
+        if (status.is_err()) {
+            MutationResult result;
+            result.status      = std::move(status);
+            result.revision    = revision_;
+            result.exportable  = canExport();
+            result.diagnostics = std::move(diagnostics);
+            return result;
+        }
+        return commit(std::move(candidate), std::move(diagnostics), request);
+    }
+    catch (const std::exception& exception) {
+        return stateFailure(error(WorkspaceError::Internal, "apply pipeline", exception.what()));
+    }
+}
+
+WorkflowResult WorkspaceBase::runWorkflow(const WorkflowRequest& workflow,
+                                          const MutationRequest& request)
+{
+    WorkflowResult result;
+    const auto     loaded = ensureLoaded("run workflow");
+    if (loaded.is_err()) {
+        result.mutation = stateFailure(std::move(loaded));
+        return result;
+    }
+    if (!accepts(request)) {
+        result.mutation = revisionConflict();
+        return result;
+    }
+
+    const auto fail = [&](const std::string& stage, WorkspaceErrorInfo status) {
+        result.stages.push_back({stage, status});
+        result.mutation = stateFailure(std::move(status));
+        return std::move(result);
+    };
+
+    try {
+        auto inputFingerprint = fingerprintContainer(*working_);
+        if (inputFingerprint.is_err())
+            return fail("fingerprint", std::move(inputFingerprint).unwrap_err());
+        result.inputFingerprint = std::move(inputFingerprint).unwrap();
+
+        auto candidate = cloneWorking();
+        if (workflow.remapPlan != nullptr) {
+            auto remapped = asm_remapper::applyResourceRemapPlan(*candidate, *workflow.remapPlan,
+                                                                 workflow.remapPolicy);
+            if (remapped.is_err()) {
+                return fail("mapping",
+                            error(WorkspaceError::Internal, "run workflow mapping",
+                                  std::string("remap failed: ") +
+                                      asm_remapper::to_string(std::move(remapped).unwrap_err())));
+            }
+            result.stages.push_back({"mapping", WorkspaceErrorInfo{}});
+        }
+        if (workflow.runPipeline) {
+            const auto status = runPipeline(*candidate, workflow.pipeline);
+            if (status.is_err()) return fail("pipeline", status);
+            result.stages.push_back({"pipeline", WorkspaceErrorInfo{}});
+        }
+
+        std::vector<jasm::Diagnostic> diagnostics;
+        const auto validation = validateCandidate(*candidate, diagnostics);
+        if (validation.is_err()) {
+            result.stages.push_back({"validation", validation});
+            result.mutation.status      = validation;
+            result.mutation.revision    = revision_;
+            result.mutation.exportable  = canExport();
+            result.mutation.diagnostics = std::move(diagnostics);
+            return result;
+        }
+        result.stages.push_back({"validation", WorkspaceErrorInfo{}});
+
+        for (const auto& query : workflow.referenceQueries) {
+            auto before = workflowReferences(*working_, query);
+            if (before.is_err()) return fail("xref", std::move(before).unwrap_err());
+            auto after = workflowReferences(*candidate, query);
+            if (after.is_err()) return fail("xref", std::move(after).unwrap_err());
+            result.references.push_back(
+                {query, std::move(before).unwrap(), std::move(after).unwrap()});
+        }
+        if (!workflow.referenceQueries.empty())
+            result.stages.push_back({"xref", WorkspaceErrorInfo{}});
+
+        auto candidateFingerprint = fingerprintContainer(*candidate);
+        if (candidateFingerprint.is_err())
+            return fail("fingerprint", std::move(candidateFingerprint).unwrap_err());
+        result.candidateFingerprint = std::move(candidateFingerprint).unwrap();
+
+        if (workflow.candidateJarConsumer) {
+            auto artifactPath = createWorkflowCandidateJarPath();
+            if (artifactPath.is_err())
+                return fail("candidate_artifact", std::move(artifactPath).unwrap_err());
+            ScopedWorkflowCandidateJar artifact(std::move(artifactPath).unwrap());
+            const auto exportStatus =
+                exportContainerToJar(*candidate, sourcePath_, pathToUtf8(artifact.path()), revision_);
+            if (exportStatus.is_err()) return fail("candidate_artifact", exportStatus);
+            const auto stageStatus = workflow.candidateJarConsumer(pathToUtf8(artifact.path()));
+            if (stageStatus.is_err()) {
+                return fail(workflow.candidateJarStageName.empty() ? "candidate_artifact"
+                                                                   : workflow.candidateJarStageName,
+                            stageStatus);
+            }
+            result.stages.push_back({workflow.candidateJarStageName.empty()
+                                         ? "candidate_artifact"
+                                         : workflow.candidateJarStageName,
+                                     WorkspaceErrorInfo{}});
+        }
+
+        if (!workflow.exportPath.empty()) {
+            auto destination = validateExportDestination(sourcePath_, workflow.exportPath);
+            if (destination.is_err()) return fail("export", std::move(destination).unwrap_err());
+            result.exportPath = pathToUtf8(destination.unwrap());
+            if (!request.dryRun) {
+                const auto exportStatus =
+                    exportContainerToJar(*candidate, sourcePath_, result.exportPath, revision_);
+                if (exportStatus.is_err()) return fail("export", exportStatus);
+                result.exported = true;
+            }
+            result.stages.push_back(
+                {request.dryRun ? "export_preview" : "export", WorkspaceErrorInfo{}});
+        }
+
+        if (request.dryRun) {
+            result.mutation.status             = WorkspaceErrorInfo{};
+            result.mutation.revision           = revision_;
+            result.mutation.exportable         = canExport();
+            result.mutation.diagnostics        = std::move(diagnostics);
+            result.mutation.byteDiffs          = diffContainers(*working_, *candidate);
+            result.mutation.affectedClasses    = changedClassNames(*candidate, result.mutation.byteDiffs);
+            result.mutation.affectedReferences =
+                collectImpacts(*candidate, result.mutation.affectedClasses);
+            return result;
+        }
+        result.mutation = commit(std::move(candidate), std::move(diagnostics), request);
+        if (result.mutation.status.is_err()) {
+            removeWorkflowExport(result);
+            result.exported = false;
+        }
+        return result;
+    }
+    catch (const std::exception& exception) {
+        removeWorkflowExport(result);
+        result.exported = false;
+        return fail("workflow", error(WorkspaceError::Internal, "run workflow", exception.what()));
+    }
+}
+
+WorkspaceErrorInfo WorkspaceBase::buildRenamePlan(const RenameRequest&   request,
+                                                  asm_remapper::MemberRemapPlan&   plan,
+                                                  std::vector<RenameMapping>&      mappings,
+                                                  std::vector<MethodOverrideInfo>& overrides,
+                                                  std::vector<std::string>&        risks) const
+{
+    if (request.owner.empty() || request.newName.empty())
+        return error(WorkspaceError::InvalidArgument, "build rename plan",
+                     "owner and new name are required");
+    switch (request.kind) {
+    case RenameKind::Class:
+    {
+        auto source = classInfo(request.owner);
+        if (source.is_err()) return source.unwrap_err();
+        auto existing = classInfo(request.newName);
+        if (existing.is_ok() && request.newName != request.owner)
+            return error(WorkspaceError::AlreadyExists, "rename class", request.newName);
+        plan.mapClass(request.owner, request.newName);
+        mappings.push_back({"class", request.owner, request.newName});
+        return WorkspaceErrorInfo{};
+    }
+    case RenameKind::Package:
+    {
+        auto classes = listClasses();
+        if (classes.is_err()) return classes.unwrap_err();
+        std::string oldPrefix = request.owner;
+        std::string newPrefix = request.newName;
+        while (!oldPrefix.empty() && oldPrefix.back() == '/') oldPrefix.pop_back();
+        while (!newPrefix.empty() && newPrefix.back() == '/') newPrefix.pop_back();
+        for (const auto& clazz : classes.unwrap()) {
+            if (clazz.internalName != oldPrefix &&
+                clazz.internalName.rfind(oldPrefix + "/", 0) != 0)
+                continue;
+            const auto suffix = clazz.internalName.substr(oldPrefix.size());
+            const auto mapped = newPrefix + suffix;
+            plan.mapClass(clazz.internalName, mapped);
+            mappings.push_back({"class", clazz.internalName, mapped});
+        }
+        if (mappings.empty()) return error(WorkspaceError::NotFound, "rename package", request.owner);
+        return WorkspaceErrorInfo{};
+    }
+    case RenameKind::Field:
+    {
+        if (request.name.empty() || request.descriptor.empty())
+            return error(WorkspaceError::InvalidArgument, "rename field",
+                         "name and descriptor are required");
+        auto field = fieldInfo(request.owner, request.name, request.descriptor);
+        if (field.is_err()) return field.unwrap_err();
+        plan.mapField(request.owner, request.name, request.descriptor, request.owner,
+                      request.newName, request.descriptor);
+        mappings.push_back({"field",
+                            request.owner + "." + request.name + request.descriptor,
+                            request.owner + "." + request.newName + request.descriptor});
+        return WorkspaceErrorInfo{};
+    }
+    case RenameKind::Method:
+    {
+        if (request.name.empty() || request.descriptor.empty())
+            return error(WorkspaceError::InvalidArgument, "rename method",
+                         "name and descriptor are required");
+        auto method = methodInfo(request.owner, request.name, request.descriptor);
+        if (method.is_err()) return method.unwrap_err();
+        auto component = overridesOfMethod(request.owner, request.name, request.descriptor);
+        if (component.is_err()) return component.unwrap_err();
+        overrides = std::move(component).unwrap();
+        const bool hasSupporting =
+            std::any_of(overrides.begin(), overrides.end(),
+                        [](const auto& item) { return item.supporting; });
+        if (overrides.size() > 1 && !request.cascadeOverrides)
+            risks.push_back("method belongs to an override component; set cascadeOverrides "
+                            "after reviewing mappings");
+        if (hasSupporting)
+            risks.push_back("override component contains supporting-library declarations that "
+                            "cannot be renamed in this workspace");
+        for (const auto& item : overrides) {
+            if (item.supporting) continue;
+            plan.mapMethod(item.owner, item.name, item.descriptor, item.owner, request.newName,
+                           item.descriptor);
+            mappings.push_back({"method",
+                                item.owner + "." + item.name + item.descriptor,
+                                item.owner + "." + request.newName + item.descriptor});
+        }
+        return WorkspaceErrorInfo{};
+    }
+    case RenameKind::Local:
+        if (request.methodName.empty() || request.name.empty() || request.descriptor.empty())
+            return error(WorkspaceError::InvalidArgument, "rename local",
+                         "method name, local name and descriptor are required");
+        {
+            auto method = methodInfo(request.owner, request.methodName, request.descriptor);
+            if (method.is_err()) return method.unwrap_err();
+        }
+        mappings.push_back({"local", request.name, request.newName});
+        return WorkspaceErrorInfo{};
+    }
+    return error(WorkspaceError::InvalidArgument, "build rename plan", "unknown rename kind");
+}
+
+RenameAnalysis WorkspaceBase::analyzeRename(const RenameRequest& request) const
+{
+    RenameAnalysis result;
+    asm_remapper::MemberRemapPlan plan;
+    result.status = buildRenamePlan(request, plan, result.mappings, result.overrideComponent,
+                                    result.impact.risks);
+    if (result.status.is_err()) {
+        result.impact.status = result.status;
+        return result;
+    }
+    if (request.kind == RenameKind::Local) {
+        result.impact.status     = WorkspaceErrorInfo{};
+        result.impact.exportable = canExport();
+        result.readyToApply      = true;
+        return result;
+    }
+    auto renameRisks = std::move(result.impact.risks);
+    result.impact    = analyzeRemap(plan, request.policy);
+    result.impact.risks.insert(result.impact.risks.end(),
+                               std::make_move_iterator(renameRisks.begin()),
+                               std::make_move_iterator(renameRisks.end()));
+    result.status                 = result.impact.status;
+    result.requiresOverrideReview = !result.impact.risks.empty();
+    result.readyToApply = result.status.is_ok() && !result.requiresOverrideReview;
+    return result;
+}
+
+MutationResult WorkspaceBase::applyRename(const RenameRequest& request,
+                                          const MutationRequest& requestOptions)
+{
+    auto preview = analyzeRename(request);
+    if (preview.status.is_err()) return stateFailure(std::move(preview.status));
+    if (!preview.readyToApply) {
+        return stateFailure(error(WorkspaceError::FailedPrecondition, "apply rename",
+                                  "rename requires override review: " +
+                                      (preview.impact.risks.empty()
+                                           ? std::string("unknown risk")
+                                           : preview.impact.risks.front())));
+    }
+    if (request.kind == RenameKind::Local) {
+        ClassMutation mutation;
+        mutation.classUri             = request.owner;
+        mutation.kind                 = ClassMutationKind::RenameLocal;
+        mutation.member               = {request.methodName, request.descriptor};
+        mutation.localName            = request.name;
+        mutation.replacementLocalName = request.newName;
+        mutation.localIndex           = request.localIndex;
+        return applyClassMutation(mutation, requestOptions);
+    }
+    asm_remapper::MemberRemapPlan plan;
+    std::vector<RenameMapping>    mappings;
+    std::vector<MethodOverrideInfo> overrides;
+    std::vector<std::string>      risks;
+    auto status = buildRenamePlan(request, plan, mappings, overrides, risks);
+    if (status.is_err()) return stateFailure(std::move(status));
+    return applyRemap(plan, request.policy, requestOptions);
 }
 
 WorkflowCandidateCommitResult WorkspaceBase::commitWorkflowCandidateJar(
