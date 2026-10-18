@@ -40,12 +40,16 @@ enum class RegistryError : ca::u8
 
 const char* to_string(RegistryError e) noexcept;
 
-/// 注册表条目视图（查询面交付物）：名字 + scope 标签；工厂由注册表持有，
-/// 经 create 族调用。name 为注册时借入的视图，寿命 = 视图实参实体（见注册契约）。
+/// 注册表条目视图（查询面交付物）：名字 + scope 标签 + 描述；工厂由注册表持有，
+/// 经 create 族调用。name/description 为注册时借入的视图，寿命 = 视图实参实体
+/// （见注册契约）。description 服务 workspace availablePasses / CLI --describe
+/// 展示面，注册方给直述文本（mbase 存 i18n key 由 tr 渲染；mjbase 消费面
+/// （MCP）语言固定英文，直述文本免 i18n 依赖，未 i18n::init 的宿主也不泄漏 key）。
 struct PassNameEntry
 {
     std::string_view name;
     PassScope        scope = PassScope::Method;
+    std::string_view description = {};
 };
 
 /// @brief pass 名字注册面：name → factory + scope 标签。
@@ -79,14 +83,18 @@ public:
     using CfClassFactory = std::function<std::unique_ptr<CfClassPass>()>;
 
     /// 注册一个方法级 pass；重名 Err(DuplicateName)。
-    Result<void, RegistryError> registerMethodPass(std::string_view name, MethodFactory factory);
+    /// description 为可选展示文本（借用视图，寿命同 name）。
+    Result<void, RegistryError> registerMethodPass(std::string_view name, MethodFactory factory,
+                                                   std::string_view description = {});
     /// 注册一个类级 pass；重名 Err(DuplicateName)。
-    Result<void, RegistryError> registerClassPass(std::string_view name, ClassFactory factory);
+    Result<void, RegistryError> registerClassPass(std::string_view name, ClassFactory factory,
+                                                  std::string_view description = {});
     /// 注册一个容器级 pass；重名 Err(DuplicateName)。
-    Result<void, RegistryError> registerGlobalPass(std::string_view name, GlobalFactory factory);
+    Result<void, RegistryError> registerGlobalPass(std::string_view name, GlobalFactory factory,
+                                                   std::string_view description = {});
     /// 注册一个 classfile 级 pass；重名 Err(DuplicateName)。
-    Result<void, RegistryError> registerCfClassPass(std::string_view name,
-                                                    CfClassFactory  factory);
+    Result<void, RegistryError> registerCfClassPass(std::string_view name, CfClassFactory factory,
+                                                    std::string_view description = {});
 
     /// 名字是否已注册。
     bool has(std::string_view name) const;
@@ -111,11 +119,12 @@ public:
         createCfClassPass(std::string_view name) const;
 
 private:
-    /// 条目：scope 标签 + 四槽工厂（恰一槽非空，与注册入口一一对应——pass 基类
-    /// 之间无公共可delete基类型，按槽分存是最直白的类型安全形态）。
+    /// 条目：scope 标签 + 描述 + 四槽工厂（恰一槽非空，与注册入口一一对应——
+    /// pass 基类之间无公共可delete基类型，按槽分存是最直白的类型安全形态）。
     struct Entry
     {
         PassScope      scope = PassScope::Method;
+        std::string_view description = {};
         MethodFactory  method;
         ClassFactory   clazz;
         GlobalFactory  global;

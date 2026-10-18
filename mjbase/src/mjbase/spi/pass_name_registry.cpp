@@ -49,11 +49,13 @@ const char* to_string(RegistryError e) noexcept
 // ── 注册 ──
 
 Result<void, RegistryError> PassNameRegistry::registerMethodPass(std::string_view name,
-                                                                 MethodFactory    factory)
+                                                                 MethodFactory    factory,
+                                                                 std::string_view description)
 {
     if (entries_.find(name) != entries_.end()) return Err(RegistryError::DuplicateName);
     Entry& e     = entries_[name];
     e.scope      = PassScope::Method;
+    e.description  = description;
     e.method     = std::move(factory);
     e.clazz      = nullptr;
     e.global     = nullptr;
@@ -62,11 +64,13 @@ Result<void, RegistryError> PassNameRegistry::registerMethodPass(std::string_vie
 }
 
 Result<void, RegistryError> PassNameRegistry::registerClassPass(std::string_view name,
-                                                                ClassFactory     factory)
+                                                                ClassFactory     factory,
+                                                                 std::string_view description)
 {
     if (entries_.find(name) != entries_.end()) return Err(RegistryError::DuplicateName);
     Entry& e     = entries_[name];
     e.scope      = PassScope::Class;
+    e.description  = description;
     e.method     = nullptr;
     e.clazz      = std::move(factory);
     e.global     = nullptr;
@@ -75,11 +79,13 @@ Result<void, RegistryError> PassNameRegistry::registerClassPass(std::string_view
 }
 
 Result<void, RegistryError> PassNameRegistry::registerGlobalPass(std::string_view name,
-                                                                 GlobalFactory    factory)
+                                                                 GlobalFactory    factory,
+                                                                 std::string_view description)
 {
     if (entries_.find(name) != entries_.end()) return Err(RegistryError::DuplicateName);
     Entry& e     = entries_[name];
     e.scope      = PassScope::Global;
+    e.description  = description;
     e.method     = nullptr;
     e.clazz      = nullptr;
     e.global     = std::move(factory);
@@ -88,11 +94,13 @@ Result<void, RegistryError> PassNameRegistry::registerGlobalPass(std::string_vie
 }
 
 Result<void, RegistryError> PassNameRegistry::registerCfClassPass(std::string_view name,
-                                                                  CfClassFactory   factory)
+                                                                  CfClassFactory   factory,
+                                                                 std::string_view description)
 {
     if (entries_.find(name) != entries_.end()) return Err(RegistryError::DuplicateName);
     Entry& e     = entries_[name];
     e.scope      = PassScope::Cf;
+    e.description  = description;
     e.method     = nullptr;
     e.clazz      = nullptr;
     e.global     = nullptr;
@@ -114,7 +122,7 @@ Result<PassNameEntry, RegistryError> PassNameRegistry::find(std::string_view nam
 {
     const Entry* e = findEntry(name);
     if (e == nullptr) return Err(RegistryError::UnknownPass);
-    return Ok(PassNameEntry{name, e->scope});
+    return Ok(PassNameEntry{name, e->scope, e->description});
 }
 
 std::vector<PassNameEntry> PassNameRegistry::list() const
@@ -122,7 +130,7 @@ std::vector<PassNameEntry> PassNameRegistry::list() const
     std::vector<PassNameEntry> out;
     out.reserve(entries_.size());
     for (const auto& [name, entry] : entries_) {
-        out.push_back(PassNameEntry{name, entry.scope});
+        out.push_back(PassNameEntry{name, entry.scope, entry.description});
     }
     // 存储是 unordered_map，list 输出面保持按名稳定序（CLI list 纪律）。
     std::sort(out.begin(), out.end(),
@@ -184,101 +192,116 @@ PassNameRegistry makeDefaultRegistry()
     const auto       seed = [&reg](Result<void, RegistryError> r) {
         if (r.is_err()) throw std::logic_error("defaultPassRegistry: seed registration failed");
     };
-    seed(reg.registerClassPass("ClassMemberSorter",
-                               [] { return std::make_unique<mjbase::pass::ClassMemberSorter>(); }));
+    seed(reg.registerClassPass(
+        "ClassMemberSorter", [] { return std::make_unique<mjbase::pass::ClassMemberSorter>(); },
+        "Sort class members into a deterministic order."));
     seed(reg.registerGlobalPass(
-        "IllegalClassFileCleaner",
-        [] { return std::make_unique<mjbase::pass::IllegalClassFileCleaner>(); }));
+        "IllegalClassFileCleaner", [] { return std::make_unique<mjbase::pass::IllegalClassFileCleaner>(); },
+        "Drop class entries that cannot be parsed as class files."));
     seed(reg.registerGlobalPass(
-        "AccessModifierTightener",
-        [] { return std::make_unique<mjbase::pass::AccessModifierTightener>(); }));
+        "AccessModifierTightener", [] { return std::make_unique<mjbase::pass::AccessModifierTightener>(); },
+        "Tighten access modifiers to the minimum visibility that keeps references valid."));
     // A 批（方法体改写族，纯指令变换）：默认链收尾清理件 + 冗余装载消除 +
     // 字符串族化简 + 冗余空检查清除。
-    seed(reg.registerMethodPass("NopRemover",
-                                [] { return std::make_unique<mjbase::pass::NopRemover>(); }));
+    seed(reg.registerMethodPass(
+        "NopRemover", [] { return std::make_unique<mjbase::pass::NopRemover>(); },
+        "Remove nop instructions from method bodies."));
     seed(reg.registerMethodPass(
         "RedundantLoadValEliminator",
-        [] { return std::make_unique<mjbase::pass::RedundantLoadValEliminator>(); }));
+        [] { return std::make_unique<mjbase::pass::RedundantLoadValEliminator>(); },
+        "Remove redundant load-then-store pairs on locals."));
     seed(reg.registerMethodPass(
-        "CharArrToStrSimplifier",
-        [] { return std::make_unique<mjbase::pass::CharArrToStrSimplifier>(); }));
+        "CharArrToStrSimplifier", [] { return std::make_unique<mjbase::pass::CharArrToStrSimplifier>(); },
+        "Rewrite char-array String construction into string constants where safe."));
     seed(reg.registerMethodPass(
-        "UnusedCheckCleaner",
-        [] { return std::make_unique<mjbase::pass::UnusedCheckCleaner>(); }));
+        "UnusedCheckCleaner", [] { return std::make_unique<mjbase::pass::UnusedCheckCleaner>(); },
+        "Remove redundant null/bounds checks whose results are unused."));
     // B 批（加控制流，A1 帧链首批消费者）：确定性垃圾分支块插入。
     seed(reg.registerMethodPass(
-        "JunkCodeInserter",
-        [] { return std::make_unique<mjbase::pass::JunkCodeInserter>(); }));
+        "JunkCodeInserter", [] { return std::make_unique<mjbase::pass::JunkCodeInserter>(); },
+        "Insert deterministic dead branch blocks (control-flow noise)."));
     // opt pass 波次（常量折叠族）：操作数栈常量链折叠，i/l/f/d 四型算术 +
     // 移位/按位 + 除零/Min/-1 红线保守停止。标签：scope:method /
     // action:fold / stability:opt-in（默认链不收，CLI -p 显式挂点）。
     seed(reg.registerMethodPass(
-        "ConstantFolder",
-        [] { return std::make_unique<mjbase::pass::ConstantFolder>(); }));
+        "ConstantFolder", [] { return std::make_unique<mjbase::pass::ConstantFolder>(); },
+        "Fold constant operand-stack chains (arithmetic, shifts, bitwise; conservative stop rules)."));
     // opt pass 波次（强度削减族）：常量 2^k 乘/除改写为移位与移位-加法
     // 修正序列（int/long；float/double 形态不同未做）。标签：
     // scope:method / action:simplify / stability:opt-in。
     seed(reg.registerMethodPass(
-        "StrengthReducer",
-        [] { return std::make_unique<mjbase::pass::StrengthReducer>(); }));
+        "StrengthReducer", [] { return std::make_unique<mjbase::pass::StrengthReducer>(); },
+        "Rewrite multiplication/division by powers of two into shifts (int/long)."));
     // 批 A（容器级直写组首件）：全容器确定性类重命名。
     seed(reg.registerGlobalPass(
-        "ClassRenamer", [] { return std::make_unique<mjbase::pass::ClassRenamer>(); }));
+        "ClassRenamer", [] { return std::make_unique<mjbase::pass::ClassRenamer>(); },
+        "Rename classes across the whole container deterministically."));
     // 批 A（未使用成员清理家族，容器级四件）：空类删除 + 可达闭包类删除 +
     // 可达类内不可达 private 字段/方法删除。
     seed(reg.registerGlobalPass(
-        "EmptyClassRemover", [] { return std::make_unique<mjbase::pass::EmptyClassRemover>(); }));
+        "EmptyClassRemover", [] { return std::make_unique<mjbase::pass::EmptyClassRemover>(); },
+        "Remove empty classes from the container."));
     seed(reg.registerGlobalPass(
-        "UnusedClassRemover",
-        [] { return std::make_unique<mjbase::pass::UnusedClassRemover>(); }));
+        "UnusedClassRemover", [] { return std::make_unique<mjbase::pass::UnusedClassRemover>(); },
+        "Remove classes unreachable from container entry points."));
     seed(reg.registerGlobalPass(
-        "UnusedFieldRemover",
-        [] { return std::make_unique<mjbase::pass::UnusedFieldRemover>(); }));
+        "UnusedFieldRemover", [] { return std::make_unique<mjbase::pass::UnusedFieldRemover>(); },
+        "Remove private fields that are never read or written."));
     seed(reg.registerGlobalPass(
         "GlobalUnusedMethodRemover",
-        [] { return std::make_unique<mjbase::pass::GlobalUnusedMethodRemover>(); }));
+        [] { return std::make_unique<mjbase::pass::GlobalUnusedMethodRemover>(); },
+        "Remove private methods that are never invoked."));
     // 批 B（类级骨架组，meta 元数据清理家族 13 件）：catch-all debug/framework
     // 元数据清除 + 单面件（final / synthetic+bridge / kotlin metadata /
     // source 信息 / 签名 / 非法注解 / 非法签名 / 非法 type 注解 / 非法 source
     // 信息 / 未知属性 / 非法 access 位 / 黑名单注解）。
-    seed(reg.registerClassPass("MetaInfoRemover",
-                               [] { return std::make_unique<mjbase::pass::MetaInfoRemover>(); }));
-    seed(reg.registerClassPass("FinalRemover",
-                               [] { return std::make_unique<mjbase::pass::FinalRemover>(); }));
     seed(reg.registerClassPass(
-        "SyntheticBridgeRemover",
-        [] { return std::make_unique<mjbase::pass::SyntheticBridgeRemover>(); }));
+        "MetaInfoRemover", [] { return std::make_unique<mjbase::pass::MetaInfoRemover>(); },
+        "Remove debug/framework metadata (source, signatures, annotations, unknown attributes)."));
     seed(reg.registerClassPass(
-        "KotlinMetadataRemover",
-        [] { return std::make_unique<mjbase::pass::KotlinMetadataRemover>(); }));
-    seed(reg.registerClassPass("SourceInfoRemover",
-                               [] { return std::make_unique<mjbase::pass::SourceInfoRemover>(); }));
-    seed(reg.registerClassPass("SignatureRemover",
-                               [] { return std::make_unique<mjbase::pass::SignatureRemover>(); }));
+        "FinalRemover", [] { return std::make_unique<mjbase::pass::FinalRemover>(); },
+        "Remove final modifiers from classes, fields and methods."));
+    seed(reg.registerClassPass(
+        "SyntheticBridgeRemover", [] { return std::make_unique<mjbase::pass::SyntheticBridgeRemover>(); },
+        "Remove synthetic and bridge markers."));
+    seed(reg.registerClassPass(
+        "KotlinMetadataRemover", [] { return std::make_unique<mjbase::pass::KotlinMetadataRemover>(); },
+        "Remove Kotlin @Metadata annotations."));
+    seed(reg.registerClassPass(
+        "SourceInfoRemover", [] { return std::make_unique<mjbase::pass::SourceInfoRemover>(); },
+        "Remove SourceFile attributes and line number tables."));
+    seed(reg.registerClassPass(
+        "SignatureRemover", [] { return std::make_unique<mjbase::pass::SignatureRemover>(); },
+        "Remove generic Signature attributes."));
     seed(reg.registerClassPass(
         "IllegalAnnotationRemover",
-        [] { return std::make_unique<mjbase::pass::IllegalAnnotationRemover>(); }));
+        [] { return std::make_unique<mjbase::pass::IllegalAnnotationRemover>(); },
+        "Remove annotations with malformed structure or illegal targets."));
     seed(reg.registerClassPass(
-        "IllegalSignatureRemover",
-        [] { return std::make_unique<mjbase::pass::IllegalSignatureRemover>(); }));
+        "IllegalSignatureRemover", [] { return std::make_unique<mjbase::pass::IllegalSignatureRemover>(); },
+        "Remove malformed Signature attributes."));
     seed(reg.registerClassPass(
         "IllegalTypeAnnotationRemover",
-        [] { return std::make_unique<mjbase::pass::IllegalTypeAnnotationRemover>(); }));
+        [] { return std::make_unique<mjbase::pass::IllegalTypeAnnotationRemover>(); },
+        "Remove malformed type annotations."));
     seed(reg.registerClassPass(
         "IllegalSourceInfoRemover",
-        [] { return std::make_unique<mjbase::pass::IllegalSourceInfoRemover>(); }));
+        [] { return std::make_unique<mjbase::pass::IllegalSourceInfoRemover>(); },
+        "Remove malformed SourceFile/LineNumberTable attributes."));
     seed(reg.registerClassPass(
-        "UnknownAttributeCleaner",
-        [] { return std::make_unique<mjbase::pass::UnknownAttributeCleaner>(); }));
-    seed(reg.registerClassPass("IllegalAccessRemover",
-                               [] { return std::make_unique<mjbase::pass::IllegalAccessRemover>(); }));
+        "UnknownAttributeCleaner", [] { return std::make_unique<mjbase::pass::UnknownAttributeCleaner>(); },
+        "Remove unrecognized class-file attributes."));
+    seed(reg.registerClassPass(
+        "IllegalAccessRemover", [] { return std::make_unique<mjbase::pass::IllegalAccessRemover>(); },
+        "Remove illegal access flag combinations."));
     seed(reg.registerClassPass(
         "SpecificAnnotationRemover",
-        [] { return std::make_unique<mjbase::pass::SpecificAnnotationRemover>(); }));
+        [] { return std::make_unique<mjbase::pass::SpecificAnnotationRemover>(); },
+        "Remove annotations matching the configured blacklist."));
     // 批 A（容器级直写组收口件）：static 工具类保守合并 + 全量 owner 重映射。
     seed(reg.registerGlobalPass(
-        "ToolClassCombiner",
-        [] { return std::make_unique<mjbase::pass::ToolClassCombiner>(); }));
+        "ToolClassCombiner", [] { return std::make_unique<mjbase::pass::ToolClassCombiner>(); },
+        "Merge static utility classes and remap their owners."));
     return reg;
 }
 
