@@ -1077,8 +1077,16 @@ TEST(MjRenamerRunTest, contextExposesReadOnlyHierarchyQueries)
     ASSERT_TRUE(component.is_ok());
     const auto members = std::move(component).unwrap();
     ASSERT_EQ(members.size(), 2U);   // A + B 闭包组件
-    EXPECT_EQ(members[0].owner, "A");
-    EXPECT_EQ(members[0].name, "oldMethod");
+    // 成员序随闭包集迭代序（MSVC STL 与 libstdc++ 不同——CI Linux 首曝），
+    // 断言序无关：两成员 name 同值、owner 各为 A 与 B。
+    bool sawOwnerA = false, sawOwnerB = false;
+    for (const auto& m : members) {
+        EXPECT_EQ(m.name, "oldMethod");
+        if (m.owner == "A") sawOwnerA = true;
+        if (m.owner == "B") sawOwnerB = true;
+    }
+    EXPECT_TRUE(sawOwnerA);
+    EXPECT_TRUE(sawOwnerB);
 
     const auto missing = view->overrideComponentOf("A", "nope", "()V");
     EXPECT_TRUE(missing.is_err());

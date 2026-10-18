@@ -1260,7 +1260,10 @@ TEST(MjProjectStoreTest, manifestTransactionRefusesUnloadableManifestAndNeverTou
     EXPECT_EQ(goodBytes, readFileOrDie(dir / "store.json"));
 #endif
 
-    // 清单恢复可载后，同一变更即可提交（拒绝不是永久损伤）。
+    // 清单恢复可载后，同一变更即可提交（拒绝不是永久损伤）。变体 f 是
+    // Windows 专属形态（_fsopen 句柄保持），非 Windows 路径 store.json 仍
+    // 处于变体 e 的删除态——heal 前提是"清单在且可载"，这里统一回填。
+    ASSERT_FALSE(ca::fs::FileUtil::write_text((dir / "store.json").string(), goodBytes).is_err());
     ASSERT_FALSE(commitStoreManifestTransaction(refOf(dirStr), mutation).is_err());
     auto healed = readStoreManifestFile(refOf(dirStr));
     ASSERT_FALSE(healed.is_err());
@@ -2798,16 +2801,19 @@ TEST(MjProjectStoreTest, recoveryScanPosixCaseSensitiveStemCoexistence)
     ASSERT_FALSE(ca::fs::FileUtil::write_text((dir / "store.json").string(),
                                               std::move(text).unwrap().to_std_string()).is_err());
 
-    // 词根匹配敏感：候选按字典序（'F' < 'f'，变体垃圾在前）——首候选受验
-    // 失配 Damaged，真收容字节落词根多匹配的 Never 档（宁可错认不可误删，
-    // 两份字节都不进可 prune 面）。
+    // 词根匹配敏感（R62/N2 POSIX 分叉实证）：变体垃圾名与收容词根
+    // "future.thing." 是不同文件——不进候选面（candidates 仅真收容字节，
+    // 受验通过 → 0 Damaged）；变体名无人认领 → 落一般孤儿面（清单可载 →
+    // AfterFirstFlush 档）。"首候选失配 Damaged + 变体 Never"是多匹配
+    // 语义（Windows 不敏感分叉）的推演，POSIX 敏感面下不成立。
     auto scanned = scanBundleRecovery(refOf(dirStr));
     ASSERT_FALSE(scanned.is_err()) << std::move(scanned).unwrap_err().message.to_std_string();
     auto report = std::move(scanned).unwrap();
-    ASSERT_EQ(1U, report.damagedSections.size());
-    EXPECT_EQ("future.thing", report.damagedSections[0].name.to_std_string());
+    ASSERT_EQ(1U, report.okSections.size());
+    EXPECT_EQ("future.thing", report.okSections[0].name.to_std_string());
+    EXPECT_TRUE(report.damagedSections.empty());
     ASSERT_EQ(1U, report.orphans.size());
-    EXPECT_EQ("future.thing.cbor", report.orphans[0].fileName.to_std_string());
-    EXPECT_EQ(OrphanPrunePolicy::Never, report.orphans[0].prunePolicy);
+    EXPECT_EQ("Future.Thing.Cbor", report.orphans[0].fileName.to_std_string());
+    EXPECT_EQ(OrphanPrunePolicy::AfterFirstFlush, report.orphans[0].prunePolicy);
 #endif
 }

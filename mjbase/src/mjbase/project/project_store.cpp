@@ -1850,34 +1850,48 @@ StorePruneReport pruneOrphanSections(const Utf8StringRef& bundleDir,
             continue;
         }
 
-        //-- 现验第 3 环：路径此刻存在、为普通文件、可读（exists 的 ec 首次被
-        //    尊重——R62 病灶的执行面收口）------------------------------------
-        std::error_code existsEc;
-        if (!std::filesystem::exists(nativePath(path), existsEc)) {
-            if (existsEc) {
-                outcome.skipped.push_back(copyOf(fileName));
-                outcome.diagnostics.push_back(copyOf(
-                    "orphan prune: skipped '" + path + "': existence check failed (" +
-                    utf8SafeSystemText(existsEc.message()) + "); never prune on unverified state"));
-            }
-            else {
-                // 已缺 = 此前中断/已被处置的幂等形态："文件已缺视为已删"的
-                // 既有设计口径；诊断逐笔注明，不与真实删除混报。
-                outcome.pruned.push_back(copyOf(fileName));
-                outcome.diagnostics.push_back(copyOf(
-                    "orphan prune: '" + path +
-                    "' already absent; counted as pruned (idempotent, prior-interruption form)"));
-            }
+        //-- 现验第 3 环：此刻存在、为普通文件、可读（R62 病灶的执行面收口）----
+        // 探测必须走 status() 而非 exists()：两大家族标准库的 exists(p, ec)
+        // 都把 ENOTDIR（路径穿普通文件）折叠成 not_found 并清 ec——病态路径
+        // 形态会被谎报成"幂等已删"，违背"绝不带病删"红线。status() 面保留
+        // errno，且两家族对 not-found 族都置 ec，故"干净已缺"与"病态探测"
+        // 按 errc 值分类：no_such_file_or_directory（ENOENT / Win32 的
+        // FILE_NOT_FOUND 与 PATH_NOT_FOUND 同映射此值）= 幂等已缺；
+        // 其余 ec（ENOTDIR、EACCES 等）= 带病跳过。平台分叉恰好落回测试
+        // 文档化的语义：POSIX 病态形态带病跳过，Win32 归一形态幂等已缺。
+        std::error_code probeEc;
+        const std::filesystem::file_status probeStatus =
+            std::filesystem::status(nativePath(path), probeEc);
+
+        //-- 3a. 干净已缺 = 幂等（not-found 族 errc；Win32 的 FILE/PATH_NOT_FOUND
+        //      与 POSIX ENOENT 同映射 no_such_file_or_directory）--------------
+        if (probeEc == std::errc::no_such_file_or_directory
+            || (!probeEc && probeStatus.type() == std::filesystem::file_type::not_found)) {
+            // 已缺 = 此前中断/已被处置的幂等形态："文件已缺视为已删"的
+            // 既有设计口径；诊断逐笔注明，不与真实删除混报。
+            outcome.pruned.push_back(copyOf(fileName));
+            outcome.diagnostics.push_back(copyOf(
+                "orphan prune: '" + path +
+                "' already absent; counted as pruned (idempotent, prior-interruption form)"));
             continue;
         }
-        std::error_code regularEc;
-        const bool regular = std::filesystem::is_regular_file(nativePath(path), regularEc);
-        if (!regular || regularEc) {
+
+        //-- 3b. 带病探测（ENOTDIR / EACCES 等）= 绝不带病删 ------------------
+        if (probeEc) {
             outcome.skipped.push_back(copyOf(fileName));
             outcome.diagnostics.push_back(copyOf(
-                "orphan prune: skipped '" + path + "': not a regular file at prune time" +
-                (regularEc ? " (" + utf8SafeSystemText(regularEc.message()) + ")" : "") +
-                "; non-regular entries are never touched (design section 8.2)"));
+                "orphan prune: skipped '" + path + "': existence check failed (" +
+                utf8SafeSystemText(probeEc.message()) + "); never prune on unverified state"));
+            continue;
+        }
+
+        //-- 3c. 非普通文件（目录等）= 永不触碰 -------------------------------
+        if (probeStatus.type() != std::filesystem::file_type::regular) {
+            outcome.skipped.push_back(copyOf(fileName));
+            outcome.diagnostics.push_back(copyOf(
+                "orphan prune: skipped '" + path +
+                "': not a regular file at prune time; non-regular entries are never "
+                "touched (design section 8.2)"));
             continue;
         }
         if (!pathReadable(path)) {
