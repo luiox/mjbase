@@ -36,18 +36,12 @@ struct MethodPassRun
     mjbase::spi::PreservedAnalyses         pa;
 };
 
-/// @brief 组字节建会话，经生产管线驱动一组方法级 pass（默认管线选项），写回字节。
-template<class... PassTs>
-MethodPassRun runMethodPass(Bytes classBytes, PassTs&&... passes)
-{
-    return runMethodPassOpts(std::move(classBytes), mjbase::spi::PassPipelineOptions{},
-                             std::forward<PassTs>(passes)...);
-}
-
 /// @brief 同上，显式给管线选项（B 批帧链接线注入 typeResolver）。
 ///
 /// 选项放包前：MSVC 对「尾随默认参数 + 前置参数包」的推导会把包吞空，
 /// 包后置则是干净的逐位匹配。
+/// 注意本模板必须先于 runMethodPass 定义：gcc 两阶段查找要求未限定
+/// 调用名在模板定义点可见（MSVC permissive 才容许后置声明）。
 template<class... PassTs>
 MethodPassRun runMethodPassOpts(Bytes                              classBytes,
                                 mjbase::spi::PassPipelineOptions   options,
@@ -68,6 +62,14 @@ MethodPassRun runMethodPassOpts(Bytes                              classBytes,
     auto written = jbc::core::writeClass(session->backing());
     EXPECT_TRUE(written.is_ok());
     return {std::move(session), std::move(written).unwrap(), pa};
+}
+
+/// @brief 组字节建会话，经生产管线驱动一组方法级 pass（默认管线选项），写回字节。
+template<class... PassTs>
+MethodPassRun runMethodPass(Bytes classBytes, PassTs&&... passes)
+{
+    return runMethodPassOpts(std::move(classBytes), mjbase::spi::PassPipelineOptions{},
+                             std::forward<PassTs>(passes)...);
 }
 
 /// 写回字节的再升格视图：会话 + 第 methodIdx 个方法的 CodeUnit（保活成对）。
