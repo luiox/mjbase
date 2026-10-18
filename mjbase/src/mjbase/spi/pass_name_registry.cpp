@@ -14,6 +14,7 @@
 #include "mjbase/pass/meta_info_remover.hpp"
 #include "mjbase/pass/nop_remover.hpp"
 #include "mjbase/pass/redundant_load_val_eliminator.hpp"
+#include "mjbase/pass/stack_operation.hpp"
 #include "mjbase/pass/strength_reducer.hpp"
 #include "mjbase/pass/tool_class_combiner.hpp"
 #include "mjbase/pass/unused_check_cleaner.hpp"
@@ -232,6 +233,13 @@ PassNameRegistry makeDefaultRegistry()
     seed(reg.registerMethodPass(
         "StrengthReducer", [] { return std::make_unique<mjbase::pass::StrengthReducer>(); },
         "Rewrite multiplication/division by powers of two into shifts (int/long)."));
+    // opt pass 波次（栈操作家族首件，W0 样板批）：冗余栈操作窗口折叠 25 条
+    // 规则迭代到不动点；ldc 载荷不可判别的宽匹配语义与 Err 保守停收敛声明
+    // 见 pass 头注。标签：scope:method / action:simplify / stability:default。
+    seed(reg.registerMethodPass(
+        "StackOperationSimplifier",
+        [] { return std::make_unique<mjbase::pass::StackOperationSimplifier>(); },
+        "Fold redundant stack-operation windows to a fixpoint (dup/pop family)."));
     // 批 A（容器级直写组首件）：全容器确定性类重命名。
     seed(reg.registerGlobalPass(
         "ClassRenamer", [] { return std::make_unique<mjbase::pass::ClassRenamer>(); },

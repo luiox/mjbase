@@ -10,6 +10,7 @@
 #include "mjbase/pass/meta_info_remover.hpp"
 #include "mjbase/pass/nop_remover.hpp"
 #include "mjbase/pass/redundant_load_val_eliminator.hpp"
+#include "mjbase/pass/stack_operation.hpp"
 #include "mjbase/pass/strength_reducer.hpp"
 #include "mjbase/pass/unused_check_cleaner.hpp"
 #include "mjbase/pass/unused_member_remover.hpp"
@@ -125,6 +126,19 @@ ca::usize registerBuiltinPipelines()
                              b.addMethodPass(
                                  [] { return std::make_unique<mjbase::pass::StrengthReducer>(); },
                                  "StrengthReducer");
+                             return b;
+                         },
+                         PassStability::OptIn);
+
+    reg.registerPipeline("phase.stack-op-simplify",
+                         "Fold redundant stack-operation windows to a fixpoint (opt-in)",
+                         [] {
+                             PipelineBuilder b;
+                             b.addMethodPass(
+                                 [] {
+                                     return std::make_unique<mjbase::pass::StackOperationSimplifier>();
+                                 },
+                                 "StackOperationSimplifier");
                              return b;
                          },
                          PassStability::OptIn);
