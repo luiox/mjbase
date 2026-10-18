@@ -1,0 +1,109 @@
+# mjbase CI（Linux + Windows）
+#
+# 范围：mjbase 静态库 + mjbase_unittest 全量单测（target 是 set_default(false)，
+# 必须显式构建）。
+# 依赖：luiox-repo git 直连包（libca/libjbc 家族等）——root xmake.lua 内
+# add_repositories 已指向 GitHub 远端，CI 无需显式注册；gtest/libarchive/zlib
+# 走 xrepo（libarchive 用仓内覆盖包 xmake/repo，规避官方包 Linux 编译失败）。
+# 注意 set_defaultplat("windows")：Linux 配置必须显式 -p linux。
+
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test-linux:
+    name: build & test (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK (jdk_finder scanning tests)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: v3.0.9
+          actions-cache-folder: '.xmake-cache'
+
+      - name: Cache xrepo packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.xmake/packages
+            ~/.local/share/xmake
+          key: mjbase-xrepo-linux-x64-xmake309-${{ hashFiles('xmake.lua', 'xmake/packages/*.lua') }}
+          restore-keys: |
+            mjbase-xrepo-linux-x64-xmake309-
+
+      - name: Configure (with tests)
+        run: xmake f -p linux --with_tests=y -y
+
+      - name: Build library
+        run: xmake -y
+      - name: Build tests
+        run: xmake -y mjbase_unittest
+
+      - name: Run unit tests
+        run: xmake run mjbase_unittest
+
+  build-and-test-windows:
+    name: build & test (windows)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK (jdk_finder scanning tests)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: v3.0.9
+          actions-cache-folder: '.xmake-cache'
+
+      - name: Cache xrepo packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/.xmake/packages
+          key: mjbase-xrepo-windows-x64-xmake309-${{ hashFiles('xmake.lua', 'xmake/packages/*.lua') }}
+          restore-keys: |
+            mjbase-xrepo-windows-x64-xmake309-
+
+      - name: Configure (with tests)
+        shell: bash
+        run: xmake f -p windows --with_tests=y -y
+
+      - name: Build library
+        shell: bash
+        run: xmake -y
+      - name: Build tests
+        shell: bash
+        run: xmake -y mjbase_unittest
+
+      - name: Run unit tests
+        shell: bash
+        run: xmake run mjbase_unittest
