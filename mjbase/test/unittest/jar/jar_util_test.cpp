@@ -42,8 +42,8 @@ TEST(MjJarUtilIsClassFileTest, nonClass)
     EXPECT_FALSE(JarUtil::isClassFile(S("Foo.class//")));
 }
 
-// ── 后缀判定的边界形态（os29/Jbytec 样本实测形态回归，见
-//    work/doc_survey/non_matrix/jar_gate_fix_NOTES.md）──────────
+// ── 后缀判定的边界形态（os29/Jbytec 样本实测形态回归，判据溯源：
+//    私有侧 survey 笔记）──────────
 
 // 恰好等于尾缀本身的最短输入：当前为纯文本尾缀判定，放行。
 // （".class" 是 6 字节、".class/" 是 7 字节，正好达到两个下限长度。）

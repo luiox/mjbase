@@ -203,7 +203,7 @@ TEST(MjModelIoTest, StubPrefixedJarEntriesAllLoad)
 }
 
 // ── os29/Jbytec 样本实测形态的 fail-closed 回归 ────────────────
-// （判据与数字溯源见 mbase work/doc_survey/non_matrix/jar_gate_fix_NOTES.md）
+// （判据与数字溯源见私有侧 survey 笔记）
 
 // 目录形态 entry 藏 class 内容（OS2.9 中央目录视角：59 个 class 内容挂在
 // 'yaakov/jni/' 目录名下）：名字关拒绝 → UnknownResource 保留原始名，

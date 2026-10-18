@@ -5,8 +5,8 @@
 
 ## opt pass 完整集波次（mjbase-pass-wave2）
 
-审计报告 `mbase/doc_ai/opt-pass-completeness-audit.md`（A0–A4 × B1–B5 覆盖
-矩阵 +  27 trim 对标 + P0×5/P1×7/P2×4 缺口）。本波次逐项落地：
+私有侧审计报告（A0–A4 × B1–B5 覆盖矩阵 + 混淆器 trim 对标 + P0×5/P1×7/P2×4
+缺口）。本波次逐项落地：
 
 - [x] P0-1/P0-2 keep 规则 DSL + 保守预设模式库（`reference/keep_rule`：
   行式 class/member/preset、glob 语义、八预设穷举单入口 keepPresetFrom、
