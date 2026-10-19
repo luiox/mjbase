@@ -31,3 +31,8 @@ hb_meta_quirks CLASSFILE_REENCODE
 # 批 C 扩段语料（hb_const_char_fold）：本类方法名序与源序不同（m_* 系固定后缀）
 # → 成员重排，旧栈 golden 全量重编码 → reencode 对拍，指纹不含成员序关系。
 hb_const_char_fold CLASSFILE_REENCODE
+
+# 批 C 扩段第二件语料（hb_enum_cast）：4 个静态方法无字段，同走 sorter 目标
+# 排序（plain 名字典序），旧栈 golden 全量重排 → reencode 类目，指纹以成员
+# 序列等价判定。
+hb_enum_cast CLASSFILE_REENCODE

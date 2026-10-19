@@ -563,7 +563,8 @@ void compareAbatchMethodPass(const char* passName)
                               || name.rfind("hb_pop_pairs", 0) == 0
                               || name.rfind("hb_char_arr", 0) == 0
                               || name.rfind("hb_unused_check", 0) == 0
-                              || name.rfind("hb_const_char_fold", 0) == 0;
+                              || name.rfind("hb_const_char_fold", 0) == 0
+                              || name.rfind("hb_enum_cast", 0) == 0;
         if (!isAbatch) continue;
         SCOPED_TRACE(name);
         const Bytes corpus = test::getResource(lanePath(kTreeLane, name));
@@ -606,6 +607,11 @@ TEST(MjPassGoldenCompare, CharArrToStrSimplifier)
 TEST(MjPassGoldenCompare, UnusedCheckCleaner)
 {
     compareAbatchMethodPass("UnusedCheckCleaner");
+}
+
+TEST(MjPassGoldenCompare, EnumCastCheckRemover)
+{
+    compareAbatchMethodPass("EnumCastCheckRemover");
 }
 
 // ── 批 C 方法级指令变换组第一件：ConstCharArrayStringFolder（整窗折叠）──
