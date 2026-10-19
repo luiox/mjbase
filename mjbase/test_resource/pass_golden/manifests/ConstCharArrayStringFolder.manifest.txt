@@ -1,0 +1,17 @@
+# ConstCharArrayStringFolder golden 差异声明清单（默认零差异；本文件只列确有输出差异的语料）
+# 格式：<语料名> <类目名>；'#' 起为注释；各段落对应
+# mjbase/test_resource/pass_golden/corpus/tree/<语料名>.class。
+# 消费方在测试 test/unittest/pass/golden/pass_golden_compare_test.cpp 对拍处读。
+# 类目 CLASSFILE_REENCODE = 指纹语义对拍（指纹 = 逐方法指令序列 + LDC 解析常量
+# / INVOKE member 三段）；未声明语料一律走逐字节比较。
+#
+# 类目 CLASSFILE_REENCODE 属 writer 差异，非 pass 语义差异：
+#   本 pass 折叠整窗携带 CP 引用（String intern + 旧条目失引剪除），旧栈 golden
+#   由 jbytecode writer 全量重新序列化后按 encounter 序重编号，mjbase
+#   copy-through 写回保持条目原位；字节约束两边不同，语义等价（指令指纹一致）。
+#   同类目先例见 CharArrToStrSimplifier.manifest。
+#
+# 语料 hb_const_char_fold：整类含折叠三件（m_ascii / m_obf / m_reorder）与
+# 保留七件（红线/未覆盖/非常量/孤立代理/非 char/错挂 ctor/窗内锚定标签）；
+# 折叠三件触发池面变化，按语料键整文件声明（文件级粒度的既有惯例）。
+hb_const_char_fold CLASSFILE_REENCODE

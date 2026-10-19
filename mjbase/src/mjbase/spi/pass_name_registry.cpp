@@ -8,6 +8,7 @@
 #include "mjbase/pass/char_arr_to_str_simplifier.hpp"
 #include "mjbase/pass/class_member_sorter.hpp"
 #include "mjbase/pass/class_renamer.hpp"
+#include "mjbase/pass/const_char_array_string_folder.hpp"
 #include "mjbase/pass/constant_folder.hpp"
 #include "mjbase/pass/illegal_class_file_cleaner.hpp"
 #include "mjbase/pass/junk_code_inserter.hpp"
@@ -240,6 +241,13 @@ PassNameRegistry makeDefaultRegistry()
         "StackOperationSimplifier",
         [] { return std::make_unique<mjbase::pass::StackOperationSimplifier>(); },
         "Fold redundant stack-operation windows to a fixpoint (dup/pop family)."));
+    // opt pass 波次（C 方法级指令变换组第一件）：常量 char 数组构造的
+    // `new String(char[])` 整窗折叠为字符串 ldc。标签：scope:method /
+    // action:fold / stability:opt-in（默认链不收，CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "ConstCharArrayStringFolder",
+        [] { return std::make_unique<mjbase::pass::ConstCharArrayStringFolder>(); },
+        "Fold whole `new String(constant char[])` construction windows into string ldc."));
     // 批 A（容器级直写组首件）：全容器确定性类重命名。
     seed(reg.registerGlobalPass(
         "ClassRenamer", [] { return std::make_unique<mjbase::pass::ClassRenamer>(); },

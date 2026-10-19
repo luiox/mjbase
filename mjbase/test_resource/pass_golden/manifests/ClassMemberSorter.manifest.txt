@@ -26,3 +26,8 @@ jdk5_enum_class CLASSFILE_REENCODE
 jdk8_all_structures CLASSFILE_REENCODE
 mbase_constant_folder1 CLASSFILE_REENCODE
 hb_meta_quirks CLASSFILE_REENCODE
+
+
+# 批 C 扩段语料（hb_const_char_fold）：本类方法名序与源序不同（m_* 系固定后缀）
+# → 成员重排，旧栈 golden 全量重编码 → reencode 对拍，指纹不含成员序关系。
+hb_const_char_fold CLASSFILE_REENCODE

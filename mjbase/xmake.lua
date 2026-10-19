@@ -140,6 +140,8 @@ target("mjbase_unittest")
     add_files("test/unittest/reference/*_test.cpp")
     add_files("test/unittest/spi/*_test.cpp")
     add_files("test/unittest/pass/*_test.cpp")
+    -- golden 对拍子目录（旧栈 baseline 字节/指纹对拍机器，pass-golden-pipeline.md）。
+    add_files("test/unittest/pass/golden/*_test.cpp")
     add_files("test/unittest/asm/remapper/*_test.cpp")
     -- 批 4：与上面 src 的 renamer/jasm/log/workspace/cli 一一对应。
     add_files("test/unittest/renamer/*_test.cpp")

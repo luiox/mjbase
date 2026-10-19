@@ -11,3 +11,7 @@
 #   mjbase copy-through 保留语料原池（保真契约）。两者 pass 语义等价（指令
 #   指纹一致），字节必然不同。与 ClassMemberSorter.manifest 的同类目同根因。
 hb_char_arr CLASSFILE_REENCODE
+
+
+# 批 C 扩段语料（hb_const_char_fold）：m_ascii / m_reorder 的裸数组构造片段在本件口径下仍命中（重写为 ldc + toCharArray），池面变化 → reencode 对拍；m_obf 的混算构造不受本件影响。
+hb_const_char_fold CLASSFILE_REENCODE

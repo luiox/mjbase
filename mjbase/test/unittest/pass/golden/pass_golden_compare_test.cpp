@@ -562,7 +562,8 @@ void compareAbatchMethodPass(const char* passName)
         const bool isAbatch = name.rfind("hb_nop_seq", 0) == 0
                               || name.rfind("hb_pop_pairs", 0) == 0
                               || name.rfind("hb_char_arr", 0) == 0
-                              || name.rfind("hb_unused_check", 0) == 0;
+                              || name.rfind("hb_unused_check", 0) == 0
+                              || name.rfind("hb_const_char_fold", 0) == 0;
         if (!isAbatch) continue;
         SCOPED_TRACE(name);
         const Bytes corpus = test::getResource(lanePath(kTreeLane, name));
@@ -605,6 +606,12 @@ TEST(MjPassGoldenCompare, CharArrToStrSimplifier)
 TEST(MjPassGoldenCompare, UnusedCheckCleaner)
 {
     compareAbatchMethodPass("UnusedCheckCleaner");
+}
+
+// ── 批 C 方法级指令变换组第一件：ConstCharArrayStringFolder（整窗折叠）──
+TEST(MjPassGoldenCompare, ConstCharArrayStringFolder)
+{
+    compareAbatchMethodPass("ConstCharArrayStringFolder");
 }
 
 // ── 批 A ClassRenamer：全部语料必被重命名（旧栈 tree writer 全量重编码 +
