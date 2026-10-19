@@ -94,9 +94,8 @@ TEST(ConstCharArrayStringFolderTest, asciiConstructionFoldsToLdc)
 TEST(ConstCharArrayStringFolderTest, obfuscatedConstantExpressionsFold)
 {
     FixtureBuilder b("t/F");
-    const StringCp cp             = makeStringCp(b);
-    const ca::u16  cjkBase        = b.intConst(0x4E00);   // 19968
-    const ca::u16  wideOver16Bits = b.intConst(0x4041);   // I2C 截断源
+    const StringCp cp      = makeStringCp(b);
+    const ca::u16  cjkBase = b.intConst(0x4E00);   // Integer 19968
 
     Bytes code = windowHead(cp);
     appendBytes(code, {0x05, 0x02, 0x64});                   // ICONST_2; ICONST_M1; ISUB → 3
@@ -318,11 +317,12 @@ TEST(ConstCharArrayStringFolderTest, midWindowAnchorKept)
     FixtureBuilder b("t/F");
     const StringCp cp = makeStringCp(b);
 
-    // 字节布局：GOTO(3) | NEW(3) | DUP(1) | len 2 拍(2) | NEWARRAY(2)
-    //   | arm0(4) | arm1 @pc 16 | arm2(4) | INVOKESPECIAL(3) | ARETURN(1)
-    // GOTO 目标 = 16（arm1 的 DUP，相对 pc0 偏移 +16）。
+    // 字节布局：GOTO(3) | NEW(3) | DUP(1) | ICONST_3(1) | NEWARRAY(2)
+    //   | arm0(5) | arm1 @pc15 | arm2 | INVOKESPECIAL | ARETURN
+    // GOTO 目标 = pc15（arm1 的 DUP 头，相对 pc0 偏移 +15，与 mbase 侧
+    // hb_const_char_fold 语料的 m_keep_anchor 同布局）。
     Bytes code;
-    appendBytes(code, {0xA7, 0x00, 0x10});
+    appendBytes(code, {0xA7, 0x00, 0x0F});
     appendBytes(code, windowHead(cp));
     appendBytes(code, {0x06});
     appendBytes(code, {0xBC, 0x05});
