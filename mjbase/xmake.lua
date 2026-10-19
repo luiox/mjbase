@@ -122,6 +122,11 @@ target("mjbase_unittest")
     add_files("test/unittest/log/*_test.cpp")
     add_files("test/unittest/workspace/*_test.cpp")
     add_files("test/unittest/cli/*_test.cpp")
+    -- 第 5 批（morpher 仓内副本孤儿测试救回）：keys/i18n/util 伞头与叶子件，
+    -- 与 src 的 keys.hpp/i18n.hpp/util 一一对应（B3-A 波次测试面，副本删除前收容）。
+    add_files("test/unittest/keys/*_test.cpp")
+    add_files("test/unittest/i18n/*_test.cpp")
+    add_files("test/unittest/util/*_test.cpp")
     add_includedirs("src")
     -- 共享测试夹具目录（test/unittest/shared/）：跨模块单测共用的头文件面，
     -- 消费形如 #include "shared/xxx.hpp"（structural_pass_util 升格共享 util）。
