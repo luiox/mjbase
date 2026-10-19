@@ -5,8 +5,30 @@
 -- 迁移期约定：源文件与测试文件走 glob 收编（多 agent 并行落文件），
 -- 模块稳定后按仓惯例转显式清单。
 
+-- i18n 生成头回源：libca.i18n.embed-lang 将 .lang 文案编译为
+-- i18n_mjbase_translations.generated.hpp（落于构建树 .gens），公开头
+-- i18n.hpp 同目录直引。包导出只捕源树（add_headerfiles("src/(mjbase/**)")），
+-- 故构建后把生成件按内容判等同步回 src/mjbase/，供安装面捕获；内容
+-- 未变不落盘，避免 mtime 抖动触发消费方重编级联。
+rule("mjbase.i18n_src_sync")
+    after_build(function (target)
+        import("core.project.config")
+        local name = "i18n_mjbase_translations.generated.hpp"
+        local gens = os.files(path.join(config.buildir(), "**", name))
+        if not gens or #gens == 0 then
+            raise("mjbase.i18n_src_sync: 构建树内未找到 " .. name)
+        end
+        local dst = path.join(os.scriptdir(), "src", "mjbase", name)
+        local data = io.readfile(gens[1])
+        if data ~= (os.isfile(dst) and io.readfile(dst) or nil) then
+            io.writefile(dst, data)
+            print("  > mjbase.i18n_src_sync: 同步 %s 至 src/mjbase/", name)
+        end
+    end)
+
 target("mjbase")
     set_kind("static")
+    add_rules("mjbase.i18n_src_sync")
 
     -- jar/model/mapping/project 批次新增：zip 读写（libjzip）、资源解包后端
     -- （libarchive，与 mbase 同源）、fs/json/crypto（mapping 与 project 直迁）。
