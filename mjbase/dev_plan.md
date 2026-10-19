@@ -67,6 +67,13 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
 
 ## 待办
 
+- [x] **2026-10-19 air/sir 出仓定案（morpher 仓内副本退役）**：deobf 工具面 IR
+  （AIR 节点指令层 + SIR 沿擎）按归属裁决不入 mjbase 独立仓——本波次以上各
+  「AIR/SIR 批」计量均为彼时 morpher 仓内载体的完成记录；代码以
+  `mjt::deobf::air/sir` 命名空间驻留 mjt-deobf/src/mjt/deobf/{air,sir}，
+  单测随 mjt_deobf_unittest。批四（sir 真实 SSA→栈机 lower）随之改隶
+  mjt-deobf，不再排 mjbase 波次。独立仓 0.0.1 首发为纯框架面（不含 air/sir）。
+
 - model / jar / mapping / project 批次：零旧栈依赖，直迁或按需重设计。
 - B8 挂账（air/sir）拆四批推进：
   - [x] 批一：builder 读接缝收回（libjbc 零改动）。multianewarray 描述符改经
@@ -113,7 +120,7 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     builder 元数据用例 +2、writer 元数据门 +5）。挂账：注解与 ConstantValue
     的 AIR 面仍不转换（旧 TODO 口径不变）；originalOffset 为 u16，超 64K
     偏移截断沿旧口径未扩。
-  - [ ] 批四：sir 真实 SSA→栈机 lower（挂起）。
+  - [ ] 批四：sir 真实 SSA→栈机 lower——已改隶 mjt-deobf（air/sir 出仓定案，2026-10-19），挂起不排 mjbase 波次。
 - [x] Nest 族消费面迁移（2026-10-14，libjbc design §32.10）：libjbc 将
   NestHost/NestMembers/PermittedSubclasses 立为 typed 属性并收编 CP 压缩封闭
   集后，mjbase 消费面同批接线不留半接线态——member_remapper 三件改 typed 体
