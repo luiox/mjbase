@@ -63,7 +63,10 @@ target("mjbase")
     -- cli 的 ArgParser 文案单源表（i18n_setup 静态注册，public include 供下游覆盖）。
     -- 批 1 不含 cli 源码，但 i18n.hpp 依赖其生成头，故规则始终保留。
     add_files("src/mjbase/cli/translations/*.lang", {rules = "libca.i18n.embed-lang"})
-    add_headerfiles("src/mjbase/(**.hpp)")
+    -- 导出捕获含 mjbase/ 前缀（src/(mjbase/**)）：安装根下保留 mjbase/ 子树，
+    -- 消费方 #include "mjbase/keys.hpp" 等伞头/模块头统一解析（同 libjbytecode
+    -- src/(jbytecode/*.hpp) 口径）。
+    add_headerfiles("src/(mjbase/**.hpp)")
     add_includedirs("src", {public = true})
     set_languages("cxx17")
 
