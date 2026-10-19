@@ -1,0 +1,15 @@
+# EnumCastCheckRemover golden 语义等价清单。默认零词条；本文件只记录确定
+# 说明性文档与推理依据（当前无任何声明词条）。
+# 格式：<语料名> <类目>；'#' 起始为注释；类目两段对应
+# mjbase/test_resource/pass_golden/corpus/tree/<语料名>.class。
+# 再生成对拍的策略：test/unittest/pass/golden/pass_golden_compare_test.cpp 跑批。
+#
+# 本 pass 匹配形态（INVOKEVIRTUAL 调用描述符字面 == 枚举数组类型
+# "[L<本类>;"）在真实 javac 字节码不会出现（方法描述符恒带 (…) 包裹），
+# jcf 层读取面（容器族 pass）并对其做描述符文法校验直接拒收——旧栈
+# golden 管道自始承载不了该形态（旧提取器无本件 fixture，匹配面由直建
+# IR 的单测钉死，旧栈同款做法）。
+# 语料 hb_enum_cast 取合法 javac values() 形状（Enum.clone 调用描述符
+# "()Ljava/lang/Object;" + CHECKCAST 数组类型），本 pass 全语料确定性
+# no-op：golden == 语料字节 == mjbase 输出，走逐字节默认面，无需词条。
+# （若未来引入匹配形态语料，届时按 writer 差异事实评估 CLASSFILE_REENCODE。）

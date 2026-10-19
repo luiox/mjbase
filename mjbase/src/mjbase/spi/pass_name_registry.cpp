@@ -9,6 +9,7 @@
 #include "mjbase/pass/class_member_sorter.hpp"
 #include "mjbase/pass/class_renamer.hpp"
 #include "mjbase/pass/const_char_array_string_folder.hpp"
+#include "mjbase/pass/enum_cast_check_remover.hpp"
 #include "mjbase/pass/constant_folder.hpp"
 #include "mjbase/pass/illegal_class_file_cleaner.hpp"
 #include "mjbase/pass/junk_code_inserter.hpp"
@@ -248,6 +249,13 @@ PassNameRegistry makeDefaultRegistry()
         "ConstCharArrayStringFolder",
         [] { return std::make_unique<mjbase::pass::ConstCharArrayStringFolder>(); },
         "Fold whole `new String(constant char[])` construction windows into string ldc."));
+    // opt pass 扩段：C 组方法级指令变换组第二件——移除枚举 values() 中
+    // 可证明冗余的 INVOKEVIRTUAL/CHECKCAST 相邻对（签名：scope:method /
+    // action:eliminate / stability:opt-in，默认不进链，CLI -p 显式点名）。
+    seed(reg.registerMethodPass(
+        "EnumCastCheckRemover",
+        [] { return std::make_unique<mjbase::pass::EnumCastCheckRemover>(); },
+        "Remove provably redundant enum values() INVOKEVIRTUAL/CHECKCAST adjacent pairs."));
     // 批 A（容器级直写组首件）：全容器确定性类重命名。
     seed(reg.registerGlobalPass(
         "ClassRenamer", [] { return std::make_unique<mjbase::pass::ClassRenamer>(); },
