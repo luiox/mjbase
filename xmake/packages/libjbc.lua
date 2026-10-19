@@ -23,9 +23,11 @@
 --
 -- 链接说明：整包单库（links = libjbc）。libjbc 工程自身 xmake.lua 已声明
 -- libca 依赖（modules = core,str,log,crypto,zip），包沙箱内自解析；下方
--- add_deps 是给消费方的传递声明（另一回事，不可省）。libca modules 取
--- luiox 家族统一超集 core,str,log,crypto,zip（同一消费图内各包的 libca
--- 配置必须一致，否则 xmake 报 conflict configs dependencies）。
+-- add_deps 是给消费方的传递声明（另一回事，不可省）。libca 版本/模块取
+-- root xmake.lua 的 LUIOX_LIBCA_VERSION/LUIOX_LIBCA_MODULES 家族统一超集
+-- （同一消费图内各包的 libca (版本, 模块集) 必须完全一致——实例身份 =
+-- (版本, configs 哈希)，任何偏差都会多出一个 libca 实例：链接闭包多条
+-- -libpath，同名符号双归档，解析次序脆弱）。
 --
 -- 许可：MIT（源仓 v0.4.12 起 LICENSE 落地）。
 
@@ -49,8 +51,10 @@ package("libjbc")
     -- 嵌套 libca 直接钉到本仓单源版本：项目内联包定义不吃 deps.lua 的
     -- **.libca / libjbc.libca requireconfs（实测），裸声明会解析到仓库最新版
     -- （0.0.15），与项目实例（LUIOX_LIBCA_VERSION）形成双版本 libca——D33
-    -- 同族隐患。版本常量取 deps.lua 全局，维持版本单源纪律。
-    add_deps("libca " .. LUIOX_LIBCA_VERSION, {configs = {modules = "core,str,log,crypto,zip"}})
+    -- 同族隐患。版本/模块常量取 root xmake.lua 全局（本文件在常量定义之后
+    -- include，作用域可见）；configs 必须与项目级 add_requires 完全一致，
+    -- 否则同一消费图内多出一份 libca 实例（链接闭包多条 -libpath）。
+    add_deps("libca " .. LUIOX_LIBCA_VERSION, {configs = {modules = LUIOX_LIBCA_MODULES}})
 
     on_load(function (package)
         package:add("links", "libjbc")
