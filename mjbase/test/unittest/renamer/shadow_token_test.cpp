@@ -199,7 +199,7 @@ TEST(MjShadowTokenTest, EmptyTableAnyReferenceShapeIsMissingSidecarHardError)
         EXPECT_EQ(ShadowSlotError::MissingSidecar, result.error) << input;
         EXPECT_NE(std::string::npos, text(result).find("missing-sidecar")) << input;
         // 硬报错带修复动作（§6：提示需加载 sidecar）。
-        EXPECT_NE(std::string::npos, text(result).find("shadow_generate")) << input;
+        EXPECT_NE(std::string::npos, text(result).find("shadow sidecar")) << input;
     }
 }
 
