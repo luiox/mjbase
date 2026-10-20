@@ -17,7 +17,7 @@
 |---|---|---|---|---|
 | asm/cfg | ✅ | asm/cfg | 基本块、CFG 后继/前驱/异常边、迭代支配树、可达集 | CodeEditor::blocks + resolveLabel + CodeUnit::exc |
 | asm/insn | ✅ | asm/insn | opcode 分类谓词、栈效应表、指令工厂 | jbc::ir::Insn / CodeEditor 工厂 |
-| asm/analyzer | ✅ | asm/analyzer | 常量域、来源域、可空性事实域、跳转走向事实（branch_facts）、字符串/常量流事实（string_flow：来源、逃逸、Base64/XOR/char 偏移管线）+ 入参常量种子 + slot 级 def-use（有界到达定义集、异常边、字段访问事实，见 doc_ai/slot-def-use.md） | jbc::analysis::DomainEngine + IValueDomain；引擎缺口挂账：分支条件钩子、CHECKCAST 族 operand-aware 钩子；string_flow 设计见 [string-flow.md](string-flow.md) |
+| asm/analyzer | ✅ | asm/analyzer | 常量域、来源域、可空性事实域、跳转走向事实（branch_facts）、跨路径整数约束事实（path_conditions：分支谓词贴边、must 交集、死分支修剪，见 doc_ai/path-conditions.md）、字符串/常量流事实（string_flow：来源、逃逸、Base64/XOR/char 偏移管线）+ 入参常量种子 + slot 级 def-use（有界到达定义集、异常边、字段访问事实，见 doc_ai/slot-def-use.md） | jbc::analysis::DomainEngine + IValueDomain；引擎缺口挂账：分支条件钩子、CHECKCAST 族 operand-aware 钩子；string_flow 设计见 [string-flow.md](string-flow.md) |
 | asm/tmatcher | ✅ | asm/tmatcher | 新代匹配 DSL：combinator、capture、替换规则骨架 | CodeDom::order 窗口匹配 |
 | asm/matcher | ✅ | asm/matcher | 旧代 pattern_matcher 语义 | 同上 |
 | asm/evaluator | ✅ | asm/evaluator | 具体求值栈机（数值子集 + 分支 + 步数熔断） | CodeDom 只读遍历 |
