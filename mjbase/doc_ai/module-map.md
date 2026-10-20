@@ -21,7 +21,7 @@
 | asm/tmatcher | ✅ | asm/tmatcher | 新代匹配 DSL：combinator、capture、替换规则骨架 | CodeDom::order 窗口匹配 |
 | asm/matcher | ✅ | asm/matcher | 旧代 pattern_matcher 语义 | 同上 |
 | asm/evaluator | ✅ | asm/evaluator | 具体求值栈机（数值子集 + 分支 + 步数熔断） | CodeDom 只读遍历 |
-| asm/classpath | ✅ | asm/classpath | 调用边提取（MemberKey 键）、可达、库类过滤、惰性调用链枚举 + 调用树视图（简单路径/环叶/去重号/节点上限） | promote + memberOf + keys |
+| asm/classpath | ✅ | asm/classpath | 调用边提取（MemberKey 键）、可达、库类过滤、indy/MethodHandle 解析与 BSM 展开边、VarHandle 读写事实、惰性调用链枚举 + 调用树视图（简单路径/环叶/去重号/节点上限） | promote + memberOf + keys + BootstrapMethodsAttr |
 | hierarchy | ✅ | hierarchy | 类/方法/字段层次内存图、ancestors/overrides（.ihc 序列化不迁） | 会话扫描 this/super/interfaces + keys |
 
 ## 第二批（资源与映射叶子，直迁）

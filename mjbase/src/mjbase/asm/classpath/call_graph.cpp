@@ -2,11 +2,29 @@
 /// @brief       直接调用图实现：构建两遍扫描 + 正反向索引 + 可达闭包。
 #include "call_graph.hpp"
 
+#include <algorithm>
 #include <unordered_set>
 
 #include "mjbase/util.hpp"
 
 namespace mjbase::asm_classpath {
+
+namespace {
+
+/// MethodHandle → 调用点分派语义；字段句柄与域外 kind 不产调用边。
+bool invokeKindOfHandle(const HandleTarget& target, InvokeKind& out) noexcept
+{
+    switch (target.dispatch()) {
+    case HandleDispatch::Virtual: out = InvokeKind::Virtual; return true;
+    case HandleDispatch::Static: out = InvokeKind::Static; return true;
+    case HandleDispatch::Special:
+    case HandleDispatch::Constructor: out = InvokeKind::Special; return true;
+    case HandleDispatch::Interface: out = InvokeKind::Interface; return true;
+    default: return false;
+    }
+}
+
+}   // namespace
 
 bool invokeKindOf(jbc::core::Op op, InvokeKind& out) noexcept
 {
@@ -432,6 +450,11 @@ Result<CallGraph, BuildError> CallGraphBuilder::build()
                                           className, methodName, methodDesc});
                 }
 
+                // indy 先取 BSM 解析结果（fail-closed：未知家族仍走保守边）。
+                IndyResolution indy;
+                const bool isIndy =
+                    kind == InvokeKind::Dynamic && resolveIndyInsn(s, *in, indy);
+
                 // indy 的 CP 操作数无 owner（memberOf 置空视图）→ 驻留空串。
                 const MemberKey calleeKey =
                     sem.kind == jbc::ir::ClassSession::MemberSem::Kind::InvokeDynamic
@@ -443,16 +466,51 @@ Result<CallGraph, BuildError> CallGraphBuilder::build()
 
                 // 外部目标丢弃：未声明的 callee 不建节点、调用点不落
                 //（与旧版 includeExternalTargets=false 语义一致：节点不存在）。
-                if (!g.contains(calleeKey) && !options_.includeExternalTargets) {
-                    continue;
+                if (g.contains(calleeKey) || options_.includeExternalTargets) {
+                    const ca::u32 calleeIdx = g.internNode(calleeKey);
+                    const ca::u32 siteIdx = static_cast<ca::u32>(g.sites_.size());
+                    CallSite site{callerKey, calleeKey, id, kind,
+                                  static_cast<ca::u32>(si)};
+                    if (isIndy) {
+                        site.indyFamily = indy.family;
+                    }
+                    g.sites_.push_back(site);
+                    g.nodes_[callerIdx].outSites.push_back(siteIdx);
+                    g.nodes_[calleeIdx].inSites.push_back(siteIdx);
                 }
-                const ca::u32 calleeIdx = g.internNode(calleeKey);
 
-                const ca::u32 siteIdx = static_cast<ca::u32>(g.sites_.size());
-                g.sites_.push_back(
-                    CallSite{callerKey, calleeKey, id, kind, static_cast<ca::u32>(si)});
-                g.nodes_[callerIdx].outSites.push_back(siteIdx);
-                g.nodes_[calleeIdx].inSites.push_back(siteIdx);
+                // BSM 可解析时补真实边：同一 insn 追加展开目标，kind 按
+                // MethodHandle reference_kind 折算。字段句柄（record getter）
+                // 不产调用边；未知家族只有上面的保守 Dynamic 边。
+                if (isIndy && indy.known()) {
+                    std::vector<MemberKey> emitted;
+                    for (const HandleTarget& target : indy.targets) {
+                        InvokeKind targetKind;
+                        if (!invokeKindOfHandle(target, targetKind)) {
+                            continue;
+                        }
+                        const MemberKey targetKey =
+                            memberKeyOf(g.pool(), classKeyOf(g.pool(), target.owner),
+                                        target.name, target.desc);
+                        if (std::find(emitted.begin(), emitted.end(), targetKey) !=
+                            emitted.end()) {
+                            continue;
+                        }
+                        emitted.push_back(targetKey);
+                        if (!g.contains(targetKey) && !options_.includeExternalTargets) {
+                            continue;
+                        }
+                        const ca::u32 targetIdx = g.internNode(targetKey);
+                        const ca::u32 siteIdx = static_cast<ca::u32>(g.sites_.size());
+                        CallSite site{callerKey, targetKey, id, targetKind,
+                                      static_cast<ca::u32>(si)};
+                        site.indyExpanded = true;
+                        site.indyFamily   = indy.family;
+                        g.sites_.push_back(site);
+                        g.nodes_[callerIdx].outSites.push_back(siteIdx);
+                        g.nodes_[targetIdx].inSites.push_back(siteIdx);
+                    }
+                }
             }
         }
     }
