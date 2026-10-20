@@ -5,7 +5,7 @@
 namespace mjbase::pass {
 
 /// @brief 冗余装载值消除器：删除「常量装载 + 紧随 POP/POP2」的相邻指令对
-///        （移植自 mbase pass/opt/dead_code_remover 的
+///        （移植自旧栈 pass/opt/dead_code_remover 的
 ///        RedundantLoadValEliminator）。
 ///
 /// 匹配矩阵（与旧实现的 classfile 可观测行为逐条对齐）：

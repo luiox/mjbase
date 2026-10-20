@@ -5,7 +5,7 @@
 
 namespace mjbase::pass {
 
-/// @brief 保守合并简单的 static 工具类（移植自 mbase pass/opt/tool_class_combiner，
+/// @brief 保守合并简单的 static 工具类（移植自旧栈 pass/opt/tool_class_combiner，
 ///        搬移面按 libjbc 成员级增删契约重定型，design.md §34.3 的首要消费场景）。
 ///
 /// 行为矩阵（与旧实现逐条对齐）：

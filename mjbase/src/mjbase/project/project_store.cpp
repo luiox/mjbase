@@ -1923,7 +1923,7 @@ StorePruneReport pruneOrphanSections(const Utf8StringRef& bundleDir,
 
 namespace {
 
-/// RFC 3339 UTC 时间戳（daemon_protocol.cpp mjtraceUtcNow 同款口径）。仅诊断
+/// RFC 3339 UTC 时间戳（守护协议时间戳同款口径）。仅诊断
 /// 用——§7.2 明言 v1 不做时间戳/启动时间启发式，created_at 只是锁的人读上下文。
 std::string rfc3339UtcNow()
 {

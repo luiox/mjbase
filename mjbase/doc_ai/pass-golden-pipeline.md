@@ -13,7 +13,7 @@ JunkCodeInserter 无旧栈对标，走自基线道（见下文专节）。
 ## 管道结构（两侧各一入口，golden 只从旧栈流出）
 
 ```
-旧栈侧（mbase/unittest/pass/golden/pass_golden_extract_test.cpp）
+旧栈侧（私有侧统一提取单测）
   MJBASE_PASS_GOLDEN_REGEN=1 驱动；默认零动作（回归面无感）
   1. 语料规范化：源类 ──旧栈恒等写回──> 冻结语料（两条规范形道）
   2. golden 提取：语料 ──旧栈 pass 原样运行──> golden 字节落盘
@@ -63,7 +63,7 @@ CP 编排不同，故按 pass 旧实现自己的 writer 分道：
 - cc 道手造类（提取器内裸字节组装，tree 道）：合并候选矩阵与拒绝矩阵
   九件（hb_cc_*，见上）；
 - 仓内既有测试类：asm-test origin 预编译样本（注解 ×2、缺省包类、jdk8 泛型
-  结构类、jdk5 枚举类）+ mbase test_resource 大样本。
+  结构类、jdk5 枚举类）+ 旧栈 test_resource 大样本。
 
 语料规模纪律：覆盖 pass 声明的语义矩阵（触发/不触发各占相当比例）+ 元数据
 怪癖面（注解/泛型签名/未知属性），不追求量。
@@ -156,4 +156,4 @@ tightener 语料数随 A 批新语料同步扩面（新语料无 access 可收�
   常规运行不写任何仓库文件（提取器 env 门控）。
 - golden 再生成只能在冻结旧栈上做（提取有时限，迁移计划 §5 第 3 关）；再生成
   字节幂等，幂等破坏即触发声明流程。
-- mbase/src 与 libs/ 一行不改：旧栈只消费。
+- 旧栈 src 与 libs/ 一行不改：旧栈只消费。

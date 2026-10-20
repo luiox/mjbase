@@ -1,7 +1,7 @@
 /// @file        origin_domain.hpp
 /// @brief       来源追踪域：OriginValue（定义指令/入参/未知）+ OriginDomain + 查询入口。
 ///
-/// 旧栈对应物：mbase/asm/analyzer 的 original_source_interpreter
+/// 旧栈对应物：asm/analyzer 的 original_source_interpreter
 /// （OriginalSourceValue + OriginalSourceInterpreter）。迁移纪律是语义照旧、
 /// 实现重写：本域回答「这个槽里的值最初由谁定义」——定义指令句柄、入参
 /// 身份、或未知；控制流/槽迁移/入参播种全部交给 jbc::analysis::DomainEngine。

@@ -1,7 +1,7 @@
 /// @file        util_leaf_test.cpp
 /// @brief       util 叶子件（Pair/Span/Triple/TimeUtil）编译冒烟 + 最小行为抽检。
 ///
-/// mbase 对这批 header-only 叶子无单测；迁移验收以编译通过为主，
+/// 旧栈 对这批 header-only 叶子无单测；迁移验收以编译通过为主，
 /// 抽检仅防静默腐烂，断言强度不作为语义契约。
 #include <gtest/gtest.h>
 

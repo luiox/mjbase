@@ -1,7 +1,7 @@
 /// @file        class_source.hpp
 /// @brief       E3 类源抽象：IClassSource 协议 + 内存/容器两个实现。
 ///
-/// 消费者对接协议（E 系）的类字节供给面：产品线（开源 mjt 等）经本面按
+/// 消费者对接协议（E 系）的类字节供给面：各产品线经本面按
 /// 内部名取 class 字节、枚举类集合，不直接触碰 ResourceContainer/Jar 细节。
 /// 设计承自 libjbc design.md §9 的 IClassSource 草案，按 mjbase 底座重定型：
 /// 键是 JVM 内部名字符串（协议面的调用方还没有 KeyPool），错误走 Result 值

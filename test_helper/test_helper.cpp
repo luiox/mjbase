@@ -16,7 +16,7 @@
 #    include <mach-o/dyld.h>
 #endif
 
-// morpher 私有实现：构建产物路径（asm-test 特例定位已随 libjbytecode 拆出删除）。
+// 旧栈私有实现：构建产物路径（asm-test 特例定位已随其底座拆出删除）。
 // 通用机制（扫描/资源/输出根）全部由 ca::test 承担，见 test_helper.hpp。
 
 namespace test {
@@ -61,7 +61,7 @@ std::string build_arch()
 }
 
 /// 目标产物文件名：Windows 下补 .exe；已带 .exe/.dll 后缀（shared 目标伴生产物，
-/// 如 mjt-obf-runtime-native.dll）的名字原样采信，避免拼出 ".dll.exe"。
+/// 如 <产品>-runtime-native.dll）的名字原样采信，避免拼出 ".dll.exe"。
 /// POSIX 下 .dll 后缀按 xmake shared 目标的平台产物名映射为 lib<base>.so /
 /// lib<base>.dylib，保持「.dll 名 = shared 伴生」调用约定跨平台可用。
 std::string exe_name(const std::string& targetName)
@@ -142,7 +142,7 @@ const std::filesystem::path* active_target_dir()
 
 /// 逐级上溯 exe 所在目录，在活动 buildir 树内探测伴生产物。exe 既可能在 binary
 /// 层（<buildir>/<plat>/<arch>/<mode>/，距 buildir 根三级），也可能经
-/// morpher_set_artifact_dir 落在 artifacts 层（<buildir>/artifacts/<plat>/
+/// 产物目录定位落在 artifacts 层（<buildir>/artifacts/<plat>/
 /// <arch>/<mode>/<line>/，距根五级），两种形态层级不同，故逐级上溯、由 @p layout
 /// 拼出 buildir 根以下的布局段试探；产物存在才采信（防误指）。命中返回完整路径。
 template <typename Layout>
@@ -168,7 +168,7 @@ std::filesystem::path getBuildTargetPath(const std::string& targetName)
     // 优先：活动 buildir。测试 exe 与伴生二进制同为 xmake binary 目标时在同一
     // 输出目录（<buildir>/<plat>/<arch>/<mode>/），按 exe 自身位置找兄弟目标在
     // 自定义 `-o <dir>` 配置下依然正确；伴生目标未随测试构建时不采信（防误指），
-    // 回退下方默认 buildir 布局（历史行为）。exe 自身经 morpher_set_artifact_dir
+    // 回退下方默认 buildir 布局（历史行为）。exe 自身经产物目录定位
     // 输出在 artifacts 层时（runner 类可执行），binary 层伴生目标上溯同 buildir 定位。
     if (const auto* dir = active_target_dir()) {
         const auto sibling = *dir / exe_name(targetName);

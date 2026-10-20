@@ -7,9 +7,9 @@
 //   - probeClang：clang 探测（PATH 优先 + 常见安装位置，#1122 可见化）
 //
 // JDK/MSVC 探测本身（JAVA_HOME 解析、vcvarsall 定位等）已在 libjdk_finder，
-// 产品代码（mj2x-cli --compile）与测试代码共用同一份探测，本文件不再重复。
+// 产品代码（产品线 CLI --compile）与测试代码共用同一份探测，本文件不再重复。
 //
-// 供 mtest_set / mbase / mj2x 等所有需要 "javac 编译 + java 运行" 的测试复用。
+// 供本项目与各子项目所有需要 "javac 编译 + java 运行" 的测试复用。
 
 #pragma once
 
@@ -163,7 +163,7 @@ struct JdkToolchain
 /// probeJdk 的可选配置（透传给 jdk_finder::find_jdk）。
 struct ProbeOptions
 {
-    /// JAVA_HOME / MORPHER_JDK_HOME 都没命中时的额外回落候选。
+    /// JAVA_HOME / MJBASE_JDK_HOME 都没命中时的额外回落候选。
     std::vector<fs::path> fallbackHomes;
     /// 是否要求 jni.h 存在（native 编译测试用）。默认 false。
     bool requireJniHeader = false;
@@ -206,11 +206,11 @@ inline JdkToolchain probeJdk(const ProbeOptions& opts = {})
 //
 // 查找顺序：
 //   1. PATH（`clang --version` 可执行即命中，source=PATH）；
-//   2. MORPHER_CLANG_HOME 显式覆盖（指向 clang.exe 或其所在/bin 目录）；
+//   2. MJBASE_CLANG_HOME 显式覆盖（指向 clang.exe 或其所在/bin 目录）；
 //   3. 常见安装位置（Windows：LLVM 标准安装、MATLAB 自带工具链
 //      <ProgramFiles>/MATLAB/R*/toolbox/sldrt/clang/win64/clang.exe，多版本取
 //      字典序最大；POSIX：/usr/local/bin、Homebrew llvm）逐候选 `--version` 验证。
-// MORPHER_DISABLE_CLANG_PROBE=1 可整体禁用（回落"仅 PATH 且视为未找到"），
+// MJBASE_DISABLE_CLANG_PROBE=1 可整体禁用（回落"仅 PATH 且视为未找到"），
 // 供门禁取"未启用 clang"基线或排障时使用。
 // ---------------------------------------------------------------------------
 
@@ -221,7 +221,7 @@ struct ClangProbe
     std::string reason;      // 未命中时的说明
     fs::path    clangPath;   // 命中的 clang 可执行文件（PATH 命中时为空，使用时仍走 PATH）
     std::string version;     // `--version` 输出首行（如 "clang version 16.0.6"）
-    std::string source;      // 命中来源：PATH / MORPHER_CLANG_HOME / LLVM install / MATLAB bundled
+    std::string source;      // 命中来源：PATH / MJBASE_CLANG_HOME / LLVM install / MATLAB bundled
 };
 
 namespace detail {
@@ -256,9 +256,9 @@ inline ClangProbe probeClang()
     ClangProbe probe;
 
     // 0. 显式禁用开关：门禁取"未启用 clang"基线 / 排障用。
-    if (const char* disabled = std::getenv("MORPHER_DISABLE_CLANG_PROBE");
+    if (const char* disabled = std::getenv("MJBASE_DISABLE_CLANG_PROBE");
         disabled != nullptr && disabled[0] != '\0' && std::string(disabled) != "0") {
-        probe.reason = "disabled by MORPHER_DISABLE_CLANG_PROBE=1";
+        probe.reason = "disabled by MJBASE_DISABLE_CLANG_PROBE=1";
         return probe;
     }
 
@@ -274,9 +274,9 @@ inline ClangProbe probeClang()
         }
     }
 
-    // 2. MORPHER_CLANG_HOME 显式覆盖：指向 clang 可执行文件或其所在/bin 目录。
+    // 2. MJBASE_CLANG_HOME 显式覆盖：指向 clang 可执行文件或其所在/bin 目录。
     bool homeProbed = false;
-    if (const char* home = std::getenv("MORPHER_CLANG_HOME"); home != nullptr && home[0] != '\0') {
+    if (const char* home = std::getenv("MJBASE_CLANG_HOME"); home != nullptr && home[0] != '\0') {
         homeProbed     = true;
         const fs::path root(home);
 #ifdef _WIN32
@@ -287,7 +287,7 @@ inline ClangProbe probeClang()
             root / "clang", root, root / "bin" / "clang", root / "bin"};
 #endif
         for (const auto& candidate : candidates) {
-            if (detail::verifyClangCandidate(candidate, "MORPHER_CLANG_HOME", probe)) return probe;
+            if (detail::verifyClangCandidate(candidate, "MJBASE_CLANG_HOME", probe)) return probe;
         }
     }
 
@@ -343,7 +343,7 @@ inline ClangProbe probeClang()
     // "not on PATH"、尾部兜底因 reason 恒非空不可达——SKIP 消息声称已探常见
     // 安装位置而原因只写 "not on PATH"，措辞与实际探测面不符（#1191）。
     probe.reason = "not on PATH";
-    if (homeProbed) probe.reason += "; MORPHER_CLANG_HOME 未命中 clang --version";
+    if (homeProbed) probe.reason += "; MJBASE_CLANG_HOME 未命中 clang --version";
     probe.reason += "; no common install location matched";
     return probe;
 }
@@ -359,7 +359,7 @@ inline std::string formatClangProbe(const ClangProbe& probe)
     return "clang NOT found: " + probe.reason + " — llvm exec 列将整列跳过 (#1122)";
 }
 
-/// clang 命中非 PATH 位置时，给子进程脚本前置 PATH 注入行——mj2x-cli --compile
+/// clang 命中非 PATH 位置时，给子进程脚本前置 PATH 注入行——产品线 CLI --compile
 /// 与 --c-compiler/--llvm-tool clang 均按 PATH 解析 clang（jdk_finder::commandExists
 /// / ca::process::Command）。PATH 命中或未找到返回空（未找到时调用方本就该 SKIP）。
 inline std::vector<std::string> clangPathPrelude(const ClangProbe& probe)
@@ -424,8 +424,8 @@ inline ExecResult runJavaMain(const JdkToolchain& tc, const fs::path& classpath,
 // ---------------------------------------------------------------------------
 // 共享 JVM 行为等价 harness：写 class(es)+Runner.java → javac → java → 抓 stdout。
 //
-// 收敛此前散在 4 处的同一份逻辑（mbase runJvmMainClasses、mjt-obf obf_jvm_fixture::runJvm、
-// mtest_set semantic_jvm、mj2x）。层级放 test::jdk（只依赖 jdk_finder+filesystem，不碰
+// 收敛此前散在 4 处的同一份逻辑（各产品线先后自带的Jvm 运行脚手架：
+// ）。层级放 test::jdk（只依赖 jdk_finder+filesystem，不碰
 // libjbytecode/libjzip），供全线复用。JDK 不可用返回 nullopt，调用方 GTEST_SKIP。
 // ---------------------------------------------------------------------------
 
@@ -448,10 +448,10 @@ struct RunnerSpec
     std::vector<std::pair<std::string, std::vector<std::uint8_t>>> classes;
     std::string                     runnerBody;
     std::vector<std::string>        arguments;      ///< 传给 Runner 的命令行参数
-    std::vector<std::string>        jvmArgs;        ///< 额外 JVM 参数（如 -Dmjt.literal.native=<dll>）
+    std::vector<std::string>        jvmArgs;        ///< 额外 JVM 参数（含运行时原生注入类属性）
     std::vector<fs::path>           extraJavaSources;   ///< 额外一起编译的 .java 绝对路径（如 indy bootstrap）
     bool                            verify = true;   ///< true=-Xverify:all，false=-noverify
-    std::string                     scratchPrefix = "morpher_jvm_";
+    std::string                     scratchPrefix = "mjbase_jvm_";
 };
 
 /// 运行终态分类。此前 runWithRunner 把三种失败混同为 nullopt、被调用方

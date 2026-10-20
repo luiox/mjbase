@@ -1,7 +1,7 @@
 /// @file        mapping_remapper.hpp
 /// @brief       基于 IntermediateMapping 的文本映射门面（类名/成员名/描述符）。
 ///
-/// 旧栈对应物：mbase/asm/remapper/utf8_remapper 的 `Utf8Remapper`——继承
+/// 旧栈对应物：asm/remapper/utf8_remapper 的 `Utf8Remapper`——继承
 /// jbytecode::commons::Remapper（visitor 底座，mjbase 禁入）并 override map()
 /// 查 IntermediateMapping，描述符/签名重写靠基类 non-virtual helper 回调。
 /// 重设计为纯值门面：类名/成员名映射直接委托 IntermediateMapping 查询，

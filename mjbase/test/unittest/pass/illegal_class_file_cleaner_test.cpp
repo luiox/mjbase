@@ -1,4 +1,4 @@
-/// 移植自 mbase/unittest/pass/opt/clean_pass_test.cpp 的 IllegalClassFileCleaner
+/// 移植自旧栈 unittest/pass/opt/clean_pass_test.cpp 的 IllegalClassFileCleaner
 /// 段（889 行起），并按任务补齐旧栈缺失的独立直接用例。断言口径：
 /// 不可解析字节原样保留；可解析资源清洗后仍可解析；改动走两阶段提交；
 /// PA 与实际改动一致。

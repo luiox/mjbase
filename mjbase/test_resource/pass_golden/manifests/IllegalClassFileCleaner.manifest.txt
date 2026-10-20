@@ -3,7 +3,7 @@
 # mjbase/test_resource/pass_golden/corpus/jcf/<语料名>.class。
 #
 # 语料事实（旧栈侧提取器 probeOldTransform 的证据面，见
-# mbase/unittest/pass/golden/pass_golden_extract_test.cpp）：
+# 旧栈统一提取单测）：
 #   - 结构性垃圾（越界/空区间异常表条目，hb_junk_exc）在 jcf 语料道的读取期
 #     即被旧栈 ClassFileReader 校验族吸收（3 条入库 1 条），语料不含此类条目，
 #     golden 与 mjbase copy-through 输出逐字节一致；

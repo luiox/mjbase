@@ -1,7 +1,7 @@
 /// @file        null_domain.hpp
 /// @brief       可空性域（nullness 子集）：NullValue 格 + NullDomain + 查询入口。
 ///
-/// 旧栈对应物：mbase/asm/analyzer 的 nullability_interpreter /
+/// 旧栈对应物：asm/analyzer 的 nullability_interpreter /
 /// nullability_analyzer。旧实现是 SimpleVerifier 形态的完整类型格机：值携带
 /// Type 全类型 + nullness 态、经 typeCache_ 管指针寿命、analyzer 对
 /// IFNULL/IFNONNULL 做分支细化。本域只迁 nullness 事实层：

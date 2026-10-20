@@ -2,7 +2,7 @@
 /// @brief       内部名/描述符的纯视图工具（无状态、无分配）。
 ///
 /// 只放跨模块都要用的字符串视图函数；模块私有 helper 放各自目录。
-/// 对齐 mbase/util/class_name_util 的语义，实现按新库约定重写。
+/// 对齐 util/class_name_util 的语义，实现按新库约定重写。
 #pragma once
 
 #include <string_view>

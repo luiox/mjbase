@@ -99,7 +99,7 @@ CliRunReport runCli(const CliOptions& options, const ClassProcessor& processor);
 /// - "name()I"   → name 精确匹配 AND descriptor 精确匹配
 /// - ""          → 返回 nullopt（不过滤）
 ///
-/// mbase 的 buildMethodPredicate 架在 jbytecode::tree::MethodNode 上；mjbase
+/// 旧栈 的 buildMethodPredicate 架在 jbytecode::tree::MethodNode 上；mjbase
 /// 底座无该类型，过滤契约改落在 (name, descriptor) 借用视图上，后续 pass 域
 /// 接线时由消费方把成员元数据投到视图（语义等价：匹配规则不变）。
 class MethodFilter

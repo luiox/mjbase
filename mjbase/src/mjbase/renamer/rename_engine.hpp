@@ -2,7 +2,7 @@
 /// @brief       统一 renamer 编排引擎：建议流 → 合法性过滤 → 裁决 → override
 ///              闭包 → 包展开 → 后缀消解 → 计划 + 审计记录。
 ///
-/// 旧栈对应物：mbase/renamer/rename_engine（luiox/morpher#1025/#1032 P0 骨架）。
+/// 旧栈对应物：renamer/rename_engine（旧栈 P0 骨架）。
 /// 流水线与裁决语义逐阶段照旧：
 ///
 ///   收集建议流 → 合法性过滤（复用 IdentifierUtil，`<init>`/`<clinit>` 豁免，

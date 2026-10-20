@@ -70,7 +70,7 @@ void appendEmbeddedSources(Utf8StringBuilder& out, Utf8StringRef target,
     const bool xml = isXmlMappingFormat(target);
     for (const auto& [format, source] : mappings.sourceSnapshots()) {
         if (format == target.to_std_string()) continue;
-        out.append(xml ? "<!-- morpher-source " : "# morpher-source ");
+        out.append(xml ? "<!-- mjbase-source " : "# mjbase-source ");
         out.append(Utf8StringRef::from_cstr(format.c_str()));
         out.append("\t");
         const auto encoded = hexEncode(source);
@@ -81,8 +81,8 @@ void appendEmbeddedSources(Utf8StringBuilder& out, Utf8StringRef target,
 
 void restoreEmbeddedSources(IntermediateMapping& mappings, Utf8StringRef text)
 {
-    constexpr const char* lineMarker = "# morpher-source ";
-    constexpr const char* xmlMarker  = "<!-- morpher-source ";
+    constexpr const char* lineMarker = "# mjbase-source ";
+    constexpr const char* xmlMarker  = "<!-- mjbase-source ";
     for (const auto line : linesOfRef(text)) {
         auto        value = trimRef(line).to_std_string();
         std::string payload;
@@ -836,7 +836,7 @@ public:
         Utf8StringBuilder out;
         // PK 行按旧名字典序输出（与下方 CL 的 sortedClassNames 同口径）：
         // 底座是 unordered_map，迭代序随实现漂移，逐行对账需要确定序
-        // （luiox/morpher#1032 P2 评审收口）。
+        // （旧栈 P2 评审收口）。
         std::vector<const PackageMapping*> packages;
         packages.reserve(mappings.getPackages().size());
         for (const auto& [key, pm] : mappings.getPackages()) {
@@ -856,7 +856,7 @@ public:
         }
         // CL 行按旧名字典序输出（与 FD/MD 的 sortedClassNames 同口径）：
         // 底座是 unordered_map，迭代序随实现漂移，跨实现（如 obf 旧核心与
-        // renamer 引擎，luiox/morpher#1032 P2）逐行对账需要确定序。
+        // renamer 引擎）逐行对账需要确定序。
         for (const auto& owner : sortedClassNames(mappings)) {
             const auto* cm = mappings.getClassMapping(owner);
             if (cm == nullptr) continue;
@@ -888,7 +888,7 @@ public:
                 if (fm.hasType()) {
                     // 带类型字段输出 desc token（旧 desc + 映射后 desc）：SRG 解析
                     // 两侧均支持；丢 desc 会让 parse 产物丢类型、按 (owner,name,desc)
-                    // 的查找（getMappedFieldName）失配（luiox/morpher#1032 P2 实证）。
+                    // 的查找（getMappedFieldName）失配（旧栈 P2 实证）。
                     out.append(" ");
                     out.append(fm.desc);
                 }

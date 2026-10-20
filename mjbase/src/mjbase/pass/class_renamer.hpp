@@ -6,7 +6,7 @@
 namespace mjbase::pass {
 
 /// @brief 类重命名器：按确定性规则把容器内全部类重命名为 `<包>/Class<N>`（移植自
-///        mbase pass/opt/class_renamer）。
+///        旧栈 pass/opt/class_renamer）。
 ///
 /// 行为矩阵（与旧实现逐条对齐）：
 ///   - 装载面：可解析、有类名的 class 资源参与；空 bytes、不可解析资源跳过。

@@ -1,7 +1,7 @@
 /// @file        resource_container.hpp
 /// @brief       资源容器：IResourceContainer 接口 + unordered_map 默认实现。
 ///
-/// URI 键语义（mbase 行为照旧 + 字符串约定迁移）：键文本驻留在容器自有的
+/// URI 键语义（旧栈 行为照旧 + 字符串约定迁移）：键文本驻留在容器自有的
 /// Utf8StringArena（只增不移、内容去重），对外一律以 std::string_view 借用——
 /// addResource 的入参视图在调用返回后即可释放；visitResources /
 /// duplicateResourceUris 发出的视图指向 arena，容器存活期内有效。

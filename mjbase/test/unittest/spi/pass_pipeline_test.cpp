@@ -1,4 +1,4 @@
-// 移植自 mbase/unittest/pass/pass_pipeline_test.cpp（断言强度原样保留，
+// 移植自旧栈 unittest/pass/pass_pipeline_test.cpp（断言强度原样保留，
 // IR 单元按新契约重定型：MethodNode/ClassNode → MethodScope/ClassSession；
 // CurrentClassContext 断言改写为 MethodScope 自带 owner 身份的等价验收）。
 #include <gtest/gtest.h>

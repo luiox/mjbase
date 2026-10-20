@@ -18,7 +18,7 @@ namespace mjbase::workspace {
 /// @brief Workspace 接口层共享的数据传输类型（DTO）。
 ///
 /// 无业务语义的纯数据结构 + 枚举 + 常量：IWorkspace 接口签名与 WorkspaceBase
-/// 实现共同使用。移植自 mbase/workspace/workspace_types（语义照旧），类型面按
+/// 实现共同使用。移植自旧栈 workspace/workspace_types（语义照旧），类型面按
 /// mjbase 约定重定型：
 /// - 错误通道：ca::Status/StatusOr → WorkspaceError + WorkspaceResult<T>
 ///   （mjbase 错误走 Result 值语义的总约定）；DTO 内嵌的 ca::Status 字段
@@ -27,7 +27,7 @@ namespace mjbase::workspace {
 /// - 重映射契约类型：RemapPolicy/MemberRemapPlan 取 mjbase::asm_remapper 域
 ///   （KeyPool 驻留 + MemberKey 建键版）。
 /// RenameRequest 族、PipelineRequest 族、WorkflowRequest 族随工作区 remap/
-/// rename/pipeline 事务面一起迁入（mjt-mcp 为第二个管线消费方，触发装配层
+/// rename/pipeline 事务面一起迁入（下游第二管线消费方，触发装配层
 /// 定型，见 pass-contract §9）。
 
 /// @brief workspace 模块错误码。与旧 ca::StatusCode 用点的映射：

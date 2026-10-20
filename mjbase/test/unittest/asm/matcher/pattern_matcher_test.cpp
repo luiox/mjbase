@@ -1,7 +1,7 @@
 /// @file        pattern_matcher_test.cpp
 /// @brief       旧代 pattern matcher 语义测试：窗口匹配、捕获、原子替换、回滚。
 ///
-/// 用例意图移植自 mbase/unittest/asm/matcher/pattern_matcher_test.cpp，
+/// 用例意图移植自旧栈 unittest/asm/matcher/pattern_matcher_test.cpp，
 /// 底座换为纯 jbc::ir::CodeDom 构造。
 #include <gtest/gtest.h>
 

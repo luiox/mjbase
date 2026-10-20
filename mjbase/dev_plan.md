@@ -31,10 +31,10 @@
   同步消除、StringBuilder 链化简）待批。
 - [ ] B 批 meta_info_remover 家族迁移（scope:class，在途）。
 
-## opt pass 余量批次裁决（W0 备料，mjt-deobf 消费面缺口对账）
+## opt pass 余量批次裁决（W0 备料，宿主消费面缺口对账）
 
-mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收" = 新载体
-语义下无独立变换面，登记后从迁移清单除名。体量实测（mbase cpp 行数）已注。
+宿主侧尚在旧栈消费的 opt pass 逐件裁决；"结构性吸收" = 新载体
+语义下无独立变换面，登记后从迁移清单除名。体量实测（旧栈 cpp 行数）已注。
 
 - [x] **StackOperationSimplifier**（stack_operation.cpp 内，方法级窗口折叠）：
   `dup;pop`→∅、`pop;pop`→`pop2`、`ldc;dup`→`ldc;ldc` 等规则迭代到不动点，
@@ -67,12 +67,12 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
 
 ## 待办
 
-- [x] **2026-10-19 air/sir 出仓定案（morpher 仓内副本退役）**：deobf 工具面 IR
+- [x] **2026-10-19 air/sir 出仓定案（上游仓内副本退役）**：deobf 工具面 IR
   （AIR 节点指令层 + SIR 沿擎）按归属裁决不入 mjbase 独立仓——本波次以上各
-  「AIR/SIR 批」计量均为彼时 morpher 仓内载体的完成记录；代码以
-  `mjt::deobf::air/sir` 命名空间驻留 mjt-deobf/src/mjt/deobf/{air,sir}，
+  「AIR/SIR 批」计量均为彼时 上游仓内载体的完成记录；代码以
+  air/sir 命名空间常驻宿主产品线（deobf/{air,sir}，
   单测随 mjt_deobf_unittest。批四（sir 真实 SSA→栈机 lower）随之改隶
-  mjt-deobf，不再排 mjbase 波次。独立仓 0.0.1 首发为纯框架面（不含 air/sir）。
+  宿主产品线，不再排 mjbase 波次。独立仓 0.0.1 首发为纯框架面（不含 air/sir）。
 
 - model / jar / mapping / project 批次：零旧栈依赖，直迁或按需重设计。
 - B8 挂账（air/sir）拆四批推进：
@@ -120,7 +120,7 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     builder 元数据用例 +2、writer 元数据门 +5）。挂账：注解与 ConstantValue
     的 AIR 面仍不转换（旧 TODO 口径不变）；originalOffset 为 u16，超 64K
     偏移截断沿旧口径未扩。
-  - [ ] 批四：sir 真实 SSA→栈机 lower——已改隶 mjt-deobf（air/sir 出仓定案，2026-10-19），挂起不排 mjbase 波次。
+  - [ ] 批四：sir 真实 SSA→栈机 lower——已改隶宿主产品线（air/sir 出仓定案，2026-10-19），挂起不排 mjbase 波次。
 - [x] Nest 族消费面迁移（2026-10-14，libjbc design §32.10）：libjbc 将
   NestHost/NestMembers/PermittedSubclasses 立为 typed 属性并收编 CP 压缩封闭
   集后，mjbase 消费面同批接线不留半接线态——member_remapper 三件改 typed 体
@@ -171,7 +171,7 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   - [x] structural_pass_util 升格共享 util（`test/unittest/shared/`，sorter 与
     结构编辑原语 / 注册面测试共用）。
   - [x] golden 对拍管道（轨道 B 首件）：旧栈侧提取器
-    （mbase/unittest/pass/golden/，MJBASE_PASS_GOLDEN_REGEN=1 驱动，双规范形
+    （旧栈提取单测口径，MJBASE_PASS_GOLDEN_REGEN=1 驱动，双规范形
     语料道 + golden 提取 + 不动点自检，再生成字节幂等）+ mjbase 侧逐字节对拍
     （test/unittest/pass/golden/，registry 按名构造，manifest 声明差异清单）。
     三试点全过：sorter 5/9 字节一致 + 4 声明（CLASSFILE_REENCODE）、tightener

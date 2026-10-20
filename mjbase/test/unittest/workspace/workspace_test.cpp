@@ -1,6 +1,6 @@
 /// @file        workspace_test.cpp
 /// @brief       WorkspaceBase 事务/查询面单测（移植自
-///              mbase/unittest/workspace/workspace_test.cpp，26 用例处置见下）。
+///              unittest/workspace/workspace_test.cpp，26 用例处置见下）。
 ///
 /// 移植口径（批次 B6-B）：gtest 套件名加 Mj 前缀；命名空间 mjbase::workspace；
 /// 错误通道 ca::StatusCode → WorkspaceError（断言码一一对应）；access 常量

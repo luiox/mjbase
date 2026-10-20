@@ -6,7 +6,7 @@
 
 namespace mjbase::pass {
 
-/// @defgroup meta_info_cleanup meta 元数据清理家族（移植自 mbase
+/// @defgroup meta_info_cleanup meta 元数据清理家族（移植自旧栈
 /// pass/opt/meta_info_remover 的类级 13 件；批 B 类级骨架组）。
 ///
 /// 家族语义面 = 类/字段/方法三层的非语义元数据：SourceFile 与

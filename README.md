@@ -2,7 +2,7 @@
 
 `mjbase` is a cross-class JVM bytecode analysis and transformation library built
 on [libjbc](https://github.com/luiox/libjbc). It is the successor line of the
-legacy `mbase` stack: keys (cross-class identity), class/method/field hierarchy,
+legacy predecessor stack: keys (cross-class identity), class/method/field hierarchy,
 call graphs and reference indexing, instruction engineering (the `asm` domain),
 mapping and remapping, an AIR/SIR tree IR, and the pass pipeline that drives
 them.

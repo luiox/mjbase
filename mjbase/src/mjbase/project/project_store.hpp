@@ -15,7 +15,7 @@ namespace mjbase::project {
 ///        原子读写与 hash/size 校验原语。
 ///
 /// 设计源：`doc_ai/analysis-project-store-design.md`（R45 评审通过稿），
-/// luiox/morpher#1092 分解 2。实现卡 **C1**（§12 卡表：bundle 常量/目录骨架、
+/// 结构分解 2。实现卡 **C1**（§12 卡表：bundle 常量/目录骨架、
 /// section 命名校验、store.json 严格解析与确定性写出；验收 §11-1 骨架、
 /// §11-7）+ **C2**（section 层可靠读写原语：单 section 原子写 staged tmp +
 /// 换名、content_hash/byte_size 双登记、hash 校验 Damaged 判定材料；
@@ -652,8 +652,8 @@ ca::Result<StoreLock, ProjectStoreError> acquireStoreLock(
     const ca::str::Utf8StringRef& bundleDir, const StoreLockOptions& options = {},
     const char* owner = kProjectStoreLockOwnerDefault);
 
-/// @brief PID 存活探测（§7.2 fail-closed 过期判定；mjdbg daemon_state.cpp
-///        :348-368 纪律平移——模式平移，不改 mjdbg）。
+/// @brief PID 存活探测（§7.2 fail-closed 过期判定；守护进程 daemon_state
+///        纪律平移——模式平移，不改宿主件）。
 ///
 /// 返回 true = 活（或**证明不了死**）；false = 证明已死。Windows：
 /// OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) + GetExitCodeProcess，**仅**

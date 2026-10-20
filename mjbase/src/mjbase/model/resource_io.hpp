@@ -1,8 +1,8 @@
 /// @file        resource_io.hpp
 /// @brief       资源导入导出：接口 + Jar/Class 导入导出器 + libarchive 解压工具。
 ///
-/// 语义对齐 mbase/model/resource_io（迁移来源）；本批有意重设计：
-/// - 错误：mbase 以 throw std::runtime_error 报错，本模块全部改 ModelResult<T>
+/// 语义对齐 model/resource_io（迁移来源）；本批有意重设计：
+/// - 错误：旧栈 以 throw std::runtime_error 报错，本模块全部改 ModelResult<T>
 ///   值语义，抛点消息文本 → 错误码的映射见各函数注释（码表见 ModelError）；
 /// - jar 依赖换 mjbase::jar（并行迁移批，错误走 Result<void, JarError>）——
 ///   JarError 经 toModelError 归一为本模块错误码；

@@ -1,5 +1,5 @@
 /// @file        renamer_engine_test.cpp
-/// @brief       统一 renamer 引擎管线单测（mjbase 移植版，luiox/morpher#1025/
+/// @brief       统一 renamer 引擎管线单测（mjbase 移植版，旧栈 
 ///              #1032/#1037 对应物）：合法性矩阵、冲突消解矩阵、记录与导出、
 ///              run 两态、继承别名。
 ///
@@ -574,7 +574,7 @@ TEST(MjRenamerConflictTest, suffixWallRejectsWholeClosureGroupAndOldSlotsStayOcc
 
 TEST(MjRenamerConflictTest, methodSlotCollisionCheckedInMappedDescSpace)
 {
-    // luiox/morpher#1037 复现：类 A 声明 m:(LA;)V 与 n:(LB;)V（B 为容器外类型，
+    // 旧栈定案复现：类 A 声明 m:(LA;)V 与 n:(LB;)V（B 为容器外类型，
     // A→B 改名不被 6a 后缀拦截），m 改名到 n。修复前 6c 在旧 desc 空间查
     // ("n","(LA;)V")——与既有 ("n","(LB;)V") 不撞放行；应用后类映射 A→B 把 m 的
     // desc 预映像为 (LB;)V，最终类文件出现两个 n:(LB;)V（非法 class file）。
@@ -838,7 +838,7 @@ TEST(MjRenamerRecordTest, staticExportMappingReusesSameChannelForExternalBases)
 {
     // P1 消费方通道：任意外部 IntermediateMapping 底座（如 deobf 侧
     // NameRestoreRecord）经静态 exportMapping 导出，与实例方法逐字节一致
-    // （luiox/morpher#1032 P1）。
+    // （旧栈 P1）。
     Fixture        fixture;
     RenamerEngine  engine;
     RenamerOptions options;
@@ -1014,7 +1014,7 @@ TEST(MjRenamerRunTest, planRecordsFieldRenameForCallSiteSync)
 
 TEST(MjRenamerRunTest, planPreImagesMemberRuleOwnerAndDescWhenOwnerClassRenamed)
 {
-    // P1 实证回归（luiox/morpher#1032）plan 面移植：成员改名与 owner 类改名同
+    // P1 实证回归（旧栈）plan 面移植：成员改名与 owner 类改名同
     // plan 时，成员规则的 newOwner/newDesc 必须按类映射预映像——否则 remapper 的
     // 调用点同步路径会把 owner/描述符写回旧值。desc 分支用含被改名类的类型
     // （`LA;` → `Lmoved/A;`）锁定 mapFieldDescriptor/mapMethodDescriptor 预映像。
@@ -1092,7 +1092,7 @@ TEST(MjRenamerRunTest, contextExposesReadOnlyHierarchyQueries)
     EXPECT_TRUE(missing.is_err());
 }
 
-// ── 继承别名（luiox/morpher#1032 P2：obf rename_core 需要的应用面闭包）──
+// ── 继承别名（旧栈 P2：obf rename_core 需要的应用面闭包）──
 
 TEST(MjRenamerAliasTest, fieldAliasRulesCoverInheritingSubclassesPlanOnly)
 {
@@ -1273,7 +1273,7 @@ void addDualComponentWorld(model::ResourceContainer& container, bool withCaller)
 
 TEST(MjRenamerAliasTest, methodAliasAmbiguityDropsWholeRuleWhenInheritorsDisagree)
 {
-    // N5（luiox/morpher#1032 评审收口）：同 (owner=C, oldName, desc) 键被两个
+    // N5（旧栈评审收口）：同 (owner=C, oldName, desc) 键被两个
     // override 组件组分配到不同新名（A 组 → brandA，I 组 → brandI）时，C 的
     // 继承别名无法二选一——整条放弃（保守口径，与旧核心一致），不得产出
     // 半边别名把另一组件的调用点错改。
@@ -1416,7 +1416,7 @@ TEST(MjRenamerRunTest, applyRewritesFieldReadInsnToNewName)
 
 TEST(MjRenamerRunTest, applySyncsMemberRuleOwnerAndDescWhenOwnerClassRenamed)
 {
-    // P1 实证回归（luiox/morpher#1032）应用面移植：成员改名与 owner 类改名同
+    // P1 实证回归（旧栈）应用面移植：成员改名与 owner 类改名同
     // plan 时，调用点同步必须落到预映像后的 owner/描述符（`LA;` →
     // `Lmoved/A;`），不残留旧名；类资源 URI 随 resources 门同步（deobf 消费
     // 口径；mjbase 双门下 resources 显式开启）。

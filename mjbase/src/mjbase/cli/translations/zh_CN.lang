@@ -1,4 +1,4 @@
-# mbase/cli 框架文本(所有用 ArgParser 的产品线共享)。zh_CN 为唯一事实源。
+# cli 框架文本(所有用 ArgParser 的产品线共享)。zh_CN 为唯一事实源。
 # 静态注册:i18n_setup.cpp 在 main 前自动 init(各线主表后注册者胜)。
 
 mbase.cli.usage=用法

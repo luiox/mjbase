@@ -14,7 +14,7 @@
 ///             诊断规则只收录 JVMS 必然违规（越界/保留槽/空引用/tag 错配/环/
 ///             长度越界），对合法 classfile 零误报；readClass 自身的版本、魔数
 ///             之外的结构裁决权不变——净化器是带精确诊断的前置预检，不是第二套
-///             解析器。检查项与诊断文本从 mbase 语义参考（jbytecode class_file_
+///             解析器。检查项与诊断文本从 旧栈 语义参考（jbytecode class_file_
 ///             sanitizer）逐条移植，规则序与消息格式保持一致。
 
 #include <vector>

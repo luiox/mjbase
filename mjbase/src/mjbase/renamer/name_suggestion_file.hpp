@@ -1,7 +1,7 @@
 /// @file        name_suggestion_file.hpp
 /// @brief       AI 建议文件 schema（严格 v1 JSON）+ FileSuggestionProvider。
 ///
-/// 旧栈对应物：mbase/renamer/name_suggestion_file（luiox/morpher#1025/#1032）。
+/// 旧栈对应物：renamer/name_suggestion_file。
 /// schema 形状、错误分类、行号定位、零应用拒载语义照旧；字符串面按 mjbase
 /// 约定改驻留视图（NameSuggestionFile.source 与各 proposal 字段经
 /// aliasInterned 驻留，文件顶层 source 落各条 source）。IO 面保持

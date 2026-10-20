@@ -1,7 +1,7 @@
 /// @file        jar_util.hpp
 /// @brief       JAR 相关工具方法：条目名后缀判定 + class 字节嗅探。
 ///
-/// 直迁自 mbase/jar/jar_util（语义照旧，std::string 形参换成 Utf8StringRef
+/// 直迁自 jar/jar_util（语义照旧，std::string 形参换成 Utf8StringRef
 /// 借用视图；后缀判定仍是大小写敏感的字节级比较）。
 #pragma once
 

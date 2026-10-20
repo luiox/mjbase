@@ -12,7 +12,7 @@
 namespace mjbase::workspace {
 
 /// @file class_mutation_service.hpp
-/// @brief 结构化 class 修改服务（移植自 mbase/workspace/class_mutation_service，
+/// @brief 结构化 class 修改服务（移植自旧栈 workspace/class_mutation_service，
 ///        事务与校验语义照旧，指令载体按 libjbc 重定型）。
 
 /// @brief 结构化 class 修改的目标成员标识。
@@ -226,7 +226,7 @@ struct ClassMutationOutcome final
 /// 布局改变的产物沿用原属性的 relocation 语义（lower 链路），整方法重建的产物
 /// 不携带重建的 StackMapTable。
 ///
-/// 与 mbase 版的差异：构造不再挂 GlobalAnalysisManager——mjbase ResourceJasmService
+/// 与 旧栈 版的差异：构造不再挂 GlobalAnalysisManager——mjbase ResourceJasmService
 /// 每次按容器即时重建层次图，服务不持任何跨调用缓存。
 class ClassMutationService final
 {

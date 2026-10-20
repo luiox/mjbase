@@ -2,7 +2,7 @@
 /// @brief       全程序别名分析：栈/局部别名事实 + 方法摘要 + 反射接收者身份
 ///              + Andersen 包含约束索引。
 ///
-/// 旧栈对应物：mbase/analysis/alias_analysis（AliasAnalysis + AliasFlowInterpreter
+/// 旧栈对应物：analysis/alias_analysis（AliasAnalysis + AliasFlowInterpreter
 /// + AndersenConstraintInterpreter，骑 jbytecode DataflowAnalyzer）。迁移纪律是
 /// 语义照旧、实现重写：
 ///
@@ -24,7 +24,7 @@
 ///   节点身份 = 方法内临时（"method\ninsn:idx"）/形参/this/return/静态槽/
 ///   合并节点，与旧实现逐串一致。
 ///
-/// 反射接收者追踪不依赖 mbase ReflectionInterpreter（依赖方向相反：后者是
+/// 反射接收者追踪不依赖 旧栈 ReflectionInterpreter（依赖方向相反：后者是
 /// alias 的消费方）；"class:X" 事实由 LDC 类常量产点直接维护。
 #pragma once
 

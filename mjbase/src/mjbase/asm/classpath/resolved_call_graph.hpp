@@ -1,12 +1,12 @@
 /// @file        resolved_call_graph.hpp
 /// @brief       层次感知调用图：CHA 虚/接口分派扩展 + 反射织入挂点。
 ///
-/// 移植自 mbase/asm/classpath/resolved_call_graph（CHA 档 + 查询面 + appendEdge
+/// 移植自旧栈 asm/classpath/resolved_call_graph（CHA 档 + 查询面 + appendEdge
 /// 织入挂点）。与旧版的差异：
 ///
 /// - 基座换 mjbase 件：调用点来自 ReferenceIndex（CodeDom order() 坐标的
 ///   ReferenceSite），层次查询走 mjbase::hierarchy 的 ClassHierarchy/
-///   MethodHierarchy（键面 API，无 mbase 的条目下标制）。
+///   MethodHierarchy（键面 API，无 旧栈 的条目下标制）。
 /// - 输入层次以 HierarchyBundle 交付（共享驻留池 + 类/方法层次图同生共死）：
 ///   mjbase MethodHierarchy 的查询键必须经类图绑定的池驻留，束把「池 + 两图」
 ///   的配对关系收口为单一载体。
@@ -97,7 +97,7 @@ struct ResolvedCallEdge
 
 /// @brief 层次分析束：共享驻留池 + 类/方法层次图的最小配对载体。
 ///
-/// 停泊件：mbase 的 ClassHierarchyAnalysis/MethodHierarchyAnalysis（GAM 包装）
+/// 停泊件：旧栈 的 ClassHierarchyAnalysis/MethodHierarchyAnalysis（GAM 包装）
 /// 归层次批所有，本批不改其目录；resolved 图需要「查询键驻留池与两图绑定池
 /// 同一」的载体，此处给最小实现（build 从容器扫描 + fillSummary 逐类登记，
 /// 同名首到先得，登记 Err 的类跳过）。主线裁决点：层次批交付 GAM 包装后，

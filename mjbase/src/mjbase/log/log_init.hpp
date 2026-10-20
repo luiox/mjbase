@@ -19,7 +19,7 @@
 namespace mjbase::log {
 
 /// 注册进程级 "default" 日志 target（SimpleLogBackend：stderr、彩色、HH:MM:SS，
-/// 不带 file:line——与 mjt-obf LogUtil 的门面范式一致）。幂等，可重复调用。
+/// 不带 file:line——与既有日志门面范式一致）。幂等，可重复调用。
 ///
 /// 运行期级别取 Trace：诊断可见性与迁移前的 fprintf/stderr 打平，
 /// 输出开关仍由各调用点的既有门控（env 探针 / verbose 标志）负责。

@@ -1,7 +1,7 @@
 /// @file        insn_op.hpp
 /// @brief       opcode 分类谓词全集与栈效应静态表。
 ///
-/// 语义来源：mbase asm/insn 的 InsnUtil 分类与 Stack 分析（isReturn/isIf/
+/// 语义来源：旧栈 asm/insn 的 InsnUtil 分类与 Stack 分析（isReturn/isIf/
 /// invertIf/getStack*Count 等），在 jbc::core::Op 值域上重写。两处有意的
 /// 语义修订（相对旧实现）：
 ///   - 常量族补齐 LDC_W/LDC2_W（旧 isConstant 只认 LDC，宽形态被注释掉）；

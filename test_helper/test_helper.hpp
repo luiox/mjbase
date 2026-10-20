@@ -1,13 +1,13 @@
 #pragma once
 
-// test_helper：morpher 测试基建门面。
+// test_helper：跨项目测试基建门面。
 //
 // 通用的多项目测试布局机制（.project_root_file 扫描 / 资源定位 / 输出根约定）
-// 已下沉到 libca/test（#912/#913），本头文件保持 morpher 侧历史 API 形态
+// 已下沉到 libca/test，本头文件保持历史 API 形态
 // （namespace test::、camelCase），内部委托 ca::test 实现——既有测试 main
 // 无需任何改动。
 //
-// morpher 私有件（不下沉）：
+// 旧栈私有件（不下沉）：
 // - asm-test 特例定位（libjbytecode/asm-test 目录布局胶水）
 // - 构建产物路径（build/artifacts 布局属产品构建知识）
 // - jdk_fixture.hpp（架构在闭源 libjdk_finder 之上，另见该文件）
@@ -42,7 +42,7 @@ inline bool                  hasResource(const std::string& filename);
 inline std::filesystem::path getResourcePath(const std::string& filename);
 inline std::vector<uint8_t>  getResource(const std::string& filename);
 
-/// 跨项目定位：按 .project_root_file 名字（如 "mtest_set" / "mj2x"）取项目根 / 资源。
+/// 跨项目定位：按 .project_root_file 名字按项目根标识取项目根 / 资源。
 /// 统一样本供给的底层原语——任何子项目按名字拿另一子项目的 test_resource 文件，
 /// 无需硬编码相对路径。未注册名字回落 <top>/<name>。
 inline std::filesystem::path getProjectPath(const std::string& projectName)
@@ -79,11 +79,11 @@ inline std::filesystem::path getTempOutPath(const std::string& filename)
 
 std::string           getBuildModeName();
 
-/// 定位同 buildir 的伴生构建产物（如 mj2x-cli）。优先按测试可执行文件自身位置
+/// 定位同 buildir 的伴生构建产物（如产品 CLI）。优先按测试可执行文件自身位置
 /// 推导活动 buildir——xmake binary 目标同树同目录输出，自定义 `-o <dir>` 配置下
 /// 依然正确；目标未随测试同树构建（文件不存在）时回退默认 buildir 布局
 /// <top>/build/<plat>/<arch>/<mode>/。@p targetName 可带 .dll 后缀定位 shared
-/// 目标产物（如 "mjt-obf-runtime-native.dll"）。
+/// 目标产物（如运行时原生伴侣 dll）。
 std::filesystem::path getBuildTargetPath(const std::string& targetName);
 /// 定位同 buildir 的 artifacts 层伴生产物
 /// <buildir>/artifacts/<plat>/<arch>/<mode>/<line>/<name>。活动 buildir 优先

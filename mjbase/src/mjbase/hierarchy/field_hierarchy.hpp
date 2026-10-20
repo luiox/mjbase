@@ -1,7 +1,7 @@
 /// @file        field_hierarchy.hpp
 /// @brief       字段层次：沿 super 链的可见性解析（找到定义类 / shadow 判定）。
 ///
-/// 语义来源（mbase field_hierarchy，按键重写）：
+/// 语义来源（旧栈 field_hierarchy，按键重写）：
 /// - resolveField：receiver 起 super 链自近及远，第一个 name+desc 完全
 ///   匹配的声明即解析结果（JVM 字段解析不区分 static/instance）；
 /// - shadowsAncestor：实例字段遮蔽祖先链上的同名实例字段（static 字段

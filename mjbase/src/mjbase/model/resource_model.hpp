@@ -1,13 +1,13 @@
 /// @file        resource_model.hpp
 /// @brief       资源模型：ResourceType 枚举 + IResource 接口与三实现 + ModelError。
 ///
-/// 语义对齐 mbase/model/resource_model（迁移来源）：资源是「URI + 类型化载荷」
+/// 语义对齐 model/resource_model（迁移来源）：资源是「URI + 类型化载荷」
 /// 的最小抽象——Class（class 字节）、Manifest（MANIFEST.MF 解析物）、Unknown
 /// （原样字节）。类型识别沿用 ca::core::tag_cast：每个叶子类型把 TypeOf<T>
 /// 特化到 ResourceType 标签值，与运行期 getType() 比较，零 RTTI。
 ///
-/// 与 mbase 的差异（本批有意重设计，其余语义照旧）：
-/// - 错误：mbase 侧以 throw std::runtime_error 报错，本模块统一走
+/// 与 旧栈 的差异（本批有意重设计，其余语义照旧）：
+/// - 错误：旧栈 侧以 throw std::runtime_error 报错，本模块统一走
 ///   ModelResult<T>（= Result<T, ModelError>）值语义，错误码定义见 ModelError，
 ///   各抛点消息文本的映射写在 resource_io 的对应返回处；
 /// - 字符串：借用的路径/URI 一律借用视图（容器/工具入参 std::string_view，
@@ -54,7 +54,7 @@ inline std::string_view to_string(ResourceType type) noexcept
     return kNames[static_cast<ca::usize>(type)];
 }
 
-/// @brief 字符串 → ResourceType；未知名归 Unknown（mbase resource_type_from_string）。
+/// @brief 字符串 → ResourceType；未知名归 Unknown（旧栈 resource_type_from_string）。
 inline ResourceType resourceTypeFromString(std::string_view name) noexcept
 {
     if (name == "Class") return ResourceType::Class;
@@ -65,7 +65,7 @@ inline ResourceType resourceTypeFromString(std::string_view name) noexcept
 
 /// @brief model 模块错误码。
 ///
-/// mbase 对应实现以 throw std::runtime_error 报错，消息文本按位收进各码的
+/// 旧栈 对应实现以 throw std::runtime_error 报错，消息文本按位收进各码的
 /// 注释（来源 resource_io / helper），语义等价映射：
 enum class ModelError : ca::u8
 {

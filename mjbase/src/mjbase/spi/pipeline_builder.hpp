@@ -1,8 +1,8 @@
 /// @file        pipeline_builder.hpp
 /// @brief       管线装配层（pass-contract §9）：fluent 组装嵌套 PassManager。
 ///
-/// 语义参考 mbase/pass/pass_registry 的 PipelineBuilder，按 mjbase 四 scope
-/// 模型重定型。装配序（mbase 纪律照迁）：
+/// 语义参考 pass/pass_registry 的 PipelineBuilder，按 mjbase 四 scope
+/// 模型重定型。装配序（旧栈 纪律照迁）：
 /// @code
 ///   GlobalPM [
 ///     ClassFileSanitizeGate            (输入净化门，恒为 head)
@@ -15,14 +15,14 @@
 ///   ]
 /// @endcode
 ///
-/// 与 mbase 的差异：
+/// 与 旧栈 的差异：
 /// - buildNestedPipeline 入参去掉 classWriterFlags/typeResolver——libjbc 写回面
 ///   没有 COMPUTE_*S 旗标，帧重算经 options.typeResolver 注入（pass-contract
 ///   §9：resolver 数据获取是调用方的事，管线只消费已建好的图）；
 /// - ClassToMethodPassAdaptor 需要 identityPool，从入参 PassJobContext 取
 ///   （构建期借用，与 adaptor 持引用的寿命契约一致：built 管线须在 job 存活
 ///   期内 run）；
-/// - PassRunStats 只读计数装饰器未随迁（消费方 mjt CLI dry-run 尚未切到
+/// - PassRunStats 只读计数装饰器未随迁（消费方 CLI dry-run 尚未切到
 ///   mjbase；需要时按同款装饰器形态补）。
 ///
 /// @warning 非线程安全。

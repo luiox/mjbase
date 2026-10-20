@@ -3,7 +3,7 @@
 ///              createLabel），覆盖算术 Java 语义、分支真假两路、cat2 双槽、
 ///              步数熔断、不支持形状结构化报错。
 ///
-/// 求值断言移植自 mbase/unittest/asm/evaluator/method_evaluator_test.cpp 的
+/// 求值断言移植自旧栈 unittest/asm/evaluator/method_evaluator_test.cpp 的
 /// 数值子集（overflow/shift/div/rem/cmp/switch/branch/step-budget 用例）。
 #include <gtest/gtest.h>
 

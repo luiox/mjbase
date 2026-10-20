@@ -6,7 +6,7 @@
 namespace mjbase::pass {
 
 /// @brief 访问修饰符收紧器：把仅被本类引用的 public static 成员收紧为 private
-///        （移植自 mbase pass/opt/access_modifier_tightener）。
+///        （移植自旧栈 pass/opt/access_modifier_tightener）。
 ///
 /// 收紧规则矩阵（与旧实现逐条对齐）：
 ///   - 普查面：全容器 INVOKESTATIC（方法）与 GETSTATIC/PUTSTATIC（字段）引用；

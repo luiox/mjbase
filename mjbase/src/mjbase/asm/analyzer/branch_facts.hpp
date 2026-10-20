@@ -1,7 +1,7 @@
 /// @file        branch_facts.hpp
 /// @brief       分支预测事实：常量操作数可判定时的条件分支/switch 走向。
 ///
-/// 旧栈对应物：mbase/asm/analyzer 的 jump_predicting_analyzer（predictIf /
+/// 旧栈对应物：asm/analyzer 的 jump_predicting_analyzer（predictIf /
 /// predictIfTwo / predictLookupSwitch / predictTableSwitch 的常量判定路径）与
 /// reanalyzer 的 EvaluatorBranchPredictor（null 系判定）。迁移纪律是语义照旧、
 /// 实现重写：预测是 ConstResult 到达帧上的纯函数查询——读分支指令入口帧的

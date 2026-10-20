@@ -1,7 +1,7 @@
 /// @file        member_remap_plan_test.cpp
 /// @brief       asm/remapper 模块测试：计划/类改写器/资源改写器/映射门面。
 ///
-/// 旧栈对应物：mbase/unittest/asm/remapper/member_remap_plan_test.cpp（21 用例
+/// 旧栈对应物：unittest/asm/remapper/member_remap_plan_test.cpp（21 用例
 /// 全量移植，语义为 oracle）；夹具从 ASM ClassNode 手拼改为
 /// class_bytes_builder.hpp 的受控字节装配 + libjbc 会话往返，断言面从内存树
 /// 改为 writeClass → readClass 的产物字节（更贴近旧栈 ClassWriter 输出的

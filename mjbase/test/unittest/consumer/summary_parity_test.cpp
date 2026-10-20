@@ -1,11 +1,11 @@
 /// @file        summary_parity_test.cpp
-/// @brief       E3 骨架扫描对拍与失败面用例：mbase listClassSummaries 口径
+/// @brief       E3 骨架扫描对拍与失败面用例：旧栈 listClassSummaries 口径
 ///              逐字段对拍 + KeyPool 驻留稳定性 + fail-closed 错误路径。
 ///
 /// 与 class_source_test.cpp 互补：那边钉 API 行为（fail-closed/枚举序/
 /// first-wins/hasCode 分流），本文件钉扫描产物的字段级口径——
 /// internalName/superName/access/version/interfaceCount/fieldCount/methodCount
-/// 与 mbase WorkspaceBase::listClassSummaries 逐字段相等（version 编码同口径
+/// 与 旧栈 WorkspaceBase::listClassSummaries 逐字段相等（version 编码同口径
 /// `(minor << 16) | major`，即旧栈 visit(version) 的 V1_8 形态）；期望值全部
 /// 由夹具规格独立给出，不经被测代码换算。降级读入（Recovered）照常出骨架、
 /// 截断逐字节全 sweep 拒收，也在此钉死。
@@ -35,7 +35,7 @@ using mjbase::reference::test_support::FieldSpec;
 using mjbase::reference::test_support::MethodSpec;
 
 /// 对拍夹具：public final 类、自定义父类、双接口、双字段、三方法
-///（一具体一 abstract 一 static final）——mbase 摘要的每个计数字段都非平凡。
+///（一具体一 abstract 一 static final）——旧栈摘要的每个计数字段都非平凡。
 /// 汇编器固定 V1_8（minor=0, major=52）。
 Bytes makeParityClass()
 {
@@ -59,9 +59,9 @@ Bytes makeParityClass()
     return b.assemble(methods);
 }
 
-/// E3-9：mbase listClassSummaries 口径逐字段对拍——期望值由夹具规格独立给出，
-/// 成员序 = classfile 声明序（计数即容器 size，与 mbase 计数口径相等）。
-TEST(MjConsumerSummaryParityTest, FieldsMatchMbaseListClassSummariesContract)
+/// E3-9：旧栈 listClassSummaries 口径逐字段对拍——期望值由夹具规格独立给出，
+/// 成员序 = classfile 声明序（计数即容器 size，与 旧栈 计数口径相等）。
+TEST(MjConsumerSummaryParityTest, FieldsMatchLegacySummaryContract)
 {
     const Bytes               bytes   = makeParityClass();
     KeyPool                   pool;
@@ -70,7 +70,7 @@ TEST(MjConsumerSummaryParityTest, FieldsMatchMbaseListClassSummariesContract)
     ASSERT_TRUE(scanned.is_ok());
     const ClassSummary& s = scanned.unwrap();
 
-    // mbase 摘要七字段逐一对拍（internalName/superName/access/version/
+    // 旧栈 摘要七字段逐一对拍（internalName/superName/access/version/
     // interfaceCount/fieldCount/methodCount）。
     EXPECT_EQ(pool.str(s.self.id), "com/x/Sample");
     EXPECT_EQ(pool.str(s.super.id), "com/i/Base");

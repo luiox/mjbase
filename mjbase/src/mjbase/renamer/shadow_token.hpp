@@ -15,7 +15,7 @@
 /// 边界：仅 Name 槽实现；Descriptor/JasmBody 分支未接线（传入即 fail-loud，
 /// 不做文法）。相对旧栈的实修：查表命中面一律按值/optional 交付——旧栈
 /// findClassByHandle 返回指向 findByShadowName 临时 vector 内部的指针（悬垂
-/// UB，mjt 仓 9e72e9f 已修），本移植自始不带该形状。
+/// UB，旧栈侧已修），本移植自始不带该形状。
 #pragma once
 
 #include <optional>
@@ -96,7 +96,7 @@ enum class ShadowSlotError
     /// 修复动作：补 raw desc。
     AmbiguousMember,
     /// 缺 sidecar 而输入为引用形状（§6 末行硬报错，不静默回落裸名）。
-    /// 修复动作：加载 sidecar（MCP shadow_generate / `mjt shadow -i <jar>`）。
+    /// 修复动作：加载 sidecar（由项目 shadow 工具生成）。
     MissingSidecar,
 };
 

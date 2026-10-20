@@ -1,6 +1,6 @@
--- mjbase：基于 libjbc 的跨类程序分析与变换库（mbase 的重写线，逐模块迁移）。
+-- mjbase：基于 libjbc 的跨类程序分析与变换库（旧栈的重写线，逐模块迁移）。
 -- 边界（AGENTS.md / doc_ai/module-map.md）：libjbc 单类/单方法；mjbase 持
--- 跨类身份（keys）、层次/调用图与指令工程（asm 域）。旧 mbase 冻结对拍。
+-- 跨类身份（keys）、层次/调用图与指令工程（asm 域）。旧栈冻结对拍。
 --
 -- 迁移期约定：源文件与测试文件走 glob 收编（多 agent 并行落文件），
 -- 模块稳定后按仓惯例转显式清单。
@@ -31,7 +31,7 @@ target("mjbase")
     add_rules("mjbase.i18n_src_sync")
 
     -- jar/model/mapping/project 批次新增：zip 读写（libjzip）、资源解包后端
-    -- （libarchive，与 mbase 同源）、fs/json/crypto（mapping 与 project 直迁）。
+    -- （libarchive，与旧栈同源）、fs/json/crypto（mapping 与 project 直迁）。
     -- B3-A 批次新增：Java 整数语义（libjstd，expr_value）与日志/i18n 门面
     -- （libca_log，log_init/triple）。libjstd/libca_i18n 为 headeronly，无链接产物。
     -- F 线清洗批新增：libjclassfile（敌意输入前置清洗级，§3.0 裁决；deps_gate
@@ -44,7 +44,7 @@ target("mjbase")
     -- 见 doc_ai/module-map.md 的依赖图——批 1 只收零环的叶子与容器层，
     -- 字符串口径（util/mapping/jar 的标识符与路径面）在这一批定死。
     -- 后续批次（asm/hierarchy → reference/spi/pass/workspace → air/sir/jasm/cli）
-    -- 按 mjt 与 mjt-py 的实际消费面追加，每批独立构建 + 独立测试。
+    -- 按各产品线的实际消费面追加，每批独立构建 + 独立测试。
     add_files("src/mjbase/keys.cpp", "src/mjbase/util.cpp")
     add_files("src/mjbase/expr/**.cpp")
     add_files("src/mjbase/jar/**.cpp")
@@ -76,7 +76,7 @@ target("mjbase")
     add_files("src/mjbase/pass/**.cpp")
     add_files("src/mjbase/asm/classpath/resolved_call_graph.cpp")
     add_files("src/mjbase/asm/remapper/**.cpp")
-    -- 批 4：mcp 与 mjt-py 的直接消费面——renamer、workspace、jasm、log、cli。
+    -- 批 4：下游 CLI 与语言绑定的直接消费面——renamer、workspace、jasm、log、cli。
     -- workspace 依赖 jasm，故 jasm 从批 5 提前到本批；cli 只收源码（文案表
     -- .lang 的规则在上方始终保留）。
     add_files("src/mjbase/renamer/**.cpp")
@@ -98,7 +98,7 @@ target("mjbase")
         add_cxflags("/utf-8", {tools = "cl"})
         add_links("bcrypt")
         -- xmllite：libarchive 静态库内含 xar 格式读取（依赖 CreateXmlReader），
-        -- 链接 mjbase 的可执行需解析该符号。public 传递给下游（同 mbase）。
+        -- 链接 mjbase 的可执行需解析该符号。public 传递给下游（同旧栈）。
         add_syslinks("xmllite", {public = true})
     end
 
@@ -152,7 +152,7 @@ target("mjbase_unittest")
     add_files("test/unittest/log/*_test.cpp")
     add_files("test/unittest/workspace/*_test.cpp")
     add_files("test/unittest/cli/*_test.cpp")
-    -- 第 5 批（morpher 仓内副本孤儿测试救回）：keys/i18n/util 伞头与叶子件，
+    -- 第 5 批（上游仓内副本孤儿测试救回）：keys/i18n/util 伞头与叶子件，
     -- 与 src 的 keys.hpp/i18n.hpp/util 一一对应（B3-A 波次测试面，副本删除前收容）。
     add_files("test/unittest/keys/*_test.cpp")
     add_files("test/unittest/i18n/*_test.cpp")

@@ -1,7 +1,7 @@
 /// @file        call_graph.hpp
 /// @brief       直接方法调用图：调用点提取、正反向索引、可达闭包。
 ///
-/// 移植自 mbase/asm/classpath/call_graph（语义参考），底座换成 libjbc：
+/// 移植自旧栈 asm/classpath/call_graph（语义参考），底座换成 libjbc：
 /// 类字节经 makeSessionFromBytes 建会话，逐方法 collectCodeUnits 升格后
 /// 遍历 CodeDom 程序顺序，invoke 家族指令用 ClassSession::memberOf 把
 /// CP 操作数解析为 MemberSem{owner,name,desc}，再驻留成 MemberKey 边。

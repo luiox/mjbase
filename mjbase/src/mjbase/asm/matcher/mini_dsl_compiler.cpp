@@ -1,7 +1,7 @@
 /// @file        mini_dsl_compiler.cpp
 /// @brief       mini DSL 编译：AST → MatchStep 序列 + 求值替换策略。
 ///
-/// 语义对照旧 mbase mini_dsl_compiler：
+/// 语义对照旧 旧栈 mini_dsl_compiler：
 ///   - ConstLoad 命名绑定按步骤下标从 matchedInsns 取值（ldc 载荷在纯
 ///     DOM 层不可读，读不到则不绑定，后续 require 报 UnboundVariable）；
 ///   - 求值改为 I/J 走 i64、F/D 走 double 的分域实现（旧实现全程 double，

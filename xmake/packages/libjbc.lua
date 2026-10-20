@@ -1,13 +1,13 @@
 -- libjbc 包定义（项目内联定义，源自 luiox-repo 同名定义）
 --
--- 为什么项目内联（而不是直接用 luiox-repo 定义，也不走 morpher-repo 覆盖）：
+-- 为什么项目内联（而不是直接用 luiox-repo 定义，也不走其他目录仓覆盖）：
 -- 上游 0.4.15 定义的 on_load 只传 /std:c++17 不传 /utf-8。libjbc 公开头含
 -- UTF-8 中文注释，其中存在 GBK 解码下吞并后续字节的序列——GBK ACP 的机器上
 -- on_test 探针（has_cxxincludes/check_cxxsnippets，只吃包元数据的 cxxflags）
 -- 把多行注释误读合并，枚举定义被拆散，报 C2059/C2086 级联，安装直接失败
 -- （库本体沙箱构建带工程自己的 /utf-8，不受影响——纯 on_test 面）。这里在
 -- on_load 补 /utf-8（windows），与库自身构建口径一致。项目内联的 package()
--- 定义优先于一切包仓（实测 morpher-repo 目录仓同名定义压不过 luiox-repo），
+-- 定义优先于一切包仓（实测其他目录仓同名定义压不过 luiox-repo），
 -- 是唯一能就地修探针的承载形态。升级 luiox-repo 的 libjbc 定义时（含其修复
 -- 本行的上游版本）记得同步本文件，修复合入上游后本文件整体退役。
 --

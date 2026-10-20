@@ -436,7 +436,7 @@ Result<bool, RemapError> applyResourceRemapPlan(model::ResourceContainer& contai
     renameClassResources(container, resourceRenames, changed);
     if (policy.resources) {
         // META-INF/services 与 MANIFEST 主属性是 resources 面下的细分门
-        //（luiox/morpher#1032 Q6），默认开——与既有 resources=true 行为一致。
+        //（旧栈评审收口），默认开——与既有 resources=true 行为一致。
         applyServiceResourceUpdates(
             container, collectServiceResourceUpdates(container, plan, policy.serviceLoader),
             changed);

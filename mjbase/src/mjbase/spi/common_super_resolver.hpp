@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <map>
 #include <string_view>
@@ -14,7 +14,7 @@ namespace mjbase::spi {
 /// @brief 公共父类求解适配件：挂接 mjbase::hierarchy::ClassHierarchy 的
 ///        JVM 子类型骨架，产出 getCommonSuperClass 语义。
 ///
-/// 语义参考 mbase CommonSuperClassProvider（骑 jbytecode ICommonSuperClassProvider
+/// 语义参考 旧栈 CommonSuperClassProvider（骑 jbytecode ICommonSuperClassProvider
 /// 的实现），按层次图底座重写：
 ///   - 求解面从「superName 映射表 + 手工链遍历」改为 ClassHierarchy 的
 ///     commonAncestor（super 链最近公共祖先，super-chain-only，与旧实现的

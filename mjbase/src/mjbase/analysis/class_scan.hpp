@@ -1,7 +1,7 @@
 /// @file        class_scan.hpp
 /// @brief       analysis 模块内共享的类集合扫描底座：资源容器 → 会话集合。
 ///
-/// 旧栈对应物：mbase 各全局分析里逐份复制的 parseClassResources（ResourceContainer
+/// 旧栈对应物：旧栈 各全局分析里逐份复制的 parseClassResources（ResourceContainer
 /// 迭代 + ClassReader 解析 + 畸形跳过）。mjbase 的字节底座是 libjbc：类字节经
 /// makeSessionFromBytes 建会话；解析失败/空字节的类不产出会话（fail-open，与
 /// 旧栈「malformed classes contribute no facts」语义一致）。会话按容器迭代序

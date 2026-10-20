@@ -1,7 +1,7 @@
 /// @file        member_remapper.hpp
 /// @brief       把 MemberRemapPlan 应用到一个 libjbc 类会话的改写器。
 ///
-/// 旧栈对应物：mbase/asm/remapper/member_remapper（骑 jbytecode ClassNode
+/// 旧栈对应物：asm/remapper/member_remapper（骑 jbytecode ClassNode
 /// 树 + visitor 形状）。语义照旧、实现重写：改写载体换成 libjbc backing
 /// DOM（@ref jbc::core::ClassFile），方法体经 promote/CodeDom/lower 往返，
 /// 指令 CP 操作数经会话语义层（setMember/setClass/setString + intern）
@@ -55,7 +55,7 @@ struct RemapPolicy
     bool annotations       = false;
     bool signatures        = false;
     bool resources         = false;
-    /// resources 开启时的细分门（luiox/morpher#1032 Q6：obf 改写面显式化）。
+    /// resources 开启时的细分门（旧栈评审：obf 改写面显式化）。
     /// 默认 true 保持既有 resources=true 的完整改写面不变；false 仅关掉对应
     /// 资源面，字节码/反射常量/注解/签名/授权文本资源不受影响。
     bool manifest      = true;

@@ -5,7 +5,7 @@
 namespace mjbase::pass {
 
 /// @brief 冗余栈操作折叠：`dup;pop`→∅、`pop;pop`→`pop2`、常量装载复制展开等
-///        25 条窗口规则迭代到不动点（移植自 mbase pass/opt/stack_operation 的
+///        25 条窗口规则迭代到不动点（移植自旧栈 pass/opt/stack_operation 的
 ///        StackOperationSimplifier，Java 原件 replace/StackOperationSimplifier.java）。
 ///
 /// 语义（与旧实现逐条对齐）：只匹配连续的栈操作形状，不跨 label/frame/异常边；

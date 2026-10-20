@@ -39,7 +39,7 @@ Result<T> resourceError(const std::string& message)
 }
 
 // 读取 class internal name（jbc 骨架解析）；字节不可解析返回 Err(ReadError)。
-// 与 jvm_jasm_service.cpp 的同名 helper 保持同一语义（mbase 两 TU 也各自持有）。
+// 与 jvm_jasm_service.cpp 的同名 helper 保持同一语义（旧栈 两 TU 也各自持有）。
 ca::core::Result<ca::str::Utf8String, jbc::core::ReadError>
 readInternalName(const std::vector<ca::u8>& bytes)
 {
@@ -87,7 +87,7 @@ model::ResourceContainer candidateContainer(const model::ResourceContainer& cont
 // 容器 → 层次图即时重建：只读 Class 资源的 this/super/接口骨架（jbc 骨架解析）。
 // 畸形条目跳过，不进图。帧计算（InheritanceChecker）只依赖类图，成员摘要不参与；
 // 层次错误（DuplicateClass/Cycle）按跳过处理——服务这里只取「可用的类图」，
-// 与 mbase ClassHierarchyAnalysis 对畸形输入的容错口径一致。
+// 与 旧栈 ClassHierarchyAnalysis 对畸形输入的容错口径一致。
 mjbase::hierarchy::ClassHierarchy buildHierarchy(const model::ResourceContainer& container,
                                                  mjbase::KeyPool&                pool)
 {

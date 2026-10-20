@@ -1,7 +1,7 @@
 /// @file        exception_flow_analysis_test.cpp
 /// @brief       analysis 异常流模型测试：项目内异常类型传播与处理器覆盖判定。
 ///
-/// 旧栈对应物：mbase/unittest/analysis/exception_flow_analysis_test.cpp
+/// 旧栈对应物：unittest/analysis/exception_flow_analysis_test.cpp
 /// propagatesAndHandlesProjectExceptionTypes（1 用例全量移植：夹具字节化重写，
 /// 断言逐字等强——含未捕获类型集合、handled/unhandled 边的双向覆盖）。
 #include <gtest/gtest.h>

@@ -1,7 +1,7 @@
 # mjbase pass 契约（pass-contract）
 
 mjbase::spi 的 pass 体系定型文档：pass 分类、作用域单元、写回纪律、
-preserved analyses 复用条件与 sanitize 闸门位置。语义承自 mbase spi
+preserved analyses 复用条件与 sanitize 闸门位置。语义承自旧栈 spi
 （libjbc-migration-plan P5 的 mjbase 内先行版），载体按 libjbc 值语义
 句柄底座重定型。本文只记语义/不变量/契约，不锚文件行号。
 
@@ -67,7 +67,7 @@ preserved analyses 复用条件与 sanitize 闸门位置。语义承自 mbase sp
 谓词过滤（`MethodPredicate`）在 **promote 之前**按身份面（MethodTarget）
 求值：被过滤方法不付解码成本，与 CLI 目标过滤语义一致。
 
-## 3. 编排语义（与 mbase 逐条对齐）
+## 3. 编排语义（与旧栈逐条对齐）
 
 - **阶段序**：容器级 [sanitize 闸门 → global passes]；类级 [类级 passes]；
   方法级在类内逐方法（显式 adaptor 或入口裸方法路径）。类级管线先于方法级。
@@ -77,7 +77,7 @@ preserved analyses 复用条件与 sanitize 闸门位置。语义承自 mbase sp
   已完成的前序变换不回滚，后续 pass 不再运行；异常路径保守按
   `none()` 失效当前作用域缓存并清理子级缓存。模块边界的两个入口
   （单类/容器 run 管线）把异常收敛为 `Result<_, PipelineError>`；
-  编排内部的失败语言仍是异常（容错档位以 try/catch 实现，与 mbase 一致）。
+  编排内部的失败语言仍是异常（容错档位以 try/catch 实现，与旧栈一致）。
   这是「mjbase 错误走 Result」总约定上的显式豁免点，仅限 pass 域编排层。
 - **配置错误稳定失败**：`addPass(nullptr)` 抛 invalid_argument；adaptor
   取不到 pinned proxy 抛 logic_error；未注册分析取结果抛 logic_error。
@@ -155,11 +155,11 @@ preserved analyses 复用条件与 sanitize 闸门位置。语义承自 mbase sp
 - API 面字符串一律借用视图（string_view / Utf8StringRef）；自有存储用
   ca::str 家族；std::string 只出现在输出/异常文本等外部边界与一次性拼接。
 
-## 9. 明确不迁/待决（对齐 mbase 语义参考的边界）
+## 9. 明确不迁/待决（对齐 旧栈语义参考的边界）
 
-- mbase 内置分析注册表（runJarPipeline 的 11 个内置分析）：属于旧栈分析
+- 旧栈内置分析注册表（runJarPipeline 的 11 个内置分析）：属于旧栈分析
   域，未随迁；分析注册是 pass 自己的责任（registerAnalysis 幂等）。
-- `PipelineBuilder::buildNestedPipeline` 装配面：属 mbase/pass/pass_registry
+- `PipelineBuilder::buildNestedPipeline` 装配面：属 旧栈 pass_registry
   旧栈装配层，mjbase 出现第二个管线消费方时再定型装配层。
 - 公共父类 resolver 的 JDK 归档扫描（scan/addJar）：数据获取是调用方的
   事（会话 fillSummary + addClass），resolver 只消费已建好的图。

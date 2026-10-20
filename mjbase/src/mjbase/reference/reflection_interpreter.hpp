@@ -1,7 +1,7 @@
 /// @file        reflection_interpreter.hpp
 /// @brief       反射对象常量数据流解释器（独立成件）：反射接收者/成员对象追踪。
 ///
-/// 旧栈对应物：mbase/reference/reflection_interpreter（ReflectionValue +
+/// 旧栈对应物：reference/reflection_interpreter（ReflectionValue +
 /// ReflectionInterpreter，骑 jbytecode BasicInterpreter/Analyzer）。迁移纪律是
 /// 语义照旧、实现重写：
 ///

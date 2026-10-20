@@ -5,7 +5,7 @@
 /// 「不做校验的形状便利」；本工厂族是它们的校验扩展面——op 与操作数形状
 /// 不一致时统一返回 Err（Result 值语义，不抛异常、不静默修正），产物由
 /// 调用方经 CodeDom::append 入库（句柄归属校验仍由 CodeDom 负责）。
-/// 语义来源：mbase asm/insn 的 InsnUtil::get*Insn 常量选择策略与 InsnBuilder
+/// 语义来源：旧栈 asm/insn 的 InsnUtil::get*Insn 常量选择策略与 InsnBuilder
 /// 的 typed 工厂方法；CP 操作数在新底座是池索引（u32），不再是 (owner,name,desc)
 /// 三段文本——intern 由 ClassSession 负责，工厂只收索引。
 #pragma once

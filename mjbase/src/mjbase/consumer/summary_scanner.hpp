@@ -3,7 +3,7 @@
 ///
 /// 消费者对接协议（E 系）的类摘要面：对一份 class 字节做骨架扫描（类名/父/
 /// 接口/成员签名/hasCode/access/version），产出可跨类携带的值对象。语义与
-/// mbase `WorkspaceBase::listClassSummaries`（libjbc 薄切片口径）对齐：
+/// 旧栈 `WorkspaceBase::listClassSummaries`（libjbc 薄切片口径）对齐：
 /// internalName/superName/access/version/interfaceCount/fieldCount/methodCount
 /// 逐字段可对拍（version 编码同口径：`(minor << 16) | major`）；在计数之外
 /// 再交付成员签名（名字/描述符/access）与方法 hasCode，供消费方在不开会话
@@ -46,7 +46,7 @@ struct SummaryField
 /// 成员序 = classfile 声明序。self/super/interfaces 驻留调用方 KeyPool；
 /// super 为 invalid 键表示无父类条目（java/lang/Object 自身或 module-info，
 /// 与 hierarchy::fillSummary 的空串映射同口径）。interfaceCount/
-/// fieldCount/methodCount 不另设字段：即三个容器的 size（与 mbase 口径的
+/// fieldCount/methodCount 不另设字段：即三个容器的 size（与 旧栈 口径的
 /// 计数逐字段相等）。
 struct ClassSummary
 {
@@ -56,7 +56,7 @@ struct ClassSummary
     std::vector<SummaryMethod> methods;
     std::vector<SummaryField>  fields;
     ca::u32                    access  = 0;   ///< 类 access flags 原样
-    ca::u32                    version = 0;   ///< `(minor << 16) | major`（mbase 口径）
+    ca::u32                    version = 0;   ///< `(minor << 16) | major`（旧栈 口径）
 };
 
 /// @brief E3 骨架扫描器（无状态；池由调用方持有）。

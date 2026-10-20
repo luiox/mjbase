@@ -123,7 +123,7 @@ TEST(PipelineBuilderTest, ApplyToFactoryProducesFreshInstancePerBuild)
 
 TEST(PassRegistryTest, RegisterGetListRoundtripIsStable)
 {
-    // PassRegistry 是私有构造的单例（与 mbase 一致）：测试用专名注入全局表，
+    // PassRegistry 是私有构造的单例（与 旧栈 一致）：测试用专名注入全局表，
     // 断言只看专名的相对性质，不依赖全表规模。
     auto&       registry = PassRegistry::instance();
     const char* nameA    = "zz-roundtrip-a";

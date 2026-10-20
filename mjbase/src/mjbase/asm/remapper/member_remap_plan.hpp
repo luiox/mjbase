@@ -1,7 +1,7 @@
 /// @file        member_remap_plan.hpp
 /// @brief       成员重映射规则计划：类/字段/方法的精确旧值到新值规则。
 ///
-/// 旧栈对应物：mbase/asm/remapper/member_remap_plan（Utf8StringRef + 私有
+/// 旧栈对应物：asm/remapper/member_remap_plan（Utf8StringRef + 私有
 /// Utf8StringArena）。语义照旧、实现重写：驻留存储换成 mjbase::KeyPool
 /// （内容寻址 u32 id），规则键统一为 @ref mjbase::MemberKey——remap 计划的
 /// 键类型与 alias/reference 消费契约对齐；文本入参 intern 进计划自有池，

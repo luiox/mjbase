@@ -1,7 +1,7 @@
 /// @file        const_domain.hpp
 /// @brief       常量传播域：ConstLattice 格 + ConstDomain 钩子 + 查询入口。
 ///
-/// 旧栈对应物：mbase/asm/analyzer 的 constant_interpreter（ConstantValue +
+/// 旧栈对应物：asm/analyzer 的 constant_interpreter（ConstantValue +
 /// ConstantInterpreter）。迁移纪律是语义照旧、实现重写：格、JVM 折叠语义与
 /// 合并规则按旧实现的公开语义移植；控制流 worklist、槽迁移、入参播种调度
 /// 全部交给 jbc::analysis::DomainEngine，本域只供给值。

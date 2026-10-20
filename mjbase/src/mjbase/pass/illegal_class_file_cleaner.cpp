@@ -31,7 +31,7 @@ using jbc::core::MemberInfo;
 ///
 /// 读入（畸形容忍、全量属性建模 + 指令解码）→ IllegalStrippingTransformer 全量
 /// 规则面 → 写出。规则是否实际触发按产物与输入的字节比较判定（与旧栈
-/// mbase IllegalClassFileCleaner 的判定一致）；读/transform/写任一步抛出该级
+/// 旧栈 IllegalClassFileCleaner 的判定一致）；读/transform/写任一步抛出该级
 /// 零产出，返回 false、调用方拿原 bytes 继续走 libjbc 级（旧实现 catch 全部
 /// 的对齐；边界外不许异常逃逸）。
 ///

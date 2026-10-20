@@ -5,7 +5,7 @@
 
 ## 一、公私边界（红线，不可协商）
 
-mjt-deobf 及其混淆器家族设施**不能开源**。本仓一旦混入这些内容，等于
+混淆器家族设施及其宿主**不能开源**。本仓一旦混入这些内容，等于
 把私有资产和私有坐标系（混淆器厂商、版本特解的对抗面）公开出去。
 
 | 内容 | 归属 |
@@ -29,7 +29,7 @@ mjt-deobf 及其混淆器家族设施**不能开源**。本仓一旦混入这些
 
 整库搬运 = 一次性继承全部未审问题（编码口径、生命周期约定、依赖环），
 且没有消费方约束时，无法判断哪些面真正需要。切片的原则是**消费方驱动**：
-mjt-mcp 与 mjt-py 实际 include 什么，就迁什么。
+下游两条产品线（CLI 网关与语言绑定）实际 include 什么，就迁什么。
 
 ## 三、迁移与重构的解耦（顺序纪律）
 
@@ -59,8 +59,8 @@ mjt-mcp 与 mjt-py 实际 include 什么，就迁什么。
 |---|---|---|
 | 1（已落） | keys / util / expr / jar / mapping / model / project / consumer | 无（零内依赖叶子） |
 | 2（已落） | asm 域 + hierarchy | 环 1 的 asm 侧 |
-| 3（已落） | reference + analysis + spi + pass | 环 1 余下 + 环 2（主战场）；reference_scan 先落直写切片，class-string 反射事实已随 mjt-mcp 契约补齐，反射事实族其余（成员查找/handle/lambda bootstrap/别名）待主线落 |
-| 4（已落） | renamer + workspace | 无新增；workspace 的 remap/rename/pipeline/workflow 方法族随 mjt-mcp 消费面补齐 |
+| 3（已落） | reference + analysis + spi + pass | 环 1 余下 + 环 2（主战场）；reference_scan 先落直写切片，class-string 反射事实已随下游 CLI 契约补齐，反射事实族其余（成员查找/handle/lambda bootstrap/别名）待主线落 |
+| 4（已落） | renamer + workspace | 无新增；workspace 的 remap/rename/pipeline/workflow 方法族随下游 CLI 消费面补齐 |
 | 5（部分落） | jasm / cli / log 已落；air / sir 未落 | 环 3 |
 
 include 全走 `mjbase/<mod>/...` 全限定形式，所以**分 target 不需要改动任何

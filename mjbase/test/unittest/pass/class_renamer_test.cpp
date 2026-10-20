@@ -1,4 +1,4 @@
-/// 移植自 mbase/unittest/pass/opt/recover_pass_test.cpp 的 ClassRenamerTest 段，
+/// 移植自旧栈 unittest/pass/opt/recover_pass_test.cpp 的 ClassRenamerTest 段，
 /// 并补齐旧栈缺失的独立直接用例（空容器 / 不可解析资源 / 命名确定性）。
 /// 断言面：URI 重写（旧条目删除、新条目入容器）、描述符与调用点同步改写、
 /// 编号确定性（旧名序 → Class0/Class1/...）。

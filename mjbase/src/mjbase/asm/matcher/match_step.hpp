@@ -1,7 +1,7 @@
 /// @file        match_step.hpp
 /// @brief       线性指令序列模式的单步约束：具体 Op / 通配 / 贪婪多步 / 组合子。
 ///
-/// 旧栈（mbase/asm/matcher/match_step.hpp）的步骤是虚接口 + 裸指针 +
+/// 旧栈（asm/matcher/match_step.hpp）的步骤是虚接口 + 裸指针 +
 /// 进程级所有权登记表；本实现是值语义：一步是一棵可自由拷贝/移动的
 /// 组合子树，随 MatchRule 一起存活，无生命周期负担。谓词只读单条指令
 /// （@ref jbc::ir::Insn 值），不再接触节点指针与列表游标。

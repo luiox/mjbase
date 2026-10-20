@@ -1,4 +1,4 @@
-/// 移植自 mbase/unittest/pass/opt/recover_pass_test.cpp 的 ClassMemberSorterTest
+/// 移植自旧栈 unittest/pass/opt/recover_pass_test.cpp 的 ClassMemberSorterTest
 /// 段（206 行起），并按任务补齐旧栈缺失的独立直接用例：排序键矩阵、条件 PA、
 /// 重排后 lower/backingIndex 一致性。载体按新契约重定型：ClassNode 骨架 →
 /// ClassSession（backing + unit 同步重排）。

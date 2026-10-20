@@ -8,11 +8,11 @@
 -- 测试开关
 -- ---------------------------------------------------------------------------
 
--- 启用 mjt_mcp_unittest。gtest 仅在开启时才被 add_requires。
+-- 启用单元测试 target（mjbase_unittest）。gtest 仅在开启时才被 add_requires。
 option("with_tests")
     set_default(false)
     set_showmenu(true)
-    set_description("Enable the mjt_mcp_unittest target (pulls gtest via xrepo).")
+    set_description("Enable the mjbase_unittest target (pulls gtest via xrepo).")
 
 
 -- AddressSanitizer。MSVC 下 /fsanitize=address 会改变 STL 的 ABI

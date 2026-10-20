@@ -1,9 +1,9 @@
 /// @file        reference_index_test.cpp
 /// @brief       ReferenceIndex 全量移植用例（旧栈 20 用例逐字等强）。
 ///
-/// 旧栈对应物：mbase/unittest/reference/reference_index_test.cpp。夹具从
+/// 旧栈对应物：unittest/reference/reference_index_test.cpp。夹具从
 /// jbytecode ClassWriter 重写为手拼 classfile 字节（class_bytes_builder.hpp）；
-/// 旧栈经 CallGraph::buildFromIndex 的图级二次断言（mbase CallGraph 消费索引
+/// 旧栈经 CallGraph::buildFromIndex 的图级二次断言（旧栈 CallGraph 消费索引
 /// 事实成边）按同一过滤规则改在索引事实上断言（indexHasMethodEdge，见函数注）。
 #include <gtest/gtest.h>
 

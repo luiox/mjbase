@@ -1,11 +1,11 @@
 # mjbase 开发约定
 
-mjbase 是基于 libjbc 的跨类程序分析与变换库，按模块逐步重写 mbase 的能力。
-mbase 不在本仓（语义来源见 mjt 仓的 mbase 分叉），只作语义参考与对拍 oracle；
+mjbase 是基于 libjbc 的跨类程序分析与变换库，按模块逐步重写旧栈的能力。
+旧栈不在本仓（语义参考实现由私有侧维护），只作语义参考与对拍 oracle；
 mjbase 不做兼容 shim。
 
 **改动前必读 [`../doc_ai/migration-boundary.md`](../doc_ai/migration-boundary.md)**：
-公私边界红线（mjt-deobf 与家族设施不进公开仓）、按消费方驱动的迁移切片顺序，
+公私边界红线（混淆器家族设施不进公开仓）、按消费方驱动的迁移切片顺序，
 以及迁移与重构逐批交替的解耦纪律。
 
 ## 边界
@@ -47,7 +47,7 @@ mjbase 不做兼容 shim。
   `jbc::ir::CodeDom`（append + createLabel 组合，不需要 classfile）；
   需要类字节时参考 libjbc 独立仓（luiox/libjbc）`demo/control_flow.cpp` 的手工字节模式。
 
-## 从 mbase 移植的纪律
+## 从旧栈移植的纪律
 
 - 语义照旧、实现重写：按旧实现的公开语义与测试意图在新底座上重写，
   不逐行翻译（旧代码架在 InsnList/MethodNode 上，新底座是值语义句柄）。

@@ -12,7 +12,7 @@ namespace mjbase::pass {
 /// 流水（中间层设计 §3.0 敌意输入前置清洗级裁决的落地批）：
 ///   1. 前置级（libjclassfile）：畸形容忍读入（全量属性建模 + 指令解码）→
 ///      IllegalStrippingTransformer 全量规则面 → 写出。规则触发按产物与输入的
-///      字节比较判定（与旧栈 mbase IllegalClassFileCleaner 一致），未触发的
+///      字节比较判定（与旧栈 旧栈 IllegalClassFileCleaner 一致），未触发的
 ///      资源不重编码——合法输入零重编码、字节不动。
 ///   2. libjbc 级：对进入字节跑既有 2 条结构规则（见下），读/写失败零产出。
 /// 每级独立原子（级内任一步失败该级原样放行），级间以字节衔接；bytes 发生

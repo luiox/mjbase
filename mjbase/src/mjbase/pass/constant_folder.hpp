@@ -5,7 +5,7 @@
 namespace mjbase::pass {
 
 /// @brief 常量折叠器：把操作数栈上的「常量装载 + 同类型二元运算」极大链
-///        折叠为单条常量装载（移植自 mbase pass/opt 的 ConstantFolder 的
+///        折叠为单条常量装载（移植自旧栈 pass/opt 的 ConstantFolder 的
 ///        可观测子集）。
 ///
 /// @par 策略（链识别算法）

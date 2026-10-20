@@ -1,7 +1,7 @@
 /// @file        keep_rule.hpp
 /// @brief       keep 规则面：行式 DSL、类/成员 glob 匹配、保守 keep 预设模式库。
 ///
-/// 审计 P0-1/P0-2（mbase/doc_ai/opt-pass-completeness-audit.md §6）的落地件：
+/// 审计 P0-1/P0-2（doc_ai/opt-pass-completeness-audit.md §6）的落地件：
 /// 对标 商业化 trim 工具 的 trimExclude 脚本与 DEFAULT_TRIM_EXCLUDE 保守模式库，
 /// 为全局收缩家族（unused_member_remover 四件）提供可配置的保留策略。
 ///

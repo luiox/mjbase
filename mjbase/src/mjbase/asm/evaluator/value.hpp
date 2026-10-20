@@ -2,7 +2,7 @@
 /// @brief       asm/evaluator 具体值模型：数值四类 + 只读引用面。
 ///
 /// 求值器是具体栈机：每个值都是精确已知的，不存在 unknown/部分已知状态
-/// （旧 mbase evaluator 的 unknown 降级语义由 analyzer 域承接，本模块
+/// （旧 旧栈 evaluator 的 unknown 降级语义由 analyzer 域承接，本模块
 /// 遇到不可求值的形状直接返回结构化错误，不猜、不静默降级）。
 /// 引用面是只读子集：null、具长度的数组、不透明对象；仅支撑
 /// null 判定、arraylength 读长度与按身份的引用相等，不建模对象内容。

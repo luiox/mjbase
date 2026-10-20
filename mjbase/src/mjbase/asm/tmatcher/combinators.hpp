@@ -1,7 +1,7 @@
 /// @file        combinators.hpp
 /// @brief       组合子库：叶子匹配节点 + 序列组合子 + 捕获。
 ///
-/// 语义对齐 mbase/asm/tmatcher 的 combinators.hpp，按新底座裁剪：
+/// 语义对齐 asm/tmatcher 的 combinators.hpp，按新底座裁剪：
 ///   - 叶子按 `jbc::core::Op` 与操作数条件（cp 索引 / local 索引 /
 ///     立即数 / 分支目标标签解析结果）组合成谓词。
 ///   - 组合子覆盖任务清单：seq / any（任意单条）/ opt / repeat（贪婪与

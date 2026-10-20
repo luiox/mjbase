@@ -22,7 +22,7 @@ namespace model = mjbase::model;
 namespace {
 
 // ── 最小可解析 classfile 手工构造 ────────────────────────────────
-// 形态对齐 mbase 测试的 ClassWriter 产物：public class <name> extends
+// 形态对齐 旧栈 测试的 ClassWriter 产物：public class <name> extends
 // Object，含一个 public static int t() { return 1; }，无 StackMapTable。
 // libjbc 无 tree 式 ClassWriter，字节按骨架直拼（单槽 CP 条目，无 long/double）。
 void putU2(std::vector<ca::u8>& out, ca::u16 v)
@@ -360,7 +360,7 @@ TEST(MjCliRunnerTest, stagedPublishesToExactUtf8OutputPath)
     fs::remove_all(outDir);
 }
 
-// ── targetMethod 解析：name / name()I 过滤语义（mbase
+// ── targetMethod 解析：name / name()I 过滤语义（旧栈
 // buildMethodPredicate 的 (name, desc) 视图形态）──
 TEST(MjCliRunnerTest, methodPredicateMatchesNameAndDescriptor)
 {
@@ -376,6 +376,6 @@ TEST(MjCliRunnerTest, methodPredicateMatchesNameAndDescriptor)
     EXPECT_FALSE(byDescriptor->matches("keep", "()V"));
     EXPECT_FALSE(byDescriptor->matches("other", "()I"));
 
-    // 空串 → nullopt（不过滤），对应 mbase 的 nullptr 谓词。
+    // 空串 → nullopt（不过滤），对应 旧栈 的 nullptr 谓词。
     EXPECT_FALSE(MethodFilter::parse("").has_value());
 }

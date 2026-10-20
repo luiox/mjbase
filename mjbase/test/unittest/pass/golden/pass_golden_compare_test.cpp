@@ -4,7 +4,7 @@
 /// 迁移计划 §0 规则 2「双栈对拍」/ P4「每 pass 一役：golden 提取 → 新实现 →
 /// 字节级对拍或显式声明输出差异」的验收机器：同一语料跑 mjbase 试点 pass
 /// （经 pass_name_registry 按名构造），与旧栈提取的 golden 逐字节比较。
-/// golden 与语料由旧栈侧提取器（mbase/unittest/pass/golden/）生成并冻结在
+/// golden 与语料由旧栈侧提取器（旧栈同名单测）生成并冻结在
 /// mjbase/test_resource/pass_golden/ 下，属基线文件；再生成方式见该目录 README
 /// 与 doc_ai/pass-golden-pipeline.md。
 ///
@@ -931,7 +931,7 @@ const std::vector<std::string>& umCorpusNames()
 }
 
 /// 重建 um 容器：5 类语料 + services 文件（hb.UMService）+ Manifest
-/// （Agent-Class: hb.UMAgent）。与 mbase 提取侧 makeUmContainer 同源。
+/// （Agent-Class: hb.UMAgent）。与 旧栈 提取侧 makeUmContainer 同源。
 void addUmContainerResources(mjbase::model::ResourceContainer& container)
 {
     for (const std::string& name : umCorpusNames()) {
@@ -1066,7 +1066,7 @@ namespace {
 
 constexpr const char* kCcLane = "pass_golden/corpus/cc";
 
-/// cc 道语料名（与 mbase 提取侧 handCcSources 同序——容器插入序 = 候选
+/// cc 道语料名（与 旧栈 提取侧 handCcSources 同序——容器插入序 = 候选
 /// 处理序契约，分桶与宿主成员序依赖它）。
 const std::vector<std::string>& ccCorpusNames()
 {
@@ -1445,8 +1445,8 @@ TEST(MjPassGoldenCompare, ToolClassCombiner)
 
 // ── B 批 JunkCodeInserter 自基线（防漂移，非旧栈对拍）──
 //
-// golden 纪律「基线在切换前从旧栈提取」对本 pass 不适用：B 批无 mbase 对应件
-// （旧栈垃圾代码面在 mjt-obf，且建类属 A5 域，不在本批迁移面）。替代基线：
+// golden 纪律「基线在切换前从旧栈提取」对本 pass 不适用：B 批无 旧栈 对应件
+// （旧栈垃圾代码面在宿主混淆器线，且建类属 A5 域，不在本批迁移面）。替代基线：
 // 确定性 pass 的输出按字节冻结为自基线（MJBASE_PASS_GOLDEN_REGEN=1 时再生成），
 // 常规运行逐字节对拍——行为漂移即失败。硬验收面（真 JVM 执行）另在 JVM 用例。
 // 基线语料取 hb_char_arr（15 指令方法，kStride 命中一次插入）与 hb_nop_seq

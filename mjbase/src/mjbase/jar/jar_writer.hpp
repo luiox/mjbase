@@ -1,7 +1,7 @@
 /// @file        jar_writer.hpp
 /// @brief       JAR 条目写入接口：回调式收集 → 排序 → 目录条目补全 → DEFLATE 写出。
 ///
-/// 直迁自 mbase/jar/jar_writer（语义照旧）。差异点：错误通道 throw →
+/// 直迁自 jar/jar_writer（语义照旧）。差异点：错误通道 throw →
 /// Result<void, JarError>；条目名/路径用 ca::str::Utf8String 家族（jzip 条目
 /// 名域以 std::string 为边界类型，进入 jzip 前一次性转换）。
 #pragma once
@@ -34,7 +34,7 @@ public:
     /// @param entryName 条目路径
     /// @param content   条目内容
     ///
-    /// mbase 按值接收 std::string 以吃住临时对象的移动；本版形参为借用视图
+    /// 旧栈 按值接收 std::string 以吃住临时对象的移动；本版形参为借用视图
     /// （Utf8StringRef），条目名在收集器内单次复制驻留，语义等价且调用方
     /// 无需为复用再拷贝一份。
     virtual void writeEntry(Utf8StringRef entryName, std::vector<ca::u8> content) = 0;

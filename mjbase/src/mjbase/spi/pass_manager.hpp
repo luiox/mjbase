@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <vector>
 
@@ -51,7 +51,7 @@ const char* to_string(PipelineError::Stage stage) noexcept;
 /// @param classBytes    输入 class 字节
 /// @param classManager  可选类级 pass 编排器（nullptr 或空跳过）
 /// @param methodManager 可选方法级 pass 编排器（nullptr 或空跳过；与 classManager 可并用，
-///                      先类级后方法级，与 mbase 阶段序一致）
+///                      先类级后方法级，与 旧栈 阶段序一致）
 /// @param job           作业级根上下文（arena + 身份池）
 /// @return 转换后的 class 字节；仅当有 pass 声明改动时重序列化，否则原字节透传。
 Result<std::vector<ca::u8>, PipelineError>
@@ -61,7 +61,7 @@ Result<std::vector<ca::u8>, PipelineError>
 /// @brief Jar 级字节码编排入口：容器 → GlobalPassManager → 统一写回。
 ///
 /// 在 ResourceContainer 上跑全局流水线（含 GlobalToClassPassAdaptor 驱动的跨类编排）。
-/// 与 mbase runJarPipeline 的差异：不再在此注册 mbase 内置分析（那些分析属于
+/// 与 旧栈 runJarPipeline 的差异：不再在此注册 旧栈 内置分析（那些分析属于
 /// 旧栈分析域，未随迁）；分析注册是 pass 自己的责任（registerAnalysis 幂等）。
 /// 内置分析缺位不改变编排语义：AM 的惰性求值 + PreservedAnalyses 失效协议不变。
 ///

@@ -1,4 +1,4 @@
-/// 移植自 mbase/unittest/pass/opt/structure_pass_test.cpp 的
+/// 移植自旧栈 unittest/pass/opt/structure_pass_test.cpp 的
 /// EmptyClassRemoverTest / UnusedClassRemoverTest / UnusedFieldRemoverTest /
 /// GlobalUnusedMethodRemoverTest / GlobalUnusedPassContractTest 段（批 A：
 /// 未使用成员清理家族，容器级四件）。夹具从 jbytecode ClassWriter 重写为

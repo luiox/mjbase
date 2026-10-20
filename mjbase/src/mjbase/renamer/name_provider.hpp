@@ -1,8 +1,8 @@
 /// @file        name_provider.hpp
 /// @brief       改名引擎只读上下文（RenameContext）+ 建议来源抽象（NameProvider）。
 ///
-/// 旧栈对应物：mbase/renamer/name_provider（ClassHierarchy+MethodHierarchy 借
-/// ClassNode 活在 mbase 树上）。mjbase 重写线：容器经 class_scan 建libjbc 会话，
+/// 旧栈对应物：renamer/name_provider（ClassHierarchy+MethodHierarchy 借
+/// ClassNode 活在 旧栈 树上）。mjbase 重写线：容器经 class_scan 建libjbc 会话，
 /// fillSummary 抽骨架值建 mjbase::hierarchy 图；override 闭包组件 =
 /// MethodHierarchy::overrideFamily（并查集等价语义已在 hierarchy 批对拍）。
 ///

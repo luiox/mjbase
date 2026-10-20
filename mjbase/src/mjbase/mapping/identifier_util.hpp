@@ -33,7 +33,7 @@ struct IdentifierUtil
 
     static bool isPrimitiveDescChar(char c);
 
-    // ── std::string 系列（外部边界：mjt CLI 等消费 CpUtf8::text() 的场景）──
+    // ── std::string 系列（外部边界：产品线 CLI 等消费 CpUtf8::text() 的场景）──
     // 转义规则与 escapeUnicode 一致（0x21..0x7E 保留，空格/控制符/高字节/backslash
     // 转 \uXXXX 大写），并对连续相同 token 做 run-length 压缩：
     //   连续 ≥ collapseThreshold 个相同 token → <token>...(省略N个)...<token>

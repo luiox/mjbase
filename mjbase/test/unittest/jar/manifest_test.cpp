@@ -1,6 +1,6 @@
 /// JAR-4 回归：Manifest::toBytes 折行不得切断 UTF-8 多字节字符。
 ///
-/// 移植自 mbase/unittest/jar/manifest_test.cpp（4 用例逐一对应，断言等强度）；
+/// 移植自旧栈 unittest/jar/manifest_test.cpp（4 用例逐一对应，断言等强度）；
 /// 适配点仅命名空间与 Utf8String 字节级构造（from_data_unchecked 直通）。
 #include "mjbase/jar/manifest.hpp"
 

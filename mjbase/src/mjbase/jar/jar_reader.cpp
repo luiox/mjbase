@@ -11,8 +11,8 @@ namespace mjbase::jar {
 
 namespace {
 
-// fs 层错误 → jar 错误（读侧）：FileNotFound 与打开失败分开（对应 mbase 的
-// 两种 throw），读取失败单独成类（mbase 未检测读失败，此为诊断粒度细化）。
+// fs 层错误 → jar 错误（读侧）：FileNotFound 与打开失败分开（对应 旧栈 的
+// 两种 throw），读取失败单独成类（旧栈 未检测读失败，此为诊断粒度细化）。
 JarError toJarError(ca::fs::FsError e, const Utf8StringRef& path)
 {
     JarError err;

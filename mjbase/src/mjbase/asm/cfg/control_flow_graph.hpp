@@ -1,7 +1,7 @@
 /// @file        control_flow_graph.hpp
 /// @brief       方法级控制流图：基本块表、后继/前驱边与异常边。
 ///
-/// 语义来源是 mbase 的 asm/cfg（冻结参考），在 libjbc 底座上重写为只读
+/// 语义来源是 旧栈 的 asm/cfg（冻结参考），在 libjbc 底座上重写为只读
 /// 值视图：
 ///   - 切块复用 CodeEditor::blocks() 的 leader 分析（顺序头、跳转/switch
 ///     目标、return/athrow/ret 的顺序后继、异常表三个边界）；

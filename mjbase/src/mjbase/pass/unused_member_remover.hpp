@@ -8,7 +8,7 @@
 
 namespace mjbase::pass {
 
-/// @defgroup unused_member_cleanup 未使用成员清理家族（移植自 mbase
+/// @defgroup unused_member_cleanup 未使用成员清理家族（移植自旧栈
 /// pass/opt/unused_member_remover 的容器级直写四件）。
 ///
 /// 本家族把「可达性 / 引用索引分析证明不可达」的类、字段、方法转换为字节码删除。

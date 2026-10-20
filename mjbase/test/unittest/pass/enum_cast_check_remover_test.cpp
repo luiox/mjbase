@@ -1,5 +1,5 @@
 /// EnumCastCheckRemover 单测：枚举 values() 中 INVOKEVIRTUAL/CHECKCAST 相邻
-/// 对的成对删除面（移植自 mbase structure_pass_test 的 EnumCastCheckRemover
+/// 对的成对删除面（移植自旧栈 structure_pass_test 的 EnumCastCheckRemover
 /// 三例，语义口径 1:1；并补移植审计两钉：首方法位序面、cast 锚定阻断面）。
 #include <gtest/gtest.h>
 

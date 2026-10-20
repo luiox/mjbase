@@ -5,7 +5,7 @@
 namespace mjbase::pass {
 
 /// @brief 常量 char 数组构造的 `new String(char[])` 整窗折叠为字符串 ldc
-///        （移植自 mbase pass/opt/const_char_array_string_folder，旧栈
+///        （移植自旧栈 pass/opt/const_char_array_string_folder，旧栈
 ///        deobfuscate/recover 的 opt-in 件，与已迁的 CharArrToStrSimplifier
 ///        互补：那件把裸 char[] 字面构造改写为 ldc+"toCharArray"，保留数组
 ///        语义；本件把整个 `new String(char[])` 构造串折叠为最终字符串）。

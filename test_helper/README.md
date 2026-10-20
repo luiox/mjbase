@@ -1,6 +1,6 @@
 # test_helper
 
-Shared test utility library for morpher subprojects. Provides resource loading and output path resolution for tests.
+Shared test utility library for project subprojects. Provides resource loading and output path resolution for tests.
 
 `jdk_fixture.hpp` additionally provides shared JDK probing and cross-platform command execution:
 Windows commands run through a temporary `.bat`; POSIX commands run through a temporary `sh`
@@ -50,9 +50,8 @@ and builds a `name → absolute_path` map:
 
 | File location | Content (name) | Resolved path |
 |---|---|---|
-| `.project_root_file` | `morpher` | *project root* |
-| `libs/libjbytecode/.project_root_file` | `libjbytecode` | `libs/libjbytecode/` |
-| `libs/libjbytecode/core/.project_root_file` | `libjbytecode_core` | `libs/libjbytecode/core/` |
+| .project_root_file | mjbase | *project root* |
+| <sub>/.project_root_file | <sub-name> | <sub>/ |
 | ... | ... | ... |
 
 Blacklist (directories skipped during scan): `.`-prefix, `build`-prefix, `node_modules`.
@@ -70,7 +69,7 @@ Call `setup("project_name")` once in `main()` to initialize:
 
 ### 跨项目样本访问
 
-当某个子项目（如 mj2x）需要消费另一子项目（如 mtest_set）的 `test_resource/`
+当某个子项目需要消费另一子项目的 `test_resource/`
 样本时，通过这组按名字定位的原语跨项目取，无需各自硬编码相对路径：
 
 - `getProjectPath(name)` → 该 `.project_root_file` 名字对应的项目根绝对路径
@@ -79,8 +78,8 @@ Call `setup("project_name")` once in `main()` to initialize:
 - `getProjectResource(name, relPath)` → 读取为 `std::vector<uint8_t>`
 
 定位机制同 `getAsmTestResourcePath`：通过 `.project_root_file` 扫描建立的
-`name → path` 映射查找项目名（如 `"mtest_set"` / `"mj2x"`）。统一样本供给门面
-`mtest_set::sample`（`mtest_set/src/sample/`）即建立在这组原语之上。
+`name → path` 映射查找项目名）。统一样本供给门面`
+`即建立在这组原语之上。
 
 ### Adding a new subproject
 

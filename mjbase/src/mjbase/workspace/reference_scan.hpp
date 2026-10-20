@@ -1,7 +1,7 @@
 /// @file        reference_scan.hpp
 /// @brief       工作区内直写引用扫描：字节码编码事实（方法/字段/类型）。
 ///
-/// mbase ReferenceIndex 的 mjbase 直迁切片：只回答「哪些扫描过的 class 和方法体
+/// 旧栈 ReferenceIndex 的 mjbase 直迁切片：只回答「哪些扫描过的 class 和方法体
 /// 直接引用给定的 method/field/type」。旧栈索引的反射事实族中 class-string 形态
 /// 事实已随迁（字符串常量按 remapper 反射语法识别为类型引用候选）；常量反射
 /// 成员查找、method handle、lambda bootstrap、别名传播与注解/签名/结构元数据

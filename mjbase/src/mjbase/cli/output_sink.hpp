@@ -15,7 +15,7 @@
 //   mjbase::cli::OutputSink sink(tmpfile);  // 或注入到命令
 //   sink.printf(...);
 //
-// 移植自 mbase/cli/output_sink（语义照旧）。
+// 移植自旧栈 cli/output_sink（语义照旧）。
 
 #include <cstdio>
 #include <cstdarg>

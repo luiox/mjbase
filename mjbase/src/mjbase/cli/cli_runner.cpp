@@ -36,7 +36,7 @@ void setFailure(CliRunReport& report, CliFailureKind kind, std::string message)
 }
 
 // 重新导入输出文件，确认其中每个 Class 资源都能被 classfile 读取器完整解析
-// （mbase 侧以 ClassReader 异常判定；mjbase 换 jbc::core::readClass——
+// （旧栈 侧以 ClassReader 异常判定；mjbase 换 jbc::core::readClass——
 // Err / 非 Validated / 类名为空都视为验证失败）。
 bool verifyOutput(const std::string& output, InputKind kind)
 {
@@ -124,7 +124,7 @@ std::string createStagedOutput(const std::string& output)
         const auto suffix = std::to_string(timestamp) + "." +
                             std::to_string(sequence.fetch_add(1, std::memory_order_relaxed));
         const auto candidate =
-            parent / std::filesystem::u8path(base + ".morpher-stage." + suffix);
+            parent / std::filesystem::u8path(base + ".mjbase-stage." + suffix);
         if (FileUtil::create_file(candidate.generic_u8string()))
             return candidate.generic_u8string();
     }

@@ -1,6 +1,6 @@
 # mjbase
 
-`mjbase` 是基于 [libjbc](https://github.com/luiox/libjbc) 的跨类 JVM 字节码分析与变换库，是旧 `mbase` 栈的重写继任者线：跨类身份（keys）、类/方法/字段层次、调用图与引用索引、指令工程（asm 域）、映射与重映射、AIR/SIR 树 IR，以及驱动它们的 pass 管线。
+`mjbase` 是基于 [libjbc](https://github.com/luiox/libjbc) 的跨类 JVM 字节码分析与变换库，是旧栈的重写继任者线：跨类身份（keys）、类/方法/字段层次、调用图与引用索引、指令工程（asm 域）、映射与重映射、AIR/SIR 树 IR，以及驱动它们的 pass 管线。
 
 与 libjbc 的分界是刻意的：**libjbc 只管单类/单方法**（classfile DOM、CodeDom、CodeEditor、帧与支配引擎），**mjbase 管跨类**。mjbase 不重新实现 libjbc 已有能力，也不把全局状态塞回 libjbc。
 

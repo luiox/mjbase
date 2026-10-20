@@ -182,7 +182,7 @@ TEST(MjConsumerSummaryScannerTest, ObjectClassHasNoSuperAndVersionEncoding)
     EXPECT_TRUE(s.interfaces.empty());
     ASSERT_EQ(s.methods.size(), 1u);
     EXPECT_FALSE(s.methods[0].hasCode);
-    // 手拼汇编器固定 V1_8（major=52, minor=0）；编码与 mbase 口径一致。
+    // 手拼汇编器固定 V1_8（major=52, minor=0）；编码与 旧栈 口径一致。
     EXPECT_EQ(s.version, 52u);
     EXPECT_EQ(s.version, (0u << 16) | 52u);
 }

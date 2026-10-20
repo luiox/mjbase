@@ -2,7 +2,7 @@
 /// @brief       analysis 别名分析测试：值代数契约、摘要驻留键、全程序固定点、
 ///              反射闭包作用域、静态槽迟变更收敛与引用化摘要绑定。
 ///
-/// 旧栈对应物：mbase/unittest/analysis/alias_analysis_test.cpp（19 用例全量
+/// 旧栈对应物：unittest/analysis/alias_analysis_test.cpp（19 用例全量
 /// 移植；断言逐字等强）。夹具从 ASM ClassWriter 重写为手拼 classfile 字节
 /// （class_bytes_builder.hpp）；MemberKey 键经 aliasMemberKey 构造（与实现
 /// 共用驻留池，内容寻址等值）。

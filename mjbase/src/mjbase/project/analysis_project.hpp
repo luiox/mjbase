@@ -12,7 +12,7 @@ namespace mjbase::project {
 
 /// @brief 分析工程文件 schema 当前版本（不识别的版本拒载）。
 ///
-/// v1 契约（luiox/morpher#1092 分析工程）：
+/// v1 契约（分析工程面）：
 /// ```
 /// {
 ///   "version": 1,
@@ -116,7 +116,7 @@ struct AnalysisProjectError
     ca::str::Utf8String      message;
 };
 
-/// @brief 分析工程最小库：实体登记 + 严格 JSON v1 读写（luiox/morpher#1092 P1）。
+/// @brief 分析工程最小库：实体登记 + 严格 JSON v1 读写（旧栈 P1 收敛）。
 ///
 /// 纯数据层，不感知 CLI/MCP/执行接口（P2 起）与工作区会话；值语义存储
 /// （人工规模实体量，无热路径，不引入 arena 视图生命周期）。返回指针/引用

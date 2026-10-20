@@ -1,7 +1,7 @@
 /// @file        name_proposal.hpp
 /// @brief       改名建议契约值对象：ProposalKind / RejectionReason / NameProposal。
 ///
-/// 旧栈对应物：mbase/renamer/name_proposal（luiox/morpher#1025/#1032 P0 四类）。
+/// 旧栈对应物：renamer/name_proposal（旧栈 P0 四类）。
 /// 语义照旧、载体重定型：旧栈字段是 move-only Utf8String 值；mjbase 底座按
 /// 「API 字符串 = 驻留视图」约定，全部字段是 aliasInterned（进程级内容寻址池）
 /// 的借用视图——内容相同 ⇔ 视图相同，本类型恢复可拷贝（视图在池存活期稳定）。

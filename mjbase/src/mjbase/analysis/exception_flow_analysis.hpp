@@ -2,7 +2,7 @@
 /// @brief       跨类异常流模型：throw/call 站点扫描 + 处理器覆盖 + 未捕获
 ///              异常类型的过程间不动点。
 ///
-/// 旧栈对应物：mbase/analysis/exception_flow_analysis（ExceptionFlowModel）。
+/// 旧栈对应物：analysis/exception_flow_analysis（ExceptionFlowModel）。
 /// 语义照旧、实现重写：类字节经 libjbc 会话升格后走 CodeDom 程序序扫描——
 /// NEW 记录最近分配类型，ATHROW 产出（类型, 处理器列表）抛出站点，invoke
 /// 家族产出调用站点；处理器覆盖按异常表范围判定。未捕获类型沿调用边做

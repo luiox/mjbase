@@ -1,7 +1,7 @@
 -- libca 构建规则内嵌（来源：luiox/libca @ 1ab29dea，即 libca 包 0.0.1）。
 -- libca.i18n.embed-lang 与 libca.resources.embed 两条 rule 原属 libca
 -- submodule 的 i18n/resources 模块 xmake.lua；包安装只产头文件与库，
--- 不带规则，故在此原样内嵌供 mbase/mjt 的 add_files({rules=...}) 使用。
+-- 不带规则，故在此原样内嵌供各产品线的 add_files({rules=...}) 使用。
 -- 同步要求：libca 升级时若规则变更，需同步更新本文件。
 
 rule("libca.i18n.embed-lang")

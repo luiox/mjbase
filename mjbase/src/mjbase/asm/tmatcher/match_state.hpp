@@ -1,7 +1,7 @@
 /// @file        match_state.hpp
 /// @brief       匹配状态层：不可变捕获表 + 游标快照。
 ///
-/// 语义对齐 mbase/asm/tmatcher 的 match_state.hpp，底座换成 CodeDom：
+/// 语义对齐 asm/tmatcher 的 match_state.hpp，底座换成 CodeDom：
 ///   - 捕获值从 `ca::core::Any` 收窄为 `jbc::ir::InsnId`——新 DSL 的绑定
 ///     语义是「捕获名 → 命中窗口入口处的指令句柄」，调用方经
 ///     `CodeDom::peek` 读取操作数，常量解释归 asm/insn / evaluator 模块。

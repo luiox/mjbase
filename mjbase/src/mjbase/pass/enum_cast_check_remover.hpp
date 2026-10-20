@@ -5,7 +5,7 @@
 namespace mjbase::pass {
 
 /// @brief 移除枚举类首个方法中可证明冗余的 `INVOKEVIRTUAL`/`CHECKCAST` 相邻
-///        指令对（移植自 mbase pass/opt/enum_cast_check_remover，旧栈
+///        指令对（移植自旧栈 pass/opt/enum_cast_check_remover，旧栈
 ///        deobfuscate/recover 的 opt-in 保守件，不进默认链）。
 ///
 /// 语义（与旧实现逐条对齐）：只处理枚举类（ACC_ENUM）的**首个方法**

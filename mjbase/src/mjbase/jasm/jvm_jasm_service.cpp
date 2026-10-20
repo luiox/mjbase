@@ -40,7 +40,7 @@ std::string_view view(ca::str::Utf8StringRef value)
 }
 
 // mjbase::hierarchy::ClassHierarchy → jhasm InheritanceChecker 适配器。
-// 语义照 mbase ClassHierarchy 适配：任一侧未登记时 isSubclassOf 退化为
+// 语义照 旧栈 ClassHierarchy 适配：任一侧未登记时 isSubclassOf 退化为
 // 名字相等，commonSuperclass 退化为 java/lang/Object。
 class HierarchyInheritanceChecker final : public ::jhasm::analysis::InheritanceChecker
 {
@@ -114,7 +114,7 @@ Result<T> exceptionResult(DiagnosticStage stage, const std::exception& exception
     return result;
 }
 
-// 字节不可解析时的稳定 Error 诊断（mbase 侧由 ClassReader 异常路径产生）。
+// 字节不可解析时的稳定 Error 诊断（旧栈 侧由 ClassReader 异常路径产生）。
 template<typename T>
 Result<T> unreadableClassResult(DiagnosticStage stage, jbc::core::ReadError error)
 {

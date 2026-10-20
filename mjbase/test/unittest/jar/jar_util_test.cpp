@@ -2,7 +2,7 @@
 /// @brief       JarUtil 测试：条目名后缀判定（.class/.jar/.jmod）与 class 字节嗅探
 ///              （魔数 + 常量池头部 tag 合法性预检）。
 ///
-/// 移植自 mbase/unittest/jar/jar_util_test.cpp，22 用例断言逐一对应，
+/// 移植自旧栈 unittest/jar/jar_util_test.cpp，22 用例断言逐一对应，
 /// 仅适配命名空间与字符串类型（std::string → Utf8StringRef 借用视图）。
 #include <gtest/gtest.h>
 

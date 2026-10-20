@@ -1,8 +1,8 @@
 /// @file        jar_reader.hpp
 /// @brief       JAR 读取接口：条目遍历、进度回调、条目名宽容解码、条目元数据列表。
 ///
-/// 直迁自 mbase/jar/jar_reader（语义照旧）。差异点：
-///   - 错误通道：mbase 对文件级失败 throw，本版改为 Result<void, JarError>；
+/// 直迁自 jar/jar_reader（语义照旧）。差异点：
+///   - 错误通道：旧栈 对文件级失败 throw，本版改为 Result<void, JarError>；
 ///   - 字符串：条目名/路径用 ca::str::Utf8String 家族，原始字节经
 ///     from_data_unchecked 直通（zip 条目名零解码口径不变）；
 ///   - 文件 IO 走 ca::fs::FileUtil（UTF-8 路径边界，libjzip 输入不变）。
@@ -40,12 +40,12 @@ public:
                            const std::vector<ca::u8>& /*data*/)>;
 
     /// @brief 条目名宽容解码回调（#1110 族，opt-in，对齐 D40 setLenientTextDecoder
-    /// 先例：libjclassfile 注入回调、消费面注入 mjt text_codec 规范口径）。
+    /// 先例：字节码底座注入回调、消费面注入文本编解码规范口径）。
     ///
     /// zip 条目名在 jzip 层是零解码原始字节（LFH/CEN read_string 直拷，GP bit
     /// 0x800 读入但未用）。注入本回调后，条目名原始字节（GBK 无 flag 名等）经
     /// 回调规范化为合法 UTF-8 再进入资源 URI；未注入时原始字节直通——缺省路径
-    /// 逐字节零漂移。回调口径由注入方定（mjt 侧统一注入 text_codec.hpp 的
+    /// 逐字节零漂移。回调口径由注入方定（宿主侧统一注入文本编解码器的
     /// toCanonicalUtf8：合法 UTF-8 原样 / GBK→UTF-8 / 残字节 U+FFFD）。
     using EntryNameDecoder = std::function<Utf8String(std::string_view)>;
     void setEntryNameDecoder(EntryNameDecoder fn) { entryNameDecoder_ = std::move(fn); }
@@ -120,7 +120,7 @@ struct JarEntryInfo
 
 /// @brief 解析 jar 的条目元数据：读文件 + 解析 ZIP 结构（central directory 名/大小，
 /// 不解压任何条目）。与 JvmJarReader 同一解析语义，供"先显示列表、后台加载内容"的
-/// 增量打开流程使用（mjdbg-editor）。
+/// 增量打开流程使用（编辑器消费面）。
 /// @param decoder 条目名宽容解码回调（opt-in，同 IJarReader::setEntryNameDecoder；
 /// 空回调 = 原始字节直通）。供 list 类消费面与读取面保持同一解码口径。
 Result<std::vector<JarEntryInfo>, JarError>

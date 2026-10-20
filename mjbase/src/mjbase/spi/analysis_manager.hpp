@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <memory>
 #include <stdexcept>
@@ -41,7 +41,7 @@ namespace mjbase::spi {
 /// 生命周期内有效；借用外部指针的 pinned 结果必须由注入方在借用作用域结束时调用
 /// `clearPinned` 或恢复先前值。
 ///
-/// @par 与 mbase 版的差异
+/// @par 与 旧栈 版的差异
 /// 移除 typeResolver 注入口（旧 ICommonSuperClassProvider 挂在 AM 上供 COMPUTE_FRAMES
 /// 写回取用）。libjbc 的写回面（lowerMethod relocation 契约 + writeClass copy-through）
 /// 不需要外部 resolver；公共父类求解改由 mjbase::spi::CommonSuperClassResolver 独立

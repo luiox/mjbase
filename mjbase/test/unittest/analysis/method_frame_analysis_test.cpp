@@ -2,7 +2,7 @@
 /// @brief       analysis 帧分析语义测试：逐指令帧对齐、空方法 fail-open、
 ///              容量声明无关。
 ///
-/// 旧栈对应物：mbase/unittest/analysis/method_frame_analysis_test.cpp
+/// 旧栈对应物：unittest/analysis/method_frame_analysis_test.cpp
 ///（6 用例中 3 个可移植）。OriginalSourceFrameAnalysis 的驱动器职责在 mjbase
 /// 由 libjbc DomainEngine 承担（域引擎产出 DomainResult.frames 与
 /// CodeUnit::dom.order() 按下标对齐）；帧语义等价断言落在 origin 域 +

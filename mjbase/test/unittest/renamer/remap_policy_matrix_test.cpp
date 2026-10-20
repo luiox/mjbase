@@ -1,5 +1,5 @@
 /// @file        remap_policy_matrix_test.cpp
-/// @brief       renamer 应用面矩阵（mjbase 移植版，luiox/morpher#1025 决议
+/// @brief       renamer 应用面矩阵（mjbase 移植版，旧栈决议
 ///              "对 P0–P4 阶段表的微调"第 3 条对应物）。
 ///
 /// 范围：options 两态（plan-only 门）、零建议/全拒后的 zero-applied 成功口径、

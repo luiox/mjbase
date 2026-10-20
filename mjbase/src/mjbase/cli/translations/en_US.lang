@@ -1,4 +1,4 @@
-# mbase/cli framework texts shared by every line using ArgParser.
+# cli framework texts shared by every line using ArgParser.
 
 mbase.cli.usage=Usage
 mbase.cli.options_header=Options:

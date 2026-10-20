@@ -1,5 +1,5 @@
 /// @file        resource_io_test.cpp
-/// @brief       资源导入导出测试（移植自 mbase/unittest/model/resource_io_test.cpp，
+/// @brief       资源导入导出测试（移植自旧栈 unittest/model/resource_io_test.cpp，
 ///              12 用例；末尾 3 个为本批新增的 Result 错误面用例）。
 #include <gtest/gtest.h>
 
@@ -146,7 +146,7 @@ TEST(MjModelIoTest, MixedEntriesClassifiedAndNormalized)
 // ── Recaf 98dd1f528 InfoImporterTest 两用例移植 ─────────────────
 //
 // 上游语义：头部形似 class 但 CP 首个 tag 越界（121）的伪 class 内容按普通
-// 文件处理；stub 前缀 JAR 整体按 ZIP 容器打开、条目全部可加载。morpher 的
+// 文件处理；stub 前缀 JAR 整体按 ZIP 容器打开、条目全部可加载。旧栈 的
 // 对应行为：条目级 isClassFile 双检（名字+内容）失败 → UnknownResource 保留
 // （不丢弃、不产出损坏 ClassResource），同容器的真实 class 条目照常加载。
 
@@ -288,7 +288,7 @@ TEST(MjModelIoTest, ManifestNameRoutesThroughManifestChannel)
     EXPECT_EQ(res->getType(), ResourceType::Manifest);
 }
 
-// ── Result 错误面（本批新增；mbase 同路径以 throw std::runtime_error 报错）──
+// ── Result 错误面（本批新增；旧栈同路径以 throw std::runtime_error 报错）──
 // 全部不触磁盘：错误分支在打开文件前返回。
 
 // 空 URI 导出 class：容器非「恰好一个 ClassResource」时拒绝。
@@ -297,12 +297,12 @@ TEST(MjModelIoTest, ExportClassFileWithoutUriRequiresSingleClassResource)
     ResourceContainer container;
     SimpleClassFileExporter exporter("", "unused.bin");
 
-    // 空容器：size != 1（mbase: "uri is empty and container size is not 1"）。
+    // 空容器：size != 1（旧栈: "uri is empty and container size is not 1"）。
     auto r1 = exporter.exportResource(container);
     ASSERT_TRUE(r1.is_err());
     EXPECT_EQ(r1.unwrap_err(), ModelError::BadArgument);
 
-    // 唯一资源不是 ClassResource（mbase: "the only resource is not ClassResource"）。
+    // 唯一资源不是 ClassResource（旧栈: "the only resource is not ClassResource"）。
     container.addResource("x.txt",
                           std::make_unique<UnknownResource>("x.txt", std::vector<ca::u8>{1}));
     auto r2 = exporter.exportResource(container);
@@ -320,15 +320,15 @@ TEST(MjModelIoTest, ExportClassFileByUriRejectsMissingAndNonClass)
     SimpleClassFileExporter missing("nope.class", "unused.bin");
     auto r1 = missing.exportResource(container);
     ASSERT_TRUE(r1.is_err());
-    EXPECT_EQ(r1.unwrap_err(), ModelError::NotFound);   // mbase: "uri not found in container"
+    EXPECT_EQ(r1.unwrap_err(), ModelError::NotFound);   // 旧栈: "uri not found in container"
 
     SimpleClassFileExporter wrongType("a.txt", "unused.bin");
     auto r2 = wrongType.exportResource(container);
     ASSERT_TRUE(r2.is_err());
-    EXPECT_EQ(r2.unwrap_err(), ModelError::TypeMismatch);   // mbase: "resource is not ClassResource"
+    EXPECT_EQ(r2.unwrap_err(), ModelError::TypeMismatch);   // 旧栈: "resource is not ClassResource"
 }
 
-// 从磁盘导入不存在的 class 文件：Err(Io)，容器保持为空（mbase: "failed to open"）。
+// 从磁盘导入不存在的 class 文件：Err(Io)，容器保持为空（旧栈: "failed to open"）。
 TEST(MjModelIoTest, ImportClassFileFromMissingPathIsIoError)
 {
     ResourceContainer container;

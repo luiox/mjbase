@@ -1067,7 +1067,7 @@ bool applyMutations(MethodPipeline& p, jbc::ir::ClassSession& session)
 
         // 实参：append 取末实参；insert(index, x) 取第 2 实参（index 槽 0，
         // 缺省回退槽 0）；<init>(String) 取槽 0。<init>()V 不携带内容实参：
-        // 新建 SB 本就是已知空串（mbase init 段 values.size()>=2 同口径），
+        // 新建 SB 本就是已知空串（旧栈 init 段 values.size()>=2 同口径），
         // 走 appended==nullptr 的 fail-closed 会误杀折叠链。
         if (init && argCount == 0) continue;
         const BindingValue* appended = nullptr;
@@ -1584,7 +1584,7 @@ void ReflectionBindingAnalyzer::analyzeSession(jbc::ir::ClassSession& session)
     }
 }
 
-// ── 类级编排（mbase clear/summarize/bindingsOfClass/build/indexDeclarations 照迁；
+// ── 类级编排（旧栈 clear/summarize/bindingsOfClass/build/indexDeclarations 照迁；
 //    文本一律 pool_ 驻留视图——键寿命与驻留池同在，内容寻址等值）──────────
 
 void ReflectionBindingAnalyzer::clear()
@@ -1631,7 +1631,7 @@ void ReflectionBindingAnalyzer::indexSession(jbc::ir::ClassSession& session)
 
     const std::string_view className = pool_.str(pool_.intern(syms.str(unit.thisClass)));
 
-    // 声明底表（first-seen wins；mbase try_emplace 同口径）。
+    // 声明底表（first-seen wins；旧栈 try_emplace 同口径）。
     auto [it, inserted] = classes_.try_emplace(className);
     if (inserted) {
         ClassInfo& info = it->second;
@@ -1680,7 +1680,7 @@ void ReflectionBindingAnalyzer::build(const mjbase::model::ResourceContainer& co
 {
     clear();
 
-    // 两趟扫描（mbase build 同构）：先全量声明底表/常量/名表，再逐方法值流
+    // 两趟扫描（旧栈 build 同构）：先全量声明底表/常量/名表，再逐方法值流
     // 落解。畸形类在 scan 阶段已 fail-open 跳过，不产出会话。
     const auto scanned = mjbase::analysis::scanClassResources(container);
     for (const auto& scannedClass : scanned) {

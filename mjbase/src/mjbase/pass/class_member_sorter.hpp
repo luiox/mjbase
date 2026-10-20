@@ -6,7 +6,7 @@
 
 namespace mjbase::pass {
 
-/// @brief 类成员排序器（移植自 mbase pass/opt/class_member_sorter）。
+/// @brief 类成员排序器（移植自旧栈 pass/opt/class_member_sorter）。
 ///
 /// 排序键（与旧实现逐条对齐）：
 ///   - 字段：先按描述符、再按名称的字典序（稳定排序，同键保原相对序）；
