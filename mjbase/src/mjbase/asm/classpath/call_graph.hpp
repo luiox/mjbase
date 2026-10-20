@@ -11,7 +11,10 @@
 ///   - invokevirtual / invokeinterface 记边但标记为虚分派（本层 unresolved，
 ///     层次扩展批做目标重写；见 CallSite::isVirtualDispatch）；
 ///   - invokedynamic 的 CP 操作数没有 owner（memberOf 返回空视图），
-///     callee 键的 owner 段驻留空串，消费者按 kind == Dynamic 分流。
+///     callee 键的 owner 段驻留空串，消费者按 kind == Dynamic 分流；
+///   - BSM 可解析时（见 indy.hpp），同一指令额外产出展开边：callee 为
+///     MethodHandle 目标成员，kind 按 reference_kind 折算，indyExpanded 置真。
+///     未知 BSM 家族只保留 Dynamic 保守边，不猜目标。
 ///
 /// 节点以 MemberKey（KeyPool 驻留）为键；图自有池，键随图存活。
 /// 扫描类集合中声明的方法标记 declared 并保留 access；只被引用未声明的
@@ -40,6 +43,7 @@
 #include "jbc/core/opcode.hpp"
 #include "jbc/ir/units.hpp"
 
+#include "mjbase/asm/classpath/indy.hpp"
 #include "mjbase/keys.hpp"
 
 namespace mjbase::asm_classpath {
@@ -54,7 +58,7 @@ enum class InvokeKind : ca::u8 {
     Special,       ///< invokespecial：直边（super/私有/构造器语义）
     Static,        ///< invokestatic：直边
     Interface,     ///< invokeinterface：虚分派边，本层 unresolved
-    Dynamic,       ///< invokedynamic：直边（BSM 链接目标不在本层展开）
+    Dynamic,       ///< invokedynamic：保守边（owner 空；可解析时另发 indyExpanded 边）
 };
 
 /// @brief opcode → 分派语义；非 invoke 家族返回 false。
@@ -69,6 +73,18 @@ struct CallSite
     InvokeKind kind = InvokeKind::Static;
     ca::u32 session = 0;                 ///< 图内会话表下标（sessionOf 消费，勿手改）
 
+    /// @brief 由 indy BSM 展开的补充边。
+    ///
+    /// callee 是展开目标（lambda implMethod / ConstantBootstraps.invoke 等），
+    /// kind 按 MethodHandle reference_kind 折算；insn 仍指向原 INVOKEDYNAMIC
+    /// 指令。原始 indy 边该位为 false。
+    bool indyExpanded = false;
+    /// @brief indy 的 BSM 家族。
+    ///
+    /// 仅 kind == Dynamic（原始边）或 indyExpanded（展开边）有意义；
+    /// Dynamic + Unknown = 未能展开的保守边，消费者应按未知效果处理。
+    BootstrapFamily indyFamily = BootstrapFamily::Unknown;
+
     /// @brief 虚分派边（virtual/interface）：目标待层次批解析，本层 unresolved。
     bool isVirtualDispatch() const noexcept
     {
@@ -80,7 +96,8 @@ struct CallSite
     bool operator==(const CallSite& o) const noexcept
     {
         return caller == o.caller && callee == o.callee && insn == o.insn &&
-               kind == o.kind && session == o.session;
+               kind == o.kind && session == o.session &&
+               indyExpanded == o.indyExpanded && indyFamily == o.indyFamily;
     }
     bool operator!=(const CallSite& o) const noexcept { return !(*this == o); }
 };
@@ -234,7 +251,8 @@ public:
     /// @brief 声明方法的 access 标志；未知方法返回 0。
     ca::u32 accessOf(MemberKey m) const noexcept;
 
-    /// @brief caller 的全部调用点（含虚分派未解析边与重复调用点），按扫描序。
+    /// @brief caller 的全部调用点（含虚分派未解析边、indy 展开边与重复调用点），
+    ///        按扫描序。
     std::vector<CallSite> outgoingSitesOf(MemberKey caller) const;
 
     /// @brief 指向 callee 的全部调用点（反向索引），按扫描序。

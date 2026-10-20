@@ -63,6 +63,7 @@ target("mjbase")
     add_files("src/mjbase/asm/matcher/**.cpp")
     add_files("src/mjbase/asm/tmatcher/**.cpp")
     add_files("src/mjbase/asm/classpath/call_graph.cpp")
+    add_files("src/mjbase/asm/classpath/indy.cpp")
     add_files("src/mjbase/hierarchy/**.cpp")
     -- 批 3：analysis / reference / spi / pass，连同上面推迟的 resolved_call_graph
     -- 与 remapper。本批含两个实锤环（asm⇄analysis⇄reference 余下部分、
