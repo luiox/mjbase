@@ -37,6 +37,13 @@ bool longValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, 
 bool doubleValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in,
                    double& out);
 
+bool floatValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, float& out);
+
+jbc::ir::Insn materializeIntConst(jbc::ir::ClassSession& session, ca::i32 v);
+jbc::ir::Insn materializeLongConst(jbc::ir::ClassSession& session, ca::i64 v);
+jbc::ir::Insn materializeFloatConst(jbc::ir::ClassSession& session, float v);
+jbc::ir::Insn materializeDoubleConst(jbc::ir::ClassSession& session, double v);
+
 /// @brief string 常量装载判定（旧栈 InsnUtil::getStringValue 对齐：仅 LDC）。
 bool stringValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in,
                    std::string_view& out);
