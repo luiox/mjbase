@@ -1,5 +1,6 @@
 #include "mjbase/pass/tool_class_combiner.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -422,6 +423,14 @@ mjbase::spi::PreservedAnalyses ToolClassCombiner::run(mjbase::model::ResourceCon
         loaded.push_back(std::move(entry));
     }
     if (loaded.empty()) return mjbase::spi::PreservedAnalyses::all();
+
+    // 分桶是贪心序依赖的（撞名/方法数上限决定供体落哪个宿主），容器是
+    // unordered_map——迭代序随标准库实现漂移（MSVC/libstdc++ 分桶策略不同）。
+    // 固定按类内部名排序，输出跨平台逐位稳定。
+    std::sort(loaded.begin(), loaded.end(),
+              [](const LoadedClass& a, const LoadedClass& b) {
+                  return a.name != b.name ? a.name < b.name : a.uri < b.uri;
+              });
 
     std::vector<LoadedClass*> candidates;
     for (LoadedClass& entry : loaded) {

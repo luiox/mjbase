@@ -32,6 +32,7 @@
 // file_util.hpp 的 FileMode 常量名——所有用到这些名字的头必须先于本块。
 #ifdef _WIN32
 #include <process.h>
+#include <share.h>   // _SH_DENYNO（锁文件共享模式，见 readLockBytes）
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -1981,13 +1982,32 @@ std::string buildLockContent(ca::i64 pid, const std::string& createdAt, const st
 }
 
 /// 读锁文件字节（失败 = 无值；调用方按各自路径裁决，不在此吞错）。
+///
+/// Windows 锁文件在持有期由写句柄打开（tryCreateLock 的 _SH_DENYNO）；libca
+/// 0.0.16 的读路径用 CRT 默认共享模式打开，会撞已存在的写句柄（sharing
+/// violation，EACCES）——二次获取读 owner 与释放前内容复核都会误判"读不出"。
+/// 锁域读显式 _SH_DENYNO，与持有者的共享模式对称；POSIX 无此限制。
 std::optional<std::string> readLockBytes(const std::string& path)
 {
+#ifdef _WIN32
+    std::FILE* handle = ::_wfsopen(nativePath(path).c_str(), L"rb", _SH_DENYNO);
+    if (handle == nullptr) return std::nullopt;
+    std::string bytes;
+    char        chunk[4096];
+    for (std::size_t n = 0; (n = std::fread(chunk, 1, sizeof(chunk), handle)) > 0;) {
+        bytes.append(chunk, n);
+    }
+    const bool failed = std::ferror(handle) != 0;
+    std::fclose(handle);
+    if (failed) return std::nullopt;
+    return bytes;
+#else
     auto content = ca::fs::FileUtil::read_all_bytes(path);
     if (content.is_err()) return std::nullopt;
     auto bytes = std::move(content).unwrap();
     return std::string(reinterpret_cast<const char*>(bytes.as_ptr()),
                        static_cast<std::size_t>(bytes.len()));
+#endif
 }
 
 /// 锁 owner 记录（store.lock 的解析产物；§7.1 三字段）。

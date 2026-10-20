@@ -131,9 +131,27 @@ std::string writeOrDie(const StoreManifest& manifest)
 
 std::string readFileOrDie(const std::filesystem::path& path)
 {
+#ifdef _WIN32
+    // store.lock 在持有期由写句柄打开；FileUtil 的默认共享模式读它会撞
+    // sharing violation（libca 0.0.16 stdio 读路径）。测试读取显式
+    // _SH_DENYNO，与锁持有者的共享模式对称。
+    std::FILE* handle = ::_wfsopen(path.native().c_str(), L"rb", _SH_DENYNO);
+    EXPECT_NE(nullptr, handle) << "path=" << path.string();
+    if (handle == nullptr) return {};
+    std::string bytes;
+    char        chunk[4096];
+    for (std::size_t n = 0; (n = std::fread(chunk, 1, sizeof(chunk), handle)) > 0;) {
+        bytes.append(chunk, n);
+    }
+    const bool failed = std::ferror(handle) != 0;
+    std::fclose(handle);
+    EXPECT_FALSE(failed) << "path=" << path.string();
+    return bytes;
+#else
     auto content = ca::fs::FileUtil::read_all_text(path.string());
     EXPECT_FALSE(content.is_err());
     return content.is_err() ? std::string() : std::move(content).unwrap();
+#endif
 }
 
 /// 清掉上一次 run 的同名临时 bundle，返回干净路径。
