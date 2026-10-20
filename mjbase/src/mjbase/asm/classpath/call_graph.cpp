@@ -189,6 +189,159 @@ std::vector<MemberKey> CallGraph::reachableClosure(const std::vector<MemberKey>&
 }
 
 // ---------------------------------------------------------------------------
+// 调用链 / 调用树视图
+// ---------------------------------------------------------------------------
+
+CallChainCursor::CallChainCursor(const CallGraph& graph, MemberKey root,
+                                 CallChainOptions options)
+    : graph_(&graph), maxDepth_(options.maxDepth)
+{
+    if (!graph.contains(root)) {
+        return;
+    }
+    stack_.push_back(Frame{root, graph.calleesOf(root), 0});
+    onPath_.insert(root);
+    exhausted_ = false;
+}
+
+bool CallChainCursor::next(CallChain& out)
+{
+    while (!exhausted_) {
+        Frame& top = stack_.back();
+        const ca::u32 depth = static_cast<ca::u32>(stack_.size() - 1);
+        const bool depthLimited = maxDepth_ != 0 && depth >= maxDepth_;
+
+        // 入帧判定只做一次：没有可展开的 callee（空/全部在路径上）或已到
+        // 深度上限时，该帧就是链尾。返回父帧后路径恢复原状，不能重复判叶。
+        if (!top.entered) {
+            top.entered = true;
+            bool expandable = !depthLimited;
+            if (expandable) {
+                expandable = false;
+                for (const MemberKey callee : top.callees) {
+                    if (onPath_.find(callee) == onPath_.end()) {
+                        expandable = true;
+                        break;
+                    }
+                }
+            }
+            if (!expandable) {
+                out.methods.clear();
+                out.methods.reserve(stack_.size());
+                for (const Frame& f : stack_) {
+                    out.methods.push_back(f.method);
+                }
+                onPath_.erase(top.method);
+                stack_.pop_back();
+                if (stack_.empty()) {
+                    exhausted_ = true;
+                }
+                return true;
+            }
+        }
+
+        if (top.next < top.callees.size()) {
+            const MemberKey callee = top.callees[top.next++];
+            if (onPath_.find(callee) != onPath_.end()) {
+                continue;   // 环：跳过该边，继续同层其它 callee
+            }
+            onPath_.insert(callee);
+            stack_.push_back(Frame{callee, graph_->calleesOf(callee), 0, false});
+            continue;
+        }
+
+        // 子树全部展开完毕：回退，不产出前缀路径。
+        onPath_.erase(top.method);
+        stack_.pop_back();
+        if (stack_.empty()) {
+            exhausted_ = true;
+        }
+    }
+    return false;
+}
+
+CallChainCursor CallGraph::enumerateChains(MemberKey root, CallChainOptions options) const
+{
+    return CallChainCursor(*this, root, options);
+}
+
+CallTree CallGraph::buildCallTree(MemberKey root, CallTreeOptions options) const
+{
+    CallTree tree;
+    if (!contains(root)) {
+        return tree;
+    }
+
+    std::unordered_map<MemberKey, ca::u32, MemberKeyHash> methodIds;
+    std::unordered_set<MemberKey, MemberKeyHash> onPath;
+
+    struct Frame
+    {
+        ca::u32               node = 0;
+        std::vector<MemberKey> callees;
+        ca::usize             next = 0;
+    };
+
+    const auto appendNode = [&](MemberKey method, ca::u32 parent, ca::u32 depth,
+                                bool cycle) {
+        auto ids = methodIds.find(method);
+        if (ids == methodIds.end()) {
+            ids = methodIds.emplace(method, static_cast<ca::u32>(methodIds.size())).first;
+        }
+        const ca::u32 index = static_cast<ca::u32>(tree.nodes.size());
+        CallTreeNode node;
+        node.method   = method;
+        node.parent   = parent;
+        node.depth    = depth;
+        node.methodId = ids->second;
+        node.cycle    = cycle;
+        tree.nodes.push_back(std::move(node));
+        if (parent != kNoCallTreeParent) {
+            tree.nodes[parent].children.push_back(index);
+        }
+        return index;
+    };
+
+    if (options.maxNodes != 0) {
+        tree.nodes.reserve(options.maxNodes);
+    }
+    appendNode(root, kNoCallTreeParent, 0, false);
+
+    std::vector<Frame> stack;
+    stack.push_back(Frame{0, calleesOf(root), 0});
+    onPath.insert(root);
+
+    while (!stack.empty()) {
+        Frame& top = stack.back();
+        if (top.next >= top.callees.size()) {
+            onPath.erase(tree.nodes[top.node].method);
+            stack.pop_back();
+            continue;
+        }
+
+        const MemberKey callee = top.callees[top.next++];
+        const ca::u32 depth = tree.nodes[top.node].depth + 1;
+        if (options.maxDepth != 0 && depth > options.maxDepth) {
+            continue;   // 深度上限：该节点按叶处理，不再展开
+        }
+        if (options.maxNodes != 0 && tree.nodes.size() >= options.maxNodes) {
+            tree.truncated = true;
+            break;
+        }
+
+        const bool cycle = onPath.find(callee) != onPath.end();
+        const ca::u32 childIdx = appendNode(callee, top.node, depth, cycle);
+        if (cycle) {
+            continue;   // 回到当前路径祖先：保留节点、不展开
+        }
+        onPath.insert(callee);
+        stack.push_back(Frame{childIdx, calleesOf(callee), 0});
+    }
+
+    return tree;
+}
+
+// ---------------------------------------------------------------------------
 // CallGraphBuilder
 // ---------------------------------------------------------------------------
 

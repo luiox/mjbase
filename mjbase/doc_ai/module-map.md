@@ -21,7 +21,7 @@
 | asm/tmatcher | ✅ | asm/tmatcher | 新代匹配 DSL：combinator、capture、替换规则骨架 | CodeDom::order 窗口匹配 |
 | asm/matcher | ✅ | asm/matcher | 旧代 pattern_matcher 语义 | 同上 |
 | asm/evaluator | ✅ | asm/evaluator | 具体求值栈机（数值子集 + 分支 + 步数熔断） | CodeDom 只读遍历 |
-| asm/classpath | ✅ | asm/classpath | 调用边提取（MemberKey 键）、可达、库类过滤 | promote + memberOf + keys |
+| asm/classpath | ✅ | asm/classpath | 调用边提取（MemberKey 键）、可达、库类过滤、惰性调用链枚举 + 调用树视图（简单路径/环叶/去重号/节点上限） | promote + memberOf + keys |
 | hierarchy | ✅ | hierarchy | 类/方法/字段层次内存图、ancestors/overrides（.ihc 序列化不迁） | 会话扫描 this/super/interfaces + keys |
 
 ## 第二批（资源与映射叶子，直迁）
@@ -55,7 +55,7 @@
 
 | 模块 | 状态 | 来源（mbase） | 迁移范围 | 说明 |
 |---|---|---|---|---|
-| reference | ✅（重设计） | reference | reference_index（.ridx 缓存读写）/reflection_interpreter/reflection_binding_analyzer/global_reachability + asm/classpath/resolved_call_graph | alias 经 aliasMemberKey 建键消费；.ridx 字节级保留；binding_analyzer fail-closed；类级引用扫描（NestHost/NestMembers/PermittedSubclasses/Record 组件描述符与嵌套 Signature/注解/ModuleMainClass+Module 的 mainClass·uses·provides）走 libjbc typed 解码面 |
+| reference | ✅（重设计） | reference | reference_index（.ridx 缓存读写）/reflection_interpreter/reflection_binding_analyzer/global_reachability + asm/classpath/resolved_call_graph；根来源 provider 化（keep 规则/档位 + main 发现，共享 entry_points 谓词） | alias 经 aliasMemberKey 建键消费；.ridx 字节级保留；binding_analyzer fail-closed；类级引用扫描（NestHost/NestMembers/PermittedSubclasses/Record 组件描述符与嵌套 Signature/注解/ModuleMainClass+Module 的 mainClass·uses·provides）走 libjbc typed 解码面；provider 只读索引产值，无注册表/回调 |
 | workspace | ✅ | workspace | workspace/i_workspace/workspace_types/class_mutation_service/classfile_support/reference_scan/summary_scan | 符号标签指令家族（含 tableswitch/lookupswitch）经 libjbc CodeDom 往返 |
 
 ## 第六批（remapper + renamer）

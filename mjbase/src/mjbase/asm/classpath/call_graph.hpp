@@ -21,11 +21,16 @@
 /// （CallGraph::sessionOf）。图持有全部喂入会话的 shared_ptr 保活副本，
 /// 消费者在图存活期内不得对会话重复 promote/lower——那会重建 CodeDom、
 /// 使已发出的 InsnId 失效。
+///
+/// 视图层：`enumerateChains` 提供惰性调用链枚举，`buildCallTree` 提供带
+/// 去重号与环标记的调用树；两者都只读图，不建全图快照。反向枚举沿用
+/// `callersOf` / `incomingSitesOf`。
 #pragma once
 
 #include <memory>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "libca/core/datatype.hpp"
@@ -107,6 +112,96 @@ struct CallGraphOptions
     bool includeExternalTargets = true;
 };
 
+/// @brief 一条调用链：根到叶的简单方法序列。
+///
+/// 重复调用点合并为同一条边（`calleesOf` 去重语义），因此链是方法序列而
+/// 不是调用点序列；需要逐调用点事实时用 `outgoingSitesOf`。
+struct CallChain
+{
+    std::vector<MemberKey> methods;   ///< methods[0] 为根；空链不会产出
+};
+
+/// @brief 调用链枚举策略。
+struct CallChainOptions
+{
+    /// 最大边数（根为 0 层）。0 = 不限制；达到上限的节点按叶处理。
+    ca::u32 maxDepth = 0;
+};
+
+/// @brief 根节点没有父节点时的哨兵值。
+inline constexpr ca::u32 kNoCallTreeParent = static_cast<ca::u32>(-1);
+
+/// @brief 调用树节点：一次出现，不是去重后的方法。
+///
+/// 图里的重入（同一方法出现在多个分支）会产生多个节点；`methodId` 用于
+/// 前端把同一方法折叠展示，`cycle` 标记回到当前路径祖先的边。节点下标即
+/// 先序分配号，父节点下标由 `parent` 给出（根为 `kNoCallTreeParent`）。
+struct CallTreeNode
+{
+    MemberKey            method;
+    ca::u32              parent   = kNoCallTreeParent;
+    ca::u32              depth    = 0;   ///< 根为 0，按边数递增
+    ca::u32              methodId = 0;   ///< 去重号：同一 MemberKey 首次出现时分配
+    bool                 cycle    = false;   ///< 回到当前路径祖先：保留节点、不展开
+    std::vector<ca::u32> children;
+};
+
+/// @brief 调用树展开策略。
+struct CallTreeOptions
+{
+    /// 最大边数（根为 0 层）。0 = 不限制。
+    ca::u32 maxDepth = 0;
+    /// 节点总数上限（含根）。0 = 不限制；到达上限后停止展开并置 truncated。
+    ca::u32 maxNodes = 4096;
+};
+
+/// @brief 调用树展开结果。
+struct CallTree
+{
+    std::vector<CallTreeNode> nodes;   ///< 先序；有根时 nodes[0] 恒为根，根缺失时为空
+    bool                      truncated = false;   ///< 是否因 maxNodes 截断
+};
+
+class CallGraph;
+
+/// @brief 惰性调用链游标：每次 next() 产出一条根到叶的简单路径。
+///
+/// 不建全量快照：游标只持有当前 DFS 路径与各层未消费的 callee 列表；环在
+/// 路径内首次重复处截断（不产出重复方法）。游标借用 CallGraph，图销毁后
+/// 不得继续使用。`next()` 返回 false 时枚举结束且 `out` 不变。
+class CallChainCursor
+{
+public:
+    CallChainCursor() = default;
+    CallChainCursor(const CallChainCursor&)            = delete;
+    CallChainCursor& operator=(const CallChainCursor&) = delete;
+    CallChainCursor(CallChainCursor&&)                 = default;
+    CallChainCursor& operator=(CallChainCursor&&)      = default;
+
+    /// @brief 取下一条链；结束返回 false。
+    bool next(CallChain& out);
+
+private:
+    friend class CallGraph;
+
+    /// @brief DFS 帧：当前方法 + 去重后的 callee 列表 + 下一个待展开下标。
+    struct Frame
+    {
+        MemberKey              method;
+        std::vector<MemberKey> callees;
+        ca::usize              next = 0;
+        bool                   entered = false;   ///< 入帧的叶/深度判定已做
+    };
+
+    CallChainCursor(const CallGraph& graph, MemberKey root, CallChainOptions options);
+
+    const CallGraph* graph_ = nullptr;
+    std::vector<Frame> stack_;
+    std::unordered_set<MemberKey, MemberKeyHash> onPath_;
+    ca::u32 maxDepth_ = 0;
+    bool exhausted_ = true;
+};
+
 class CallGraphBuilder;
 
 /// @brief 直接调用图（查询面）：节点表 + 调用点边表 + 正反向索引。
@@ -173,6 +268,23 @@ public:
     /// - 沿全部精确编码边走（含虚分派未解析边）；层次语义在图外。
     std::vector<MemberKey> reachableClosure(const std::vector<MemberKey>& entries,
                                             bool skipLibraryClasses = false) const;
+
+    /// @brief 按根方法枚举调用链（惰性 DFS，简单路径）。
+    ///
+    /// 根不在图中时返回立即耗尽的游标。链按 DFS 先序产出；callee 顺序沿用
+    /// 调用点扫描序（`calleesOf` 去重）。环在路径内首次重复处截断，因此
+    /// 每条链都是不含重复方法的简单路径。反向枚举（方法 → 调用者）沿用
+    /// `callersOf` / `incomingSitesOf`，本面不重复提供。
+    CallChainCursor enumerateChains(MemberKey root,
+                                    CallChainOptions options = {}) const;
+
+    /// @brief 展开调用树（每次出现一个节点，先序分配下标）。
+    ///
+    /// 与链枚举的差别：重入方法在树里保留为独立节点（用 `methodId` 去重
+    /// 展示），回到当前路径祖先的边保留为 `cycle` 叶节点，便于 UI 展示环。
+    /// 根不在图中时返回空树。`maxNodes` 截断只停止继续展开，已生成节点
+    /// 保持完整；截断事实由 `CallTree::truncated` 表达，不视为错误。
+    CallTree buildCallTree(MemberKey root, CallTreeOptions options = {}) const;
 
 private:
     friend class CallGraphBuilder;

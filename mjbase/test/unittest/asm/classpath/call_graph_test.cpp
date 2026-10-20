@@ -24,11 +24,16 @@ namespace {
 
 using Bytes = std::vector<ca::u8>;
 using jbc::core::Op;
+using mjbase::asm_classpath::CallChain;
+using mjbase::asm_classpath::CallChainOptions;
 using mjbase::asm_classpath::CallGraph;
 using mjbase::asm_classpath::CallGraphBuilder;
 using mjbase::asm_classpath::CallGraphOptions;
 using mjbase::asm_classpath::CallSite;
+using mjbase::asm_classpath::CallTree;
+using mjbase::asm_classpath::CallTreeOptions;
 using mjbase::asm_classpath::InvokeKind;
+using mjbase::asm_classpath::kNoCallTreeParent;
 
 void putU8(Bytes& b, ca::u8 v) { b.push_back(v); }
 
@@ -674,6 +679,176 @@ TEST(MjAsmClasspathTest, EmptyBuilderYieldsEmptyGraph)
     CallGraph g = std::move(r).unwrap();
     EXPECT_EQ(g.methodCount(), 0u);
     EXPECT_EQ(g.siteCount(), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// 调用链 / 调用树视图
+// ---------------------------------------------------------------------------
+
+/// a → {b,c}，b/c → d，d → a（回边），leaf 无出边，dup 重复调用 b 两次。
+const Bytes& chainClassBytes()
+{
+    static const Bytes cls = makeClass("Chain", {
+        {"a", "()V", {{Op::INVOKESTATIC, "Chain", "b", "()V"},
+                      {Op::INVOKESTATIC, "Chain", "c", "()V"}}},
+        {"b", "()V", {{Op::INVOKESTATIC, "Chain", "d", "()V"}}},
+        {"c", "()V", {{Op::INVOKESTATIC, "Chain", "d", "()V"}}},
+        {"d", "()V", {{Op::INVOKESTATIC, "Chain", "a", "()V"}}},
+        {"leaf", "()V", {}},
+        {"dup", "()V", {{Op::INVOKESTATIC, "Chain", "b", "()V"},
+                        {Op::INVOKESTATIC, "Chain", "b", "()V"}}},
+    });
+    return cls;
+}
+
+std::vector<std::string> chainNames(const CallGraph& g, const CallChain& chain)
+{
+    std::vector<std::string> names;
+    names.reserve(chain.methods.size());
+    for (const mjbase::MemberKey m : chain.methods) {
+        names.emplace_back(g.pool().str(m.name));
+    }
+    return names;
+}
+
+using NameChain = std::vector<std::string>;
+
+TEST(MjAsmClasspathTest, EnumerateChainsYieldsSimplePathsInDfsOrder)
+{
+    CallGraph g = buildGraphOf({chainClassBytes()});
+    const mjbase::MemberKey a = keyOf(g, "Chain", "a", "()V");
+
+    auto cursor = g.enumerateChains(a);
+    CallChain chain;
+    ASSERT_TRUE(cursor.next(chain));
+    EXPECT_EQ(chainNames(g, chain), (NameChain{"a", "b", "d"}));
+    ASSERT_TRUE(cursor.next(chain));
+    EXPECT_EQ(chainNames(g, chain), (NameChain{"a", "c", "d"}));
+
+    // 结束：返回 false 且 out 不变。
+    chain.methods.assign(3, missingKey(g));
+    EXPECT_FALSE(cursor.next(chain));
+    EXPECT_EQ(chain.methods.size(), 3u);
+}
+
+TEST(MjAsmClasspathTest, EnumerateChainsTruncatesAtDepthLimit)
+{
+    CallGraph g = buildGraphOf({chainClassBytes()});
+    const mjbase::MemberKey a = keyOf(g, "Chain", "a", "()V");
+
+    CallChainOptions options;
+    options.maxDepth = 1;
+    auto cursor = g.enumerateChains(a, options);
+    CallChain chain;
+    ASSERT_TRUE(cursor.next(chain));
+    EXPECT_EQ(chainNames(g, chain), (NameChain{"a", "b"}));
+    ASSERT_TRUE(cursor.next(chain));
+    EXPECT_EQ(chainNames(g, chain), (NameChain{"a", "c"}));
+    EXPECT_FALSE(cursor.next(chain));
+
+    // 深度上限 = 2 时环仍在路径内截断，两条链回到完整形态。
+    options.maxDepth = 2;
+    auto cursor2 = g.enumerateChains(a, options);
+    ASSERT_TRUE(cursor2.next(chain));
+    EXPECT_EQ(chainNames(g, chain), (NameChain{"a", "b", "d"}));
+    ASSERT_TRUE(cursor2.next(chain));
+    EXPECT_EQ(chainNames(g, chain), (NameChain{"a", "c", "d"}));
+    EXPECT_FALSE(cursor2.next(chain));
+}
+
+TEST(MjAsmClasspathTest, EnumerateChainsLeafMissingRootAndDedup)
+{
+    CallGraph g = buildGraphOf({chainClassBytes()});
+
+    // 无出边的方法：单节点链。
+    auto leaf = g.enumerateChains(keyOf(g, "Chain", "leaf", "()V"));
+    CallChain chain;
+    ASSERT_TRUE(leaf.next(chain));
+    EXPECT_EQ(chainNames(g, chain), (NameChain{"leaf"}));
+    EXPECT_FALSE(leaf.next(chain));
+
+    // 根不在图中：立即耗尽，不产出空链。
+    auto missing = g.enumerateChains(missingKey(g));
+    CallChain untouched;
+    EXPECT_FALSE(missing.next(untouched));
+    EXPECT_TRUE(untouched.methods.empty());
+
+    // 重复调用点合并为一条边：dup 两次调 b 只产出一条链；b→d→a 继续沿
+    // 未在路径上的 c 展开，(a,b) 回边被截断。
+    auto dup = g.enumerateChains(keyOf(g, "Chain", "dup", "()V"));
+    ASSERT_TRUE(dup.next(chain));
+    EXPECT_EQ(chainNames(g, chain), (NameChain{"dup", "b", "d", "a", "c"}));
+    EXPECT_FALSE(dup.next(chain));
+}
+
+TEST(MjAsmClasspathTest, CallTreeKeepsReentryAndMarksCycleLeaves)
+{
+    CallGraph g = buildGraphOf({chainClassBytes()});
+    const mjbase::MemberKey a = keyOf(g, "Chain", "a", "()V");
+
+    const CallTree tree = g.buildCallTree(a);
+    ASSERT_EQ(tree.nodes.size(), 7u);
+    EXPECT_FALSE(tree.truncated);
+
+    // 先序下标：a, b, d, a(cycle), c, d, a(cycle)。
+    EXPECT_EQ(tree.nodes[0].method, a);
+    EXPECT_EQ(tree.nodes[0].parent, kNoCallTreeParent);
+    EXPECT_EQ(tree.nodes[0].depth, 0u);
+    EXPECT_EQ(tree.nodes[0].methodId, 0u);
+    EXPECT_EQ(tree.nodes[0].children, (std::vector<ca::u32>{1, 4}));
+
+    EXPECT_EQ(g.pool().str(tree.nodes[1].method.name), "b");
+    EXPECT_EQ(tree.nodes[1].parent, 0u);
+    EXPECT_EQ(g.pool().str(tree.nodes[2].method.name), "d");
+    EXPECT_EQ(tree.nodes[2].depth, 2u);
+
+    // 回边：保留为 cycle 叶节点，methodId 与首次出现的 a 相同。
+    EXPECT_EQ(tree.nodes[3].method, a);
+    EXPECT_EQ(tree.nodes[3].methodId, tree.nodes[0].methodId);
+    EXPECT_EQ(tree.nodes[3].depth, 3u);
+    EXPECT_TRUE(tree.nodes[3].cycle);
+    EXPECT_TRUE(tree.nodes[3].children.empty());
+
+    // 重入方法在另一分支是独立节点，但共享 methodId。
+    EXPECT_EQ(g.pool().str(tree.nodes[5].method.name), "d");
+    EXPECT_EQ(tree.nodes[5].methodId, tree.nodes[2].methodId);
+    EXPECT_FALSE(tree.nodes[5].cycle);
+}
+
+TEST(MjAsmClasspathTest, CallTreeRespectsDepthAndNodeCaps)
+{
+    CallGraph g = buildGraphOf({chainClassBytes()});
+    const mjbase::MemberKey a = keyOf(g, "Chain", "a", "()V");
+
+    CallTreeOptions options;
+    options.maxDepth = 2;
+    CallTree depthCapped = g.buildCallTree(a, options);
+    ASSERT_EQ(depthCapped.nodes.size(), 5u);
+    EXPECT_FALSE(depthCapped.truncated);
+    ASSERT_EQ(depthCapped.nodes[0].children.size(), 2u);
+    // 深度 2 的 d 按叶处理：没有 cycle 子节点。
+    EXPECT_TRUE(depthCapped.nodes[2].children.empty());
+    EXPECT_TRUE(depthCapped.nodes[4].children.empty());
+
+    options = CallTreeOptions{};
+    options.maxNodes = 3;
+    CallTree nodeCapped = g.buildCallTree(a, options);
+    ASSERT_EQ(nodeCapped.nodes.size(), 3u);
+    EXPECT_TRUE(nodeCapped.truncated);
+
+    // 上限恰好等于完整树规模：不截断。
+    options.maxNodes = 7;
+    CallTree exact = g.buildCallTree(a, options);
+    EXPECT_EQ(exact.nodes.size(), 7u);
+    EXPECT_FALSE(exact.truncated);
+
+    // 根不在图中：空树；叶根：单节点。
+    EXPECT_TRUE(g.buildCallTree(missingKey(g)).nodes.empty());
+    const CallTree leaf = g.buildCallTree(keyOf(g, "Chain", "leaf", "()V"));
+    ASSERT_EQ(leaf.nodes.size(), 1u);
+    EXPECT_EQ(leaf.nodes[0].depth, 0u);
+    EXPECT_TRUE(leaf.nodes[0].children.empty());
+    EXPECT_FALSE(leaf.truncated);
 }
 
 // ---------------------------------------------------------------------------
