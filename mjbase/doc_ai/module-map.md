@@ -22,6 +22,7 @@
 | asm/matcher | ✅ | asm/matcher | 旧代 pattern_matcher 语义 | 同上 |
 | asm/evaluator | ✅ | asm/evaluator | 具体求值栈机（数值子集 + 分支 + 步数熔断） | CodeDom 只读遍历 |
 | asm/classpath | ✅ | asm/classpath | 调用边提取（MemberKey 键）、可达、库类过滤、indy/MethodHandle 解析与 BSM 展开边、VarHandle 读写事实、惰性调用链枚举 + 调用树视图（简单路径/环叶/去重号/节点上限） | promote + memberOf + keys + BootstrapMethodsAttr |
+| asm/stmt | ✅ | 新设计（issue #5） | 保守结构化语句层：块级 if/while/for/do-while、语句↔指令窗口双映射、叶子整窗写回 | asm_cfg 快照 + CodeEditor insert/eraseBatch；见 doc_ai/statement-ir.md |
 | hierarchy | ✅ | hierarchy | 类/方法/字段层次内存图、ancestors/overrides（.ihc 序列化不迁） | 会话扫描 this/super/interfaces + keys |
 
 ## 第二批（资源与映射叶子，直迁）
