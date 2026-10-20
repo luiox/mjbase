@@ -1,7 +1,7 @@
 #include "mjbase/reference/global_reachability.hpp"
 
 #include "mjbase/analysis/class_scan.hpp"
-#include "mjbase/hierarchy/summary.hpp"
+#include "mjbase/reference/entry_points.hpp"
 #include "mjbase/reference/reference_index_analysis.hpp"
 
 namespace mjbase::reference {
@@ -11,8 +11,6 @@ using mjbase::asm_classpath::CallGraphBuilder;
 using mjbase::asm_classpath::ResolvedCallEdge;
 using mjbase::asm_classpath::ResolvedCallGraph;
 using mjbase::asm_classpath::ResolvedCallKind;
-using mjbase::hierarchy::kAccPublic;
-using mjbase::hierarchy::kAccStatic;
 
 namespace {
 
@@ -28,13 +26,6 @@ bool isDeclarationTypeReference(TypeReferenceKind kind)
            kind == TypeReferenceKind::FieldDeclarationDescriptor ||
            kind == TypeReferenceKind::Signature || kind == TypeReferenceKind::Annotation ||
            kind == TypeReferenceKind::StructuralMetadata;
-}
-
-bool isJavaMain(const MethodDeclaration& decl)
-{
-    const ca::u32 requiredAccess = kAccPublic | kAccStatic;
-    return decl.method.name == "main" && decl.method.desc == "([Ljava/lang/String;)V" &&
-           (decl.access & requiredAccess) == requiredAccess;
 }
 
 }   // namespace
@@ -151,7 +142,7 @@ void GlobalReachability::buildInternal(const ReferenceIndex& index, const CallGr
     }
     if (options.includeMainMethods) {
         for (const auto& decl : index.methodDeclarations()) {
-            if (isJavaMain(decl)) enqueueMethod(decl.method);
+            if (isJavaMainMethod(decl)) enqueueMethod(decl.method);
         }
     }
 
