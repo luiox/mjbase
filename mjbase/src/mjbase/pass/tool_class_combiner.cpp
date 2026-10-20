@@ -401,8 +401,8 @@ mjbase::spi::PreservedAnalyses ToolClassCombiner::run(mjbase::model::ResourceCon
 {
     (void)am;
 
-    // 阶段零：装载与准入（容器迭代序即候选处理序——分桶确定性的来源，
-    // 与旧栈 loadClassesForInlining 同款；解析失败按旧栈保守跳过）。
+    // 阶段零：装载与准入（装载序来自容器迭代，跨平台漂移；候选处理序
+    // 在下方统一按内部名排序固定——解析失败按旧栈保守跳过）。
     std::vector<LoadedClass> loaded;
     for (auto& [uri, resource] : container.getResources()) {
         (void)uri;
