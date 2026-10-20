@@ -17,7 +17,7 @@
 |---|---|---|---|---|
 | asm/cfg | ✅ | asm/cfg | 基本块、CFG 后继/前驱/异常边、迭代支配树、可达集 | CodeEditor::blocks + resolveLabel + CodeUnit::exc |
 | asm/insn | ✅ | asm/insn | opcode 分类谓词、栈效应表、指令工厂 | jbc::ir::Insn / CodeEditor 工厂 |
-| asm/analyzer | ✅ | asm/analyzer | 常量域、来源域、可空性事实域、跳转走向事实（branch_facts）+ 入参常量种子 | jbc::analysis::DomainEngine + IValueDomain；引擎缺口挂账：分支条件钩子、CHECKCAST 族 operand-aware 钩子 |
+| asm/analyzer | ✅ | asm/analyzer | 常量域、来源域、可空性事实域、跳转走向事实（branch_facts）+ 入参常量种子 + slot 级 def-use（有界到达定义集、异常边、字段访问事实，见 doc_ai/slot-def-use.md） | jbc::analysis::DomainEngine + IValueDomain；引擎缺口挂账：分支条件钩子、CHECKCAST 族 operand-aware 钩子 |
 | asm/tmatcher | ✅ | asm/tmatcher | 新代匹配 DSL：combinator、capture、替换规则骨架 | CodeDom::order 窗口匹配 |
 | asm/matcher | ✅ | asm/matcher | 旧代 pattern_matcher 语义 | 同上 |
 | asm/evaluator | ✅ | asm/evaluator | 具体求值栈机（数值子集 + 分支 + 步数熔断） | CodeDom 只读遍历 |
@@ -55,7 +55,7 @@
 
 | 模块 | 状态 | 来源（mbase） | 迁移范围 | 说明 |
 |---|---|---|---|---|
-| reference | ✅（重设计） | reference | reference_index（.ridx 缓存读写）/reflection_interpreter/reflection_binding_analyzer/global_reachability + asm/classpath/resolved_call_graph；根来源 provider 化（keep 规则/档位 + main 发现，共享 entry_points 谓词） | alias 经 aliasMemberKey 建键消费；.ridx 字节级保留；binding_analyzer fail-closed；类级引用扫描（NestHost/NestMembers/PermittedSubclasses/Record 组件描述符与嵌套 Signature/注解/ModuleMainClass+Module 的 mainClass·uses·provides）走 libjbc typed 解码面；provider 只读索引产值，无注册表/回调 |
+| reference | ✅（重设计） | reference | reference_index（.ridx 缓存读写）/reflection_interpreter/reflection_binding_analyzer/global_reachability + asm/classpath/resolved_call_graph + field_access_graph（调用边传播的字段读写摘要，见 doc_ai/field-access-graph.md）；根来源 provider 化（keep 规则/档位 + main 发现，共享 entry_points 谓词） | alias 经 aliasMemberKey 建键消费；.ridx 字节级保留；binding_analyzer fail-closed；类级引用扫描（NestHost/NestMembers/PermittedSubclasses/Record 组件描述符与嵌套 Signature/注解/ModuleMainClass+Module 的 mainClass·uses·provides）走 libjbc typed 解码面；provider 只读索引产值，无注册表/回调 |
 | workspace | ✅ | workspace | workspace/i_workspace/workspace_types/class_mutation_service/classfile_support/reference_scan/summary_scan | 符号标签指令家族（含 tableswitch/lookupswitch）经 libjbc CodeDom 往返 |
 
 ## 第六批（remapper + renamer）
