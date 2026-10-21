@@ -2,7 +2,6 @@
 /// @brief       方法副作用模型：局部字节码效应分类 + 直接调用边不动点传播
 ///              + 纯函数常量返回摘要。
 ///
-/// 旧栈对应物：analysis/method_effect_analysis（MethodEffectModel）。
 /// 语义照旧、实现重写：类字节经 libjbc 会话升格后按 CodeDom 程序序做局部
 /// 分类——常量/局部读写/算术/分支/转换/返回为 Pure；字段读与 arraylength
 /// 升 ReadOnly；堆写/数组存储/分配/显式抛出/监视器/invokedynamic 为 Impure；
@@ -13,7 +12,7 @@
 ///
 /// 本模型只回答堆副作用问题：不证明可以在不改变异常、空检查或类初始化时
 /// 机的情况下删除调用。破坏性通行证必须自行叠加指令形状与异常/类初始化
-/// 策略（旧栈模块头消费者规则照搬）。
+/// 策略。
 ///
 /// 与旧实现的边界差（见迁移报告）：方法键为 MemberKey（KeyPool 驻留），
 /// 查询接口收 string_view；分析管理器缓存（GlobalAnalysisManager 注册）
@@ -42,7 +41,7 @@ enum class MethodEffectKind
     Unknown    ///< 方法体或被调不可得、未解析、native、abstract 或超出保守模型
 };
 
-/// @brief 常量返回类别（旧栈 ConstantReturnKind 语义照旧）。
+/// @brief 常量返回类别。
 enum class ConstantReturnKind
 {
     Unknown,

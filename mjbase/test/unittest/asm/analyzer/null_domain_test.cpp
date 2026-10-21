@@ -154,7 +154,7 @@ TEST(MjAsmAnalyzerTest, NullAconstNullGivesNullFact)
 
 TEST(MjAsmAnalyzerTest, NullLdcStringGivesNotNullFact)
 {
-    // ldc "s"; ifnonnull L; L: return → 栈顶 = NotNull（旧实现唯一 NotNull 产点）。
+    // ldc "s"; ifnonnull L; L: return → 栈顶 = NotNull。
     ConstantPool cp;
     const ca::u32 str = cp.addString(cp.addUtf8("s"));
     CodeDom dom;

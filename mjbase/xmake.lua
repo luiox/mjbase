@@ -1,4 +1,4 @@
--- mjbase：基于 libjbc 的跨类程序分析与变换库（旧栈的重写线，逐模块迁移）。
+-- mjbase：基于 libjbc 的跨类程序分析与变换库。
 -- 边界（AGENTS.md / doc_ai/module-map.md）：libjbc 单类/单方法；mjbase 持
 -- 跨类身份（keys）、层次/调用图与指令工程（asm 域）。旧栈冻结对拍。
 --
@@ -31,7 +31,7 @@ target("mjbase")
     add_rules("mjbase.i18n_src_sync")
 
     -- jar/model/mapping/project 批次新增：zip 读写（libjzip）、资源解包后端
-    -- （libarchive，与旧栈同源）、fs/json/crypto（mapping 与 project 直迁）。
+    -- （libarchive，与）、fs/json/crypto（mapping 与 project 直迁）。
     -- B3-A 批次新增：Java 整数语义（libjstd，expr_value）与日志/i18n 门面
     -- （libca_log，log_init/triple）。libjstd/libca_i18n 为 headeronly，无链接产物。
     -- F 线清洗批新增：libjclassfile（敌意输入前置清洗级，§3.0 裁决；deps_gate
@@ -98,7 +98,7 @@ target("mjbase")
         add_cxflags("/utf-8", {tools = "cl"})
         add_links("bcrypt")
         -- xmllite：libarchive 静态库内含 xar 格式读取（依赖 CreateXmlReader），
-        -- 链接 mjbase 的可执行需解析该符号。public 传递给下游（同旧栈）。
+        -- 链接 mjbase 的可执行需解析该符号。public 传递给下游（同）。
         add_syslinks("xmllite", {public = true})
     end
 
@@ -143,7 +143,7 @@ target("mjbase_unittest")
     add_files("test/unittest/reference/*_test.cpp")
     add_files("test/unittest/spi/*_test.cpp")
     add_files("test/unittest/pass/*_test.cpp")
-    -- golden 对拍子目录（旧栈 baseline 字节/指纹对拍机器，pass-golden-pipeline.md）。
+    -- golden 对拍子目录。
     add_files("test/unittest/pass/golden/*_test.cpp")
     add_files("test/unittest/asm/remapper/*_test.cpp")
     -- 批 4：与上面 src 的 renamer/jasm/log/workspace/cli 一一对应。

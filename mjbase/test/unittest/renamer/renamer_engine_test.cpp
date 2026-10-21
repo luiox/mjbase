@@ -4,7 +4,7 @@
 ///              run 两态、继承别名。
 ///
 /// mjbase 底座差异（语义不变，见迁移报告偏离清单）：
-/// - 夹具类经 jasm 组装（旧栈 jbytecode ClassWriter）；
+/// - 夹具类经 jasm 组装；
 /// - run 结果 ca::Status → ok+error 值对；
 /// - 应用面已接线（asm/remapper 域）：旧栈 planOnly=false 的落盘断言以读回
 ///   断言落位（fail-loud 占位期的容器零写入断言随接线废止）。
@@ -520,7 +520,7 @@ TEST(MjRenamerConflictTest, suffixWallRejectsWholeClosureGroupAndOldSlotsStayOcc
 {
     // 64 连撞：A/B 各备 65 个占位（X 与 X_1..X_64），oldMethod→X 无一致后缀 → 整组拒
     // （fail-closed）；随后 alpha→oldMethod 必须感知被拒组回插的旧槽占用，落 oldMethod_1。
-    // （旧栈在应用后重解析字节码验证旧槽占用；mjbase 锁 plan 面同款不变式：
+    // （mjbase 锁 plan 面同款不变式：
     //   整组拒 = 无 A/B.oldMethod 规则，且后组落 oldMethod_1，不产出任何 X_65
     //   规则——应用面只消费规则，无规则即无改写，字节码零重名由此保证。）
     model::ResourceContainer container;
@@ -838,7 +838,7 @@ TEST(MjRenamerRecordTest, staticExportMappingReusesSameChannelForExternalBases)
 {
     // P1 消费方通道：任意外部 IntermediateMapping 底座（如 deobf 侧
     // NameRestoreRecord）经静态 exportMapping 导出，与实例方法逐字节一致
-    // （旧栈 P1）。
+    // 。
     Fixture        fixture;
     RenamerEngine  engine;
     RenamerOptions options;
@@ -1014,7 +1014,7 @@ TEST(MjRenamerRunTest, planRecordsFieldRenameForCallSiteSync)
 
 TEST(MjRenamerRunTest, planPreImagesMemberRuleOwnerAndDescWhenOwnerClassRenamed)
 {
-    // P1 实证回归（旧栈）plan 面移植：成员改名与 owner 类改名同
+    // P1 实证回归plan 面移植：成员改名与 owner 类改名同
     // plan 时，成员规则的 newOwner/newDesc 必须按类映射预映像——否则 remapper 的
     // 调用点同步路径会把 owner/描述符写回旧值。desc 分支用含被改名类的类型
     // （`LA;` → `Lmoved/A;`）锁定 mapFieldDescriptor/mapMethodDescriptor 预映像。
@@ -1092,7 +1092,7 @@ TEST(MjRenamerRunTest, contextExposesReadOnlyHierarchyQueries)
     EXPECT_TRUE(missing.is_err());
 }
 
-// ── 继承别名（旧栈 P2：obf rename_core 需要的应用面闭包）──
+// ── 继承别名──
 
 TEST(MjRenamerAliasTest, fieldAliasRulesCoverInheritingSubclassesPlanOnly)
 {
@@ -1273,7 +1273,7 @@ void addDualComponentWorld(model::ResourceContainer& container, bool withCaller)
 
 TEST(MjRenamerAliasTest, methodAliasAmbiguityDropsWholeRuleWhenInheritorsDisagree)
 {
-    // N5（旧栈评审收口）：同 (owner=C, oldName, desc) 键被两个
+    // N5：同 (owner=C, oldName, desc) 键被两个
     // override 组件组分配到不同新名（A 组 → brandA，I 组 → brandI）时，C 的
     // 继承别名无法二选一——整条放弃（保守口径，与旧核心一致），不得产出
     // 半边别名把另一组件的调用点错改。
@@ -1416,7 +1416,7 @@ TEST(MjRenamerRunTest, applyRewritesFieldReadInsnToNewName)
 
 TEST(MjRenamerRunTest, applySyncsMemberRuleOwnerAndDescWhenOwnerClassRenamed)
 {
-    // P1 实证回归（旧栈）应用面移植：成员改名与 owner 类改名同
+    // P1 实证回归应用面移植：成员改名与 owner 类改名同
     // plan 时，调用点同步必须落到预映像后的 owner/描述符（`LA;` →
     // `Lmoved/A;`），不残留旧名；类资源 URI 随 resources 门同步（deobf 消费
     // 口径；mjbase 双门下 resources 显式开启）。

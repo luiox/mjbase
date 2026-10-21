@@ -56,7 +56,7 @@ mjbase::spi::PreservedAnalyses EnumCastCheckRemover::run(mjbase::spi::MethodScop
     bool                modified = false;
     std::vector<InsnId> toRemove;
 
-    // 与旧栈一致的扫描面：物理相邻（dom 顺序位直邻 == 旧栈 getNext）成对收桶。
+    // 与旧栈一致的扫描面：物理相邻（dom 顺序位直邻 == ）成对收桶。
     for (ca::usize i = 0; i + 1 < ids.size(); ++i) {
         const Insn* call = dom.peek(ids[i]);
         if (call == nullptr || call->op != jbc::core::Op::INVOKEVIRTUAL) continue;

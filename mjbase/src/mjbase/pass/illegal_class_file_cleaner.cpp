@@ -31,7 +31,7 @@ using jbc::core::MemberInfo;
 ///
 /// 读入（畸形容忍、全量属性建模 + 指令解码）→ IllegalStrippingTransformer 全量
 /// 规则面 → 写出。规则是否实际触发按产物与输入的字节比较判定（与旧栈
-/// 旧栈 IllegalClassFileCleaner 的判定一致）；读/transform/写任一步抛出该级
+/// ）；读/transform/写任一步抛出该级
 /// 零产出，返回 false、调用方拿原 bytes 继续走 libjbc 级（旧实现 catch 全部
 /// 的对齐；边界外不许异常逃逸）。
 ///
@@ -165,7 +165,7 @@ mjbase::spi::PreservedAnalyses IllegalClassFileCleaner::run(mjbase::model::Resou
         }
 
         // libjbc 级：读入失败（含空 bytes / 坏魔数 / 截断）保留进入字节——
-        // 后续宽容读者还可能用得上（旧实现 catch 全部的照搬）。
+        // 后续宽容读者还可能用得上。
         auto read = jbc::core::readClass(jbc::core::ByteView(current));
         if (read.is_ok()) {
             // ReadResult 持有模型（move-only）：产物先落名为实体再取引用，
@@ -175,7 +175,7 @@ mjbase::spi::PreservedAnalyses IllegalClassFileCleaner::run(mjbase::model::Resou
 
             cleanStructure(cf);
 
-            // 写出失败同样保留进入字节（旧实现 writer 异常被 catch 的对齐）；
+            // 写出失败同样保留进入字节；
             // 字节未变不进 pending，容器保持原样。
             auto written = jbc::core::writeClass(cf);
             if (written.is_ok()) {
@@ -185,7 +185,7 @@ mjbase::spi::PreservedAnalyses IllegalClassFileCleaner::run(mjbase::model::Resou
         }
 
         // 两阶段提交：写回推迟到循环结束，任何资源中途失败时已处理的
-        // 资源保持原样（作业级原子性，与旧实现一致）。
+        // 资源保持原样（作业级原子性，与）。
         if (current != original) {
             pending.stage(cls, std::move(current));
             modified = true;

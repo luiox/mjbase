@@ -1,9 +1,8 @@
 /// @file        insn_op.hpp
 /// @brief       opcode 分类谓词全集与栈效应静态表。
 ///
-/// 语义来源：旧栈 asm/insn 的 InsnUtil 分类与 Stack 分析（isReturn/isIf/
 /// invertIf/getStack*Count 等），在 jbc::core::Op 值域上重写。两处有意的
-/// 语义修订（相对旧实现）：
+/// 语义修订（相对）：
 ///   - 常量族补齐 LDC_W/LDC2_W（旧 isConstant 只认 LDC，宽形态被注释掉）；
 ///   - isGoto 纳入 GOTO_W、isTerminator 纳入 RET——与 FrameEngine 的控制流
 ///     终结判定（domain.hpp 的 ends 名单）对齐。
@@ -88,7 +87,7 @@ bool isMonitor(jbc::core::Op op) noexcept;              ///< monitorenter / moni
 bool isTerminator(jbc::core::Op op) noexcept;
 /// 纯计算指令（无控制流/字段访问/调用/抛出）：常量/算术/转换/栈操作。
 /// 沿用旧 isPureComputation 语义：不含 compare（lcmp 等亦无副作用，
-/// 旧实现未纳入，保持行为兼容）。
+/// ）。
 bool isPureComputation(jbc::core::Op op) noexcept;
 
 /// @brief 条件跳转取反（IFEQ↔IFNE / IF_ICMPLT↔IF_ICMPGE / IFNULL↔IFNONNULL 等）。

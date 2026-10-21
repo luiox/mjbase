@@ -30,7 +30,7 @@ jbc::ir::Insn plain(Op op)
     return in;
 }
 
-/// 命中步骤首指令的值拷贝（旧栈 cloneMatchedNode 的对应物；cp 索引随值携带）。
+/// 命中步骤首指令的值拷贝。
 void appendCloned(MatchContext& ctx, ca::usize stepIndex)
 {
     ctx.replacement.push_back(ctx.matchedInsns[stepIndex]);

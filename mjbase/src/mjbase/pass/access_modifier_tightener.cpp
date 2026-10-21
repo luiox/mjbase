@@ -62,7 +62,7 @@ std::string_view memberUseKey(ca::str::Utf8StringArena& arena, std::string_view 
 
 /// @brief 装载并验证一个 class 资源；准入失败返回 false（资源保持原样）。
 ///
-/// 准入条件对齐旧栈 loadRecoverClasses：可解析、有类名；并加一条新底座
+/// 准入条件可解析、有类名；并加一条新底座
 /// 必要的安全阀——全部有码方法必须能升格。普查证据不全时做收紧是不安全
 /// 方向（漏记异类引用会误收紧），故任一方法升格失败即整类退出。
 bool loadClass(mjbase::model::ClassResource& resource, LoadedClass& out)
@@ -185,7 +185,7 @@ mjbase::spi::PreservedAnalyses AccessModifierTightener::run(mjbase::model::Resou
     }
     if (loaded.empty()) return mjbase::spi::PreservedAnalyses::all();
 
-    // 装载后按类内部名字节序排序（对齐旧栈 loadRecoverClasses 的确定性排序）。
+    // 装载后按类内部名字节序排序（对齐）。
     std::stable_sort(loaded.begin(), loaded.end(),
                      [](const LoadedClass& lhs, const LoadedClass& rhs) {
                          return lhs.name < rhs.name;

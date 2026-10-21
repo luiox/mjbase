@@ -17,7 +17,7 @@ mjbase::spi::PreservedAnalyses ClassMemberSorter::run(jbc::ir::ClassSession&    
 
     // ── 字段序：desc 优先、name 次之，稳定（同键保原相对序）。──
     // 视图借用会话符号池，排序期内有效；比较按字节字典序（成员名/描述符
-    // 实际为 ASCII，与旧栈序一致）。
+    // 实际为 ASCII，与）。
     std::vector<ca::usize> fieldOrder(unit.fields.size());
     std::iota(fieldOrder.begin(), fieldOrder.end(), ca::usize{0});
     std::stable_sort(fieldOrder.begin(), fieldOrder.end(),

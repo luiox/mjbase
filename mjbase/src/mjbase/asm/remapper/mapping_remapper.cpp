@@ -3,7 +3,7 @@
 namespace mjbase::asm_remapper {
 namespace {
 
-/// @brief 「命中才改写」判定：映射查询空视图 = 未命中（旧栈 Utf8Remapper 口径）。
+/// @brief 「命中才改写」判定：映射查询空视图 = 未命中。
 inline bool mappedNonEmpty(std::string_view mapped) noexcept { return !mapped.empty(); }
 
 template <typename MapName>

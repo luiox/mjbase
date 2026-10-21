@@ -1,4 +1,3 @@
-// 移植自旧栈 unittest/pass/analysis_manager_test.cpp：AM 机制断言原样保留
 // （FakeUnit 替身跑机制，不绑定具体 IR）；typeResolver 注入口已随重定型移除，
 // 无对应用例。
 #include <gtest/gtest.h>

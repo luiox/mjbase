@@ -6,7 +6,7 @@
 /// first-wins/hasCode 分流），本文件钉扫描产物的字段级口径——
 /// internalName/superName/access/version/interfaceCount/fieldCount/methodCount
 /// 与 旧栈 WorkspaceBase::listClassSummaries 逐字段相等（version 编码同口径
-/// `(minor << 16) | major`，即旧栈 visit(version) 的 V1_8 形态）；期望值全部
+/// `(minor << 16) | major`，即）；期望值全部
 /// 由夹具规格独立给出，不经被测代码换算。降级读入（Recovered）照常出骨架、
 /// 截断逐字节全 sweep 拒收，也在此钉死。
 #include <gtest/gtest.h>
@@ -60,7 +60,7 @@ Bytes makeParityClass()
 }
 
 /// E3-9：旧栈 listClassSummaries 口径逐字段对拍——期望值由夹具规格独立给出，
-/// 成员序 = classfile 声明序（计数即容器 size，与 旧栈 计数口径相等）。
+/// 成员序 = classfile 声明序（计数即容器 size，与 ）。
 TEST(MjConsumerSummaryParityTest, FieldsMatchLegacySummaryContract)
 {
     const Bytes               bytes   = makeParityClass();

@@ -15,7 +15,7 @@
 /// 边界：仅 Name 槽实现；Descriptor/JasmBody 分支未接线（传入即 fail-loud，
 /// 不做文法）。相对旧栈的实修：查表命中面一律按值/optional 交付——旧栈
 /// findClassByHandle 返回指向 findByShadowName 临时 vector 内部的指针（悬垂
-/// UB，旧栈侧已修），本移植自始不带该形状。
+/// UB），本移植自始不带该形状。
 #pragma once
 
 #include <optional>

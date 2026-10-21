@@ -1,12 +1,11 @@
 /// @file        resolved_call_graph.hpp
 /// @brief       层次感知调用图：CHA 虚/接口分派扩展 + 反射织入挂点。
 ///
-/// 移植自旧栈 asm/classpath/resolved_call_graph（CHA 档 + 查询面 + appendEdge
 /// 织入挂点）。与旧版的差异：
 ///
 /// - 基座换 mjbase 件：调用点来自 ReferenceIndex（CodeDom order() 坐标的
 ///   ReferenceSite），层次查询走 mjbase::hierarchy 的 ClassHierarchy/
-///   MethodHierarchy（键面 API，无 旧栈 的条目下标制）。
+///   MethodHierarchy（键面 API，无 ）。
 /// - 输入层次以 HierarchyBundle 交付（共享驻留池 + 类/方法层次图同生共死）：
 ///   mjbase MethodHierarchy 的查询键必须经类图绑定的池驻留，束把「池 + 两图」
 ///   的配对关系收口为单一载体。

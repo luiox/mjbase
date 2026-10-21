@@ -23,7 +23,6 @@ namespace workspace {
 /// @file workspace.hpp
 /// @brief WorkspaceBase：可回滚的、单线程持有的 class/JAR 分析与编辑工作区（基础实现）。
 ///
-/// 移植自旧栈 workspace/workspace（语义照旧），底座按 libjbc 重定型：
 /// - class 解码/检索/搜索走 jbc::core::readClass 骨架 + jbc::ir 会话（按需 promote）；
 /// - 候选验证接 mjbase::spi 协作面：spi::sanitizeClassFile 引用语义预检（闸门语义
 ///   在候选入口前置）+ mjbase::jasm 验证；
@@ -361,7 +360,7 @@ private:
 ///
 /// 旧栈 CommonSuperClassProvider::scan 的对应物（pipeline jdkPath 语义）：
 /// 单归档导入失败 fail-open 跳过；单类 fail-open（环检查拒绝等）；jimage
-/// 模块镜像不扫描（与旧栈同口径）。配合 spi::CommonSuperClassResolver +
+/// 模块镜像不扫描（与）。配合 spi::CommonSuperClassResolver +
 /// StrictTypeResolverAdapter 注入 PassPipelineOptions::typeResolver 使用；
 /// 调用方保证 pool/hierarchy 存活覆盖管线 build+run 全程。
 void scanJdkHierarchy(const std::string& jdkPath, mjbase::hierarchy::ClassHierarchy& hierarchy,

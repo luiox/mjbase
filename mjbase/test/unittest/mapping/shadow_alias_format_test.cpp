@@ -1,4 +1,4 @@
-// shadow-alias sidecar（"Shadow-Alias" 注册格式，旧栈 v1 定案）：
+// shadow-alias sidecar（"Shadow-Alias" 注册格式）：
 // registry 注册与宽松口径 + 严格入口 write/read roundtrip + schema 错误逐类
 // 拒载 + 文件级 roundtrip + 确定性稳定输出。
 #include <gtest/gtest.h>

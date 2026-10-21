@@ -92,7 +92,7 @@ std::string locationText(const model::IResource& resource)
     return std::string(reinterpret_cast<const char*>(location.data()), location.byte_length());
 }
 
-/// @brief 资源类型短名（旧栈小写口径："class"/"manifest"/"jar"/"resource"）。
+/// @brief 资源类型短名。
 std::string resourceTypeName(model::ResourceType type)
 {
     switch (type) {
@@ -105,7 +105,7 @@ std::string resourceTypeName(model::ResourceType type)
 
 /// @brief model 模块错误 → workspace 错误值。
 ///
-/// 旧栈这些路径以异常携带文本、统一落 DATA_LOSS；mjbase 值语义下按码分流：
+/// mjbase 值语义下按码分流：
 /// 文件/条目缺失 → NotFound，zip-slip → InvalidArgument，其余（Io/BadEntry/
 /// UnsupportedFormat/TypeMismatch/BadArgument）保持 DataLoss 兜底。
 WorkspaceErrorInfo modelFailure(const std::string& operation, model::ModelError modelError)
@@ -1364,7 +1364,7 @@ std::vector<PassDescription> WorkspaceBase::availablePasses()
 {
     std::vector<PassDescription> result;
     for (const auto& pass : spi::defaultPassRegistry().list()) {
-        // scope 输出小写（旧栈 契约照迁）；mjbase 第四 scope Cf 无默认种子，
+        // scope 输出小写（mjbase 第四 scope Cf 无默认种子，
         // 仅为穷尽 switch 兜底。
         const std::string scope = pass.scope == spi::PassScope::Method   ? "method"
                                   : pass.scope == spi::PassScope::Class  ? "class"
@@ -3027,7 +3027,7 @@ WorkspaceErrorInfo WorkspaceBase::validateCandidate(
     return status;
 }
 
-// ── workflow 事务助手（旧栈 语义照迁，错误通道换 WorkspaceErrorInfo）─────
+// ── workflow 事务助手─────
 
 void removeWorkflowExport(const WorkflowResult& result)
 {
@@ -3145,9 +3145,9 @@ WorkspaceResult<std::vector<ReferenceInfo>> workflowReferences(
 ///
 /// 旧栈 CommonSuperClassProvider::scan 的 mjbase 对应物：resolver 的数据获取
 /// 是调用方的事，管线只消费已建好的图（pass-contract §9）。逐归档逐类
-/// fail-open——解析不了的归档/类不贡献层次事实（旧栈 扫描口径一致），层次
+/// fail-open——解析不了的归档/类不贡献层次事实，层次
 /// 缺口由 CommonSuperClassResolver 的回退路径兜住。jimage（lib/modules）不是
-/// zip 容器，不在扫描集（与 旧栈 行为一致）。
+/// zip 容器，不在扫描集（与 ）。
 void scanJdkHierarchy(const std::string& jdkPath, mjbase::hierarchy::ClassHierarchy& hierarchy,
                       mjbase::KeyPool& pool)
 {

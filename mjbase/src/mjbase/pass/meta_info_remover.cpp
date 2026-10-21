@@ -95,7 +95,7 @@ bool removeNamedSlots(ClassFile&                                   cf,
 }
 
 /// Utf8 字节视图的码点数（延续字节不计；与 ca::str::Utf8StringRef::length()
-/// 同口径——旧栈 desc.length() 判定按码点）。
+/// 同口径——）。
 ca::usize codepointLength(std::string_view s)
 {
     ca::usize count = 0;
@@ -105,7 +105,7 @@ ca::usize codepointLength(std::string_view s)
     return count;
 }
 
-/// 注解描述符形状判定（旧栈 isMalformedAnnotationDesc 逐条对齐）：空 / 码点
+/// 注解描述符形状判定：空 / 码点
 /// 长度 ≤ 3 / 不以 'L' 开头 / 不以 ';' 结尾 / 含换行、NUL、空格。
 bool isMalformedAnnotationDesc(std::string_view desc)
 {
@@ -326,7 +326,7 @@ std::string_view sourceDebugValue(const ClassFile& cf, const AttrSlot& slot)
     return {reinterpret_cast<const char*>(view.data()), view.size()};
 }
 
-/// 非法 debug 信息判定（旧栈 isIllegalDebugInfo 逐条对齐）：空合法；码点
+/// 非法 debug 信息判定：空合法；码点
 /// 长度 > 100 / 不以 ".java" 结尾 / 基名空 / 基名首字节数字 / 基名含非 ASCII
 /// 字母数字字节 → 非法。
 bool isIllegalDebugInfo(std::string_view info)
@@ -592,7 +592,7 @@ mjbase::spi::PreservedAnalyses KotlinMetadataRemover::run(jbc::ir::ClassSession&
     ClassFile& cf = session.backing();
     bool       changed = false;
 
-    // 类级只查 visible 槽（旧实现面）：@kotlin/Metadata。
+    // 类级只查 visible 槽：@kotlin/Metadata。
     changed |= filterAnnotationSlots(cf, cf.attrs, AnnoFilter::Kotlin, {kRva});
     for (MemberInfo& m : cf.methods) {
         changed |= filterAnnotationSlots(cf, m.attrs, AnnoFilter::Jetbrains);

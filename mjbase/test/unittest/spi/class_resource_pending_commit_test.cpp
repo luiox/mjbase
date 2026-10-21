@@ -1,4 +1,3 @@
-// 移植自旧栈 unittest/spi/class_resource_pending_commit_test.cpp：断言原样保留，
 // 资源类型换 mjbase::model。
 #include <gtest/gtest.h>
 #include <stdexcept>

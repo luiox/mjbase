@@ -104,7 +104,7 @@ constexpr ca::i64 kLongMax = (std::numeric_limits<ca::i64>::max)();
 }   // namespace
 
 // ---------------------------------------------------------------------------
-// 算术：Java 溢出 / 移位 / 除法 / 取余语义（移植旧栈用例）
+// 算术：Java 溢出 / 移位 / 除法 / 取余语义（移植）
 // ---------------------------------------------------------------------------
 
 TEST(MjAsmEvaluatorTest, IntegerArithmeticMultiplyReturn)

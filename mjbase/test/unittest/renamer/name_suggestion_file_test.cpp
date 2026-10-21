@@ -1,6 +1,6 @@
 /// @file        name_suggestion_file_test.cpp
 /// @brief       AI 建议文件 schema + FileSuggestionProvider 单测（mjbase 移植
-///              版，旧栈对应物）。
+///              版）。
 ///
 /// schema 错误整文件拒载（零应用）、版本不识别拒载、往返恒等、provider 原样
 /// 产出，以及 provider→引擎端到端的 rationale/evidence 流水留痕。

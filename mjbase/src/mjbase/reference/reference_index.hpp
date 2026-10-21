@@ -156,7 +156,7 @@ struct FieldRefKey
 /// source* 为驻留视图；类级事实（class-header/结构元数据/字段声明）的
 /// sourceMethod/sourceDesc 为空视图且 insnIndex == -1。方法体内的
 /// insnIndex 是 jbc::ir::CodeDom::order() 程序序下标（CodeDom 无
-/// label/line 占位节点，与旧栈 InsnList 全表下标不同坐标系，见迁移报告）。
+/// label/line 占位节点，与）。
 struct ReferenceSite
 {
     std::string_view sourceClass;

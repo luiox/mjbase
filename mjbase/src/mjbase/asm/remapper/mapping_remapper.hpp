@@ -1,7 +1,6 @@
 /// @file        mapping_remapper.hpp
 /// @brief       基于 IntermediateMapping 的文本映射门面（类名/成员名/描述符）。
 ///
-/// 旧栈对应物：asm/remapper/utf8_remapper 的 `Utf8Remapper`——继承
 /// jbytecode::commons::Remapper（visitor 底座，mjbase 禁入）并 override map()
 /// 查 IntermediateMapping，描述符/签名重写靠基类 non-virtual helper 回调。
 /// 重设计为纯值门面：类名/成员名映射直接委托 IntermediateMapping 查询，
@@ -9,7 +8,7 @@
 /// 重写结果驻留门面自有 KeyPool（内容寻址、视图随门面存活）。
 ///
 /// 零拷贝：类名/成员名命中返回 IntermediateMapping 内部 arena 的视图，未命中
-/// map() 返回空视图（is_empty 语义与旧栈一致）；描述符/签名重写结果驻留本
+/// map() 返回空视图（is_empty 语义与）；描述符/签名重写结果驻留本
 /// 门面池。取代旧栈的继承形态后，命令式改写器不再需要任何 visitor 挂点。
 #pragma once
 

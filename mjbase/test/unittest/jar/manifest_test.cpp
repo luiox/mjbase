@@ -1,6 +1,5 @@
 /// JAR-4 回归：Manifest::toBytes 折行不得切断 UTF-8 多字节字符。
 ///
-/// 移植自旧栈 unittest/jar/manifest_test.cpp（4 用例逐一对应，断言等强度）；
 /// 适配点仅命名空间与 Utf8String 字节级构造（from_data_unchecked 直通）。
 #include "mjbase/jar/manifest.hpp"
 
@@ -49,7 +48,7 @@ TEST(MjManifestToBytesTest, ShortAsciiRoundtrip)
 }
 
 /// 多字节字符恰好跨越 72 字节截断点：折行必须回退到字符起始字节，
-/// roundtrip 后值逐字节一致（旧实现会把「中」切成两半导致解析失败/值错）。
+/// roundtrip 后值逐字节一致。
 TEST(MjManifestToBytesTest, WrapDoesNotSplitUtf8MultibyteChar)
 {
     // 值 = 70 个 ASCII 'x' + '中'（3 字节）。"Key: " 前缀 5 字节 + 70 = 75 > 72，

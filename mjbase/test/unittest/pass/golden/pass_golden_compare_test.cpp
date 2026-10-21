@@ -4,7 +4,7 @@
 /// 迁移计划 §0 规则 2「双栈对拍」/ P4「每 pass 一役：golden 提取 → 新实现 →
 /// 字节级对拍或显式声明输出差异」的验收机器：同一语料跑 mjbase 试点 pass
 /// （经 pass_name_registry 按名构造），与旧栈提取的 golden 逐字节比较。
-/// golden 与语料由旧栈侧提取器（旧栈同名单测）生成并冻结在
+/// golden 与语料由旧栈侧提取器生成并冻结在
 /// mjbase/test_resource/pass_golden/ 下，属基线文件；再生成方式见该目录 README
 /// 与 doc_ai/pass-golden-pipeline.md。
 ///
@@ -61,8 +61,8 @@ constexpr const char* kSorterName   = "ClassMemberSorter";
 constexpr const char* kTightenerName = "AccessModifierTightener";
 constexpr const char* kCleanerName  = "IllegalClassFileCleaner";
 
-/// 语料道：tree 道服务 sorter/tightener（旧栈 tree writer 规范形），
-/// jcf 道服务 cleaner（旧栈 jclassfile writer 规范形）。
+/// 语料道：tree 道服务 sorter/tightener，
+/// jcf 道服务 cleaner。
 constexpr const char* kTreeLane = "pass_golden/corpus/tree";
 constexpr const char* kJcfLane  = "pass_golden/corpus/jcf";
 
@@ -277,7 +277,7 @@ TEST(MjPassGoldenCompare, PilotPassesResolvableViaRegistry)
     EXPECT_EQ(cleaner.unwrap().scope, mjbase::spi::PassScope::Global);
 }
 
-// ── ClassMemberSorter：no-reorder 类逐字节；声明类（旧栈 writer 全量重编 CP）
+// ── ClassMemberSorter：no-reorder 类逐字节；声明类
 //    按成员序语义对拍 ──
 
 TEST(MjPassGoldenCompare, ClassMemberSorter)
@@ -334,7 +334,7 @@ TEST(MjPassGoldenCompare, ClassMemberSorter)
 }
 
 // ── AccessModifierTightener：全语料一容器（跨类普查）；未声明类目逐字节，
-//    声明类目（旧栈 SKIP_FRAMES 丢帧）按成员 access 语义对拍 ──
+//    声明类目按成员 access 语义对拍 ──
 
 TEST(MjPassGoldenCompare, AccessModifierTightener)
 {
@@ -1228,7 +1228,7 @@ TEST(MjPassGoldenCompare, ToolClassCombiner)
 
     // manifest 声明面：非空非注释行 = `语料名 类目码`。类目：
     //   CC_NOTMODELED_KEPT——ldc 宽常量候选按 libjbc Err(NotModeled) 口径
-    //   保守保持原资源（旧栈无此限制，正常合并；迁移声明的语义面差异）；
+    //   保守保持原资源；
     //   CLASSFILE_REENCODE——旧栈 tree writer 全量重编码的 writer 级差异。
     std::map<std::string, std::string> declared;
     {
@@ -1314,7 +1314,7 @@ TEST(MjPassGoldenCompare, ToolClassCombiner)
     }
     EXPECT_TRUE(keptPresent) << "声明类目语料必须在场（清单防腐）";
 
-    // 幸存面：拒绝矩阵逐字节（旧栈 tree 不动点）；消费面按声明类目指纹对拍。
+    // 幸存面：拒绝矩阵逐字节；消费面按声明类目指纹对拍。
     for (const std::string& name : names) {
         if (std::find(std::begin(kDonors), std::end(kDonors), name) != std::end(kDonors)) {
             continue;
@@ -1426,7 +1426,7 @@ TEST(MjPassGoldenCompare, ToolClassCombiner)
         }
         // 帧方向：新栈为分支体再生 SMT，golden（旧 tree writer）必无帧。
         EXPECT_FALSE(classHasStackMapTable(*gCf.file))
-            << "golden 宿主不应含帧（旧栈丢帧怪癖已变需复核）";
+            << "golden 宿主不应含帧";
     }
     // 全部 golden 宿主必须被配对（声明保留供体成员已在配对面扣除）。
     for (std::size_t i = 0; i < goldenHosts.size(); ++i) {
@@ -1443,10 +1443,10 @@ TEST(MjPassGoldenCompare, ToolClassCombiner)
     EXPECT_TRUE(anyOutputSmt) << "分支体并入宿主后必须再生 StackMapTable";
 }
 
-// ── B 批 JunkCodeInserter 自基线（防漂移，非旧栈对拍）──
+// ── B 批 JunkCodeInserter 自基线（防漂移，非）──
 //
 // golden 纪律「基线在切换前从旧栈提取」对本 pass 不适用：B 批无 旧栈 对应件
-// （旧栈垃圾代码面在宿主混淆器线，且建类属 A5 域，不在本批迁移面）。替代基线：
+// 。替代基线：
 // 确定性 pass 的输出按字节冻结为自基线（MJBASE_PASS_GOLDEN_REGEN=1 时再生成），
 // 常规运行逐字节对拍——行为漂移即失败。硬验收面（真 JVM 执行）另在 JVM 用例。
 // 基线语料取 hb_char_arr（15 指令方法，kStride 命中一次插入）与 hb_nop_seq
@@ -1491,7 +1491,7 @@ TEST(MjPassGoldenCompare, JunkCodeInserterSelfBaseline)
 //    - golden == output（逐字节一致）即通过。注意这合法地涵盖两类：未触发
 //      类目（copy-through 恒等），以及**纯标志位触发**类目（FinalRemover /
 //      SyntheticBridgeRemover / IllegalAccessRemover：清位不触碰 CP 与布局，
-//      旧栈重序列化产物与 mjbase 原位改写可以逐字节相同）——manifest 的
+//      ）——manifest 的
 //      「触发」语义（golden != 语料）不蕴含「字节必异」，故本族不做
 //      「声明则必须字节差异」的反向检查（与有强制重编码面的家族不同）。
 //    - golden != output：必须命中 manifest 声明（未声明的字节差异 = 失败），

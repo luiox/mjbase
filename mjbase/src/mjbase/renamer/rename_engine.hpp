@@ -2,7 +2,6 @@
 /// @brief       统一 renamer 编排引擎：建议流 → 合法性过滤 → 裁决 → override
 ///              闭包 → 包展开 → 后缀消解 → 计划 + 审计记录。
 ///
-/// 旧栈对应物：renamer/rename_engine（旧栈 P0 骨架）。
 /// 流水线与裁决语义逐阶段照旧：
 ///
 ///   收集建议流 → 合法性过滤（复用 IdentifierUtil，`<init>`/`<clinit>` 豁免，
@@ -16,8 +15,8 @@
 ///
 /// 应用面（step 8）：planOnly=false 且计划非空时，引擎计划按登记序搬运成
 /// asm/remapper 域的 MemberRemapPlan，经 applyResourceRemapPlan+RemapPolicy
-/// 就地应用到容器（旧栈 step 8 同一条路径）；应用零变化（逐类失败被
-/// remapper 面按类跳过后的聚合信号）为 ApplyFailed + ok=false（旧栈同口径）；
+/// 就地应用到容器；应用零变化（逐类失败被
+/// remapper 面按类跳过后的聚合信号）为 ApplyFailed + ok=false；
 /// planOnly=false 且计划为空保持旧栈 zero-applied 成功口径。容器入参因此收
 /// 非 const&（应用路径就地写回）。
 #pragma once
@@ -39,7 +38,7 @@
 
 namespace mjbase::renamer {
 
-/// @brief 引擎运行选项（plan-only 门 + 应用面门控，旧栈字段照旧）。
+/// @brief 引擎运行选项（plan-only 门 + 应用面门控）。
 struct RenamerOptions
 {
     /// true（默认）：只构造 RenamePlan 与审计记录，不改容器——最安全口径。
@@ -53,7 +52,7 @@ struct RenamerOptions
     mjbase::asm_remapper::RemapPolicy policy{};
 };
 
-/// @brief 一次 run 的计数摘要（旧栈字段照旧）。
+/// @brief 一次 run 的计数摘要。
 struct RenameRunStats
 {
     ca::usize proposed       = 0;   ///< 收到的建议总数（各 provider 流合计）

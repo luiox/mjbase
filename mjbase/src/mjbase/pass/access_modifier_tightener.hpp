@@ -6,9 +6,9 @@
 namespace mjbase::pass {
 
 /// @brief 访问修饰符收紧器：把仅被本类引用的 public static 成员收紧为 private
-///        （移植自旧栈 pass/opt/access_modifier_tightener）。
+///        （移植自）。
 ///
-/// 收紧规则矩阵（与旧实现逐条对齐）：
+/// 收紧规则矩阵（与）：
 ///   - 普查面：全容器 INVOKESTATIC（方法）与 GETSTATIC/PUTSTATIC（字段）引用；
 ///     其他操作码（invokevirtual/special/interface、getfield/putfield）不参与。
 ///   - 记账规则：被引用的成员（owner+name+desc）记一条；引用来源 owner 不同于
@@ -18,9 +18,9 @@ namespace mjbase::pass {
 ///     | ACC_PRIVATE。从未被引用的成员不动；非 public / 非 static 不动。
 ///   - 装载面：空 bytes、不可解析、无类名的资源跳过；任一方法体升格失败的
 ///     类整体跳过（普查证据不全时收紧是不安全方向，对齐旧栈「读不进就整类
-///     不参与」的准入粒度）。装载后按类内部名字节序排序（确定性，对齐旧栈）。
+///     不参与」的准入粒度）。装载后按类内部名字节序排序（确定性，对齐）。
 ///   - 写回：改动的类经两阶段提交（ClassResourcePendingCommit，作业级原子）；
-///     序列化失败向上抛出（对齐旧栈 writer 异常传播）。发生收紧返回 none()，
+///     序列化失败向上抛出（对齐）。发生收紧返回 none()，
 ///     否则 all()。
 ///
 /// 依赖边界与旧栈一致：跨类普查只覆盖容器内 class 资源的指令流，反射/Native/

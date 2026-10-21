@@ -39,7 +39,7 @@ Result<T> resourceError(const std::string& message)
 }
 
 // 读取 class internal name（jbc 骨架解析）；字节不可解析返回 Err(ReadError)。
-// 与 jvm_jasm_service.cpp 的同名 helper 保持同一语义（旧栈 两 TU 也各自持有）。
+// 与 jvm_jasm_service.cpp 的同名 helper 保持同一语义。
 ca::core::Result<ca::str::Utf8String, jbc::core::ReadError>
 readInternalName(const std::vector<ca::u8>& bytes)
 {

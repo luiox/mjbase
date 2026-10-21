@@ -96,7 +96,7 @@ TEST(MjAsmAnalyzerTest, OriginMergeKeepsAgreeingFactOnly)
     ASSERT_TRUE(m1.isInsn());
     EXPECT_TRUE(m1.insn == a);
 
-    // 不同句柄 → Unknown（旧实现是 producer 并集；单来源域正确退化）。
+    // 不同句柄 → Unknown。
     const OriginValue m2 = dom.merge(OriginValue::ofInsn(a), OriginValue::ofInsn(b));
     EXPECT_TRUE(m2.isUnknown());
 

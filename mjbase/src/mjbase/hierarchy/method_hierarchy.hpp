@@ -1,7 +1,7 @@
 /// @file        method_hierarchy.hpp
 /// @brief       方法层次：同 name+desc 的 override 等价族与单继承链虚分派。
 ///
-/// 语义来源（旧栈 method_hierarchy 的公开语义，按键重写）：
+/// 语义来源：
 /// - 虚方法 = 非 private、非 static、名字非 '<' 开头；只有虚方法参与
 ///   override 族（private/static/'<init>' 族退化为自身单例）；
 /// - override 族 = 旧并查集连通分量的等价语义：同一 name+desc 在

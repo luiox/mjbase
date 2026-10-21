@@ -165,7 +165,7 @@ void collectAnnotations(jbc::core::ClassFile& cf, std::vector<jbc::core::AttrSlo
                         std::vector<AnnotationInfo>& out);
 
 /// @brief 收集 Code 属性嵌套的 LVT/LVTT 行（ASM 口径：LVTT 行 desc=签名文本，
-///        signature 恒空——与旧栈 visitLocalVariable 可观察行为一致）。
+///        signature 恒空——与）。
 void collectLocalVariables(jbc::core::ClassFile& cf, jbc::core::CodeAttr& code,
                            std::vector<LocalVariableInfo>& out);
 

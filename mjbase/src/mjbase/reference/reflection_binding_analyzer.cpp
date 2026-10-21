@@ -87,7 +87,7 @@ std::string_view primitiveTypeFieldName(std::string_view owner, std::string_view
     return {};
 }
 
-// ── sink 目录（数据驱动，旧栈逐项照迁）────────────────────────
+// ── sink 目录（数据驱动）────────────────────────
 
 std::vector<ReflectionSinkEntry> buildSinkCatalog()
 {
@@ -367,7 +367,7 @@ public:
     BindingValue top() override { return BindingValue::unknown(); }
 
     /// join：内容一致保留；SB 冲突保形态降内容；数组冲突逐位折损 + ambiguous；
-    /// 其余 Unknown（fail-closed，旧栈 merge 照迁）。
+    /// 其余 Unknown（fail-closed）。
     BindingValue merge(const BindingValue& value1, const BindingValue& value2) override
     {
         if (value1 == value2) {
@@ -707,7 +707,7 @@ struct MethodPipeline
     }
 };
 
-/// @brief StringConcatFactory indy 折叠（旧栈 foldConcat 照迁）。
+/// @brief StringConcatFactory indy 折叠。
 ///
 /// makeConcatWithConstants：recipe（\u0001 占位按序消费动态实参；\u0002 静态
 /// 常量占位 fail-closed）；makeConcat：全参顺序拼接。歧义实参经哨兵渲染不阻断
@@ -761,7 +761,7 @@ BindingValue foldConcat(bool withConstants, std::string_view recipe,
 }
 
 /// @brief indy 拼接产点（StringConcatFactory.makeConcat*）；非拼接 indy 返回
-/// unknown（与旧栈 basic fallback 一致，仍走 upsert 保持无方向性陈旧）。
+/// unknown（与）。
 BindingValue concatProduction(MethodPipeline& p, const jbc::ir::Insn& in, jbc::ir::InsnId id,
                               jbc::ir::ClassSession& session)
 {
@@ -953,7 +953,7 @@ bool recomputePureProductions(MethodPipeline& p, jbc::ir::ClassSession& session)
     return changed;
 }
 
-/// @brief 变异 pass（值轮收敛后按程序序一次性施加；旧栈共享变异引用语义）。
+/// @brief 变异 pass（值轮收敛后按程序序一次性施加；）。
 ///
 /// 覆盖：NEW StringBuilder/StringBuffer（新对象登记）、SB append/insert/<init>
 /// （就地改内容 + 产出同一对象）、ANEWARRAY（新数组登记）、AASTORE（就地写元素）。
@@ -1067,7 +1067,7 @@ bool applyMutations(MethodPipeline& p, jbc::ir::ClassSession& session)
 
         // 实参：append 取末实参；insert(index, x) 取第 2 实参（index 槽 0，
         // 缺省回退槽 0）；<init>(String) 取槽 0。<init>()V 不携带内容实参：
-        // 新建 SB 本就是已知空串（旧栈 init 段 values.size()>=2 同口径），
+        // 新建 SB 本就是已知空串，
         // 走 appended==nullptr 的 fail-closed 会误杀折叠链。
         if (init && argCount == 0) continue;
         const BindingValue* appended = nullptr;
@@ -1271,7 +1271,7 @@ void ReflectionBindingAnalyzer::analyzeSession(jbc::ir::ClassSession& session)
         }
         if (!p.frames) continue;   // 该方法控制流不可分析：不产出绑定（fail-closed）
 
-        // ── sink 落解（旧栈 analyzeClass sink 段照迁，帧读取换 FrameQuery）──
+        // ── sink 落解──
         for (ca::usize pos = 0; pos < order.size(); ++pos) {
             const jbc::ir::InsnId id = order[pos];
             const jbc::ir::Insn*  in = code.dom.peek(id);
@@ -1631,7 +1631,7 @@ void ReflectionBindingAnalyzer::indexSession(jbc::ir::ClassSession& session)
 
     const std::string_view className = pool_.str(pool_.intern(syms.str(unit.thisClass)));
 
-    // 声明底表（first-seen wins；旧栈 try_emplace 同口径）。
+    // 声明底表（first-seen wins；）。
     auto [it, inserted] = classes_.try_emplace(className);
     if (inserted) {
         ClassInfo& info = it->second;
@@ -1680,7 +1680,7 @@ void ReflectionBindingAnalyzer::build(const mjbase::model::ResourceContainer& co
 {
     clear();
 
-    // 两趟扫描（旧栈 build 同构）：先全量声明底表/常量/名表，再逐方法值流
+    // 两趟扫描：先全量声明底表/常量/名表，再逐方法值流
     // 落解。畸形类在 scan 阶段已 fail-open 跳过，不产出会话。
     const auto scanned = mjbase::analysis::scanClassResources(container);
     for (const auto& scannedClass : scanned) {

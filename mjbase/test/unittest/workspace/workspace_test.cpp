@@ -892,7 +892,7 @@ TEST(MjWorkspaceCoreTest, CommitsPrivateWorkflowCandidateJarAtomically)
     const auto input = writeWorkspaceFixture();
     WorkspaceBase candidateWorkspace;
     ASSERT_TRUE(candidateWorkspace.openJar(input.string()).is_ok());
-    // 候选产物：旧栈经 applyRemap 整库重命名 Subject→RenamedSubject；mjbase
+    // 候选产物：mjbase
     // 重映射器未随迁，改经两次 applyClassBytes 等价构造（类内部名迁移 +
     // Child super 同步改指），候选 JAR 协议断言逐条保留。
     auto renamedSubject = assembleSource("workspace/RenamedSubject",
@@ -1086,7 +1086,7 @@ TEST(MjWorkspaceCoreTest, AppliesStructuredClassMutationsThroughOneTransactionPa
     ASSERT_EQ(1U, annotatedField.unwrap().annotations.size());
     EXPECT_EQ("Lworkspace/Marker;", annotatedField.unwrap().annotations[0].descriptor);
 
-    // 负例改写（类型面）：旧栈树序号 0 命中 label 节点被拒；mjbase 代码指令
+    // 负例改写（类型面）：mjbase 代码指令
     // 序号 0 是未引用 ldc、移除会成功——拒收面改断言序号越界（同一错误通道）。
     ClassMutation invalidDelete;
     invalidDelete.classUri         = "workspace/Subject.class";
@@ -1251,8 +1251,8 @@ TEST(MjWorkspaceCoreTest, BuildsExecutableInstructionFamiliesFromSymbolicLabels)
     ASSERT_TRUE(branchResult.status.is_ok()) << branchResult.status.message;
 
     // 代码指令序号口径：branch 体序号 = [iload 0, ifeq, ldc 1, ireturn, ldc 0,
-    // ireturn, pop, ldc -1, ireturn]——ifeq 为 1（旧栈树序号 2），ldc 0 为 4
-    //（旧栈树序号 5 的 "zero" 绑定点）。
+    // ireturn, pop, ldc -1, ireturn]——ifeq 为 1，ldc 0 为 4
+    //。
     ClassMutation replaceJump;
     replaceJump.classUri          = "workspace/Subject.class";
     replaceJump.kind              = ClassMutationKind::ReplaceInstruction;
@@ -1322,7 +1322,7 @@ TEST(MjWorkspaceCoreTest, BuildsExecutableInstructionFamiliesFromSymbolicLabels)
                                      simple(0x57), simple(0xb1 /* RETURN */)};
     ASSERT_TRUE(addMethod(constants).status.is_ok());
 
-    // indy 拒收钉子：旧栈 AddMethod(InvokeDynamic) 成功；mjbase 入口即拒
+    // indy 拒收钉子：mjbase 入口即拒
     //（InvalidArgument），产物不出半成品。
     ClassMutation indy;
     indy.member = {"concat", "(I)Ljava/lang/String;"};
@@ -1637,7 +1637,7 @@ TEST(MjWorkspaceCoreTest, ReportsOverrideComponentWithPrimaryAndSupportingDecora
 
 // ── summary 扫描单后端字段契约（旧 JbcSummaryScanTest 三例单后端化）──────
 //
-// 旧栈是 legacy（jbytecode SKIP）× jbc 双后端字段级对拍；mjbase 只有 libjbc
+// mjbase 只有 libjbc
 // 一个底座，对拍面收敛为单后端字段契约：对同一 (uri, bytes) 断言 internalName/
 // superName/access/version/interfaceCount/fieldCount/methodCount（resourceUri
 // 原样回填），强度与双后端逐字段相等断言一致。

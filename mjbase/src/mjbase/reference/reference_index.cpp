@@ -235,7 +235,7 @@ const jbc::core::SignatureAttr* decodeSignatureAttr(jbc::core::ClassFile& cf,
     return ca::core::tag_cast::dyn_cast<jbc::core::SignatureAttr>(body);
 }
 
-// ── 注解类型抽取（旧栈 appendAnnotationTypes 照迁）：注解类型描述符 +
+// ── 注解类型抽取：注解类型描述符 +
 //    'e'（枚举 type_name）与 'c'（class 信息）元素值，递归嵌套与数组。──
 
 bool parseRawAnnotation(RawCursor& cur, const jbc::core::ConstantPool& cp,
@@ -424,7 +424,7 @@ void ReferenceIndex::indexClassHeader(jbc::ir::ClassSession& session,
         appendTypeReference(ref, false);
     };
 
-    // 类声明（先到先得，旧栈 first-seen-wins 同口径）。
+    // 类声明（先到先得）。
     if (classDeclsByKey_.find(className) == classDeclsByKey_.end()) {
         ClassDeclaration decl;
         decl.name      = className;
@@ -470,7 +470,7 @@ void ReferenceIndex::indexClassHeader(jbc::ir::ClassSession& session,
                 }
             }
         }
-        // EnclosingMethod（旧栈 clazz.outerClass）：typed 体公开入口解码
+        // EnclosingMethod：typed 体公开入口解码
         //（不触碰槽状态，B3 分派接线前后同形）。
         if (const AttrSlot* slot = findAttrByName(cf.attrs, cp, "EnclosingMethod")) {
             auto d = decodeEnclosingMethodBody(cf, *slot);
@@ -482,7 +482,7 @@ void ReferenceIndex::indexClassHeader(jbc::ir::ClassSession& session,
             }
         }
         // NestHost / NestMembers / PermittedSubclasses：typed 体公开入口解码
-        //（不触碰槽状态，分派接线前后同形；旧栈 clazz.outerClass / nest 面）。
+        //（不触碰槽状态，分派接线前后同形；）。
         if (const AttrSlot* slot = findAttrByName(cf.attrs, cp, "NestHost")) {
             auto d = decodeNestHostBody(cf, *slot);
             if (d.is_ok()) {
@@ -525,7 +525,7 @@ void ReferenceIndex::indexClassHeader(jbc::ir::ClassSession& session,
                 }
             }
         }
-        // InnerClasses：inner + outer 两个类名（旧栈 innerClass->name/outerName）；
+        // InnerClasses：inner + outer 两个类名；
         // typed 体公开入口解码（同上），outer==0 匿名形态原样收集空名由
         // appendClassTypeRef 丢弃。
         if (const AttrSlot* slot = findAttrByName(cf.attrs, cp, "InnerClasses")) {
@@ -582,7 +582,7 @@ void ReferenceIndex::indexClassHeader(jbc::ir::ClassSession& session,
                 }
             }
         }
-        // Module + ModuleMainClass（旧栈 moduleNode.mainClass/usesList/providesList）。
+        // Module + ModuleMainClass。
         // typed 体公开入口解码（不触碰槽状态，分派接线前后同形）；requires/
         // exports/opens 不产生类引用，结构跳过。
         if (const AttrSlot* slot = findAttrByName(cf.attrs, cp, "ModuleMainClass")) {
@@ -702,7 +702,7 @@ void ReferenceIndex::indexSession(jbc::ir::ClassSession&      session,
         indexFieldUnit(session, fi, className, classSite);
     }
 
-    // ── 方法声明（先全部入表，再逐方法体扫描——旧栈两段循环同构）──
+    // ── 方法声明（先全部入表，再逐方法体扫描——）──
     for (const jbc::ir::MethodUnit& method : unit.methods) {
         appendMethodDeclaration(session, method, className);
     }
@@ -1053,7 +1053,7 @@ void ReferenceIndex::indexMethodBody(jbc::ir::ClassSession&                sessi
                 ref.kind       = TypeReferenceKind::ClassConstant;
                 appendTypeReference(ref, true);
                 // 类常量作为潜在反射接收者：值已是 Class[] 元素（下一指令
-                // AASTORE）或本方法已持有成员名时不追踪（旧栈同条件）。
+                // AASTORE）或本方法已持有成员名时不追踪。
                 const jbc::ir::Insn* next =
                     pos + 1 < order.size() ? code.dom.peek(order[pos + 1]) : nullptr;
                 const bool classArrayStoreValue = next != nullptr && next->op == Op::AASTORE;
@@ -1110,7 +1110,7 @@ void ReferenceIndex::indexMethodBody(jbc::ir::ClassSession&                sessi
                 }
             }
         }
-        // 其余指令：字符串状态复位（与旧栈 default 分支同口径）。
+        // 其余指令：字符串状态复位（与）。
         hasLastStringConstant = stringLdc;
     }
 
@@ -1126,7 +1126,7 @@ void ReferenceIndex::indexMethodBody(jbc::ir::ClassSession&                sessi
     const ReflectionSnapshot snapshot = snapshotReflectionFacts(ctx);
     if (!snapshot.ok) {
         return;   // fail-open（JSR/RET、畸形控制流）：保留 direct/lookup 事实，
-                  // 不追加 reflection 数据流事实（旧栈 catch AnalyzerException 同口径）
+                  // 不追加 reflection 数据流事实
     }
     for (ca::usize pos = 0; pos < order.size(); ++pos) {
         const jbc::ir::Insn* in = code.dom.peek(order[pos]);

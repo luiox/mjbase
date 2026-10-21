@@ -1,5 +1,5 @@
 /// @file        mini_dsl_parser.cpp
-/// @brief       mini DSL 词法/语法解析（旧实现的异常通道改为 Result）。
+/// @brief       mini DSL 词法/语法解析。
 #include <algorithm>
 #include <cctype>
 #include <string>
@@ -123,7 +123,7 @@ Result<std::vector<std::string>, MatcherError> splitSteps(std::string_view side)
     return Ok(std::move(result));
 }
 
-/// Pratt 表达式解析（优先级与旧实现一致，异常通道改 Result）。
+/// Pratt 表达式解析（优先级与）。
 class ExprParser
 {
 public:

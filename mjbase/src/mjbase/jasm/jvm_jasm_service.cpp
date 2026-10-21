@@ -114,7 +114,7 @@ Result<T> exceptionResult(DiagnosticStage stage, const std::exception& exception
     return result;
 }
 
-// 字节不可解析时的稳定 Error 诊断（旧栈 侧由 ClassReader 异常路径产生）。
+// 字节不可解析时的稳定 Error 诊断。
 template<typename T>
 Result<T> unreadableClassResult(DiagnosticStage stage, jbc::core::ReadError error)
 {

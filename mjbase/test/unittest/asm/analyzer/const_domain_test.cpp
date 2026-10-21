@@ -114,7 +114,7 @@ TEST(MjAsmAnalyzerTest, ConstMergeAlgebraFollowsJoinSemantics)
     ASSERT_TRUE(m1.isConst());
     EXPECT_EQ(m1.asI64(), 7);
 
-    // 不同常量 → Top（旧实现：冲突合并丢已知值）。
+    // 不同常量 → Top。
     const ConstLattice m2 = dom.merge(ConstLattice::ofInt(1), ConstLattice::ofInt(2));
     EXPECT_TRUE(m2.isTop());
 
@@ -621,7 +621,7 @@ TEST(MjAsmAnalyzerTest, ConstDeadCodeFrameIsUnreachable)
 TEST(MjAsmAnalyzerTest, ConstSeededArgumentFeedsIntegerArithmetic)
 {
     // 移植旧 addOne 用例族：iload_0; iconst_1; iadd; istore_1，入参种子 41
-    // → iadd 结果 42（旧栈对拍点：IRETURN 前栈顶）。旧栈按 short/char 归一
+    // → iadd 结果 42。旧栈按 short/char 归一
     // （normalizeIntValue），新格层 int 宽度只有一类 Int 载荷，(S)/(C)/(I)
     // 三种描述符同一种子语义。
     for (const char* desc : {"(S)I", "(C)I", "(I)I"}) {

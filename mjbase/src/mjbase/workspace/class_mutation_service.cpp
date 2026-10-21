@@ -462,7 +462,7 @@ WorkspaceErrorInfo makeInstruction(ClassSession& session, const InstructionSpec&
     }
 }
 
-/// @brief LDC 的 u8 CP 索引拓宽（旧栈 ASM ClassWriter 自动拓宽的等价物）。
+/// @brief LDC 的 u8 CP 索引拓宽。
 void widenLdcIfNeeded(Insn& insn)
 {
     if ((insn.op == Op::LDC || insn.op == Op::LDC_W) && insn.cp > 255) insn.op = Op::LDC_W;
@@ -523,7 +523,7 @@ struct BuiltBody
 /// 标签语义按 libjbc 重定型：Label 规格是「下一条指令的前置边界」（方法末尾
 /// 悬空时锚到方法末），Line 规格绑定到下一条指令的导出 PC。try/catch 边界
 /// 先符号标签、后代码指令序号（序号边界是 libjbc 面「标签非指令」的等价物，
-/// 旧栈要求该序号恰是 LabelNode）。局部变量/行号行由导出 PC 落表。
+/// ）。局部变量/行号行由导出 PC 落表。
 WorkspaceErrorInfo buildMethodBody(ClassSession&                         session,
                                    jbc::core::MemberInfo&                method,
                                    const std::vector<InstructionSpec>&   specs,
@@ -531,7 +531,7 @@ WorkspaceErrorInfo buildMethodBody(ClassSession&                         session
                                    const std::vector<LocalVariableSpec>& locals,
                                    BuiltBody&                            out)
 {
-    // 标签 ID 唯一且非空（旧栈 replaceMethodBody 的前置校验）。
+    // 标签 ID 唯一且非空。
     std::unordered_set<std::string> labelIds;
     for (const InstructionSpec& spec : specs) {
         if (spec.kind != InstructionKind::Label) continue;
@@ -1263,7 +1263,7 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation)
             }
             const InsnId targetId = order[static_cast<ca::usize>(index)];
 
-            // 符号标签绑定（旧栈 existingLabels：绑定 ID → 指令序号）。
+            // 符号标签绑定。
             std::unordered_map<std::string, LabelId> labels;
             bool bindingInvalid = false;
             for (const LabelBindingSpec& binding : mutation.existingLabels) {
@@ -1389,7 +1389,7 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation)
         }
         if (status.is_err()) return failure(std::move(status));
 
-        // 写回：jbc 序列化 → Jasm 验证（旧栈候选门）→ spi 两阶段提交。
+        // 写回：jbc 序列化 → Jasm 验证→ spi 两阶段提交。
         auto written = jbc::core::writeClass(cf);
         if (written.is_err())
             return failure(error(WorkspaceError::Internal, "mutate class",

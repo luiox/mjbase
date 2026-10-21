@@ -85,7 +85,7 @@ std::string trimTrailingSlash(std::string path)
 }
 
 /// owner 内的既有成员占用表（撞名检测用，值 = (name, desc)；字段槽忽略 desc）。
-/// 方法 desc 以 plan 类映射预映像（mapped-desc 空间，旧栈定案）：类改名
+/// 方法 desc 以 plan 类映射预映像（mapped-desc 空间）：类改名
 /// 会同步改写方法描述符中的类类型，最终类文件状态在 mapped-desc 空间，方法槽查撞
 /// 必须与之同空间。调用时机：类映射已全部入 plan 之后。
 /// 层级与池经入参注入（自由函数不占 RenameContext 的友元通道）。
@@ -990,7 +990,7 @@ RenamerRunResult RenamerEngine::run(mjbase::model::ResourceContainer&   containe
                                                                         options.policy);
             const bool committed = applied.is_ok() && std::move(applied).unwrap();
             if (!committed) {
-                // 旧栈同口径：非空计划应用后零变化（逐类失败被 remapper 面按类
+                // ：非空计划应用后零变化（逐类失败被 remapper 面按类
                 // 跳过后的聚合信号）= ApplyFailed，全量不落盘口径。
                 ++result.stats.rejected;
                 result.record.addRejected(

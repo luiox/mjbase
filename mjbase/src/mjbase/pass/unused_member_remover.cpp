@@ -51,7 +51,7 @@ bool loadClass(mjbase::model::ClassResource& resource, LoadedClass& out)
     return true;
 }
 
-/// 容器内全部 class 资源可解析性预检（旧栈 allClassResourcesReadable 对齐）：
+/// 容器内全部 class 资源可解析性预检：
 /// 任一不可解析整 pass 放弃（返回 all()），不做部分删除。
 bool allClassResourcesReadable(mjbase::model::ResourceContainer& container)
 {
@@ -80,13 +80,13 @@ const jbc::core::AttrSlot* findAttrByName(const jbc::core::ClassFile&           
     return nullptr;
 }
 
-/// 类是否携带 Module 描述符（module-info keep 根，对齐旧栈 moduleNode 判定）。
+/// 类是否携带 Module 描述符（module-info keep 根，对齐）。
 bool isModuleDescriptor(const jbc::core::ClassFile& cf)
 {
     return findAttrByName(cf, cf.attrs, "Module") != nullptr;
 }
 
-/// 字段 keep metadata：Signature 或任一注解族属性在场（旧栈 hasFieldKeepMetadata）。
+/// 字段 keep metadata：Signature 或任一注解族属性在场。
 bool hasFieldKeepMetadata(const jbc::core::ClassFile& cf, const jbc::core::MemberInfo& field)
 {
     static constexpr std::string_view kKeepAttrs[] = {
@@ -124,7 +124,7 @@ bool hasMethodKeepMetadata(const jbc::core::ClassFile& cf, const jbc::core::Memb
 }
 
 /// 资源 keep 类名单：module 描述符类 + Manifest 入口键 + META-INF/services
-/// 文件名与内容行（旧栈 collectResourceKeepClasses 逐条对齐）。
+/// 文件名与内容行。
 /// 任一 class 资源不可解析返回 false（调用方整 pass 放弃）。
 bool collectResourceKeepClasses(mjbase::model::ResourceContainer& container,
                                 std::unordered_set<std::string>&       keepNames)

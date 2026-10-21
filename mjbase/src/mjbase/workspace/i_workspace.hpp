@@ -11,11 +11,11 @@ namespace mjbase::workspace {
 /// 各项目面向本接口编程；mjbase 提供 WorkspaceBase 基础实现（无业务语义的
 /// jar 打开/资源缓存/搜索与变更骨架）。接口签名类型全部来自 workspace_types.hpp。
 ///
-/// 事务契约（移植自旧栈，语义照旧）：原始资源与工作副本分别保存。修改始终先发生
+/// 事务契约（移植自）：原始资源与工作副本分别保存。修改始终先发生
 /// 在候选副本；只有候选完成严格验证（spi::sanitizeClassFile 引用语义预检 + Jasm
 /// 验证）后才替换工作副本并增加 revision。调用方用 expectedRevision 可拒绝过期写入。
 ///
-/// remap / rename / pipeline / workflow 方法族（旧栈同款契约）：
+/// remap / rename / pipeline / workflow 方法族：
 /// - 候选副本语义贯穿：analyze* 与 validate* 不触碰工作副本，apply* 与
 ///   runWorkflow 验证通过才原子提交并递增 revision；
 /// - pipeline 组成以 mjbase 自有 pass 集为准（spi::PassRegistry 内置表），
@@ -96,7 +96,7 @@ public:
     /// NameAndType/InvokeDynamic/Dynamic）的 owner.name:desc 文本填入 text；false 时
     /// 引用类条目的 text 为空。非引用类条目（Utf8/Integer 等）总是填充 text。
     /// @note Long/Double 的第二槽保留空占位条目（malformed=true）；损坏 class 经
-    ///       libjbc 解析失败时返回 DataLoss（旧栈容错逐条目枚举形态不保留）。
+    ///       libjbc 解析失败时返回 DataLoss。
     virtual WorkspaceResult<std::vector<ConstantPoolEntryInfo>> constantPool(
         const std::string& uriOrInternalName, bool resolve) const = 0;
 

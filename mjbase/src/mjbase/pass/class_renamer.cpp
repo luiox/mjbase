@@ -38,7 +38,7 @@ struct LoadedClass
     std::shared_ptr<jbc::ir::ClassSession> session;
 };
 
-/// 装载单个 class 资源；空 bytes / 不可解析 / 无类名跳过（对齐旧栈准入）。
+/// 装载单个 class 资源；空 bytes / 不可解析 / 无类名跳过（对齐）。
 bool loadClass(mjbase::model::ClassResource& resource, LoadedClass& out)
 {
     const auto& bytes = resource.get();
@@ -77,7 +77,7 @@ mjbase::spi::PreservedAnalyses ClassRenamer::run(mjbase::model::ResourceContaine
               [](const LoadedClass& lhs, const LoadedClass& rhs) { return lhs.name < rhs.name; });
 
     // 阶段一：命名计划。编号 N 全局递增不按类重置，集合查重取首个未占用名
-    //（旧栈单计数器语义：容器按旧名序得到 Class0/Class1/...）。
+    //。
     mjbase::asm_remapper::MemberRemapPlan plan;
     std::set<std::string>                 allocatedNames;
     int                                   id = 0;

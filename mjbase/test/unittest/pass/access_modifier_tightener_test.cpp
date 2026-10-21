@@ -1,4 +1,3 @@
-/// 移植自旧栈 unittest/pass/opt/recover_pass_test.cpp 的
 /// AccessModifierTightenerTest 段（451 行起），并按任务补齐旧栈缺失的
 /// 独立直接用例。收紧规则矩阵：仅「普查命中 + 无异类引用 + static + public」
 /// 降 private；未引用/异类引用/非 static/非 public 均不动。

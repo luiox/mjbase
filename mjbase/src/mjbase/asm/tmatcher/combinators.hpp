@@ -10,7 +10,7 @@
 ///   - 捕获绑定「捕获名 → 窗口入口指令句柄」（InsnId），提取操作数是
 ///     调用方经 CodeDom::peek 的事。
 ///   - 候选排序即优先级：贪婪降序、懒惰升序；与旧实现的差异见各步骤
-///     注释（旧实现内部统一降序排序，因其只有贪婪一种量词）。
+///     注释。
 #pragma once
 
 #include <algorithm>
@@ -431,7 +431,7 @@ inline StepPtr any()
     return std::make_unique<AnyOneStep>();
 }
 
-/// @brief 匹配「任意单条」重复 [0, 无上限)（旧实现的量词 any()）。
+/// @brief 匹配「任意单条」重复 [0, 无上限)。
 inline StepPtr anyRepeat()
 {
     return std::make_unique<RepeatStep>(std::make_unique<AnyOneStep>(), 0, -1, true);
@@ -586,7 +586,7 @@ inline StepPtr opt(StepPtr node)
 /// @brief 重复 [min, max] 次（贪婪）；max < 0 表示无上限。
 ///
 /// 区间不合法（min < 0，或 max >= 0 且 max < min）时返回永不匹配 step，
-/// 失败原因可在 name()/trace 中观察（旧实现此处抛异常，新约定不抛）。
+/// 失败原因可在 name()/trace 中观察。
 inline StepPtr repeat(StepPtr node, ca::i32 min, ca::i32 max)
 {
     if (min < 0 || (max >= 0 && max < min)) {

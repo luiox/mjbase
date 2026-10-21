@@ -34,7 +34,7 @@ struct Steps
     /// @brief DSL 类型标签 'I'|'J'|'F'|'D' 的常量装载判定。
     ///
     /// 语义照旧：I 含 bipush/sipush/ldc/iconst 族；F 含 fconst 族/ldc；
-    /// J/D 只认 lconst/dconst（旧实现注释掉了 ldc2_w，保持一致）；
+    /// J/D 只认 lconst/dconst；
     /// 'L' 归一为 'J'；其它标签恒 false。
     static bool isConstLoadOfType(char typeTag, const jbc::ir::Insn& insn) noexcept;
 

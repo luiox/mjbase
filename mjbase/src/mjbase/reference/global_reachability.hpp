@@ -1,7 +1,6 @@
 /// @file        global_reachability.hpp
 /// @brief       全局可达性闭包：声明/引用事实 + 调用图边的保守闭包。
 ///
-/// 移植自旧栈 reference/global_reachability。闭包规则与旧版逐条同构：
 ///
 /// - Class 可达只扩展声明级类型事实（直接超类/接口/字段声明描述符/Signature/
 ///   Annotation/结构元数据），不自动展开方法体；

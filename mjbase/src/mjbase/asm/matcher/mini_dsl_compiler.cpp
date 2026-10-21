@@ -1,14 +1,14 @@
 /// @file        mini_dsl_compiler.cpp
 /// @brief       mini DSL 编译：AST → MatchStep 序列 + 求值替换策略。
 ///
-/// 语义对照旧 旧栈 mini_dsl_compiler：
+/// 语义对照旧 
 ///   - ConstLoad 命名绑定按步骤下标从 matchedInsns 取值（ldc 载荷在纯
 ///     DOM 层不可读，读不到则不绑定，后续 require 报 UnboundVariable）；
 ///   - 求值改为 I/J 走 i64、F/D 走 double 的分域实现（旧实现全程 double，
 ///     超 2^53 的 long 失真；结果域内的取值一致）；
 ///   - Method 模式/替换（owner/name/desc）需要常量池语义，编译期
 ///     Err(DslSemantic)，不再静默降级为 opcode 匹配；
-///   - VarLoad/VarStore 照旧编译为恒真步骤（旧实现的占位语义）。
+///   - VarLoad/VarStore 照旧编译为恒真步骤。
 #include <cctype>
 #include <cmath>
 #include <limits>
@@ -335,7 +335,7 @@ Result<MatchRule, MatcherError> MiniDslCompiler::compile(const Rule& astRule)
             steps.push_back(std::move(s));
         } else if (std::get_if<PatternStep::VarLoad>(&step.data) != nullptr ||
                    std::get_if<PatternStep::VarStore>(&step.data) != nullptr) {
-            // 照旧：vload/vstore 编译为恒真步骤（旧实现的占位语义）。
+            // 照旧：vload/vstore 编译为恒真步骤。
             steps.push_back(MatchStep::any());
         }
     }

@@ -1,5 +1,5 @@
 /// ToolClassCombiner（批 A 收口件）单元测试：准入/分桶/搬移/重映射语义面。
-/// golden 对拍（旧栈终态）与 JVM 真跑门另在 pass_golden_compare_test 与
+/// golden 对拍与 JVM 真跑门另在 pass_golden_compare_test 与
 /// tool_class_combiner_jvm_test；本文件钉实现面契约：候选不足 no-op、
 /// NotModeled 候选保守保留、宿主成员序确定性、ConstantValue 重建、
 /// 供体引用零残留与消费面重指向。
@@ -388,7 +388,7 @@ TEST(MjPassToolClassCombinerTest, HostMemberOrderDeterministicPerDonor)
     EXPECT_EQ(betaSeq, betaSequence);
 }
 
-// ConstantValue 重建：搬移字段在宿主侧保有常量值（旧栈整节点搬移的保真面）。
+// ConstantValue 重建：搬移字段在宿主侧保有常量值。
 TEST(MjPassToolClassCombinerTest, ConstantValueRebuiltOnAdoptedField)
 {
     mjbase::model::ResourceContainer container;

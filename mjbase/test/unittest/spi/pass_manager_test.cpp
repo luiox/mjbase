@@ -1,4 +1,3 @@
-// 移植自旧栈 unittest/pass/pass_manager_test.cpp（入口级用例）：单类/容器两级
 // 编排入口按新契约重定型（runAsmPipeline→runClassPipeline，runJarPipeline→
 // runContainerPipeline；writerFlags/typeResolver 参数随 libjbc 写回面移除）。
 #include <gtest/gtest.h>
@@ -121,7 +120,7 @@ TEST(RunClassPipelineTest, roundtripNoOpPasses)
     auto result = runClassPipeline(input, nullptr, nullptr, job);
     ASSERT_TRUE(result.is_ok());
     auto output = std::move(result).unwrap();
-    EXPECT_EQ(output, input);   // 逐字节一致（旧行为为 reader→writer 往返重编码）
+    EXPECT_EQ(output, input);   // 逐字节一致
 }
 
 // ── runClassPipeline：裸方法级管线驱动每个方法 ──

@@ -26,7 +26,7 @@
 
 namespace mjbase::spi {
 
-/// pass/pipeline 的发布稳定性与默认链状态（旧栈 契约照迁）。
+/// pass/pipeline 的发布稳定性与默认链状态。
 enum class PassStability : ca::u8
 {
     Default,      ///< 属于默认能力，可作为正式发布承诺。

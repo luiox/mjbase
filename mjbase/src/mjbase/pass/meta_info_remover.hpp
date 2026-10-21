@@ -112,7 +112,7 @@ public:
 /// @brief 移除类级 `@kotlin/Metadata` 与方法/字段上的 jetbrains 三注解。
 ///
 /// 槽内过滤：类级只查 RuntimeVisibleAnnotations 中描述符为 `Lkotlin/Metadata;`
-/// 的条目（与旧实现一致，不查类级 invisible 与 type annotation）；方法/字段查
+/// 的条目（与）；方法/字段查
 /// Runtime{Visible,Invisible}Annotations 中 `Lorg/jetbrains/annotations/` 的
 /// NotNull/JvmName/Nullable 三件。解析失败保持原样。
 ///
@@ -127,7 +127,7 @@ public:
                                        mjbase::spi::ClassAnalysisManager& cam) override;
 };
 
-/// @brief 清除 SourceFile/SourceDebugExtension（旧栈 sourceDebug 面）。
+/// @brief 清除 SourceFile/SourceDebugExtension。
 ///
 /// 只摘类级两槽，不改指令与 Code；两属性缺席时零改动。
 ///
@@ -159,9 +159,9 @@ public:
 
 /// @brief 清理三层 Runtime{Visible,Invisible}Annotations 中描述符形状非法的注解。
 ///
-/// 非法判定（与旧实现逐条对齐）：空描述符 / 码点长度 ≤ 3 / 不以 `L` 开头 /
+/// 非法判定（与）：空描述符 / 码点长度 ≤ 3 / 不以 `L` 开头 /
 /// 不以 `;` 结尾 / 含换行、NUL、空格。槽内过滤，删空连槽摘除；不查 type
-/// annotation 与参数注解（旧实现面一致）。
+/// annotation 与参数注解。
 ///
 /// @par 标签
 /// - `scope:class`
@@ -177,7 +177,7 @@ public:
 /// @brief 清理三层中解析器拒绝的非法 generic signature。
 ///
 /// 合法性按 libjbc signature 解析器判（类/方法用类/方法签名文法，字段用
-/// 类型签名文法——与旧栈 ASM SignatureReader 的 accept/acceptType 分道一致）；
+/// 类型签名文法——与）；
 /// 仅摘解析失败的 Signature 槽，合法签名原样。与旧栈的一处载体差异：旧栈
 /// 签名清空后 tree 不再产出属性，新栈直接摘槽，语义等价。
 ///
@@ -198,7 +198,7 @@ public:
 /// 形状判定与 IllegalAnnotationRemover 同规则（施于条目的注解类型描述符）；
 /// 槽内过滤，删空连槽摘除。覆盖成员级与 Code 嵌套槽（code 目标形态——cast/
 /// instanceof/new/localvar——旧栈在方法向量上同面参与，新载体对应 Code 嵌套
-/// 属性表，见家族头注破例面）。不查普通注解槽（旧实现面一致）。
+/// 属性表，见家族头注破例面）。不查普通注解槽。
 ///
 /// @par 标签
 /// - `scope:class`
@@ -213,7 +213,7 @@ public:
 
 /// @brief 清除形状非法的 SourceFile/SourceDebugExtension。
 ///
-/// 非法判定（与旧实现逐条对齐）：码点长度 > 100 / 不以 `.java` 结尾 / 基名
+/// 非法判定（与）：码点长度 > 100 / 不以 `.java` 结尾 / 基名
 /// 为空 / 基名首字节为数字 / 基名含非 ASCII 字母数字字节。SourceFile 载荷
 /// 经 CP Utf8 解析，SourceDebugExtension 载荷为内联 Utf8 字节（两属性编码
 /// 形态不同，读面分别处理）；合法值原样保留。
@@ -235,7 +235,7 @@ public:
 /// libjbc 的 Raw 解码类等价——libjbc 未建模属性解码即 Raw；guard 集额外
 /// 罩住 ConstantValue/Exceptions/SourceFile 等标准但未建模属性，防止误伤
 /// 语义面——这是对旧栈「tree 域 attrs 恒空、isUnknown() 恒真」可观测行为的
-/// 保守重定型，见家族头注）。Code 嵌套属性不在本 pass 面（旧实现面一致）。
+/// 保守重定型，见家族头注）。Code 嵌套属性不在本 pass 面。
 ///
 /// @par 标签
 /// - `scope:class`
@@ -250,14 +250,14 @@ public:
 
 /// @brief 清除类/方法/字段/参数上明确非法的 access 标志位。
 ///
-/// 非法位表（与旧实现逐条对齐，按成员种类分列，保留合法别名位）：类
+/// 非法位表（与）：类
 /// {STATIC, VOLATILE, VARARGS, NATIVE, STRICT}；方法 {INTERFACE, ANNOTATION,
 /// ENUM, MODULE}（旧表另含 RECORD 位，0x10000 超 u16 载体恒零，无面）；
 /// 字段 {SUPER, NATIVE, INTERFACE, ABSTRACT, STRICT, ANNOTATION, MODULE}，
 /// 另有规则：类非 enum 时清字段的 ENUM 位；参数（MethodParameters 属性载荷）
 /// 按旧 ILLEGAL_PARAM_ACCESS 表清位、FINAL/SYNTHETIC/MANDATED 幸存——
 /// MethodParameters 在 libjbc 为 Raw 槽，按 JVMS 4.7.24 布局（u2 count）或
-/// 旧栈 writer 遗留布局（u1 count——旧栈参数表计数字段按 u1 落盘）校验后
+/// 旧栈 writer 遗留布局（u1 count——）校验后
 /// 原位改写 access u16，其余形状保守跳过。全部两面落盘（unit() + backing）。
 ///
 /// @par 标签

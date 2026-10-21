@@ -2,7 +2,7 @@
 /// @brief       旧代 pattern matcher：线性窗口匹配 + 原子替换（值语义重建）。
 ///
 /// 语义来源 asm/matcher/pattern_matcher.hpp，按 libjbc 底座重写：
-///   - 匹配目标是 @ref jbc::ir::CodeDom 的 order 序列（旧栈是 InsnList 链表）。
+///   - 匹配目标是 @ref jbc::ir::CodeDom 的 order 序列。
 ///   - 旧栈「不跨越 Label/Line/Frame 边界」在新栈的对应物是窗口纪律：
 ///     窗口内部（首条豁免）不得有分支/switch 目标（jumpTargetMask 可判部分）。
 ///     Line/Frame 是 classfile 嵌套属性，不在 DOM 层出现；异常表等

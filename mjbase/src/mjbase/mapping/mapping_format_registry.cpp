@@ -836,7 +836,7 @@ public:
         Utf8StringBuilder out;
         // PK 行按旧名字典序输出（与下方 CL 的 sortedClassNames 同口径）：
         // 底座是 unordered_map，迭代序随实现漂移，逐行对账需要确定序
-        // （旧栈 P2 评审收口）。
+        // 。
         std::vector<const PackageMapping*> packages;
         packages.reserve(mappings.getPackages().size());
         for (const auto& [key, pm] : mappings.getPackages()) {
@@ -888,7 +888,7 @@ public:
                 if (fm.hasType()) {
                     // 带类型字段输出 desc token（旧 desc + 映射后 desc）：SRG 解析
                     // 两侧均支持；丢 desc 会让 parse 产物丢类型、按 (owner,name,desc)
-                    // 的查找（getMappedFieldName）失配（旧栈 P2 实证）。
+                    // 的查找（getMappedFieldName）失配。
                     out.append(" ");
                     out.append(fm.desc);
                 }

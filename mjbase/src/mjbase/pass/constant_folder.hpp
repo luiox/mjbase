@@ -72,7 +72,7 @@ namespace mjbase::pass {
 /// - CP 容量预检失败（cp.size() + 待追加槽数 > 0xFFFF）或 CP 物化失败；
 /// - 插入/删除编辑失败（带恢复：回迁标签、删除已插替换头，本链跳过）。
 ///
-/// @par 物化策略（输出形态，对齐旧栈 InsnUtil::get*Insn）
+/// @par 物化策略（输出形态，对齐）
 ///
 /// - int：-1..5 → ICONST；-128..127 → BIPUSH；-32768..32767 → SIPUSH；
 ///   其余 → LDC(internInteger，去重)。

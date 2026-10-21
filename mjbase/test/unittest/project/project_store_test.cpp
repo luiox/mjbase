@@ -1,4 +1,4 @@
-// 分析工程存取层（旧栈分解 2 实现卡 C1+C2+C3+C4+C5）：bundle 常量/目录
+// 分析工程存取层：bundle 常量/目录
 // 骨架 + create 的目录判别 + store.json 严格解析逐类拒载 + 确定性逐字节写出
 // + section 命名规则 + 未知 format 收容（P1：清单拒载≠删数据）（C1）；
 // section 内容原子读写原语：staged tmp + 换名单 section 原子写、
@@ -26,7 +26,6 @@
 // 恢复扫描与 §11-4/5/6 的分类账面（C4，扫描只报告不改动）；§7.1/§7.2/§11-3
 // 的锁面（C5）。
 //
-// 移植自旧栈 unittest/project/project_store_test.cpp：41 用例断言逐一
 // 对应、语义与时序假设不变；仅命名空间（mjbase::project）与 gtest 套件名
 // 随 mjbase 约定调整。
 #include <gtest/gtest.h>

@@ -864,7 +864,7 @@ bool remapRecordAttr(const RemapCtx& ctx, std::string_view owner, bool signature
 /// @brief Module 属性族：ModuleMainClass + Module 的 uses/provides 段。
 ///
 /// typed 体经公开解码入口读出（分派接线前后同形）；requires/exports/opens
-/// 段不触碰（旧栈不触这些面，typed 体上原样携带）；uses/provides 的 Class
+/// 段不触碰；uses/provides 的 Class
 /// 槽逐条目类名重映射，命中才 intern 新条目、全 miss 原样；makeNew 置 New
 /// 走重编码。
 bool remapModuleAttrs(const RemapCtx& ctx)
@@ -953,7 +953,7 @@ bool remapMethodInsn(const RemapCtx& ctx, Insn& in)
     return ctx.session.setMember(in, kind, newOwner, newName, newDesc);
 }
 
-/// @brief invokedynamic：描述符/合成方法名 + BSM 链（旧栈 remapInvokeDynamic 语义）。
+/// @brief invokedynamic：描述符/合成方法名 + BSM 链。
 bool remapInvokedynamic(const RemapCtx& ctx, Insn& in)
 {
     const ConstantPool& cp = ctx.cf.cp;
@@ -976,7 +976,7 @@ bool remapInvokedynamic(const RemapCtx& ctx, Insn& in)
         // LambdaMetafactory 合成方法按 SAM 规则改名：BSM 方法句柄为 metafactory/
         // altMetafactory 且调用点描述符返回类型为对象类型时，
         // findMethod(返回类型, indy 名, SAM 描述符) 命中才改。SAM 描述符取自
-        // 改写前的 BSM 首实参（旧栈同序：先判名后改链）。
+        // 改写前的 BSM 首实参。
         RefSem  bsmSem;
         ca::u32 bsmKind = 0;
         if (resolveHandleCp(ctx.cf, bsmEntry.methodRef, bsmSem, bsmKind) &&
@@ -1076,7 +1076,7 @@ bool remapInsn(const RemapCtx& ctx, Insn& in)
 
 // ── 反射类名形态（导出面：xref 元数据事实与 remap 改写候选共用同一语法）──────
 
-/// @brief 反射类名形态判定（旧栈 looksLikeClassName 照迁）。
+/// @brief 反射类名形态判定。
 bool looksLikeClassName(std::string_view value) noexcept
 {
     if (value.empty()) return false;
@@ -1108,7 +1108,7 @@ std::string toInternalReflectionName(std::string_view value)
 namespace
 {
 
-/// @brief 按原始串形态恢复改写结果（点分/描述符外壳，旧栈同函数照迁）。
+/// @brief 按原始串形态恢复改写结果（点分/描述符外壳）。
 std::string restoreReflectionNameShape(std::string_view original, std::string_view mapped)
 {
     std::string value(mapped);
@@ -1134,7 +1134,7 @@ std::string remapReflectionClassName(const MemberRemapPlan& plan, std::string_vi
     return restoreReflectionNameShape(value, mapped);
 }
 
-/// @brief 反射查找调用形态（旧栈 isReflectionMethodLookup/isReflectionFieldLookup）。
+/// @brief 反射查找调用形态。
 bool isReflectionMethodLookup(const ClassSession::MemberSem& sem) noexcept
 {
     return sem.owner == "java/lang/Class" &&
@@ -1157,11 +1157,11 @@ bool setLdcString(ClassSession& session, CodeUnit& code, InsnId id, std::string_
     return session.setString(*got.unwrap(), text);
 }
 
-/// @brief 反射字符串改写：线性状态机轨道 + alias 数据流轨道（旧栈双轨照迁）。
+/// @brief 反射字符串改写：线性状态机轨道 + alias 数据流轨道。
 ///
 /// 线性轨道：类字面量 LDC / Class.forName 实参提供 owner，其后最近字符串
 /// LDC 是成员名；查找调用命中即改写。字面量对在任意无关方法调用处失效
-///（旧栈同口径：跨调用传播属 AliasAnalysis，不在状态机里猜）。
+///。
 /// 数据流轨道：域引擎快照给接收者，alias "class:X" 身份覆盖；名字实参取
 /// 直线回溯最近的字符串 LDC（旧栈经帧栈证明名字串后回溯产点；CodeDom 无
 /// 栈帧视图，最近串即实参产点近似——偏离点见迁移报告）。
@@ -1225,7 +1225,7 @@ bool remapReflectionNames(const RemapCtx& ctx, CodeUnit& code, std::string_view 
                     if (setLdcString(ctx.session, code, lastStringId, mapped)) changed = true;
                 }
             }
-            // forName 消费的是名字串：owner 保持给紧随的成员查找用（旧栈同口径）。
+            // forName 消费的是名字串：owner 保持给紧随的成员查找用。
             hasLastString = false;
             lastStringId  = InsnId{};
             lastString.clear();
@@ -1418,7 +1418,7 @@ Result<bool, RemapError> remapMethodBody(const RemapCtx& ctx, ca::usize methodId
     jbc::ir::CodeUnitRef unit = std::move(promoted).unwrap();
 
     bool changed = false;
-    // 反射字符串道先于字节码道（旧栈 remapMethod 同序）：类字面量 LDC 的
+    // 反射字符串道先于字节码道：类字面量 LDC 的
     // owner 要以映射前的旧名参与 findMethodByName/findFieldByName 查表，
     // 字节码道改过的类名会让规则查询必然 miss。
     if (needReflect) {

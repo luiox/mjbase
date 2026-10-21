@@ -34,7 +34,7 @@ public:
     Manifest() = default;
 
     /// @brief Utf8String 不可隐式复制（显式 clone），拷贝用 clone 逐对重建，
-    ///        保持 旧栈 版 Manifest 的值语义（旧栈 消费面存在按值拷贝）。
+    ///        保持 旧栈 版 Manifest 的值语义。
     Manifest(const Manifest& other);
     Manifest& operator=(const Manifest& other);
     Manifest(Manifest&& other)            = default;

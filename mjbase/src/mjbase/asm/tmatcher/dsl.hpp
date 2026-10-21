@@ -40,7 +40,7 @@ inline StepPtr operator|(StepPtr a, StepPtr b)
 
 /// @brief step >> fn → ReplaceRule：fn 接收命中视图，返回替换 Insn 序列。
 ///
-/// 规则名默认 "unnamed"（与旧实现对齐）；需要命名检索时用 ReplaceRule
+/// 规则名默认 "unnamed"（与）；需要命名检索时用 ReplaceRule
 /// 构造函数显式给名。
 template<typename Fn>
 ReplaceRule operator>>(StepPtr step, Fn&& producer)

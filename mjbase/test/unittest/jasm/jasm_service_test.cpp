@@ -1,6 +1,5 @@
 // mjbase jasm 服务单测。
 //
-// 移植自旧栈 unittest/jasm/jasm_service_test.cpp：15 用例逐一对应、断言强度
 // 不变；命名空间随 mjbase（mjbase::jasm）、gtest 套件名加 Mj 前缀。底座差异：
 // - 层次图改手工登记 ClassSummary（mjbase::hierarchy 不收容器输入；旧栈用
 //   容器装配 4 个辅助类再建图，二者产出的类图等价）；

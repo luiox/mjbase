@@ -61,7 +61,7 @@ void classifyAndAdd(IResourceContainer& container, const ca::str::Utf8String& en
 // 遍历 jar 条目，根据类型分拣为 ManifestResource / ClassResource / UnknownResource
 ModelResult<void> JarFileImporter::importResource(IResourceContainer& container)
 {
-    // jar 模块错误走 Result<void, JarError>（旧栈 为异常穿透），此处归一映射。
+    // jar 模块错误走 Result<void, JarError>，此处归一映射。
     auto r = reader_->read([&](const ca::str::Utf8String& entryName,
                                const std::vector<ca::u8>& data) {
         classifyAndAdd(container, entryName, data);
@@ -302,7 +302,7 @@ ModelResult<void> ZipUtil::extract(std::string_view archivePath, std::string_vie
     namespace fs = std::filesystem;
     // 旧栈 直接 create_directories/weakly_canonical（filesystem_error 抛出）；
     // 此处改 error_code 并归一 Err(Io)。路径按 UTF-8 解释（u8path，与
-    // SimpleClassFile* 的 旧栈 口径一致）。
+    // SimpleClassFile* 的 ）。
     std::error_code ec;
     const fs::path  target = fs::u8path(std::string(targetDir));
     fs::create_directories(target, ec);

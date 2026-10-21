@@ -8,7 +8,7 @@ namespace mjbase::pass {
 ///        序列改写为字符串常量装载（移植自旧栈 pass/opt/
 ///        char_arr_to_str_simplifier）。
 ///
-/// 匹配矩阵（与旧实现逐条对齐）：
+/// 匹配矩阵（与）：
 ///
 /// ```
 /// ICONST_n / BIPUSH / SIPUSH / LDC(Int)   // len ≥ 0
@@ -23,13 +23,13 @@ namespace mjbase::pass {
 /// Utf16String + libjstr utf8_to_mutf8；编码失败的码元序列按旧栈语义整组
 /// 不匹配）。
 ///
-/// 边界守卫（旧栈 LabelNode 阻断语义的 CodeDom 等价）：除首成员外任何
+/// 边界守卫：除首成员外任何
 /// 槽位的前置边界有存活标签锚定 → 整组不匹配（旧栈槽位被 LabelNode 占据
 /// 时模式天然失配）。首成员锚定标签时照常改写：标签迁移到替换头（等价
-/// 旧栈 LabelNode 留原位指向新序列头）。
+/// ）。
 ///
 /// 发生改写返回 none()，否则 all()。maxStack 不变（构建序 max 4 ≥ 产物
-/// max 2，旧栈同样不回落 maxStack）。
+/// max 2）。
 ///
 /// @par 标签
 /// - `scope:method`

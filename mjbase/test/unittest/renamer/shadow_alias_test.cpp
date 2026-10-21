@@ -7,7 +7,7 @@
 /// 过期条目清理、jasm 整 token 替换契约、token8 随行。
 ///
 /// mjbase 底座差异（语义不变）：容器夹具用 jasm 组装；随机补号/生成器的
-/// 系统随机源失败走 Result（测试域 unwrap，成功路径与旧栈计数逐值一致）。
+/// 系统随机源失败走 Result（测试域 unwrap，成功路径与）。
 #include <gtest/gtest.h>
 
 #include <algorithm>

@@ -1,7 +1,6 @@
 /// @file        null_domain.hpp
 /// @brief       可空性域（nullness 子集）：NullValue 格 + NullDomain + 查询入口。
 ///
-/// 旧栈对应物：asm/analyzer 的 nullability_interpreter /
 /// nullability_analyzer。旧实现是 SimpleVerifier 形态的完整类型格机：值携带
 /// Type 全类型 + nullness 态、经 typeCache_ 管指针寿命、analyzer 对
 /// IFNULL/IFNONNULL 做分支细化。本域只迁 nullness 事实层：
@@ -12,7 +11,7 @@
 ///   （乐观合并，依赖分支细化兜底），引擎约定 top 必须是吸收元——本格把
 ///   Unknown 升为顶（未知产点与任何事实合并为未知），数据流层面可靠。
 /// - 产点事实照旧 newOperation：ACONST_NULL → Null；LDC 字符串 → NotNull；
-///   其余（含 NEW——旧实现同样不给事实）→ Unknown。
+///   其余（含 NEW——）→ Unknown。
 ///
 /// 与旧实现的范围差（放弃理由见迁移报告）：类类型载荷与类层级合并
 /// （isAssignableFrom/getSuperClass）不迁——libjbc 分析层是形状级，类层级

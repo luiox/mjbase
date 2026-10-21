@@ -49,7 +49,7 @@ Result<void, MatcherError> validateReplacement(const jbc::ir::CodeDom& dom,
 ///
 /// 替换非空：覆写窗口首条（保留首边界标签语义，等价旧栈 label 留在窗口
 /// 首位），擦除窗口其余指令，链式插入剩余替换。替换为空：整窗擦除；首条
-/// 若仍被窗口外分支引用，先把引用重定向到顺序后继（旧栈 label 落点语义）。
+/// 若仍被窗口外分支引用，先把引用重定向到顺序后继。
 /// 任一步被 DOM 拒绝即回滚：恢复首条原值、按原顺序重插已擦除指令
 /// （含原 srcPc/wide 全字段），返回 Err(EditRejected)。
 Result<void, MatcherError> applyWindow(jbc::ir::CodeDom& dom, MatchContext& ctx)

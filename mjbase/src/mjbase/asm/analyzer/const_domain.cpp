@@ -13,7 +13,7 @@ using jbc::core::CpTag;
 using jbc::core::Op;
 
 /// 槽宽 join：同宽保持，异宽取窄。合法汇合（同为 cat2）不塌；类型错乱的
-/// 畸形汇合按 best-effort 取窄（与旧栈 mergedSize=min 同例）。
+/// 畸形汇合按 best-effort 取窄（与）。
 ca::u8 joinSlots(ca::u8 a, ca::u8 b) noexcept { return a == b ? a : (a < b ? a : b); }
 
 /// int 域运算：以 u32 环绕再回符号（JVM 补码语义）。

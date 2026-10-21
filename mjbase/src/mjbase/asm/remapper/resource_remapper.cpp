@@ -412,7 +412,7 @@ Result<bool, RemapError> applyResourceRemapPlan(model::ResourceContainer& contai
 
         auto sessionResult = jbc::ir::makeSessionFromBytes(
             ByteView(bytes.data(), bytes.size()));
-        if (sessionResult.is_err()) continue;   // 畸形类跳过（旧栈 catch(...) 口径）
+        if (sessionResult.is_err()) continue;   // 畸形类跳过
         auto session = std::move(sessionResult).unwrap();
 
         const std::string oldName{session->backing().thisName()};
@@ -436,7 +436,7 @@ Result<bool, RemapError> applyResourceRemapPlan(model::ResourceContainer& contai
     renameClassResources(container, resourceRenames, changed);
     if (policy.resources) {
         // META-INF/services 与 MANIFEST 主属性是 resources 面下的细分门
-        //（旧栈评审收口），默认开——与既有 resources=true 行为一致。
+        //，默认开——与既有 resources=true 行为一致。
         applyServiceResourceUpdates(
             container, collectServiceResourceUpdates(container, plan, policy.serviceLoader),
             changed);

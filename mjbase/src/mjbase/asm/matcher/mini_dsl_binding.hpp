@@ -1,7 +1,7 @@
 /// @file        mini_dsl_binding.hpp
 /// @brief       DSL 求值的变量绑定：类型化数值（I/J=i64，F/D=double）。
 ///
-/// 旧实现（旧栈 mini_dsl_binding）把一切值装进 double——超 2^53 的 long
+/// 旧实现把一切值装进 double——超 2^53 的 long
 /// 会失真；此处按值域分离，发射前再按类型标签截断。旧 bindSlot/requireSlot
 /// 从未被编译器接线，不迁。
 #pragma once

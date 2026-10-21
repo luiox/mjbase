@@ -1,4 +1,3 @@
-// 移植自旧栈 unittest/pass/preserved_analyses_test.cpp：断言强度原样保留。
 #include <gtest/gtest.h>
 
 #include "mjbase/spi/preserved_analyses.hpp"

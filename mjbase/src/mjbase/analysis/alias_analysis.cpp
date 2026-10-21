@@ -27,7 +27,7 @@ using jbc::analysis::VKind;
 // 驻留池与哈希
 // ---------------------------------------------------------------------------
 
-/// 别名身份/字段键共用的进程级只增驻留池（旧栈 aliasInterned 的池化形态）。
+/// 别名身份/字段键共用的进程级只增驻留池。
 KeyPool& identityPool()
 {
     static KeyPool pool;
@@ -149,7 +149,7 @@ AliasFrame mergeAliasFrames(const AliasFrame& lhs, const AliasFrame& rhs)
 namespace {
 
 // ---------------------------------------------------------------------------
-// 描述符与容器集合（旧栈 Type::getSort / getInternalName 判定的描述符直读版）
+// 描述符与容器集合
 // ---------------------------------------------------------------------------
 
 /// 方法描述符的参数类型序列（"(" 后逐类型；复用 jbc 引擎的 oneType 扫描）。
@@ -232,7 +232,7 @@ bool isReflectionLookup(std::string_view owner, std::string_view name)
            name == "getDeclaredConstructor" || name == "getField" || name == "getDeclaredField";
 }
 
-/// 类型描述符 → 别名值（旧栈 valueForType 的排序判定：数组→容器→对象→原始）。
+/// 类型描述符 → 别名值。
 AliasValue valueForType(std::string_view desc, std::string_view identity, ca::u8 width = 1)
 {
     if (!desc.empty() && desc.front() == '[') return AliasValue::array(identity);
@@ -275,7 +275,7 @@ bool isFormalIdentity(const AliasValue& value)
     return value.isKnown() && (value.identity.substr(0, 6) == "param:" || isThisIdentity(value));
 }
 
-/// 旧栈 instantiateReturn：callee 返回值按调用点 σ 实例化。
+/// callee 返回值按调用点 σ 实例化。
 AliasValue instantiateReturn(const AliasMethodSummary*      summary,
                              const std::vector<AliasValue>& arguments, const AliasValue& receiver,
                              std::string_view retDesc, ca::u8 width)
@@ -296,7 +296,7 @@ AliasValue instantiateReturn(const AliasMethodSummary*      summary,
     return valueForType(retDesc, summary->returnValue.identity, width);
 }
 
-/// 旧栈 instantiateFact：事实身份按调用点 σ 重写。
+/// 事实身份按调用点 σ 重写。
 AliasValue instantiateFact(const AliasValue& value, const std::vector<AliasValue>& arguments,
                            const AliasValue& receiver)
 {
@@ -341,7 +341,7 @@ void buildMethodContexts(const std::vector<ScannedClass>&                  class
 
             ctx->paramDescs = paramTypes(ctx->desc);
             if (!ctx->desc.empty() && ctx->desc.front() != '(') {
-                ctx->malformed = true;   // 旧栈 Type::getArgumentTypes 抛出同口径
+                ctx->malformed = true;   // 
             }
             else {
                 ca::u32 slot = ctx->isStatic ? 0 : 1;
@@ -375,7 +375,7 @@ void buildMethodContexts(const std::vector<ScannedClass>&                  class
 }
 
 // ---------------------------------------------------------------------------
-// 线性走查（旧栈 summarize 的主走查：自带栈/局部状态，操作数全程可见）
+// 线性走查
 // ---------------------------------------------------------------------------
 
 using FieldSlotKey   = SlotKey;
@@ -446,7 +446,7 @@ std::optional<AliasMethodSummary> summarizeLinear(const AliasMethodContext& ctx,
     }
 
     if (ctx.code == nullptr) {
-        return walk.summary;   // 无代码方法：参数摘要 + 未知返回（旧栈空指令表同形）
+        return walk.summary;   // 无代码方法：参数摘要 + 未知返回
     }
 
     const jbc::ir::CodeUnit&       u     = *ctx.code;
@@ -848,7 +848,7 @@ std::optional<AliasMethodSummary> summarizeLinear(const AliasMethodContext& ctx,
         }
         if (walk.malformedCall) break;
     }
-    if (walk.malformedCall) return std::nullopt;   // 畸形调用点：旧栈同口径，无摘要
+    if (walk.malformedCall) return std::nullopt;   // 畸形调用点：无摘要
     return walk.summary;
 }
 
@@ -1036,7 +1036,7 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// CFG 精化（旧栈 analyzeControlFlowFacts 的域引擎形态）
+// CFG 精化
 // ---------------------------------------------------------------------------
 
 struct ControlFlowAliasFacts
@@ -1079,7 +1079,7 @@ ControlFlowAliasFacts analyzeControlFlowFacts(const AliasMethodContext& ctx,
     jbc::analysis::DomainEngine<AliasValue> probeEngine(*env.cp, probeDom);
     jbc::analysis::DomainResult<AliasValue> probe = probeEngine.analyze(u, ctx.sig);
     if (!probe.summary.ok || probe.summary.hasSubroutine) {
-        // fail-open：引擎拒斥（JSR/RET、预算超限）与旧栈空快照同口径。
+        // fail-open：引擎拒斥（JSR/RET、预算超限）
         result.snapshotFailed = true;
         return result;
     }
@@ -1212,7 +1212,7 @@ std::optional<AliasMethodSummary> summarizeMethod(const AliasMethodContext& ctx,
 {
     if (ctx.malformed) return std::nullopt;
     auto linear = summarizeLinear(ctx, previous);
-    if (!linear.has_value()) return std::nullopt;   // 畸形调用点：无摘要（旧栈同口径）
+    if (!linear.has_value()) return std::nullopt;   // 畸形调用点：无摘要
     AliasMethodSummary summary = std::move(*linear);
 
     if (ctx.hasControlFlow) {
@@ -1228,7 +1228,7 @@ std::optional<AliasMethodSummary> summarizeMethod(const AliasMethodContext& ctx,
             }
             summary.fieldWrites = flowFacts.fieldWrites;
             // 绑定 FW 组按 flow 语义重写：调用点按 CFG 帧值重写 fw σ，栈深不足
-            // 的调用点 FW 组失效（与旧栈逐调用点 continue 语义一致）。
+            // 的调用点 FW 组失效（与）。
             for (const auto& sigma : flowFacts.flowSigmas) {
                 for (auto& binding : summary.callBindings) {
                     if (binding.instructionIndex != sigma.instructionIndex) continue;
@@ -1252,7 +1252,7 @@ std::optional<AliasMethodSummary> summarizeMethod(const AliasMethodContext& ctx,
 }
 
 // ---------------------------------------------------------------------------
-// Andersen 字节码约束（旧栈 AndersenConstraintInterpreter 的域引擎形态）
+// Andersen 字节码约束
 // ---------------------------------------------------------------------------
 
 /// @brief 约束值：节点句柄 + 槽宽（cat2 布局需要）。
@@ -1326,7 +1326,7 @@ public:
         if (in.op == Op::NEW) {
             const auto       node = temporary(at);
             const std::string_view cls = resolveClassName(cp, in.cp);
-            // 分配点名物化一次并内码（旧栈同串形："new:method\nkey:idx:type"）。
+            // 分配点名物化一次并内码。
             std::string alloc;
             alloc.assign("new:").append(method_).append(1, ':').append(
                 std::to_string(orderPos(at))).append(1, ':').append(cls);
@@ -1347,7 +1347,7 @@ public:
             return ConstraintNode{node, width};
         }
         if (in.op == Op::GETFIELD || isInvokeKind(in.op)) {
-            // 结果节点 = 指令临时（与旧栈同身份）；操作数依赖边在帧后处理补。
+            // 结果节点 = 指令临时（与）；操作数依赖边在帧后处理补。
             return ConstraintNode{temporary(at), width};
         }
         return ConstraintNode{0, width};
@@ -1523,7 +1523,7 @@ private:
         mergeSources_;
 };
 
-/// 逐方法抽约束 + 一次 solve（旧栈 indexAndersenBytecode 的域引擎形态）。
+/// 逐方法抽约束 + 一次 solve。
 void indexAndersenBytecode(const std::vector<std::unique_ptr<AliasMethodContext>>& ctxs,
                            AndersenPointsToSolver&                                 solver)
 {
@@ -1534,7 +1534,7 @@ void indexAndersenBytecode(const std::vector<std::unique_ptr<AliasMethodContext>
         AndersenConstraintDomain dom(solver, *ctx);
         jbc::analysis::DomainEngine<ConstraintNode> engine(ctx->cp(), dom);
         jbc::analysis::DomainResult<ConstraintNode> result = engine.analyze(u, ctx->sig);
-        // fail-open：引擎拒斥或子程序残留不产出约束（旧栈空快照同口径）。
+        // fail-open：引擎拒斥或子程序残留不产出约束。
         if (!result.summary.ok || result.summary.hasSubroutine) continue;
 
         asm_analyzer::FrameQuery<ConstraintNode> frames(u, std::move(result));
@@ -1597,7 +1597,7 @@ void indexAndersenBytecode(const std::vector<std::unique_ptr<AliasMethodContext>
 }
 
 // ---------------------------------------------------------------------------
-// 摘要比较（旧栈 sameSummary 家族）
+// 摘要比较
 // ---------------------------------------------------------------------------
 
 bool sameAliasFact(const AliasValue& lhs, const AliasValue& rhs)
@@ -1689,7 +1689,7 @@ bool sameSummary(const AliasMethodSummary& lhs, const AliasMethodSummary& rhs)
 }
 
 // ---------------------------------------------------------------------------
-// 反射闭包作用域选择（旧栈 selectReflectionClosure 的会话形态）
+// 反射闭包作用域选择
 // ---------------------------------------------------------------------------
 
 std::vector<const AliasMethodContext*> selectReflectionClosure(
@@ -1787,7 +1787,7 @@ void AliasAnalysis::build(const mjbase::model::ResourceContainer& container)
     scope.reserve(ctxs.size());
     for (const auto& ctx : ctxs) scope.push_back(ctx.get());
     buildFixedPoint(scope, scope.size());
-    // 收敛后一次性做约束图字节码索引（旧栈固定点后调 indexAndersenBytecode）；
+    // 收敛后一次性做约束图字节码索引；
     // ctxs/会话随本函数退出消亡，摘要/槽值均为自持值（身份走进程级驻留池）。
     indexAndersenBytecode(ctxs, andersen_);
 }

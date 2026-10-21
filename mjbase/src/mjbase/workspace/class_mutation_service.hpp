@@ -90,7 +90,7 @@ struct ConstantSpec final
 
 /// @brief 单条结构化字节码指令；字段按 @p kind 解释。
 ///
-/// 索引语义（与旧栈的差异，类型面重定型）：`instructionIndex`/label 绑定的
+/// 索引语义（与）：`instructionIndex`/label 绑定的
 /// instructionIndex 均为方法体内**代码指令序号**（CodeDom 程序顺序，不含
 /// label/line 节点——mjbase 底座中标签是句柄不是指令）。
 struct InstructionSpec final

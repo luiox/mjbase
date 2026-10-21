@@ -119,7 +119,7 @@ bool evalIntWindow(const jbc::ir::ClassSession& session, const CodeDom& dom,
     for (ca::usize p = startPos; p < ids.size(); ++p) {
         const Insn* n = dom.peek(ids[p]);
         if (n == nullptr) return false;
-        // 锚定标签 = 控制流可从中间进入（旧栈窗内 LABEL/LINE/FRAME 失配面）。
+        // 锚定标签 = 控制流可从中间进入。
         if (method_rewrite_util::labelsAnchorAt(dom, ids[p])) return false;
         if (n->op == terminator) {
             termPos = p;
@@ -132,7 +132,7 @@ bool evalIntWindow(const jbc::ir::ClassSession& session, const CodeDom& dom,
 
 /// UTF-16 码元序列 → MUTF-8 字节（与旧栈 Utf16String → UTF-8 → writer 编码
 /// 同构，接 CharArrToStrSimplifier 同款）。不可编码（不成代理等）返回 false
-/// = 整组失配（旧栈 catch 后整组保留语义）。
+/// = 整组失配。
 bool utf16ToMutf8(const std::vector<ca::u16>& codeUnits, std::string& out)
 {
     ca::str::Utf16String utf16(codeUnits.data(), codeUnits.size());
@@ -163,7 +163,7 @@ bool matchNewStringCharArray(const jbc::ir::ClassSession& session, const CodeDom
     if (i + 1 >= ids.size()) return false;
     const Insn* nDup = dom.peek(ids[i + 1]);
     if (nDup == nullptr || nDup->op != Op::DUP) return false;
-    // 首成员与次成员之间不允许标签（旧栈：NEW 与 DUP 之间出现任意节点即失配）。
+    // 首成员与次成员之间不允许标签。
     if (method_rewrite_util::labelsAnchorAt(dom, ids[i + 1])) return false;
     members.push_back(ids[i]);
     members.push_back(ids[i + 1]);

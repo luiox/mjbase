@@ -1,7 +1,6 @@
 /// @file        shadow_alias.hpp
 /// @brief       shadow name 表：真名 → 显示名映射，仅服务显示层，永不写回字节码。
 ///
-/// 旧栈对应物：renamer/shadow_alias（#1072 机械占位名 + #1156 引用
 /// token）。语义照旧、底座重定型：
 ///
 /// - 成员键走跨类身份契约：旧栈 "owner\x1fname\x1fdesc" 拼接串键换

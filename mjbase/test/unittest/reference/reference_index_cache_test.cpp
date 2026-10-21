@@ -2,7 +2,6 @@
 /// @brief       ReferenceIndex 持久化 cache（.ridx）读写移植用例（旧栈 5 用例
 ///              逐字等强 + 字节级逐段对拍）。
 ///
-/// 旧栈对应物：unittest/reference/reference_index_cache_test.cpp。夹具
 /// 从 jbytecode ClassWriter 重写为手拼 classfile 字节（class_bytes_builder.hpp）；
 /// 写出路径改走 test-helper 的 test/ 输出区。RoundTrip 用例在旧栈等强断言之
 /// 上追加字节级对拍基线：

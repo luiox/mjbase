@@ -51,7 +51,7 @@ std::string quoted(std::string_view value)
 /// 手滑前导零查无此条 → unknown-handle 响亮报错），token 必须逐字节相等。
 ///
 /// 返回条目拷贝（optional 按值）——不得返回指向 findByShadowName 临时 vector
-/// 内部的指针（旧栈悬垂 UB，旧栈侧已实修，本移植自始按值交付）。
+/// 内部的指针。
 std::optional<ShadowAliasEntry> findClassByHandle(const ShadowAliasTable& table,
                                                   const std::string&      index,
                                                   const std::string&      token,

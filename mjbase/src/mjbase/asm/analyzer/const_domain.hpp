@@ -1,14 +1,13 @@
 /// @file        const_domain.hpp
 /// @brief       常量传播域：ConstLattice 格 + ConstDomain 钩子 + 查询入口。
 ///
-/// 旧栈对应物：asm/analyzer 的 constant_interpreter（ConstantValue +
 /// ConstantInterpreter）。迁移纪律是语义照旧、实现重写：格、JVM 折叠语义与
 /// 合并规则按旧实现的公开语义移植；控制流 worklist、槽迁移、入参播种调度
 /// 全部交给 jbc::analysis::DomainEngine，本域只供给值。
 ///
 /// 与旧实现的范围差（代表性子集，见迁移报告）：
 /// - 载荷收窄为 i64（int 符号扩展 / long）与引用常量（null / String CP 条目），
-///   float/double 常量不折（旧实现经 ca::core::Any 载荷折全数值族）。
+///   float/double 常量不折。
 /// - 旧实现的数组建模（newarray/aaload/astore 常量数组）与 reference handler
 ///   注入（getfield/invoke 返回值）不迁：前者依赖旧栈 Any 载荷，后者属
 ///   classpath/引用索引层能力，待后续模块接入。
@@ -113,7 +112,7 @@ public:
         : cp_(&cp)
     {}
 
-    /// @brief 带入参常量种子的构造（移植旧栈 args 向量语义）。
+    /// @brief 带入参常量种子的构造（移植）。
     ///
     /// argSeeds 按描述符参数序给出（long/double 参数各占一项，种子宽度须与
     /// 参数类别一致——J/D 配 ofLong，其余配 1 槽种子）；种子按描述符落到

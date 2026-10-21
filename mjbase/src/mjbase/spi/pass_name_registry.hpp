@@ -43,7 +43,7 @@ const char* to_string(RegistryError e) noexcept;
 /// 注册表条目视图（查询面交付物）：名字 + scope 标签 + 描述；工厂由注册表持有，
 /// 经 create 族调用。name/description 为注册时借入的视图，寿命 = 视图实参实体
 /// （见注册契约）。description 服务 workspace availablePasses / CLI --describe
-/// 展示面，注册方给直述文本（旧栈 存 i18n key 由 tr 渲染；mjbase 消费面
+/// 展示面，注册方给直述文本（mjbase 消费面
 /// （MCP）语言固定英文，直述文本免 i18n 依赖，未 i18n::init 的宿主也不泄漏 key）。
 struct PassNameEntry
 {
@@ -73,7 +73,7 @@ struct PassNameEntry
 ///   Err(UnknownPass)，不交哨兵空指针——空 unique_ptr 在 addPass 处是另一条
 ///   契约（配置错误抛 invalid_argument），两不相混。
 ///
-/// @warning 非线程安全：注册与查询应在初始化阶段完成（对齐 旧栈 同款纪律）。
+/// @warning 非线程安全：注册与查询应在初始化阶段完成（对齐 ）。
 class PassNameRegistry
 {
 public:
@@ -102,7 +102,7 @@ public:
     /// @brief 查名：scope 标签面；未知名 Err(UnknownPass)。
     Result<PassNameEntry, RegistryError> find(std::string_view name) const;
 
-    /// @brief 全部条目，按 name 字典序（CLI list 类稳定输出的旧栈纪律）。
+    /// @brief 全部条目，按 name 字典序（CLI list 类稳定输出的）。
     std::vector<PassNameEntry> list() const;
 
     /// @brief 按名构造方法级 pass；未知名 Err(UnknownPass)、scope 不符

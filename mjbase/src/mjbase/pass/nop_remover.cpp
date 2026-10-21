@@ -29,7 +29,7 @@ mjbase::spi::PreservedAnalyses NopRemover::run(mjbase::spi::MethodScope&       s
             modified = true;
             continue;
         }
-        // 无引用的 NOP（含末条 NOP）无 use 可迁移，直接删（对齐旧栈无条件删除）。
+        // 无引用的 NOP（含末条 NOP）无 use 可迁移，直接删（对齐）。
         if (editor.erase(id, jbc::ir::CodeEditor::ErasePolicy::kRejectIfUsed).is_ok()) {
             modified = true;
         }

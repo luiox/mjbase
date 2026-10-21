@@ -1,10 +1,9 @@
 /// @file        jar_reader_writer_test.cpp
 /// @brief       jar 读/写测试：读真 jar、缺文件错误、写读回环、空 jar、UTF-8 条目名回环。
 ///
-/// 移植自旧栈 unittest/jar/jar_reader_writer_test.cpp，5 用例断言逐一对应：
 /// throw → Result 错误通道（is_err 断言），std::string → Utf8String。
 /// readHelloJar 的 fixture 借用 旧栈 冻结线的 test_resource（单测 rundir 是
-/// 仓库根，路径与 旧栈 原用例字面相同）；临时产物按约定只落 <root>/test/。
+/// 仓库根，路径与 ）；临时产物按约定只落 <root>/test/。
 #include <gtest/gtest.h>
 #include <cstdio>
 

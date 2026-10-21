@@ -6,7 +6,7 @@
 /// resolveLabel 走目标，不碰字节偏移。与旧实现的边界差异：
 ///   - 只做具体求值：不存在 unknown 值与优雅降级，遇不可求值形状返回
 ///     Err(Unsupported)，栈/局部变量状态不符返回 Err(BadState)；
-///   - 不做递归求值、字段缓存、JDK shim（属旧栈 workspace 级能力）；
+///   - 不做递归求值、字段缓存、JDK shim（属）；
 ///   - LDC* 依赖常量池，CodeDom 单方法视图无法解析，归入 Unsupported；
 ///   - 整数除零在旧栈降级为 unknown，此处是 BadState（JVM 会抛
 ///     ArithmeticException，求值器不猜结果）。

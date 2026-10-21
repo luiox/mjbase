@@ -19,7 +19,7 @@ namespace mjbase::jar {
 namespace {
 
 // 收集回调中所有的条目，用于后续统一排序和写入。
-// 条目名按原始字节驻留（from_data_unchecked，与 旧栈 的零解码直通一致）。
+// 条目名按原始字节驻留（from_data_unchecked，与 ）。
 struct Collector : IEntryWriter
 {
     std::vector<std::pair<Utf8String, std::vector<ca::u8>>> entries;
@@ -63,7 +63,7 @@ Result<void, JarError> writeArchive(const Utf8StringRef& path, Collector& collec
     auto dosDate = current_dos_date();
 
     // 按文件名排序，保证可重现构建（Utf8StringRef 的字节级字典序与
-    // 旧栈 的 std::string 排序同序）。
+    // ）。
     std::sort(collector.entries.begin(), collector.entries.end(), [](const auto& a, const auto& b) {
         return a.first < b.first;
     });

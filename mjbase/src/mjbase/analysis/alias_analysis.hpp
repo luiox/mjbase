@@ -2,7 +2,6 @@
 /// @brief       全程序别名分析：栈/局部别名事实 + 方法摘要 + 反射接收者身份
 ///              + Andersen 包含约束索引。
 ///
-/// 旧栈对应物：analysis/alias_analysis（AliasAnalysis + AliasFlowInterpreter
 /// + AndersenConstraintInterpreter，骑 jbytecode DataflowAnalyzer）。迁移纪律是
 /// 语义照旧、实现重写：
 ///
@@ -11,7 +10,7 @@
 ///   （"param:N"/"this:Owner"/"new:..."/"array:..."/"field:..."/"class:X"/
 ///   "string:S"）是 remapper/reference 消费契约，逐字保留——尤其 LDC 类常量
 ///   的 "class:X" 反射接收者身份。
-/// - 方法内传播双轨（与旧实现同构）：无分支方法走线性走查（自带栈/局部
+/// - 方法内传播双轨（与）：无分支方法走线性走查（自带栈/局部
 ///   状态，操作数全程可见）；有分支方法以 libjbc DomainEngine 跑别名事实域
 ///   （AliasValue 即域载荷，join 即 mergeAliasValues），操作数依赖的产点
 ///   （GETFIELD/CHECKCAST/invoke 结果）经「探测帧注入」补齐——引擎产点钩子
@@ -43,7 +42,7 @@
 
 namespace mjbase::analysis {
 
-/// @brief 保守 points-to 值类别（旧栈 AliasValueKind 语义照旧）。
+/// @brief 保守 points-to 值类别。
 ///
 /// Unknown 是一等值：消费方只有在「每条前驱（含异常前驱）上已知且稳定」
 /// 时才允许把别名落成具体目标。
@@ -73,7 +72,7 @@ MemberKey aliasMemberKey(std::string_view owner, std::string_view name, std::str
 struct AliasValue
 {
     AliasValueKind                kind = AliasValueKind::Unknown;
-    /// 驻留视图；Unknown/Null 语义为空。默认即驻留空串（旧栈 identity="" 语义），
+    /// 驻留视图；Unknown/Null 语义为空。默认即驻留空串，
     /// 消费方解引用安全。
     std::string_view              identity{};
     std::vector<std::string_view> pointsTo;   ///< 驻留视图，按字典序去重
@@ -131,13 +130,13 @@ struct AliasValue
     bool operator!=(const AliasValue& other) const { return !(*this == other); }
 };
 
-/// @brief 合并两个前驱值（旧栈 mergeAliasValues 语义照旧）。
+/// @brief 合并两个前驱值。
 ///
 /// 相等事实存活；任何分歧（含 Unknown）→ Unknown，但保留诊断 points-to
 /// 并集。交换、幂等。
 AliasValue mergeAliasValues(const AliasValue& lhs, const AliasValue& rhs);
 
-/// @brief 方法内别名帧（按 JVM local 槽位键控；旧栈 AliasFrame 照迁）。
+/// @brief 方法内别名帧（按 JVM local 槽位键控；）。
 struct AliasFrame
 {
     std::unordered_map<ca::i32, AliasValue> locals;
@@ -153,7 +152,7 @@ struct AliasFrame
 /// @brief 正常与异常前驱帧的保守合并（缺槽位按 Unknown 失败闭合，交换）。
 AliasFrame mergeAliasFrames(const AliasFrame& lhs, const AliasFrame& rhs);
 
-/// @brief 跨方法稳定摘要（反射/remap 消费契约；旧栈 AliasMethodSummary 照迁，
+/// @brief 跨方法稳定摘要（反射/remap 消费契约；，
 ///        方法/字段键换 MemberKey 驻留键）。
 struct AliasMethodSummary
 {
@@ -181,7 +180,7 @@ struct AliasMethodSummary
 
     struct ReflectionReceiver
     {
-        ca::i32    instructionIndex = -1;   ///< order() 程序序位置（旧栈为指令表下标）
+        ca::i32    instructionIndex = -1;   ///< order() 程序序位置
         AliasValue receiver;
     };
 
@@ -251,7 +250,7 @@ struct AliasFieldSummary
     AliasValue value;
 };
 
-/// @brief 共享别名分析（旧栈 AliasAnalysis 契约照迁）。
+/// @brief 共享别名分析。
 ///
 /// 持有值/合并契约并把稳定摘要算到全程序不动点。分支方法经 DomainEngine
 /// 别名域在真实 CFG join 处合并栈/局部值；分歧保持 Unknown 并保留诊断
@@ -360,7 +359,7 @@ private:
     std::unordered_map<MemberKey, ca::usize, MemberKeyHash>    byKey_;
     std::vector<AliasMethodSummary>                            summaries_;
     std::vector<AliasFieldSummary>                             fields_;
-    /// 字段槽（接收者身份空视图 = unknown 接收者/静态槽；与旧栈拼接串键同构）。
+    /// 字段槽（接收者身份空视图 = unknown 接收者/静态槽；与）。
     std::unordered_map<SlotKey, ca::usize, SlotKeyHash>        fieldsByKey_;
     std::unordered_map<std::pair<std::string_view, std::string_view>, AliasValue,
                        PairViewHash>                           arrayValues_;

@@ -2,7 +2,6 @@
 /// @brief       analysis 帧分析语义测试：逐指令帧对齐、空方法 fail-open、
 ///              容量声明无关。
 ///
-/// 旧栈对应物：unittest/analysis/method_frame_analysis_test.cpp
 ///（6 用例中 3 个可移植）。OriginalSourceFrameAnalysis 的驱动器职责在 mjbase
 /// 由 libjbc DomainEngine 承担（域引擎产出 DomainResult.frames 与
 /// CodeUnit::dom.order() 按下标对齐）；帧语义等价断言落在 origin 域 +
@@ -77,7 +76,7 @@ CodeUnit smallMethodUnit()
 }   // namespace
 
 /// 逐指令帧：DomainResult.frames 与 dom.order() 按下标对齐，全部可达
-///（旧栈 frames.size() == instructions.size() + ok 的等价断言面）。
+///。
 TEST(MjAnalysisMethodFrameTest, FramesAlignWithInstructionOrder)
 {
     CodeUnit u = smallMethodUnit();
@@ -110,7 +109,7 @@ TEST(MjAnalysisMethodFrameTest, EmptyMethodProducesNoFrames)
 }
 
 /// 容量无关：Code 属性声明 maxStack=0/maxLocals=0 的畸形方法照常分析——
-/// 域引擎自建虚拟帧，声明容量不构成约束（旧栈自管容量守卫语义的结构化消除）。
+/// 域引擎自建虚拟帧，声明容量不构成约束。
 TEST(MjAnalysisMethodFrameTest, AnalyzesWithoutCallerGuardOnZeroMaxStack)
 {
     ClassBytesBuilder b("Capless");

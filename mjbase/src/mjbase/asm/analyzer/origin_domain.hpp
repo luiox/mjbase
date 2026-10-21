@@ -1,7 +1,6 @@
 /// @file        origin_domain.hpp
 /// @brief       来源追踪域：OriginValue（定义指令/入参/未知）+ OriginDomain + 查询入口。
 ///
-/// 旧栈对应物：asm/analyzer 的 original_source_interpreter
 /// （OriginalSourceValue + OriginalSourceInterpreter）。迁移纪律是语义照旧、
 /// 实现重写：本域回答「这个槽里的值最初由谁定义」——定义指令句柄、入参
 /// 身份、或未知；控制流/槽迁移/入参播种全部交给 jbc::analysis::DomainEngine。
@@ -30,7 +29,7 @@ namespace mjbase::asm_analyzer {
 /// @brief 来源格值：单一 origin 事实。
 ///
 /// kind==Insn 时 `insn` 是值的定义指令句柄（引擎按产值点传入，含运算指令
-/// ——运算结果的来源是本条指令，与旧实现 unary/binary 的 producer 语义一致）；
+/// ——运算结果的来源是本条指令，与）；
 /// kind==Param 时 `local` 是入参所在的局部变量槽位（实例方法 this 占 0 号；
 /// 旧实现的 parameterLocal 同语义——宽参数的「第几个参数」需调用方按描述符
 /// 自行换算，槽位即入参的唯一稳定身份）。

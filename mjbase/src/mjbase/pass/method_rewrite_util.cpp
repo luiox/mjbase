@@ -52,7 +52,7 @@ bool longValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, 
 bool doubleValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, double& out)
 {
     using jbc::core::Op;
-    // 旧栈 getDoubleValue：DCONST_0/1 + tree LDC 节点持 double（classfile 面
+    // DCONST_0/1 + tree LDC 节点持 double（classfile 面
     // = ldc 族装载 Double）。
     if (in.op == Op::DCONST_0) {
         out = 0.0;

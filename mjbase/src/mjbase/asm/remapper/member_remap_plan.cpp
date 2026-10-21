@@ -7,7 +7,7 @@ namespace {
 ///
 /// 旧栈 jbytecode::commons::Remapper::mapDesc/mapType 语义：数组维度原样保留、
 /// 元素类名随类映射同步改写、基本类型原样。畸形输入（未闭合/越界）原样返回，
-/// 不抛错（旧栈经 Type 解析会抛异常，此处改值语义 fail-closed）。
+/// 不抛错。
 template <typename MapName>
 std::string rewriteFieldDescriptorText(std::string_view desc, MapName&& mapName)
 {

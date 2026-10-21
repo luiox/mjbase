@@ -16,7 +16,7 @@ Utf8StringRef text(const char* value)
 }
 
 /// registry.parse 的 Result 适配：Ok 展开映射，Err 记失败并返回空映射
-/// （断言强度与 旧栈 直调等价，且避免 Err unwrap 终止进程）。
+/// （断言强度与 ）。
 IntermediateMapping expectParsed(const char* formatName,
                                  ca::Result<IntermediateMapping, MappingError> parsed)
 {

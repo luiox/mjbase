@@ -54,7 +54,7 @@ inline std::string_view to_string(ResourceType type) noexcept
     return kNames[static_cast<ca::usize>(type)];
 }
 
-/// @brief 字符串 → ResourceType；未知名归 Unknown（旧栈 resource_type_from_string）。
+/// @brief 字符串 → ResourceType；未知名归 Unknown。
 inline ResourceType resourceTypeFromString(std::string_view name) noexcept
 {
     if (name == "Class") return ResourceType::Class;

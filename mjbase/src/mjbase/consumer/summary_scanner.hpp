@@ -56,7 +56,7 @@ struct ClassSummary
     std::vector<SummaryMethod> methods;
     std::vector<SummaryField>  fields;
     ca::u32                    access  = 0;   ///< 类 access flags 原样
-    ca::u32                    version = 0;   ///< `(minor << 16) | major`（旧栈 口径）
+    ca::u32                    version = 0;   ///< `(minor << 16) | major`
 };
 
 /// @brief E3 骨架扫描器（无状态；池由调用方持有）。

@@ -7,18 +7,18 @@ namespace mjbase::pass {
 
 /// @brief 容器级畸形 class 结构清洗器（两级流水：libjclassfile 前置级 + libjbc 级）。
 ///
-/// 中文契约（与旧实现逐条对齐 + 载体重定型）：
+/// 中文契约（与）：
 /// 输入是 ResourceContainer 中的 class bytes；非 class 资源不触碰。逐资源两级
 /// 流水（中间层设计 §3.0 敌意输入前置清洗级裁决的落地批）：
 ///   1. 前置级（libjclassfile）：畸形容忍读入（全量属性建模 + 指令解码）→
 ///      IllegalStrippingTransformer 全量规则面 → 写出。规则触发按产物与输入的
-///      字节比较判定（与旧栈 旧栈 IllegalClassFileCleaner 一致），未触发的
+///      字节比较判定（与），未触发的
 ///      资源不重编码——合法输入零重编码、字节不动。
 ///   2. libjbc 级：对进入字节跑既有 2 条结构规则（见下），读/写失败零产出。
 /// 每级独立原子（级内任一步失败该级原样放行），级间以字节衔接；bytes 发生
 /// 替换走两阶段提交（ClassResourcePendingCommit，作业级原子），全部保持时
 /// 返回 all()，发生替换返回 none()。容器拥有资源 bytes，本 pass 不保存裸
-/// 指针、不抛异常（旧栈对每资源 catch 全部，前置级边界照旧）。
+/// 指针、不抛异常。
 ///
 /// 清洗规则面：
 ///   前置级（5 条挂账规则 + transformer 一体携带项，语义逐条对齐旧栈
@@ -49,7 +49,7 @@ namespace mjbase::pass {
 ///   - libjclassfile 读失败不再整资源放弃：原 bytes 仍进 libjbc 级清洗（旧栈
 ///     catch 全部后跳过该资源），产出只会更干净、不会更差；
 ///   - 读级宽容吸收（坏上下文属性/重复注解/EOF 截断属性等 reader 配置族）与
-///     旧栈同口径计入规则触发。
+///     计入规则触发。
 /// 本批后旧栈 IllegalStrippingTransformer 的清洗规则面已全量接入，无剩余
 /// 挂账清洗规则（dev_plan 同步收口）。
 ///

@@ -286,7 +286,7 @@ void MethodEffectModel::build(const mjbase::model::ResourceContainer& container)
     }
 
     // 局部事实单调；沿直接调用边迭代让 Pure/ReadOnly 被调改善调用方，
-    // Unknown/外部边保持保守（旧栈轮数上限 = 方法数 + 1）。
+    // Unknown/外部边保持保守。
     std::unordered_map<MemberKey, MethodEffectKind, MemberKeyHash>    currentEffects;
     std::unordered_map<MemberKey, ConstantReturnValue, MemberKeyHash> currentConstants;
     for (const auto& method : methods) {

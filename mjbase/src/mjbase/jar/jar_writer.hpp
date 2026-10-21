@@ -34,7 +34,7 @@ public:
     /// @param entryName 条目路径
     /// @param content   条目内容
     ///
-    /// 旧栈 按值接收 std::string 以吃住临时对象的移动；本版形参为借用视图
+    /// 本版形参为借用视图
     /// （Utf8StringRef），条目名在收集器内单次复制驻留，语义等价且调用方
     /// 无需为复用再拷贝一份。
     virtual void writeEntry(Utf8StringRef entryName, std::vector<ca::u8> content) = 0;

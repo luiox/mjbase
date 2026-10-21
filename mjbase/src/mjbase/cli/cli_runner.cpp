@@ -36,7 +36,7 @@ void setFailure(CliRunReport& report, CliFailureKind kind, std::string message)
 }
 
 // 重新导入输出文件，确认其中每个 Class 资源都能被 classfile 读取器完整解析
-// （旧栈 侧以 ClassReader 异常判定；mjbase 换 jbc::core::readClass——
+// （mjbase 换 jbc::core::readClass——
 // Err / 非 Validated / 类名为空都视为验证失败）。
 bool verifyOutput(const std::string& output, InputKind kind)
 {
