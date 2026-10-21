@@ -162,22 +162,33 @@ TEST(MjExpressionSimplifierTest, FoldsOrWithAndNot)
 
 TEST(MjExpressionSimplifierTest, SkipsWindowWithInteriorLabel)
 {
-    DomFixture fx("ExpressionLabelGuard", "run", "()I", 2, 1, [](Body& b) {
+    // 异常表 start 锚在窗口内部成员（ICONST_0）上：旧栈 LabelNode 阻断窗口，
+    // CodeDom 等价即内部成员标签守卫——整窗跳过，x+0 不折叠。
+    // （裸 bindHere 标签无引用会在 lower→promote 往返中丢失，必须用异常表
+    // 边界锚定才能穿过管线。）
+    DomFixture fx("ExpressionLabelGuard", "run", "(I)I", 2, 1, [](Body& b) {
         b.iload(0);
-        const jbc::ir::LabelId label = b.label();
         b.op(Op::ICONST_0);
-        b.bindHere(label);
-        b.op(Op::IADD).op(Op::IRETURN);
+        const jbc::ir::InsnId atConst = b.last();
+        b.op(Op::IADD);
+        const jbc::ir::LabelId start = b.label();
+        const jbc::ir::LabelId hit   = b.label();
+        b.branch(Op::IFEQ, hit);
+        b.op(Op::ICONST_0);
+        b.op(Op::IRETURN);
+        const jbc::ir::InsnId atEnd = b.last();
+        const jbc::ir::LabelId end = b.label();
+        b.op(Op::ICONST_1);
+        const jbc::ir::InsnId atHit = b.last();
+        b.op(Op::IRETURN);
+        b.bindAt(start, atConst);
+        b.bindAt(end, atEnd);
+        b.bindAt(hit, atHit);
+        b.tryCatch(start, end, hit);
     });
-
-    fx.run(ExpressionSimplifier{});
-
-    const auto ops = opsOf(fx);
-    ASSERT_EQ(ops.size(), 4u);
-    EXPECT_EQ(ops[0], Op::ILOAD);
-    EXPECT_EQ(ops[1], Op::ICONST_0);
-    EXPECT_EQ(ops[2], Op::IADD);
-    EXPECT_EQ(ops[3], Op::IRETURN);
+    const Bytes before = fx.writeBack();
+    EXPECT_TRUE(fx.run(ExpressionSimplifier{}).areAllPreserved());
+    EXPECT_EQ(fx.writeBack(), before);
 }
 
 TEST(MjExpressionSimplifierTest, LeavesNonMatchingExpressionUntouched)
