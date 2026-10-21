@@ -50,7 +50,7 @@ package hb.jvm.rn;
 
 public class ApplyMain {
     public static void main(String[] args) {
-        System.out.println(Service.describe("morpher"));
+        System.out.println(Service.describe("legacy"));
         Service svc = new Service("tag-value");
         System.out.println(svc.tag);
         System.out.println(Service.Loader.unpack(21));
@@ -469,7 +469,7 @@ TEST(MjRenamerApplyTest, renamedSampleRunsOnRealJvmAndReflectionSeesNewNames)
     const auto orig = test::jdk::runJavaMain(tc, binDir, "hb.jvm.rn.ApplyMain");
     ASSERT_EQ(orig.exitCode, 0) << orig.out;
     const std::string origOut = test::jdk::normalizeOutput(orig.out);
-    EXPECT_NE(origOut.find("desc:morpher"), std::string::npos);
+    EXPECT_NE(origOut.find("desc:legacy"), std::string::npos);
     EXPECT_NE(origOut.find("tag-value"), std::string::npos);
     EXPECT_NE(origOut.find("42"), std::string::npos);
 
