@@ -1,8 +1,7 @@
 /// @file        control_flow_graph.hpp
 /// @brief       方法级控制流图：基本块表、后继/前驱边与异常边。
 ///
-/// 语义来源是 旧栈 的 asm/cfg（冻结参考），在 libjbc 底座上重写为只读
-/// 值视图：
+/// 只读值视图：
 ///   - 切块复用 CodeEditor::blocks() 的 leader 分析（顺序头、跳转/switch
 ///     目标、return/athrow/ret 的顺序后继、异常表三个边界）；
 ///   - 普通边按块末条指令形状分类（Branch2/Branch4/switch/终止/顺序）；
@@ -10,9 +9,8 @@
 ///     [start, end) 区间按块首位置对齐（切分保证边界都是块首），区间内
 ///     每个块获得一条指向 handler 的 Exception 边。
 ///
-/// 与旧实现的差异：CFG 不再接管/改写指令（旧 preProcess 会把 InsnList
-/// 摘链再交还），CodeDom 始终是唯一属主；jsr 除 taken 边外还补一条顺序
-/// FallThrough 边（子程序返回点），旧实现只有 fallthrough、丢失跳转目标。
+/// 形态：CFG 不接管/改写指令，CodeDom 始终是唯一属主；jsr 除 taken 边外
+/// 还补一条顺序 FallThrough 边（子程序返回点）。
 #pragma once
 
 #include <unordered_map>

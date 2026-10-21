@@ -2,9 +2,8 @@
 /// @brief       analysis 别名分析测试：值代数契约、摘要驻留键、全程序固定点、
 ///              反射闭包作用域、静态槽迟变更收敛与引用化摘要绑定。
 ///
-/// 移植；断言逐字等强）。夹具从 ASM ClassWriter 重写为手拼 classfile 字节
-/// （class_bytes_builder.hpp）；MemberKey 键经 aliasMemberKey 构造（与实现
-/// 共用驻留池，内容寻址等值）。
+/// 夹具为手拼 classfile 字节（class_bytes_builder.hpp）；MemberKey 键经
+/// aliasMemberKey 构造（与实现共用驻留池，内容寻址等值）。
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -773,7 +772,7 @@ std::vector<MethodSpec> bindingFixtureMethods()
 }   // namespace
 
 // ---------------------------------------------------------------------------
-// 值代数与帧契约（直接移植）
+// 值代数与帧契约
 // ---------------------------------------------------------------------------
 
 TEST(MjAnalysisAliasContractTest, ConflictingValuesBecomeUnknown)
@@ -952,8 +951,8 @@ TEST(MjAnalysisAliasContractTest, BuildsParameterReturnSummaryFromClassResource)
     EXPECT_EQ(arrayWriter->parameters[1].kind, AliasValueKind::Primitive);
     EXPECT_EQ(arrayWriter->parameters[2], AliasValue::object("param:2"));
     ASSERT_EQ(arrayWriter->arrayWrites.size(), 1u);
-    // P2：arrayHelper 自身不再持有内联自 writeArray 的数组写入（改持绑定），
-    // 展开视图与 P1 内联物化逐字段等值。
+    // arrayHelper 自身不再持有内联自 writeArray 的数组写入（改持绑定），
+    // 展开视图与内联物化逐字段等值。
     ASSERT_EQ(arrayHelper->arrayWrites.size(), 0u);
     const auto helperExpanded = analysis.expandedFactsOf("AliasFixture", "arrayHelperRoundTrip",
                                                          kEchoDesc);
@@ -1150,7 +1149,7 @@ TEST(MjAnalysisAliasContractTest, SkipsMalformedMethodAndKeepsOtherMethodSummari
 }
 
 // ---------------------------------------------------------------------------
-// P0 反射闭包作用域契约（R1/R2/R3/R4 + 作用域外零摘要 + 行为不变）
+// 反射闭包作用域契约（R1/R2/R3/R4 + 作用域外零摘要 + 行为不变）
 // ---------------------------------------------------------------------------
 
 TEST(MjAnalysisAliasReflectionClosureTest, ScopeExcludesUnrelatedClassesAndKeepsClosure)
@@ -1219,7 +1218,7 @@ TEST(MjAnalysisAliasReflectionClosureTest, ConvergenceRoundsReflectClosureOnly)
 }
 
 // ---------------------------------------------------------------------------
-// P1 静态槽迟变更（Jacobi 槽依赖收敛钉）
+// 静态槽迟变更（Jacobi 槽依赖收敛钉）
 // ---------------------------------------------------------------------------
 
 TEST(MjAnalysisAliasWorklistTest, StaticSlotLateChangePropagatesBeforeConvergence)
@@ -1251,8 +1250,8 @@ TEST(MjAnalysisAliasWorklistTest, StaticSlotLateChangePropagatesBeforeConvergenc
 
 TEST(MjAnalysisAliasWorklistTest, MemoizedBuildReproducesFullBuildSummaries)
 {
-    // 旧栈 memoized 路径的确定性契约（同一容器跑两次 build）：新栈 build 恒为
-    // 全量固定点，落为两次独立实例的输出逐字段一致且轮数一致。
+    // build 的确定性契约（同一容器跑两次 build）：输出恒为
+    // 全量固定点，两次独立实例的摘要逐字段一致且轮数一致。
     ResourceContainer container;
     addClosureFixture(container);
 
@@ -1270,7 +1269,7 @@ TEST(MjAnalysisAliasWorklistTest, MemoizedBuildReproducesFullBuildSummaries)
 }
 
 // ---------------------------------------------------------------------------
-// P2 引用化摘要：绑定 + 惰性展开
+// 引用化摘要：绑定 + 惰性展开
 // ---------------------------------------------------------------------------
 
 TEST(MjAnalysisAliasReferenceSummaryTest, CallBindingsReplaceInlinedCalleeFacts)
@@ -1358,7 +1357,7 @@ TEST(MjAnalysisAliasReferenceSummaryTest, CyclicCallGraphConvergesWithConstantSu
     ASSERT_NE(slot, nullptr);
     // 槽聚合 = merge(param:0, new:BindA.callSet()V:0:java/lang/Object)：
     // setSlot 直写贡献形参、callSet 绑定实例化贡献具体分配点，分歧收敛为
-    // Unknown 并保留诊断 pointsTo（与 P1 物化聚合同语义）。
+    // Unknown 并保留诊断 pointsTo（与物化聚合同语义）。
     EXPECT_EQ(slot->kind, AliasValueKind::Unknown);
     const std::string_view callSetAlloc = aliasInterned("new:BindA.callSet()V:0:java/lang/Object");
     EXPECT_TRUE(std::find(slot->pointsTo.begin(), slot->pointsTo.end(), callSetAlloc) !=

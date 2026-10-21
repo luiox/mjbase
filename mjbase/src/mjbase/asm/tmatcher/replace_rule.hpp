@@ -1,7 +1,7 @@
 /// @file        replace_rule.hpp
 /// @brief       替换规则骨架：命中视图 + 替换序列产出器 + 替换计划。
 ///
-/// 与旧实现的根本差异（任务约定）：DSL 只产出**计划**，不执行编辑。
+/// DSL 只产出**计划**，不执行编辑。
 /// ReplacePlan 携带 order() 下标窗口与一组替换 Insn 值；编辑由调用方经
 /// CodeDom 原语执行。推荐执行配方（对单个计划，且计划基于当前 order()）：
 ///
@@ -34,8 +34,7 @@ namespace mjbase::asm_tmatcher {
 
 /// @brief 一次命中的只读视图（替换产出器的输入）。
 ///
-/// 语义对齐旧实现的 ReplaceContext，去掉 builder/arena——产出器只读
-/// 命中窗口与捕获表，不再原地收集节点。
+/// 产出器只读命中窗口与捕获表，不原地收集节点。
 struct ReplaceContext
 {
     const jbc::ir::CodeDom* dom = nullptr;         ///< 被匹配的 DOM
@@ -107,8 +106,7 @@ struct ReplacePlan
 
 /// @brief 替换规则 = 命名 step 树 + 可选替换产出器。
 ///
-/// producer 为空时该规则仅参与匹配（命中区间被跳过，不产出计划）——
-/// 对齐旧实现「无 handler 的 ReplaceRule」语义。
+/// producer 为空时该规则仅参与匹配（命中区间被跳过，不产出计划）。
 class ReplaceRule
 {
     std::string_view name_;

@@ -4,7 +4,7 @@
 /// @brief      classfile 输入净化面：CP 引用语义校验，校验+拒绝。
 ///
 ///             libjbc 的 readClass 只解析「必须解析才能定位结构」的部分，引用
-///             语义缺口由下游兜底的形态与旧栈一致：CP index 指错 tag 类型时
+///             语义缺口的形态：CP index 指错 tag 类型时
 ///             静默产出空值/错类型值；ConstantDynamic 经 bootstrap args 的环
 ///             引用让常量解析无界递归；bootstrap_method_attr_index 越界是直接
 ///             越界读。本净化器在读取之前对原始 bytes 做一次只读扫描，把这些
@@ -14,8 +14,7 @@
 ///             诊断规则只收录 JVMS 必然违规（越界/保留槽/空引用/tag 错配/环/
 ///             长度越界），对合法 classfile 零误报；readClass 自身的版本、魔数
 ///             之外的结构裁决权不变——净化器是带精确诊断的前置预检，不是第二套
-///             解析器。检查项与诊断文本从 旧栈 语义参考（jbytecode class_file_
-///             sanitizer）逐条移植，规则序与消息格式保持一致。
+///             解析器。
 
 #include <vector>
 

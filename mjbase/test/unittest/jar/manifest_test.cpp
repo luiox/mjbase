@@ -84,9 +84,9 @@ TEST(MjManifestToBytesTest, WrapContinuationDoesNotSplitUtf8MultibyteChar)
     EXPECT_EQ(back.getMainAttribute(S("Key")), B(value));
 }
 
-/// 回归：值中含长串连续 UTF-8 续字节（0x80-0xBF，恶意/畸形输入）。旧实现
-/// charStart 回退越过折行窗口起点后 end==pos，折行循环永不前进 → 死循环。
-/// 修复后每行至少前进 1 字节，toBytes 终止且 roundtrip 逐字节一致。
+/// 回归：值中含长串连续 UTF-8 续字节（0x80-0xBF，恶意/畸形输入）。折行
+/// 回退越过折行窗口起点时放弃回退、按字节硬切（每行至少前进 1 字节），
+/// toBytes 终止且 roundtrip 逐字节一致。
 /// 注：run 前置一个 ASCII 字符，截断点回退停在该字符上，roundtrip 保持逐字节。
 TEST(MjManifestToBytesTest, WrapHandlesRunOfContinuationBytesWithoutHanging)
 {

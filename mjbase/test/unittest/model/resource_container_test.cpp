@@ -1,5 +1,5 @@
 /// @file        resource_container_test.cpp
-/// @brief       资源容器测试（移植自）。
+/// @brief       资源容器测试。
 #include <gtest/gtest.h>
 
 #include <memory>

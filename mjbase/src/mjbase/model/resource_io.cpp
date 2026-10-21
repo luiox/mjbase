@@ -19,8 +19,8 @@ namespace mjbase::model {
 
 // ── JarFileImporter ──────────────────────────────────────────
 
-// JarError → ModelError 归一（见 resource_io.hpp 声明）。jar 层错误在旧栈
-// 以异常穿透到调用方；本模块以码表收口，文件缺失细分为 NotFound。
+// JarError → ModelError 归一（见 resource_io.hpp 声明）。以码表收口，
+// 文件缺失细分为 NotFound。
 ModelError toModelError(const mjbase::jar::JarError& error) noexcept
 {
     if (error.kind == mjbase::jar::JarError::Kind::FileNotFound) return ModelError::NotFound;
@@ -122,30 +122,30 @@ ModelResult<void> SimpleClassFileExporter::exportResource(IResourceContainer& co
     if (uri_.ref().is_empty()) {
         // 未指定 URI，取容器中唯一的资源（必须恰好一个且为 ClassResource）
         if (container.size() != 1)
-            return Err(ModelError::BadArgument);   // 旧栈: "uri is empty and container size is not 1"
+            return Err(ModelError::BadArgument);   // 未指定 URI 而容器不是恰好 1 个资源
         container.visitResources([&](std::string_view, const IResource& res) {
             classRes = ca::core::tag_cast::dyn_cast<const ClassResource>(&res);
         });
         if (!classRes)
-            return Err(ModelError::TypeMismatch);   // 旧栈: "the only resource is not ClassResource"
+            return Err(ModelError::TypeMismatch);   // 唯一资源不是 ClassResource
     }
     else {
         auto* res = container.getResource(uri_.ref());
-        if (!res) return Err(ModelError::NotFound);   // 旧栈: "uri not found in container: <uri>"
+        if (!res) return Err(ModelError::NotFound);   // URI 在容器中无对应资源
         classRes = ca::core::tag_cast::dyn_cast<const ClassResource>(res);
         if (!classRes)
-            return Err(ModelError::TypeMismatch);   // 旧栈: "resource is not ClassResource: <uri>"
+            return Err(ModelError::TypeMismatch);   // 资源不是 ClassResource
     }
     const std::string pathText(path_.ref());
     std::ofstream     out(std::filesystem::u8path(pathText), std::ios::binary);
-    if (!out) return Err(ModelError::Io);   // 旧栈: "failed to open: <path>"
+    if (!out) return Err(ModelError::Io);   // 打开输出文件失败
     const auto& data = classRes->get();
     out.write(reinterpret_cast<const char*>(data.data()),
               static_cast<std::streamsize>(data.size()));
     out.flush();
-    if (!out) return Err(ModelError::Io);   // 旧栈: "failed to flush: <path>"
+    if (!out) return Err(ModelError::Io);   // flush 失败
     out.close();
-    if (!out) return Err(ModelError::Io);   // 旧栈: "failed to close: <path>"
+    if (!out) return Err(ModelError::Io);   // close 失败
     return Ok();
 }
 
@@ -155,7 +155,7 @@ ModelResult<void> SimpleClassFileExporter::exportResource(IResourceContainer& co
 ModelResult<void> SimpleClassFileImporter::importResource(IResourceContainer& container)
 {
     std::ifstream in(std::filesystem::u8path(std::string(path_.ref())), std::ios::binary);
-    if (!in) return Err(ModelError::Io);   // 旧栈: "failed to open: <path>"
+    if (!in) return Err(ModelError::Io);   // 打开输入文件失败
     in.seekg(0, std::ios::end);
     auto size = static_cast<ca::usize>(in.tellg());
     in.seekg(0, std::ios::beg);
@@ -195,9 +195,8 @@ bool isUnderDir(const std::filesystem::path& child, const std::filesystem::path&
 }
 
 // 把单个条目写到磁盘（等价于 archive_read_extract，但显式落到 targetDir，
-// 避免依赖进程 CWD）。返回 Ok 表示继续下一条目。旧栈 throw 文本 → 错误码：
-// "entry escapes target dir: <name>" → PathEscape；"cannot open output: <p>" → Io；
-// read_data_block 失败（archive_error_string 文本）→ BadEntry。
+// 避免依赖进程 CWD）。返回 Ok 表示继续下一条目；失败码：PathEscape（路径
+// 逃逸目标目录）/ Io（输出文件打开失败）/ BadEntry（read_data_block 失败）。
 ModelResult<void> writeEntryToDisk(struct archive* a, struct archive_entry* entry,
                                    const std::filesystem::path& targetDir)
 {
@@ -238,13 +237,9 @@ ModelResult<void> writeEntryToDisk(struct archive* a, struct archive_entry* entr
 
 // 打开归档并逐条目解压到 target（绝对路径，已 canonical）。onlyEntry 非空时仅解压
 // pathname 与之完全匹配的那一个条目，其余跳过；找不到匹配条目报 NotFound。
-// 旧栈 throw 文本 → 错误码映射：
-// - "archive_read_new failed"                         → Io
-// - "open archive failed: <p> — <msg>"（文件不存在）   → NotFound
-// - "open archive failed: <p> — <msg>"（格式识别失败） → UnsupportedFormat
-// - "read header failed: <msg>"                       → BadEntry
-// - "extract failed at '<entry>': <err>"              → 随内层（PathEscape/Io/BadEntry）
-// - "entry not found in archive '<p>': <entry>"       → NotFound
+// 错误码：alloc 失败 → Io；打开失败按文件存在性细分为 NotFound /
+// UnsupportedFormat；read header 失败 → BadEntry；条目写盘失败随内层
+// （PathEscape/Io/BadEntry）；onlyEntry 未命中 → NotFound。
 ModelResult<void> extractArchiveTo(const std::string&           archivePath,
                                    const std::filesystem::path& target,
                                    const std::string*           onlyEntry)
@@ -259,9 +254,8 @@ ModelResult<void> extractArchiveTo(const std::string&           archivePath,
 
     const int r = archive_read_open_filename(a, archivePath.c_str(), 10240);
     if (r != ARCHIVE_OK) {
-        // 旧栈 两类失败同报 "open archive failed"；此处按文件存在性细分码，
-        // 原消息文本（含 archive_error_string）不再进错误载荷。存在性检查按
-        // 模块口径走 u8path（UTF-8 解释）。
+        // 打开失败按文件存在性细分码：不存在报 NotFound（区别于格式识别
+        // 失败的 UnsupportedFormat）。存在性检查按模块口径走 u8path（UTF-8 解释）。
         if (!std::filesystem::exists(std::filesystem::u8path(archivePath)))
             return Err(ModelError::NotFound);
         return Err(ModelError::UnsupportedFormat);
@@ -284,8 +278,7 @@ ModelResult<void> extractArchiveTo(const std::string&           archivePath,
         }
         auto wr = writeEntryToDisk(a, entry, target);
         if (wr.is_err()) {
-            // 旧栈 在此包装 "extract failed at '<entry>': <err>"；条目名不进
-            // 错误载荷（enum 码），错误类别由内层给出。
+            // 条目名不进错误载荷（enum 码），错误类别由内层给出。
             return wr;
         }
         if (onlyEntry) break;   // 目标条目已提取，无需继续扫描
@@ -300,9 +293,8 @@ ModelResult<void> extractArchiveTo(const std::string&           archivePath,
 ModelResult<void> ZipUtil::extract(std::string_view archivePath, std::string_view targetDir)
 {
     namespace fs = std::filesystem;
-    // 旧栈 直接 create_directories/weakly_canonical（filesystem_error 抛出）；
-    // 此处改 error_code 并归一 Err(Io)。路径按 UTF-8 解释（u8path，与
-    // SimpleClassFile* 的 ）。
+    // create_directories / weakly_canonical 走 error_code 重载，失败归一
+    // Err(Io)。路径按 UTF-8 解释（u8path，与 SimpleClassFile* 的读写一致）。
     std::error_code ec;
     const fs::path  target = fs::u8path(std::string(targetDir));
     fs::create_directories(target, ec);

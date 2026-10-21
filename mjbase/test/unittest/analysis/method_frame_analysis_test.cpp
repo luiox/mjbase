@@ -2,12 +2,9 @@
 /// @brief       analysis 帧分析语义测试：逐指令帧对齐、空方法 fail-open、
 ///              容量声明无关。
 ///
-///（6 用例中 3 个可移植）。OriginalSourceFrameAnalysis 的驱动器职责在 mjbase
-/// 由 libjbc DomainEngine 承担（域引擎产出 DomainResult.frames 与
-/// CodeUnit::dom.order() 按下标对齐）；帧语义等价断言落在 origin 域 +
-/// FrameQuery 上。旧栈 3 个 MethodAnalysisManager 缓存用例（caches/invalidates/
-/// keepsCacheOnAllPreserved）属旧栈 pass 基建，mjbase pass 域批次未到，不迁
-///（见迁移报告不可等价清单）。
+/// 驱动器职责由 libjbc DomainEngine 承担（域引擎产出 DomainResult.frames 与
+/// CodeUnit::dom.order() 按下标对齐）；帧语义断言落在 origin 域 +
+/// FrameQuery 上。
 #include <gtest/gtest.h>
 
 #include "jbc/jbc.hpp"
@@ -61,7 +58,7 @@ CodeUnit unitOf(CodeDom&& d)
     return u;
 }
 
-/// 旧栈 buildSmallMethod 的 CodeDom 形态：iconst_1; istore_0; iload_0; pop; return。
+/// smallMethodUnit 的指令序列：iconst_1; istore_0; iload_0; pop; return。
 CodeUnit smallMethodUnit()
 {
     CodeDom d;
@@ -75,8 +72,7 @@ CodeUnit smallMethodUnit()
 
 }   // namespace
 
-/// 逐指令帧：DomainResult.frames 与 dom.order() 按下标对齐，全部可达
-///。
+/// 逐指令帧：DomainResult.frames 与 dom.order() 按下标对齐，全部可达。
 TEST(MjAnalysisMethodFrameTest, FramesAlignWithInstructionOrder)
 {
     CodeUnit u = smallMethodUnit();
@@ -95,8 +91,7 @@ TEST(MjAnalysisMethodFrameTest, FramesAlignWithInstructionOrder)
     // 此处只验帧存在性；origin 语义已由 MjAsmAnalyzer* 套件覆盖。
 }
 
-/// 空方法体：无指令 → 无帧（调用方据此 fail-open；旧栈 ok=false 哨兵的
-/// 域引擎等价物是「ok 且 0 帧」，同样不给消费方任何帧事实）。
+/// 空方法体：无指令 → 无帧（调用方据此 fail-open；）。
 TEST(MjAnalysisMethodFrameTest, EmptyMethodProducesNoFrames)
 {
     CodeUnit u = unitOf(CodeDom{});

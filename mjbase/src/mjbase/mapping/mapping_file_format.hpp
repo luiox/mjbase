@@ -8,14 +8,10 @@ namespace mjbase::mapping {
 
 /// @brief 映射解析/写出错误类别。
 ///
-/// 原 旧栈 通过 `mjbase::mapping::format::InvalidMappingException`
-/// （std::exception 子类，仅携带一条 message 文本）表达「映射文本无效」；
-/// 本模块按仓库 Result 值语义纪律改走错误通道，异常类不再迁移。分类：
-/// - InvalidText：映射文本无效被拒载（原异常的唯一语义，原异常 message 文本
-///   语义并入此值；现实现各格式为宽松跳坏行口径，实际不产生该值，为严格
-///   入口与下游格式预留）。
-/// - UnknownFormat：注册表中无此格式名（原 registry 静默返回空产物的路径，
-///   改走错误通道）。
+/// 解析/写出按仓库 Result 值语义纪律走错误通道，不抛异常。分类：
+/// - InvalidText：映射文本无效被拒载（各格式为宽松跳坏行口径，实际不产生
+///   该值，为严格入口与下游格式预留）。
+/// - UnknownFormat：注册表中无此格式名，经错误通道上报。
 /// - Io：写出失败（sidecar 文件写路径的 Io 类别归并到此处）。
 enum class MappingError : ca::u8
 {

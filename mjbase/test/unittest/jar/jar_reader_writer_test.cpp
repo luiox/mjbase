@@ -1,9 +1,9 @@
 /// @file        jar_reader_writer_test.cpp
 /// @brief       jar 读/写测试：读真 jar、缺文件错误、写读回环、空 jar、UTF-8 条目名回环。
 ///
-/// throw → Result 错误通道（is_err 断言），std::string → Utf8String。
-/// readHelloJar 的 fixture 借用 旧栈 冻结线的 test_resource（单测 rundir 是
-/// 仓库根，路径与 ）；临时产物按约定只落 <root>/test/。
+/// 错误通道走 Result（is_err 断言），std::string → Utf8String。
+/// readHelloJar 的 fixture 取 test_resource/optimize/hello.jar（单测 rundir
+/// 是仓库根）；临时产物按约定只落 <root>/test/。
 #include <gtest/gtest.h>
 #include <cstdio>
 
@@ -41,7 +41,7 @@ TEST(MjJarReaderTest, readHelloJar)
 
 TEST(MjJarReaderTest, readNonExistentJar)
 {
-    // JvmJarReader 在文件不存在时失败：旧栈 抛异常 → mjbase 返回 Err(FileNotFound)。
+    // JvmJarReader 在文件不存在时失败：返回 Err(FileNotFound)。
     JvmJarReader reader(S("nonexistent.jar"));
     auto         result = reader.read([](const ca::str::Utf8String&, const std::vector<ca::u8>&) {});
     ASSERT_TRUE(result.is_err());

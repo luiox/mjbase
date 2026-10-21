@@ -1,14 +1,14 @@
 /// @file        shadow_alias.hpp
 /// @brief       shadow name 表：真名 → 显示名映射，仅服务显示层，永不写回字节码。
 ///
-/// token）。语义照旧、底座重定型：
+/// 键形态与交付约定：
 ///
-/// - 成员键走跨类身份契约：旧栈 "owner\x1fname\x1fdesc" 拼接串键换
-///   mjbase::analysis::aliasMemberKey 建的 MemberKey（进程级内容寻址驻留，
+/// - 成员键走跨类身份契约：mjbase::analysis::aliasMemberKey 建的 MemberKey
+///   （进程级内容寻址驻留，
 ///   等值即内容等值）；类键用表私有 KeyPool 驻留 id。不发明跨模块字符串键。
-/// - 字符串面按 mjbase 约定改 std::string_view 借用视图（表私有 KeyPool
+/// - 字符串面按 mjbase 约定用 std::string_view 借用视图（表私有 KeyPool
 ///   驻留，寿命 = 表对象寿命）；渲染产物（printReadable 拼接）是值返回。
-/// - token 补号的随机源失败由 throw 改 Result 值语义（不抛异常不吞错）。
+/// - token 补号的随机源失败走 Result 值语义（不抛异常不吞错）。
 ///
 /// 与真实 remap 数据零混写（不进 RenamePlan）；sidecar 经
 /// ShadowAliasFormat（注册名 "Shadow-Alias"）读写，解析产物

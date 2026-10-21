@@ -848,7 +848,7 @@ RenamerRunResult RenamerEngine::run(mjbase::model::ResourceContainer&   containe
 
         // 字段继承别名（plan-only，不入 record/导出）：javac 可能以子类为 owner
         // 发出继承字段的 field 指令（getfield B.f，f 实际声明于超类 A），而
-        // 应用面只按精确 (owner,name,desc) 查规则。沿旧栈 rename_core 同款口径
+        // 应用面只按精确 (owner,name,desc) 查规则。沿
         // 补齐：子类 B 沿 super 链解析出的声明 owner 恰为本字段 owner 时，逐子类
         // 补 (B, oldName, desc) → 新名别名规则。SRG/mapping 记录仍只含声明处一条。
         const ClassKey ownerKey = context->hierarchy_.findClass(change.owner);
@@ -897,7 +897,7 @@ RenamerRunResult RenamerEngine::run(mjbase::model::ResourceContainer&   containe
 
     // 方法继承别名（plan-only，不入 record/导出）：闭世界子类继承了改名方法但
     // 未自行声明时，其继承引用（invokevirtual B.m，m 实际声明于超类 A）在应用面
-    // 的精确规则查找下会漏改。沿旧栈 rename_core 同款口径补齐：
+    // 的精确规则查找下会漏改。沿补齐：
     //   1) C 未声明 (oldName, desc)（声明者由闭包规则覆盖）；
     //   2) C 的继承闭包封闭（不延伸到容器外类）；
     //   3) C 是组内任一成员 owner 的子类型；

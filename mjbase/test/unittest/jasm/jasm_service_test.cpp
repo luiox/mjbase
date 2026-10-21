@@ -1,14 +1,10 @@
 // mjbase jasm 服务单测。
 //
-// 不变；命名空间随 mjbase（mjbase::jasm）、gtest 套件名加 Mj 前缀。底座差异：
-// - 层次图改手工登记 ClassSummary（mjbase::hierarchy 不收容器输入；旧栈用
-//   容器装配 4 个辅助类再建图，二者产出的类图等价）；
-// - StackMapTable 断言改经 jbc::core::readClass 的 StackMapTableAttr 读取
-//   （原 jbytecode tree FrameNode）；
-// - ResourceJasmService 无 GlobalAnalysisManager：旧栈
-//   SuccessfulReplacementClearsGlobalAnalysisCache 的「替换后无陈旧分析态」
-//   契约改断言为「同一容器连续替换仍成功 + 反汇编可见新字节」（见
-//   resource_jasm_service.hpp 头注）。
+// 机制要点：
+// - 层次图为手工登记 ClassSummary（mjbase::hierarchy 不收容器输入）；
+// - StackMapTable 断言经 jbc::core::readClass 的 StackMapTableAttr 读取；
+// - ResourceJasmService 的「替换后无陈旧分析态」契约断言为「同一容器连续
+//   替换仍成功 + 反汇编可见新字节」（见 resource_jasm_service.hpp 头注）。
 #include "mjbase/jasm/jvm_jasm_service.hpp"
 #include "mjbase/jasm/resource_jasm_service.hpp"
 
@@ -217,7 +213,7 @@ TEST(MjJvmJasmServiceTest, ClassHierarchyDrivesEmittedCommonSuperFrame)
 {
     JvmJasmService service;
 
-    // 类图与 旧栈 版容器建图等价：Object ← 基类 ← {Left, Right}。
+    // 类图形态：Object ← 基类 ← {Left, Right}。
     mjbase::KeyPool                   pool;
     mjbase::hierarchy::ClassHierarchy hierarchy(pool);
     const auto addClass = [&](const char* name, const char* super) {
@@ -307,9 +303,7 @@ TEST(MjJvmJasmServiceTest, RejectsIllegalFixtureDuringValidation)
     EXPECT_EQ(DiagnosticStage::Validate, validated.diagnostics.front().stage);
 }
 
-// ── 成功替换后无陈旧层次状态：同一容器连续替换仍成功、反汇编可见新字节。
-// （旧栈 版名 SuccessfulReplacementClearsGlobalAnalysisCache——其 GlobalAnalysisManager
-// 缓存在 mjbase 无对应物，见文件头注。）──
+// ── 成功替换后无陈旧层次状态：同一容器连续替换仍成功、反汇编可见新字节 ──
 TEST(MjResourceJasmServiceTest, SuccessfulReplacementKeepsHierarchyStateFresh)
 {
     auto  container = containerWithSubject();

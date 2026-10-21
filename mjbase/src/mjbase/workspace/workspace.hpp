@@ -28,8 +28,7 @@ namespace workspace {
 ///   在候选入口前置）+ mjbase::jasm 验证；
 /// - 结构化修改经 ClassMutationService（libjbc 会话改写 + spi::ClassResourcePendingCommit
 ///   两阶段写回）；
-/// - 错误通道为 WorkspaceError + WorkspaceResult（旧 ca::Status/StatusOr 的映射见
-///   workspace_types.hpp）；
+/// - 错误通道为 WorkspaceError + WorkspaceResult；
 /// - remap/rename/pipeline/workflow 方法族落在 spi 协作面上：管线组装经
 ///   spi::PipelineBuilder/applyTo（pass-contract §9 装配层），重映射经
 ///   asm_remapper::applyResourceRemapPlan，帧重算经
@@ -358,9 +357,9 @@ private:
 
 /// @brief 递归扫描 JDK 目录下的 .jar/.zip/.jmod，把层次摘要灌入 @p hierarchy。
 ///
-/// 旧栈 CommonSuperClassProvider::scan 的对应物（pipeline jdkPath 语义）：
+/// pipeline jdkPath 语义：
 /// 单归档导入失败 fail-open 跳过；单类 fail-open（环检查拒绝等）；jimage
-/// 模块镜像不扫描（与）。配合 spi::CommonSuperClassResolver +
+/// 模块镜像不扫描。配合 spi::CommonSuperClassResolver +
 /// StrictTypeResolverAdapter 注入 PassPipelineOptions::typeResolver 使用；
 /// 调用方保证 pool/hierarchy 存活覆盖管线 build+run 全程。
 void scanJdkHierarchy(const std::string& jdkPath, mjbase::hierarchy::ClassHierarchy& hierarchy,

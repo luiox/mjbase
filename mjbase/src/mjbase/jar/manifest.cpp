@@ -44,15 +44,15 @@ Manifest& Manifest::operator=(const Manifest& other)
 }
 
 // 解析 MANIFEST.MF：主属性段，支持续行（以空格开头）和 key: value 格式。
-// 与 旧栈 的 istringstream/getline 实现逐字节等价：按 '\n' 切行（末行可不带
-// 换行符）、只剥一个行尾 '\r'、空行即主属性段结束（其后内容忽略）。
+// 按 '\n' 切行（末行可不带换行符）、只剥一个行尾 '\r'、空行即主属性段
+// 结束（其后内容忽略）。
 Manifest Manifest::fromBytes(const std::vector<ca::u8>& bytes)
 {
     Manifest manifest;
     std::vector<ca::u8> pendingKey, pendingValue;
 
     // 将当前累积的 key:value 刷入 manifest（setMainAttribute：既有 key 原位
-    // 覆写保插入序，语义对齐旧 unordered_map 的 operator[] 赋值）。
+    // 覆写保插入序）。
     auto flush = [&]() {
         if (!pendingKey.empty()) {
             const auto keyData   = pendingKey.data();

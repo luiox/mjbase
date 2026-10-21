@@ -1,8 +1,6 @@
 /// @file        andersen_points_to_test.cpp
 /// @brief       analysis Andersen 求解器测试：copy 传播到不动点、链式字段加载、
 ///              堆字段分配敏感、初次 solve 后追加约束。
-///
-/// 移植，断言逐字等强；仅命名空间与 include 适配）。
 #include <gtest/gtest.h>
 
 #include <string>

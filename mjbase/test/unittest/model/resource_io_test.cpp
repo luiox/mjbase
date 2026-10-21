@@ -1,6 +1,5 @@
 /// @file        resource_io_test.cpp
-/// @brief       资源导入导出测试（移植自旧栈 unittest/model/resource_io_test.cpp，
-///              12 用例；末尾 3 个为本批新增的 Result 错误面用例）。
+/// @brief       资源导入导出测试。
 #include <gtest/gtest.h>
 
 #include <functional>
@@ -143,12 +142,12 @@ TEST(MjModelIoTest, MixedEntriesClassifiedAndNormalized)
     EXPECT_TRUE(container.hasResource("c/c.txt"));
 }
 
-// ── Recaf 98dd1f528 InfoImporterTest 两用例移植 ─────────────────
+// ── 伪 class / stub 前缀 JAR 的条目级容错口径 ─────────────────
 //
-// 上游语义：头部形似 class 但 CP 首个 tag 越界（121）的伪 class 内容按普通
-// 文件处理；stub 前缀 JAR 整体按 ZIP 容器打开、条目全部可加载。旧栈 的
-// 对应行为：条目级 isClassFile 双检（名字+内容）失败 → UnknownResource 保留
-// （不丢弃、不产出损坏 ClassResource），同容器的真实 class 条目照常加载。
+// 头部形似 class 但 CP 首个 tag 越界（121）的伪 class 内容按普通文件
+// 处理；stub 前缀 JAR 整体按 ZIP 容器打开、条目全部可加载。条目级
+// isClassFile 双检（名字+内容）失败 → UnknownResource 保留（不丢弃、
+// 不产出损坏 ClassResource），同容器的真实 class 条目照常加载。
 
 namespace {
 
@@ -288,7 +287,7 @@ TEST(MjModelIoTest, ManifestNameRoutesThroughManifestChannel)
     EXPECT_EQ(res->getType(), ResourceType::Manifest);
 }
 
-// ── Result 错误面（本批新增；）──
+// ── Result 错误面 ──
 // 全部不触磁盘：错误分支在打开文件前返回。
 
 // 空 URI 导出 class：容器非「恰好一个 ClassResource」时拒绝。
@@ -320,12 +319,12 @@ TEST(MjModelIoTest, ExportClassFileByUriRejectsMissingAndNonClass)
     SimpleClassFileExporter missing("nope.class", "unused.bin");
     auto r1 = missing.exportResource(container);
     ASSERT_TRUE(r1.is_err());
-    EXPECT_EQ(r1.unwrap_err(), ModelError::NotFound);   // 旧栈: "uri not found in container"
+    EXPECT_EQ(r1.unwrap_err(), ModelError::NotFound);   // URI 在容器中无对应资源
 
     SimpleClassFileExporter wrongType("a.txt", "unused.bin");
     auto r2 = wrongType.exportResource(container);
     ASSERT_TRUE(r2.is_err());
-    EXPECT_EQ(r2.unwrap_err(), ModelError::TypeMismatch);   // 旧栈: "resource is not ClassResource"
+    EXPECT_EQ(r2.unwrap_err(), ModelError::TypeMismatch);   // 资源不是 ClassResource
 }
 
 // 从磁盘导入不存在的 class 文件：Err(Io)，容器保持为空。

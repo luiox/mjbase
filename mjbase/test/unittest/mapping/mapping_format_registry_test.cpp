@@ -15,8 +15,7 @@ Utf8StringRef text(const char* value)
     return Utf8StringRef::from_cstr(value);
 }
 
-/// registry.parse 的 Result 适配：Ok 展开映射，Err 记失败并返回空映射
-/// （断言强度与 ）。
+/// registry.parse 的 Result 适配：Ok 展开映射，Err 记失败并返回空映射。
 IntermediateMapping expectParsed(const char* formatName,
                                  ca::Result<IntermediateMapping, MappingError> parsed)
 {
@@ -367,9 +366,9 @@ TEST(MjMappingRegistryTest, proguardWriterUsesJavaTypes)
 
 TEST(MjMappingRegistryTest, srgWriterEmitsDeterministicSortedLines)
 {
-    // 旧栈 P2 定案：PK 行按旧名字典序、CL 行按旧名字典序、FD/MD 组内
-    // 按 (oldName, desc) 排序输出——底座 unordered_map 迭代序不得渗进导出文本，
-    // 跨实现逐行对账需要确定序。插入顺序刻意倒置，期望输出与插入序无关。
+    // 排序口径：PK 行按旧名字典序、CL 行按旧名字典序、FD/MD 组内按
+    // (oldName, desc) 排序输出——unordered_map 迭代序不得渗进导出文本，
+    // 导出文本必须保持确定序可对账。插入顺序刻意倒置，期望输出与插入序无关。
     auto                registry = MappingFormatRegistry::withStandardFormats();
     IntermediateMapping mappings;
     mappings.addPackage(text("com/example/api"), text("b/api"));
@@ -402,8 +401,7 @@ TEST(MjMappingRegistryTest, srgWriterUsesStandardMemberLines)
 
     auto out = expectFormat("SRG", registry.format(text("SRG"), mappings));
     EXPECT_NE(out.find("CL: a/Foo com/example/Foo"), std::string::npos);
-    // 带类型字段输出 desc token（parse 两侧兼容；旧栈 P2 定案：丢 desc
-    // 会让 parse 产物按 (owner,name,desc) 查找失配）。
+    // 带类型字段输出 desc token（parse 两侧兼容）。
     EXPECT_NE(out.find("FD: a/Foo/x I com/example/Foo/count I"), std::string::npos);
     EXPECT_NE(out.find("MD: a/Foo/a (Ljava/lang/String;I)V com/example/Foo/run "
                        "(Ljava/lang/String;I)V"),

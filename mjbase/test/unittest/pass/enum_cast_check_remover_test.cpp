@@ -1,6 +1,5 @@
 /// EnumCastCheckRemover 单测：枚举 values() 中 INVOKEVIRTUAL/CHECKCAST 相邻
-/// 对的成对删除面（移植自旧栈 structure_pass_test 的 EnumCastCheckRemover
-/// 三例，语义口径 1:1；并补移植审计两钉：首方法位序面、cast 锚定阻断面）。
+/// 对的成对删除面。
 #include <gtest/gtest.h>
 
 #include <utility>
@@ -31,7 +30,7 @@ FixtureBuilder makeEnumCastClass()
     return b;
 }
 
-/// INVOKEVIRTUAL; CHECKCAST; POP; RETURN——旧栈 fixture 的成对形状
+/// INVOKEVIRTUAL; CHECKCAST; POP; RETURN——可删除的成对形状
 /// （调用描述符 == 枚举数组类型 `[LT;` 的字面口径；owner/cast 目标不被检查）。
 Bytes pairBody(ca::u16 cloneCp, ca::u16 castCls)
 {
@@ -56,8 +55,8 @@ Bytes noCastBody(ca::u16 cloneCp)
 }
 
 /// GOTO→cast; INVOKEVIRTUAL; CHECKCAST; POP; RETURN——GOTO 目标落在 cast
-/// 站点（GOTO 3 字节，pc0 发出 offset+3 → 目标 pc6 = cast）：旧栈中标签
-/// 节点隔断调用→cast 物理相邻的同构形状，保持原样面。
+/// 站点（GOTO 3 字节，pc0 发出 offset+3 → 目标 pc6 = cast）：cast 位被
+/// 标签锚定、阻断调用→cast 相邻匹配的同构形状，保持原样面。
 Bytes anchorBlockedBody(ca::u16 cloneCp, ca::u16 castCls)
 {
     return {0xA7, 0x00, 0x03,   // GOTO +3：目标 pc6 = CHECKCAST（锚定阻断相邻匹配）
@@ -115,7 +114,7 @@ TEST(EnumCastCheckRemoverTest, removesOnlyAdjacentEnumCastPair)
     EXPECT_EQ(ops[1], Op::RETURN);
 }
 
-// ─── 首方法位序面（移植审计钉）：首方法干净、次方法带对——对不动 ─────────
+// ─── 首方法位序面：首方法干净、次方法带对——对不动 ─────────
 TEST(EnumCastCheckRemoverTest, keepsPairInNonFirstMethod)
 {
     FixtureBuilder b   = makeEnumCastClass();
@@ -130,7 +129,7 @@ TEST(EnumCastCheckRemoverTest, keepsPairInNonFirstMethod)
     EXPECT_EQ(r.out, in);
 }
 
-// ─── cast 站点被锚定面（移植审计钉）：同构于旧栈标签隔断，保持原样 ────────
+// ─── cast 站点被标签锚定：阻断相邻匹配，保持原样 ────────
 TEST(EnumCastCheckRemoverTest, anchorAtCastBlocksPair)
 {
     FixtureBuilder b   = makeEnumCastClass();

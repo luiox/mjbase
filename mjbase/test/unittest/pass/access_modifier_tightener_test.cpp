@@ -1,5 +1,4 @@
-/// AccessModifierTightenerTest 段（451 行起），并按任务补齐旧栈缺失的
-/// 独立直接用例。收紧规则矩阵：仅「普查命中 + 无异类引用 + static + public」
+/// 收紧规则矩阵：仅「普查命中 + 无异类引用 + static + public」
 /// 降 private；未引用/异类引用/非 static/非 public 均不动。
 #include <gtest/gtest.h>
 
@@ -24,7 +23,7 @@ constexpr ca::u16 kAccPublic  = 0x0001;
 constexpr ca::u16 kAccPrivate = 0x0002;
 constexpr ca::u16 kAccStatic  = 0x0008;
 
-/// 旧栈 buildTightenerOwner 的移植：internal/external/unused 三字段 +
+/// Owner 类：internal/external/unused 三字段 +
 /// internal/external 两方法 + 引用 internal 成员的 self() 方法。
 Bytes buildTightenerOwner()
 {
@@ -50,7 +49,7 @@ Bytes buildTightenerOwner()
     return builder.assemble();
 }
 
-/// 旧栈 buildTightenerCaller 的移植：异类引用 Owner 的 external 成员。
+/// Caller 类：异类引用 Owner 的 external 成员。
 Bytes buildTightenerCaller()
 {
     FixtureBuilder builder("Caller");
@@ -100,7 +99,7 @@ const jbc::core::MemberInfo* findMember(const jbc::core::ClassFile& cf,
 
 }   // namespace
 
-// 旧栈用例移植：仅本类引用的 public static 成员收紧 private；异类引用与
+// 验证：仅本类引用的 public static 成员收紧 private；异类引用与
 // 从未引用的成员保持 public。
 TEST(MjPassAccessModifierTightenerTest, TightensOnlyInnerUsedPublicStaticMembers)
 {

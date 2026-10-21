@@ -472,8 +472,8 @@ std::optional<AliasMethodSummary> summarizeLinear(const AliasMethodContext& ctx,
                 }
                 if (e.tag == jbc::core::CpTag::Class && cp.isUtf8(e.a)) {
                     const std::string_view n = cp.utf8Of(e.a);
-                    // 旧栈 Type::getObjectType(name).getSort()==OBJECT|ARRAY：内部名
-                    // （>1 字符）或数组描述符；单字符为原始/void 排序，不成事实。
+                    // Class 条目成事实的口径：内部名（>1 字符）或数组描述符；
+                    // 单字符为原始/void 排序，不成事实。
                     if (!n.empty() && (n.front() == '[' || n.size() > 1)) {
                         walk.stack.push_back(AliasValue::object("class:" + std::string(n)));
                         break;
@@ -652,7 +652,7 @@ std::optional<AliasMethodSummary> summarizeLinear(const AliasMethodContext& ctx,
             MemberRefSem ref;
             if (!resolveMemberRef(cp, in->cp, ref)) break;
             if (ref.desc.empty() || ref.desc.front() != '(') {
-                // 旧栈 Type::getArgumentTypes 在调用点抛出：整个方法无摘要。
+                // 描述符缺 '(' 括号头（不可解析）：整个方法无摘要。
                 walk.malformedCall = true;
                 break;
             }
@@ -897,7 +897,7 @@ public:
 
         const jbc::core::ConstantPool& cp = *env_.cp;
         // 引擎空槽 fallback（处理器入口帧不带局部）：形参槽回退形参身份——
-        // 旧栈流程分析在异常前驱合并局部，形参在处理器内可见（语义对齐）。
+        // 异常前驱合并局部后，形参在处理器内可见。
         ca::u32 loadSlot = 0;
         if (loadLocalIndexOf(in, loadSlot)) {
             if (!env_.ctx->isStatic && loadSlot == 0) {
@@ -1073,8 +1073,8 @@ ControlFlowAliasFacts analyzeControlFlowFacts(const AliasMethodContext& ctx,
     env.ctx      = &ctx;
 
     // 探测跑：操作数依赖产点退回保守缺省（GETFIELD → field: 缺省，invoke →
-    // 具体身份/未知）。产点事实中操作数无关部分（this/param/new/class/
-    // string/array/getstatic）与旧解释器逐点一致。
+    // 具体身份/未知）。操作数无关产点（this/param/new/class/
+    // string/array/getstatic）逐点直接产出。
     AliasDomain probeDom(env);
     jbc::analysis::DomainEngine<AliasValue> probeEngine(*env.cp, probeDom);
     jbc::analysis::DomainResult<AliasValue> probe = probeEngine.analyze(u, ctx.sig);
@@ -1084,7 +1084,7 @@ ControlFlowAliasFacts analyzeControlFlowFacts(const AliasMethodContext& ctx,
         return result;
     }
 
-    // 注入表：探测帧读操作数 → 前轮摘要实例化（旧解释器的 nary/unary 语义）。
+    // 注入表：探测帧读操作数 → 前轮摘要实例化（nary/unary 调用返回语义）。
     std::unordered_map<ca::u32, AliasValue> injected;
     {
         asm_analyzer::FrameQuery<AliasValue> probeQuery(u, std::move(probe));
@@ -1117,7 +1117,7 @@ ControlFlowAliasFacts analyzeControlFlowFacts(const AliasMethodContext& ctx,
                 const bool  isStatic  = in->op == Op::INVOKESTATIC;
                 const auto  required  = argTypes.size() + (isStatic ? 0u : 1u);
                 const auto* deepest   = probeQuery.stackFromTop(id, static_cast<ca::u32>(required - 1));
-                if (deepest == nullptr) continue;   // 栈深不足：旧栈该调用点跳过
+                if (deepest == nullptr) continue;   // 栈深不足：该调用点跳过
                 const std::string_view retDesc = returnTypeOf(ref.desc);
                 const auto     offset  = isStatic ? 0u : 1u;
                 const ca::u32  base    = static_cast<ca::u32>(required - 1 - offset);
@@ -1138,7 +1138,7 @@ ControlFlowAliasFacts analyzeControlFlowFacts(const AliasMethodContext& ctx,
         }
     }
 
-    // 主跑：注入后帧值与旧解释器在操作数无关链上逐点一致。
+    // 主跑：注入后逐指令重算帧值，补出操作数依赖链上的事实。
     env.injected = &injected;
     AliasDomain mainDom(env);
     jbc::analysis::DomainEngine<AliasValue> mainEngine(*env.cp, mainDom);
@@ -1228,7 +1228,7 @@ std::optional<AliasMethodSummary> summarizeMethod(const AliasMethodContext& ctx,
             }
             summary.fieldWrites = flowFacts.fieldWrites;
             // 绑定 FW 组按 flow 语义重写：调用点按 CFG 帧值重写 fw σ，栈深不足
-            // 的调用点 FW 组失效（与）。
+            // 的调用点 FW 组失效。
             for (const auto& sigma : flowFacts.flowSigmas) {
                 for (auto& binding : summary.callBindings) {
                     if (binding.instructionIndex != sigma.instructionIndex) continue;
@@ -1347,7 +1347,7 @@ public:
             return ConstraintNode{node, width};
         }
         if (in.op == Op::GETFIELD || isInvokeKind(in.op)) {
-            // 结果节点 = 指令临时（与）；操作数依赖边在帧后处理补。
+            // 结果节点 = 指令临时；操作数依赖边在帧后处理补。
             return ConstraintNode{temporary(at), width};
         }
         return ConstraintNode{0, width};
@@ -1579,7 +1579,7 @@ void indexAndersenBytecode(const std::vector<std::unique_ptr<AliasMethodContext>
                 const auto     required = argTypes.size() + (isStatic ? 0u : 1u);
                 const auto     offset   = isStatic ? 0u : 1u;
                 if (frames.stackFromTop(id, static_cast<ca::u32>(required - 1)) == nullptr) {
-                    continue;   // 栈深不足：旧栈读帧缺省跳过
+                    continue;   // 栈深不足：缺省跳过
                 }
                 const ConstraintNode* receiver =
                     isStatic ? nullptr : frames.stackFromTop(id, static_cast<ca::u32>(required - 1));
@@ -1948,7 +1948,7 @@ void AliasAnalysis::buildFixedPoint(const std::vector<const AliasMethodContext*>
                                     ca::usize                                     roundBound)
 {
     // Jacobi 全量重算：每轮所有方法重算（读上一轮快照），逐方法 sameSummary
-    // + 轮末槽状态实比对账；轮数与旧栈 memoized 版恒等（旧 P1 文档不变量）。
+    // + 轮末槽状态实比对账。
     AliasAnalysis current;
     ca::usize     completedRounds = 0;
     for (ca::usize round = 0; round < roundBound + 1; ++round) {

@@ -35,7 +35,7 @@ constexpr ca::u16 kAccSuper      = 0x0020;
 constexpr ca::u16 kAccInterface  = 0x0200;
 constexpr ca::u16 kAccAnnotation = 0x2000;
 
-/// 旧栈分桶容量：宿主方法数合计上限（canMoveToolClassInto 语义照迁）。
+/// 宿主方法数合计上限（分桶容量口径）。
 constexpr ca::usize kMaxHostMethodTotal = 100;
 
 /// 宿主命名；幂等重入防护用短标记。
@@ -89,8 +89,7 @@ bool isEmptyOrSafeToolClinit(jbc::ir::ClassSession& session, ca::usize methodIdx
 /// + libjbc NotModeled 域保守延伸：
 /// 无任何方法调用（invoke 全家族，indy 含在内）、无 PUTSTATIC；ldc 宽常量
 /// 形态（Long/Float/Double/MethodType/MethodHandle/Dynamic，即 adoptMethod
-/// 的 fail-closed 清单）命中时同样落选——对应旧栈「不支持范围保持原资源」
-/// 按新搬移契约口径的延伸。
+/// 的 fail-closed 清单）命中时同样落选，不支持形态保守保持原资源。
 bool isSimpleToolMethodBody(jbc::ir::ClassSession& session, ca::usize methodIdx)
 {
     if (!jbc::ir::hasCode(session, methodIdx)) return true;
@@ -184,9 +183,9 @@ ca::u32 findOrAddUtf8(jbc::core::ClassFile& cf, std::string_view s)
     return cf.cp.addUtf8(s);
 }
 
-/// 重建被搬移字段的 ConstantValue：旧栈整节点搬移保真该属性；adoptField
-/// 只搬元数据（libjbc §34.3(4) 字段属性表不随迁），常量值在此按源语义
-/// intern 进宿主 CP 后以新建属性槽重挂——static final 常量的行为面等价。
+/// 重建被搬移字段的 ConstantValue：adoptField 只搬元数据（libjbc §34.3(4)
+/// 字段属性表不随迁），常量值在此按源语义 intern 进宿主 CP 后以新建属性槽
+/// 重挂——static final 常量行为面保真。
 void rebuildConstantValue(jbc::ir::ClassSession& src, const jbc::ir::FieldUnit& srcField,
                           jbc::ir::ClassSession& dst, const jbc::ir::FieldUnit& dstField)
 {
@@ -511,7 +510,7 @@ mjbase::spi::PreservedAnalyses ToolClassCombiner::run(mjbase::model::ResourceCon
     }
 
     // 阶段四：提交。全部序列化成功后一次动容器：先删全部供体条目，再以
-    // 宿主名 URI 插入宿主（覆盖语义对齐）。异常路径到此为止都
+    // 宿主名 URI 插入宿主（同 URI 覆盖）。异常路径到此为止都
     // 未触碰容器——保守回滚由两阶段结构保证。
     auto& resources = container.getResources();
     for (const LoadedClass* donor : donors) {

@@ -1,17 +1,16 @@
 /// @file        method_hierarchy.hpp
 /// @brief       方法层次：同 name+desc 的 override 等价族与单继承链虚分派。
 ///
-/// 语义来源：
+/// 语义：
 /// - 虚方法 = 非 private、非 static、名字非 '<' 开头；只有虚方法参与
 ///   override 族（private/static/'<init>' 族退化为自身单例）；
-/// - override 族 = 旧并查集连通分量的等价语义：同一 name+desc 在
+/// - override 族 = 并查集连通分量的等价语义：同一 name+desc 在
 ///   super 链与接口闭包上声明的全部虚方法互相连通（含后代方向）；
 ///   本实现在 build 时做一次并查集合并，族成员按登记序返回；
-/// - sourceDeclaration（旧 componentRoot/sourceMethod）：族内「最浅声明」，
+/// - sourceDeclaration：族内「最浅声明」，
 ///   平级接口所有者优先，再按类名字典序、声明序决胜（跨平台确定性）；
 /// - virtualDispatch：receiver 起沿 super 链取最近虚声明；接口 default
 ///   方法与多继承冲突一律 Unresolved，不裁决（单继承链边界）。
-/// 旧 canRename/isExternalOverride 依赖 broken/phantom 机制，本轮不迁。
 #pragma once
 
 #include <unordered_map>

@@ -1,9 +1,9 @@
 /// @file        name_provider.hpp
 /// @brief       改名引擎只读上下文（RenameContext）+ 建议来源抽象（NameProvider）。
 ///
-/// ClassNode 活在 ）。mjbase 重写线：容器经 class_scan 建libjbc 会话，
+/// 容器经 class_scan 建 libjbc 会话，
 /// fillSummary 抽骨架值建 mjbase::hierarchy 图；override 闭包组件 =
-/// MethodHierarchy::overrideFamily（并查集等价语义已在 hierarchy 批对拍）。
+/// MethodHierarchy::overrideFamily（并查集等价语义）。
 ///
 /// 建键纪律：provider/引擎侧一律以 (owner, name, desc) 文本查询，本对象经
 /// 自有 KeyPool 驻留后落 MemberKey（跨类身份原语）；不发明跨模块字符串键。
@@ -37,8 +37,7 @@ struct OverrideComponentMember
     std::string_view desc;
 };
 
-/// @brief 改名引擎的只读上下文视图（旧栈 Q2 结论照旧：只暴露存在性/层级/闭包
-///        查询，不暴露可变句柄）。
+/// @brief 改名引擎的只读上下文视图。
 ///
 /// 由引擎在 run() 入口从容器一次性构建（类会话扫描 + 类/方法层级），provider
 /// 在 propose() 中只读查询。所有返回的 string_view 借用本对象私有 KeyPool，
@@ -78,14 +77,14 @@ public:
     /// @brief 方法 override 闭包组件（等价族全部声明，含自身；登记序）。
     ///
     /// 目标方法不在容器中时 Err（NotFound 语义，调用方自行决定降级为单例组）。
-    /// mjbase 层级只含容器内声明：旧栈「组件延伸至容器外」的成员本就不参与
-    /// 改名，新图上天然不出现。
+    /// 层级只含容器内声明：容器外的成员本就不参与
+    /// 改名，图上天然不出现。
     Result<std::vector<OverrideComponentMember>, std::string> overrideComponentOf(
         std::string_view owner, std::string_view name, std::string_view desc) const;
 
     /// @brief 方法所属 override 组件的规范根（族内最浅声明，run 内稳定）。
     ///
-    /// 旧栈并查集根下标的替代品：同一族内任意成员的 sourceDeclaration 恒等，
+    /// 组件根即族内去重键：同一族内任意成员的 sourceDeclaration 恒等，
     /// 引擎据此按组件去重。目标方法不在容器/未声明时 Err。
     Result<MemberKey, std::string> overrideComponentRootOf(std::string_view owner,
                                                            std::string_view name,

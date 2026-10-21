@@ -1,7 +1,6 @@
 /// @file        i18n_test.cpp
 /// @brief       i18n 兜底门面编译冒烟 + 兜底注册行为抽检。
 ///
-/// 旧栈 对 i18n.hpp 无单测；迁移验收以编译通过为主，
 /// 抽检验证兜底注册后 key 可解析。
 #include <gtest/gtest.h>
 

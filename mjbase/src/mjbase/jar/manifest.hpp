@@ -1,9 +1,9 @@
 /// @file        manifest.hpp
 /// @brief       MANIFEST.MF 模型：字节级保序解析与序列化。
 ///
-/// 直迁自 jar/manifest（语义照旧）。字符串存储用 ca::str::Utf8String
+/// 字符串存储用 ca::str::Utf8String
 /// 家族（条目名/属性值按原始字节经 from_data_unchecked 直通，不校验、不改写），
-/// 解析与序列化全部按字节进行，输出字节与 旧栈 逐字节一致。
+/// 解析与序列化全部按字节进行。
 #pragma once
 
 #include <utility>
@@ -34,7 +34,7 @@ public:
     Manifest() = default;
 
     /// @brief Utf8String 不可隐式复制（显式 clone），拷贝用 clone 逐对重建，
-    ///        保持 旧栈 版 Manifest 的值语义。
+    ///        保持值语义。
     Manifest(const Manifest& other);
     Manifest& operator=(const Manifest& other);
     Manifest(Manifest&& other)            = default;

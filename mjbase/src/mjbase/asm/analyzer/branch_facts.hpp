@@ -1,21 +1,17 @@
 /// @file        branch_facts.hpp
 /// @brief       分支预测事实：常量操作数可判定时的条件分支/switch 走向。
 ///
-/// predictIfTwo / predictLookupSwitch / predictTableSwitch 的常量判定路径）与
-/// reanalyzer 的 EvaluatorBranchPredictor（null 系判定）。迁移纪律是语义照旧、
-/// 实现重写：预测是 ConstResult 到达帧上的纯函数查询——读分支指令入口帧的
-/// 操作数栈顶常量，按 JVM 条件语义给走向；条件比较符与旧 MathHelper::condition
-/// 的两版逐一对应。
+/// 预测是 ConstResult 到达帧上的纯函数查询——读分支指令入口帧的
+/// 操作数栈顶常量，按 JVM 条件语义给走向；比较符逐一实现一元 int 判零、
+/// null 判定、二元 int 比较与引用相等判定。
 ///
-/// 与旧实现的形态差（见迁移报告）：
-/// - 旧栈把预测织进分析引擎（预测器返回 nullopt 时引擎按双后继入队）；本件
-///   只答「走向事实」这个查询，不做控制流修剪——DomainEngine 无分支条件
+/// 形态与范围：
+/// - 本件只答「走向事实」这个查询，不做控制流修剪——DomainEngine 无分支条件
 ///   钩子，修剪应用属引擎层能力，待裁决。
-/// - 一元条件的 double 路径不迁（旧 predictIf 把 double 常量截断为 int 再
-///   判定）：本域不折浮点，无此载荷。
-/// - IF_ACMPEQ/IF_ACMPNE 判定合并了旧 ReAnalyzer 预测器「两操作数均已知即
-///   可比」的语义：引用常量只有 Null 与 String（JVMS 5.1 保证 CP String
-///   解析走 intern，同内容即同实例），内容相等即可安全判定引用相等。
+/// - 一元 int 条件不判浮点操作数：本域不折浮点，无此载荷。
+/// - IF_ACMPEQ/IF_ACMPNE 判定采用「两操作数均已知即可比」：引用常量只有
+///   Null 与 String（JVMS 5.1 保证 CP String 解析走 intern，同内容即同
+///   实例），内容相等即可安全判定引用相等。
 #pragma once
 
 #include "libca/core/datatype.hpp"

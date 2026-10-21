@@ -21,7 +21,7 @@ WorkspaceResult<ClassSummary> decodeClassSummary(const std::string&          uri
     output.internalName  = std::string{cf.thisName()};
     output.superName     = std::string{cf.superName()};
     output.access        = static_cast<ca::i32>(cf.access);
-    // 旧栈 ASM 版本语义：version = major | (minor << 16)。
+    // 版本编码：version = major | (minor << 16)。
     output.version       = static_cast<ca::i32>(cf.major) | (static_cast<ca::i32>(cf.minor) << 16);
     output.interfaceCount = cf.interfaces.size();
     output.fieldCount     = cf.fields.size();

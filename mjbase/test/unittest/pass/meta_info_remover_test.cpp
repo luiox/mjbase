@@ -1,8 +1,7 @@
-/// meta 元数据清理家族（批 B 类级骨架组 13 件）单测：移植自
-/// unittest/pass/opt/clean_pass_test.cpp 的 meta 段用例，并按新契约补齐
-/// 载体特有面——三层属性槽摘除/槽内过滤的落盘位置、access 标志位双面同步、
-/// Code 嵌套属性表的有界破例面（家族头注）、条件 PA。注解族载荷按 JVMS
-/// 4.7.16-4.7.21 手拼（本夹具只用空键值对的简单形态）。
+/// meta 元数据清理家族（批 B 类级骨架组 13 件）单测：覆盖三层属性槽摘除/
+/// 槽内过滤的落盘位置、access 标志位双面同步、Code 嵌套属性表的有界破例
+/// 面（家族头注）、条件 PA 各契约面。注解族载荷按 JVMS 4.7.16-4.7.21 手拼
+/// （本夹具只用空键值对的简单形态）。
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -703,7 +702,7 @@ TEST(MjPassIllegalAccessRemoverTest, MasksPerKindTwoSidedAndParamPayload)
 TEST(MjPassIllegalAccessRemoverTest, LegacyU1CountParameterLayoutMasked)
 {
     FixtureBuilder builder("T");
-    // 旧栈 writer 的遗留布局：u1 count + {u2 name, u2 acc}*（5 字节）。
+    // 遗留 u1 count 布局：u1 count + {u2 name, u2 acc}*（5 字节）。
     builder.addMethod({"mp", "()V", bareReturn(), 0x0009, {}, 1, 1,
                        {{"MethodParameters", Bytes{0x01, 0x00, 0x21, 0x80, 0x11}}}});
     builder.addMethod({"m", "()V", bareReturn()});

@@ -1,9 +1,7 @@
 /// @file        cfg_analysis.hpp
 /// @brief       CFG 上的图分析：DFS 可达集、迭代支配树与支配边界。
 ///
-/// 语义来源是 旧栈 asm/cfg 的 CfgTraversal / DominatorTree（冻结参考）。
-/// 遍历与支配计算的后继集都包含异常边（handler 入口可达、参与支配），
-/// 与旧实现一致。
+/// 遍历与支配计算的后继集都包含异常边（handler 入口可达、参与支配）。
 #pragma once
 
 #include <vector>

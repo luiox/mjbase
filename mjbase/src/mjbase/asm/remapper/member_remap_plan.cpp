@@ -5,7 +5,7 @@ namespace {
 
 /// @brief 字段描述符单类型重写：'['* 前缀保留，对象类型 `Lname;` 内部名重映射。
 ///
-/// 旧栈 jbytecode::commons::Remapper::mapDesc/mapType 语义：数组维度原样保留、
+/// 数组维度原样保留、
 /// 元素类名随类映射同步改写、基本类型原样。畸形输入（未闭合/越界）原样返回，
 /// 不抛错。
 template <typename MapName>
@@ -37,7 +37,7 @@ std::string rewriteFieldDescriptorText(std::string_view desc, MapName&& mapName)
 
 /// @brief 方法描述符重写：逐参数类型 + 返回类型按字段描述符口径重拼。
 ///
-/// 旧栈 Remapper::mapMethodDesc 语义照迁（括号结构与参数次序保持）。
+/// 括号结构与参数次序保持。
 template <typename MapName>
 std::string rewriteMethodDescriptorText(std::string_view desc, MapName&& mapName)
 {

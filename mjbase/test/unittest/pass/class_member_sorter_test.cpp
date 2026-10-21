@@ -1,6 +1,5 @@
-/// 段（206 行起），并按任务补齐旧栈缺失的独立直接用例：排序键矩阵、条件 PA、
-/// 重排后 lower/backingIndex 一致性。载体按新契约重定型：ClassNode 骨架 →
-/// ClassSession（backing + unit 同步重排）。
+/// 覆盖面：排序键矩阵、条件 PA、重排后 lower/backingIndex 一致性。
+/// 载体为 ClassSession（backing + unit 同步重排）。
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -38,7 +37,7 @@ std::string_view fieldName(const jbc::ir::ClassSession& session, ca::usize idx)
 
 }   // namespace
 
-// 旧栈用例移植：字段按 desc→name 排序（b:I, a:I → a, b），产物可写出重读。
+// 字段按 desc→name 排序（b:I, a:I → a, b），产物可写出重读。
 TEST(MjPassClassMemberSorterTest, SortsFieldsByDescThenNameRoundtrip)
 {
     FixtureBuilder builder("T");
@@ -130,8 +129,7 @@ TEST(MjPassClassMemberSorterTest, FieldDescIsPrimarySortKey)
     EXPECT_EQ(fieldName(*session, 2), "c");
 }
 
-// 补齐直接用例：已序输入 → 不发生排序，PA all()（条件 PA 语义，与旧实现的
-// 无条件 none() 偏离已在头注声明）。
+// 补齐直接用例：已序输入 → 不发生排序，PA all()（条件 PA 语义）。
 TEST(MjPassClassMemberSorterTest, ReturnsAllWhenAlreadySorted)
 {
     FixtureBuilder builder("T");
@@ -155,7 +153,7 @@ TEST(MjPassClassMemberSorterTest, ReturnsAllWhenAlreadySorted)
     EXPECT_FALSE(pa.changed());
 }
 
-// 补齐直接用例（新底座关键契约）：重排后 MethodUnit.backingIndex 必须改指
+// 补齐直接用例（ClassSession 双面同步契约）：重排后 MethodUnit.backingIndex 必须改指
 // 新物理位——重排前 promote 的方法体在重排后 lower，必须写回自己（而非别人）
 // 的物理成员，未动方法的 Code 原样保真。
 TEST(MjPassClassMemberSorterTest, LowerAfterReorderWritesOwnBackingSlot)

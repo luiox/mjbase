@@ -40,8 +40,7 @@ std::string normalize_path(const std::string& name)
     return out;
 }
 
-// fs 层错误 → jar 错误（写侧）：打开失败与写出失败分开（对应 旧栈 的两种 throw，
-// 写路径连 FileNotFound 都归结为"打不开输出 jar"）。
+// fs 层错误 → jar 错误（写侧）：打开失败与写出失败分开。
 JarError::Kind writeErrorKind(ca::fs::FsError e)
 {
     switch (e) {

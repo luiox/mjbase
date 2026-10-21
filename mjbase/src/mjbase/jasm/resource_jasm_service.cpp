@@ -86,8 +86,7 @@ model::ResourceContainer candidateContainer(const model::ResourceContainer& cont
 
 // 容器 → 层次图即时重建：只读 Class 资源的 this/super/接口骨架（jbc 骨架解析）。
 // 畸形条目跳过，不进图。帧计算（InheritanceChecker）只依赖类图，成员摘要不参与；
-// 层次错误（DuplicateClass/Cycle）按跳过处理——服务这里只取「可用的类图」，
-// 与 旧栈 ClassHierarchyAnalysis 对畸形输入的容错口径一致。
+// 层次错误（DuplicateClass/Cycle）按跳过处理——服务这里只取「可用的类图」。
 mjbase::hierarchy::ClassHierarchy buildHierarchy(const model::ResourceContainer& container,
                                                  mjbase::KeyPool&                pool)
 {

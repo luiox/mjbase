@@ -1,13 +1,13 @@
 /// @file        class_hierarchy.hpp
 /// @brief       类层次内存图：登记 ClassSummary 建图，super 链与接口闭包查询。
 ///
-/// 与旧 旧栈 ClassHierarchy 的差异（本轮范围裁定）：
-/// - 输入是 ClassSummary 值（来自 fillSummary 或手工构造），不再持有
-///   ClassNode / ResourceContainer / lookup 回调；
-/// - 无 phantom/broken/tombstone 机制：未登记的父类/接口按「悬挂键」处理
-///   ——名字已驻留（键可比较）但没有摘要，链上行到悬挂键即截断；
+/// 设计要点：
+/// - 输入是 ClassSummary 值（来自 fillSummary 或手工构造）；图内只驻留
+///   键与计数，不持有容器引用或查找回调；
+/// - 未登记的父类/接口按「悬挂键」处理——名字已驻留（键可比较）但没有
+///   摘要，链上行到悬挂键即截断；
 /// - java/lang/Object 不自动合成：未登记则 objectClass() 返回 invalid；
-/// - remap()（rename 后改名）与 .ihc 序列化不迁（本轮范围外）。
+/// - 改名映射与 .ihc 持久化不在本期范围。
 ///
 /// 畸形输入纪律：父类成环、自指父类、接口环在 addClass 时被拒绝
 ///（Err(Cycle)，不静默建图）；所有链/闭包遍历带访问集，任何情况下不挂死。

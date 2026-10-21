@@ -185,7 +185,7 @@ void scanConstantReturn(const jbc::ir::CodeUnit& u, const jbc::core::ConstantPoo
     if (producer->op == Op::INVOKESTATIC) {
         MemberRefSem ref;
         if (resolveMemberRef(cp, producer->cp, ref)) {
-            // 旧栈 Type::getArgumentCount(desc) == 0：括号内无参数类型。
+            // 无参静态调用：描述符括号内无参数类型（')' 紧随 '('）。
             const std::string_view callDesc = ref.desc;
             if (!callDesc.empty() && callDesc.front() == '(') {
                 const auto close = callDesc.find(')');
@@ -246,8 +246,8 @@ void MethodEffectModel::build(const mjbase::model::ResourceContainer& container)
                 continue;
             }
             if (m.code == nullptr) {
-                // 声明有体但无 Code（畸形）——旧栈 ClassReader 会连带整类失败，
-                // 这里降为 Unknown 单方法：效应层查询不因坏资源整体不可用。
+                // 声明有体但无 Code（畸形）：降为 Unknown 单方法，
+                // 效应层查询不因坏资源整体不可用。
                 scanned.localEffect = MethodEffectKind::Unknown;
                 methods.push_back(std::move(scanned));
                 continue;

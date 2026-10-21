@@ -1,7 +1,7 @@
 /// @file        jar_writer.hpp
 /// @brief       JAR 条目写入接口：回调式收集 → 排序 → 目录条目补全 → DEFLATE 写出。
 ///
-/// 直迁自 jar/jar_writer（语义照旧）。差异点：错误通道 throw →
+差异点：错误通道 throw →
 /// Result<void, JarError>；条目名/路径用 ca::str::Utf8String 家族（jzip 条目
 /// 名域以 std::string 为边界类型，进入 jzip 前一次性转换）。
 #pragma once

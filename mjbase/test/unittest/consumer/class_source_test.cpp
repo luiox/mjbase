@@ -4,7 +4,7 @@
 /// 测试类字节经 reference 测试共享的手拼汇编器构造（每字节受控，不依赖
 /// 本地语料）；对拍口径与 golden 对拍测试（summary_parity_test）互补：
 /// 本文件钉 API 行为（fail-closed/枚举序/first-wins/hasCode 分流），对拍
-/// 钉与旧栈的字段级一致。
+/// 钉与本夹具自建期望的逐字段一致。
 #include <gtest/gtest.h>
 
 #include <cstring>
@@ -182,7 +182,7 @@ TEST(MjConsumerSummaryScannerTest, ObjectClassHasNoSuperAndVersionEncoding)
     EXPECT_TRUE(s.interfaces.empty());
     ASSERT_EQ(s.methods.size(), 1u);
     EXPECT_FALSE(s.methods[0].hasCode);
-    // 手拼汇编器固定 V1_8（major=52, minor=0）；编码与 旧栈 口径一致。
+    // 手拼汇编器固定 V1_8（major=52, minor=0）。
     EXPECT_EQ(s.version, 52u);
     EXPECT_EQ(s.version, (0u << 16) | 52u);
 }

@@ -18,21 +18,17 @@ namespace mjbase::workspace {
 /// @brief Workspace 接口层共享的数据传输类型（DTO）。
 ///
 /// 无业务语义的纯数据结构 + 枚举 + 常量：IWorkspace 接口签名与 WorkspaceBase
-/// 实现共同使用。移植自旧栈 workspace/workspace_types（语义照旧），类型面按
-/// mjbase 约定重定型：
-/// - 错误通道：ca::Status/StatusOr → WorkspaceError + WorkspaceResult<T>
-///   （mjbase 错误走 Result 值语义的总约定）；DTO 内嵌的 ca::Status 字段
-///   同步改 WorkspaceErrorInfo；
-/// - 诊断：jasm::Diagnostic 即 mjbase::jasm::Diagnostic（同形迁移）；
+/// 实现共同使用。类型约定：
+/// - 错误通道：WorkspaceError + WorkspaceResult<T>（mjbase 错误走 Result
+///   值语义总约定）；DTO 内嵌错误字段一律用 WorkspaceErrorInfo；
+/// - 诊断：jasm::Diagnostic 即 mjbase::jasm::Diagnostic；
 /// - 重映射契约类型：RemapPolicy/MemberRemapPlan 取 mjbase::asm_remapper 域
 ///   （KeyPool 驻留 + MemberKey 建键版）。
-/// RenameRequest 族、PipelineRequest 族、WorkflowRequest 族随工作区 remap/
-/// rename/pipeline 事务面一起迁入（下游第二管线消费方，触发装配层
+/// RenameRequest 族、PipelineRequest 族、WorkflowRequest 族挂接工作区 remap/
+/// rename/pipeline 事务面（下游第二管线消费方，触发装配层
 /// 定型，见 pass-contract §9）。
 
-/// @brief workspace 模块错误码。与旧 ca::StatusCode 用点的映射：
-///        InvalidArgument/NotFound/AlreadyExists/FailedPrecondition/
-///        PermissionDenied/Aborted/DataLoss/Internal/Unimplemented 一一对应。
+/// @brief workspace 模块错误码。
 enum class WorkspaceError : ca::u8
 {
     Ok = 0,
@@ -52,7 +48,7 @@ const char* to_string(WorkspaceError error) noexcept;
 
 /// @brief workspace 模块错误值：码 + 消息文本（结构对齐 spi::PipelineError 的
 ///        模块边界错误形态——Result 错误通道要求可拷贝，诊断文本落在 std::string）。
-///        message 沿用旧 ca::Status 的 "operation: detail" 拼接口径。
+///        message 采用 "operation: detail" 拼接口径。
 struct WorkspaceErrorInfo
 {
     WorkspaceError code = WorkspaceError::Ok;
@@ -139,7 +135,7 @@ struct ReferenceImpact final
 /// @brief 所有修改操作共用的稳定结果协议。
 ///
 /// status 为 Ok 时 committed/exportable/revision 才有意义；失败路径仍回填
-/// revision 与 exportable（与旧 ca::Status 语义一致）。
+/// revision 与 exportable。
 struct MutationResult final
 {
     WorkspaceErrorInfo                 status;
@@ -666,9 +662,8 @@ struct JarDiffResult final
 /// candidateJarPath 必须由上层事务私有持有，不能直接暴露给不可信客户端。exportPath 非空时会在
 /// commit 前从同一候选原子导出；commit 失败会删除该导出。dryRun 只验证候选和导出目标。
 ///
-/// 旧栈 WorkflowRequest（remapPlan/pipeline/referenceQueries 组合事务）依赖未迁的
-/// remapper/pass-registry 设施，不随迁（见 i_workspace.hpp 范围说明）；候选 JAR 的
-/// 导入-验证-导出-提交契约由本类型与 commitWorkflowCandidateJar 承载。
+/// 候选 JAR 的导入-验证-导出-提交契约
+/// 由本类型与 commitWorkflowCandidateJar 承载。
 struct WorkflowCandidateCommitRequest final
 {
     std::string candidateJarPath;

@@ -2,10 +2,9 @@
 /// @brief       E3 骨架扫描：SummaryScanner 经 libjbc 读侧产出 ClassSummary。
 ///
 /// 消费者对接协议（E 系）的类摘要面：对一份 class 字节做骨架扫描（类名/父/
-/// 接口/成员签名/hasCode/access/version），产出可跨类携带的值对象。语义与
-/// 旧栈 `WorkspaceBase::listClassSummaries`（libjbc 薄切片口径）对齐：
-/// internalName/superName/access/version/interfaceCount/fieldCount/methodCount
-/// 逐字段可对拍（version 编码同口径：`(minor << 16) | major`）；在计数之外
+/// 接口/成员签名/hasCode/access/version），产出可跨类携带的值对象。
+/// 摘要字段：internalName/superName/access/version/interfaceCount/
+/// fieldCount/methodCount（version 编码：`(minor << 16) | major`）；在计数之外
 /// 再交付成员签名（名字/描述符/access）与方法 hasCode，供消费方在不开会话
 /// 的前提下决定 promote 分流。
 ///
@@ -46,8 +45,7 @@ struct SummaryField
 /// 成员序 = classfile 声明序。self/super/interfaces 驻留调用方 KeyPool；
 /// super 为 invalid 键表示无父类条目（java/lang/Object 自身或 module-info，
 /// 与 hierarchy::fillSummary 的空串映射同口径）。interfaceCount/
-/// fieldCount/methodCount 不另设字段：即三个容器的 size（与 旧栈 口径的
-/// 计数逐字段相等）。
+/// fieldCount/methodCount 不另设字段：即三个容器的 size。
 struct ClassSummary
 {
     ClassKey                   self;       ///< 本类（内部名驻留键）

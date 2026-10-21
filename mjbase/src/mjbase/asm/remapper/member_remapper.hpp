@@ -1,20 +1,19 @@
 /// @file        member_remapper.hpp
 /// @brief       把 MemberRemapPlan 应用到一个 libjbc 类会话的改写器。
 ///
-/// 树 + visitor 形状）。语义照旧、实现重写：改写载体换成 libjbc backing
-/// DOM（@ref jbc::core::ClassFile），方法体经 promote/CodeDom/lower 往返，
-/// 指令 CP 操作数经会话语义层（setMember/setClass/setString + intern）
-/// 重指向——不改写任何常量池 Utf8 条目内容，只做条目级重指向/追加，
-/// 与旧栈逐位置改写语义对齐且规避 Utf8 跨面共享误伤。
+/// 改写载体是 libjbc backing DOM（@ref jbc::core::ClassFile），方法体经
+/// promote/CodeDom/lower 往返，指令 CP 操作数经会话语义层
+///（setMember/setClass/setString + intern）重指向——不改写任何常量池
+/// Utf8 条目内容，只做条目级重指向/追加，规避 Utf8 跨面共享误伤。
 ///
-/// 改写面（RemapPolicy 门控，语义与）：
+/// 改写面（RemapPolicy 门控）：
 /// - bytecode：类头（this/super/interfaces）、字段/方法名与描述符、方法体
 ///   指令（字段/方法/类型/multianewarray/ldc 常量/invokedynamic）、异常表
 ///   捕获类型、Exceptions 属性、结构元数据（EnclosingMethod/NestHost/
 ///   NestMembers/PermittedSubclasses/InnerClasses/Record/Module 族）、
 ///   StackMapTable Object 校验类型、局部变量表描述符。
 /// - reflectionStrings：常量反射成员查找的名称字符串改写（线性状态机 +
-///   alias 数据流快照，与）。
+///   alias 数据流快照）。
 /// - annotations：Runtime{Visible,Invisible}Annotations 与 AnnotationDefault。
 /// - signatures：类/字段/方法 Signature 属性与 LVTT 签名。
 ///

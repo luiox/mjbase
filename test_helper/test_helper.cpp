@@ -16,8 +16,8 @@
 #    include <mach-o/dyld.h>
 #endif
 
-// 旧栈私有实现：构建产物路径（asm-test 特例定位已随其底座拆出删除）。
-// 通用机制（扫描/资源/输出根）全部由 ca::test 承担，见 test_helper.hpp。
+// 构建产物路径定位（test_helper 余留的唯一本地件）：通用机制
+// （扫描/资源/输出根）全部由 ca::test 承担，见 test_helper.hpp。
 
 namespace test {
 

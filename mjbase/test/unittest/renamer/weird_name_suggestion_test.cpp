@@ -1,8 +1,7 @@
 /// @file        weird_name_suggestion_test.cpp
 /// @brief       renamer P0 验收矩阵补遗：怪名用例
 ///              ——空格/控制字符/非 ASCII 的 UTF-8 原文口径，经建议文件（严格
-///              v1 JSON）与 FileSuggestionProvider 到引擎全程不变形（mjbase
-///              移植版）。
+///              v1 JSON）与 FileSuggestionProvider 到引擎全程不变形。
 ///
 /// Q3 口径：名字一律 UTF-8 原文；JSON 字符串转义（\u0020 等）在载入期解码为
 /// 原文字节，JVM 转义形态（字面反斜杠序列）不作为身份字段被解释——引擎按

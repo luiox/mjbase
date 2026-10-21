@@ -1,18 +1,16 @@
 /// @file        origin_domain.hpp
 /// @brief       来源追踪域：OriginValue（定义指令/入参/未知）+ OriginDomain + 查询入口。
 ///
-/// （OriginalSourceValue + OriginalSourceInterpreter）。迁移纪律是语义照旧、
-/// 实现重写：本域回答「这个槽里的值最初由谁定义」——定义指令句柄、入参
-/// 身份、或未知；控制流/槽迁移/入参播种全部交给 jbc::analysis::DomainEngine。
+/// 本域回答「这个槽里的值最初由谁定义」：定义指令句柄、入参身份、或未知；
+/// 控制流/槽迁移/入参播种全部交给 jbc::analysis::DomainEngine。
 ///
-/// 与旧实现的范围差（代表性子集，见迁移报告）：
-/// - 旧值同时携带 producer 指令集（合并取并集）、copied-from 链与常量载荷；
-///   本域收窄为单一 origin 事实：不同来源汇合即 Unknown（单来源域的正确
-///   退化，与旧 merge「producer 并集」相对——多来源问题不再可答）。
+/// 范围：
+/// - 值是单一 origin 事实：不同来源汇合即 Unknown（单来源域的正确退化
+///   ——多来源问题不再可答）。producer 并集与 copied-from 多值链不建模。
 /// - 常量事实不携带：需要常量时并行跑 ConstDomain（域引擎的换域即插即用
 ///   正是为此设计）。
-/// - origin 穿透 store→load 与栈复制（dup/swap/load 本地复制）保留——这是
-///   旧 copiedFrom 链回答的核心问题。
+/// - origin 穿透 store→load 与栈复制（dup/swap/load 本地复制）——定义
+///   追踪的核心问题域。
 #pragma once
 
 #include "libca/core/datatype.hpp"
@@ -31,8 +29,7 @@ namespace mjbase::asm_analyzer {
 /// kind==Insn 时 `insn` 是值的定义指令句柄（引擎按产值点传入，含运算指令
 /// ——运算结果的来源是本条指令，与）；
 /// kind==Param 时 `local` 是入参所在的局部变量槽位（实例方法 this 占 0 号；
-/// 旧实现的 parameterLocal 同语义——宽参数的「第几个参数」需调用方按描述符
-/// 自行换算，槽位即入参的唯一稳定身份）。
+///）。
 struct OriginValue
 {
     enum class Kind : ca::u8 {

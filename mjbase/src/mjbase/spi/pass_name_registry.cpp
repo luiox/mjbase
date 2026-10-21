@@ -183,7 +183,7 @@ Result<std::unique_ptr<CfClassPass>, RegistryError>
 //
 // 依赖方向注记：本文件在 spi 域，默认表的种子却是 pass 域的具体 pass——spi 头
 // 文件面保持不依赖 pass（pass 依赖 spi 的正向），只在 .cpp 反向包含做种子注册。
-// 名字用真实类名，对齐 旧栈 旧栈 registerBuiltinPasses 的命名纪律。
+// 名字用真实类名。
 
 namespace {
 

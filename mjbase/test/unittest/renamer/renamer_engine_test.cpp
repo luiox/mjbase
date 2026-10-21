@@ -1,13 +1,11 @@
 /// @file        renamer_engine_test.cpp
-/// @brief       统一 renamer 引擎管线单测（mjbase 移植版，旧栈 
-///              #1032/#1037 对应物）：合法性矩阵、冲突消解矩阵、记录与导出、
+/// @brief       统一 renamer 引擎管线单测：合法性矩阵、冲突消解矩阵、记录与导出、
 ///              run 两态、继承别名。
 ///
-/// mjbase 底座差异（语义不变，见迁移报告偏离清单）：
+/// 底座形态：
 /// - 夹具类经 jasm 组装；
-/// - run 结果 ca::Status → ok+error 值对；
-/// - 应用面已接线（asm/remapper 域）：旧栈 planOnly=false 的落盘断言以读回
-///   断言落位（fail-loud 占位期的容器零写入断言随接线废止）。
+/// - run 结果以 ok+error 值对交付；
+/// - 应用面走 asm/remapper 域：planOnly=false 的落盘断言以读回断言落位。
 #include <gtest/gtest.h>
 
 #include <string>
@@ -574,7 +572,7 @@ TEST(MjRenamerConflictTest, suffixWallRejectsWholeClosureGroupAndOldSlotsStayOcc
 
 TEST(MjRenamerConflictTest, methodSlotCollisionCheckedInMappedDescSpace)
 {
-    // 旧栈定案复现：类 A 声明 m:(LA;)V 与 n:(LB;)V（B 为容器外类型，
+    // 回归场景：类 A 声明 m:(LA;)V 与 n:(LB;)V（B 为容器外类型，
     // A→B 改名不被 6a 后缀拦截），m 改名到 n。修复前 6c 在旧 desc 空间查
     // ("n","(LA;)V")——与既有 ("n","(LB;)V") 不撞放行；应用后类映射 A→B 把 m 的
     // desc 预映像为 (LB;)V，最终类文件出现两个 n:(LB;)V（非法 class file）。
@@ -954,7 +952,7 @@ TEST(MjRenamerRunTest, planOnlyLeavesContainerUntouched)
 
 TEST(MjRenamerRunTest, planModeProducesClosureRulesAndLeavesContainerUntouched)
 {
-    // 旧栈 applyModeRewritesBytecodeAndClosure 的 plan 面移植：A/B 闭包整组 +
+    // plan 面：A/B 闭包整组 +
     // 字段规则齐备；容器字节零写入（应用面落盘断言见
     // applyModeWritesClosureIntoBytecode）。
     Fixture       fixture;
@@ -986,9 +984,9 @@ TEST(MjRenamerRunTest, planModeProducesClosureRulesAndLeavesContainerUntouched)
 
 TEST(MjRenamerRunTest, planRecordsFieldRenameForCallSiteSync)
 {
-    // 旧栈 applyRewritesFieldReadInsnToNewName 的 plan 面移植：record/plan 携带
+    // plan 面：record/plan 携带
     // 调用点同步所需的精确三段（GETFIELD A.oldField I → newField 的改写由
-    // remapper 批按此消费；应用面字节码断言见
+    // remapper 侧按此消费；应用面字节码断言见
     // applySyncsMemberRuleOwnerAndDescWhenOwnerClassRenamed）。
     Fixture        fixture;
     RenamerEngine  engine;
@@ -1014,7 +1012,7 @@ TEST(MjRenamerRunTest, planRecordsFieldRenameForCallSiteSync)
 
 TEST(MjRenamerRunTest, planPreImagesMemberRuleOwnerAndDescWhenOwnerClassRenamed)
 {
-    // P1 实证回归plan 面移植：成员改名与 owner 类改名同
+    // P1 实证回归：成员改名与 owner 类改名同
     // plan 时，成员规则的 newOwner/newDesc 必须按类映射预映像——否则 remapper 的
     // 调用点同步路径会把 owner/描述符写回旧值。desc 分支用含被改名类的类型
     // （`LA;` → `Lmoved/A;`）锁定 mapFieldDescriptor/mapMethodDescriptor 预映像。
@@ -1129,7 +1127,7 @@ TEST(MjRenamerAliasTest, fieldAliasRulesCoverInheritingSubclassesPlanOnly)
     const auto* aliasD = result.plan.findField("D", "oldField", "I");
     ASSERT_NE(aliasD, nullptr);
     EXPECT_EQ(aliasD->newName, "newField");
-    // 记录/SRG 底座只含声明处一条（别名不入导出，与旧核心口径一致）。
+    // 记录/SRG 底座只含声明处一条（别名不入导出）。
     EXPECT_TRUE(result.record.mapping()
                     .getMappedFieldName(ca::str::Utf8StringRef::from_cstr("B"),
                                         ca::str::Utf8StringRef::from_cstr("oldField"),
@@ -1275,7 +1273,7 @@ TEST(MjRenamerAliasTest, methodAliasAmbiguityDropsWholeRuleWhenInheritorsDisagre
 {
     // N5：同 (owner=C, oldName, desc) 键被两个
     // override 组件组分配到不同新名（A 组 → brandA，I 组 → brandI）时，C 的
-    // 继承别名无法二选一——整条放弃（保守口径，与旧核心一致），不得产出
+    // 继承别名无法二选一——整条放弃（保守口径），不得产出
     // 半边别名把另一组件的调用点错改。
     model::ResourceContainer container;
     addDualComponentWorld(container, /*withCaller=*/false);
@@ -1309,10 +1307,10 @@ TEST(MjRenamerAliasTest, methodAliasAmbiguityDropsWholeRuleWhenInheritorsDisagre
 
 TEST(MjRenamerAliasTest, methodAliasAmbiguityAppliesWithoutAliasRuleAndKeepsStaleCallsite)
 {
-    // N5 对照（应用面接线后真语义）：歧义放弃后计划仍非空——planOnly=false 走
-    // 真应用（旧占位 fail-loud 语义随接线废止）。声明处两组件照常整组改名；
+    // N5 对照（应用面真语义）：歧义放弃后计划仍非空——planOnly=false 走
+    // 就地应用。声明处两组件照常整组改名；
     // 歧义键无规则 → C 无别名规则，Caller 继承点上的 INVOKEVIRTUAL C.oldMethod
-    // 保守不随动（歧义键无从改错，旧核心同口径）。
+    // 保守不随动（歧义键无从改错）。
     model::ResourceContainer container;
     addDualComponentWorld(container, /*withCaller=*/true);
 
@@ -1327,7 +1325,7 @@ TEST(MjRenamerAliasTest, methodAliasAmbiguityAppliesWithoutAliasRuleAndKeepsStal
     ASSERT_TRUE(result.ok);
     EXPECT_TRUE(result.applied);
     ASSERT_EQ(findRejected(result, RejectionReason::ApplyFailed), nullptr);
-    // 歧义键照旧整条放弃：plan 无 C 规则。
+    // 歧义键整条放弃：plan 无 C 规则。
     EXPECT_EQ(result.plan.findMethod("C", "oldMethod", "()V"), nullptr);
 
     // 字节码面：A/I 声明处换新名（A 声明 brandA、I 声明 brandI）。
@@ -1344,7 +1342,7 @@ TEST(MjRenamerAliasTest, methodAliasAmbiguityAppliesWithoutAliasRuleAndKeepsStal
 
 TEST(MjRenamerRunTest, applyModeWritesClosureIntoBytecode)
 {
-    // 旧栈 applyModeRewritesBytecodeAndClosure 的应用面移植：闭包整组落盘——
+    // 应用面：闭包整组落盘——
     // A 与 B 声明槽都读到新名，旧名槽不复存在（容器零写入的 plan 面对照见
     // planModeProducesClosureRulesAndLeavesContainerUntouched）。
     Fixture        fixture;
@@ -1372,7 +1370,7 @@ TEST(MjRenamerRunTest, applyModeWritesClosureIntoBytecode)
 
 TEST(MjRenamerRunTest, applyRewritesFieldReadInsnToNewName)
 {
-    // 旧栈 applyRewritesFieldReadInsnToNewName 的应用面移植：A.alpha 体里的
+    // 应用面：A.alpha 体里的
     // GETFIELD A.oldField I 必须同步指向新名（规则精确三段命中的调用点改写）。
     const std::string src =
         ".super java/lang/Object\n"
@@ -1416,10 +1414,10 @@ TEST(MjRenamerRunTest, applyRewritesFieldReadInsnToNewName)
 
 TEST(MjRenamerRunTest, applySyncsMemberRuleOwnerAndDescWhenOwnerClassRenamed)
 {
-    // P1 实证回归应用面移植：成员改名与 owner 类改名同
+    // P1 实证回归：成员改名与 owner 类改名同
     // plan 时，调用点同步必须落到预映像后的 owner/描述符（`LA;` →
     // `Lmoved/A;`），不残留旧名；类资源 URI 随 resources 门同步（deobf 消费
-    // 口径；mjbase 双门下 resources 显式开启）。
+    // 口径；双门下 resources 显式开启）。
     const std::string srcA =
         ".super java/lang/Object\n"
         ".class public super A {\n"

@@ -7,10 +7,8 @@
 // （namespace test::、camelCase），内部委托 ca::test 实现——既有测试 main
 // 无需任何改动。
 //
-// 旧栈私有件（不下沉）：
-// - asm-test 特例定位（libjbytecode/asm-test 目录布局胶水）
-// - 构建产物路径（build/artifacts 布局属产品构建知识）
-// - jdk_fixture.hpp（架构在闭源 libjdk_finder 之上，另见该文件）
+// 通用布局机制之外仅担构建产物路径定位（build/ 目录层属产品构建知识）。
+// jdk_fixture.hpp 架构在 libjdk_finder 之上，另见该文件。
 //
 // 使用约定不变：测试 target 须 set_rundir("$(projectdir)")，
 // main 里先 test::setup("<子项目名>")。

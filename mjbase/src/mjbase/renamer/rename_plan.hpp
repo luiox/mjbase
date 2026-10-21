@@ -1,11 +1,9 @@
 /// @file        rename_plan.hpp
-/// @brief       改名计划：类映射 + 字段/方法规则（旧栈 MemberRemapPlan 的
-///              mjbase renamer 内部等价物）。
+/// @brief       改名计划：类映射 + 字段/方法规则。
 ///
-/// MemberRemapPlan）。remapper 批并行迁移期间 renamer 自持同名语义的计划
-/// 结构（类映射 + 成员规则 newOwner/newDesc 预映像 + 描述符预映像查询）；
-/// 应用面接线后本结构仍是引擎产物面，应用时按登记序搬运成 asm/remapper 域
-/// MemberRemapPlan 消费（见 rename_engine step 8）。语义对旧实现：
+/// 引擎自持的同构计划结构（类映射 + 成员规则 newOwner/newDesc 预映像 +
+/// 描述符预映像查询）；应用时按登记序搬运成 asm/remapper 域
+/// MemberRemapPlan 消费（见 rename_engine step 8）。语义口径：
 ///
 /// - 规则的 newOwner/newDesc 必须**预映像**（类映射先入 plan）：留原值会让
 ///   应用面的指令同步路径把调用点 owner/描述符写回旧名；

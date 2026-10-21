@@ -3,7 +3,7 @@
 ///        对拍、typed 工厂校验。
 ///
 /// 全部用例基于纯 jbc::ir::CodeDom/CodeUnit 构造（无需 classfile）；
-/// FrameEngine 对拍以 jbc::analysis（domain.hpp 的槽位迁移）为 oracle。
+/// FrameEngine 对拍以 jbc::analysis（domain.hpp）为 oracle。
 /// 构建模式：先落跳转目标指令与锚定标签，再 insertBefore 把分支插到
 /// 程序位（连续 insertBefore(end, x) 的插入序即程序序）。
 #include <gtest/gtest.h>
@@ -158,7 +158,7 @@ TEST(MjAsmInsnTest, PredicatesAgreeWithClassification)
     }
 }
 
-/// 旧 InsnUtil 分类断言的行为移植（含）。
+/// 分类谓词的全枚举行为断言。
 TEST(MjAsmInsnTest, ClassificationMatchesLegacyInsnUtilSemantics)
 {
     // isReturn：IRETURN..RETURN 全真；RET 不算 return（jsr/ret 遗留自成一族）。
@@ -166,7 +166,7 @@ TEST(MjAsmInsnTest, ClassificationMatchesLegacyInsnUtilSemantics)
         EXPECT_TRUE(mjbase::asm_insn::isReturn(opAt(v))) << v;
     }
     EXPECT_FALSE(mjbase::asm_insn::isReturn(Op::RET));
-    // isConditionalBranch（旧 isIf）：IFEQ..IF_ACMPNE + IFNULL/IFNONNULL。
+    // isConditionalBranch：IFEQ..IF_ACMPNE + IFNULL/IFNONNULL。
     for (ca::u32 v = 0x99; v <= 0xa6; ++v) {
         EXPECT_TRUE(mjbase::asm_insn::isConditionalBranch(opAt(v))) << v;
     }
@@ -204,8 +204,7 @@ TEST(MjAsmInsnTest, ClassificationMatchesLegacyInsnUtilSemantics)
         EXPECT_TRUE(mjbase::asm_insn::isArray(opAt(v))) << v;
     }
     EXPECT_TRUE(mjbase::asm_insn::isArray(Op::ARRAYLENGTH));
-    // isConst：ACONST_NULL..DCONST_1 + BIPUSH/SIPUSH + ldc 族
-    //。
+    // isConst：ACONST_NULL..DCONST_1 + BIPUSH/SIPUSH + ldc 族。
     for (ca::u32 v = 0x01; v <= 0x14; ++v) {
         EXPECT_TRUE(mjbase::asm_insn::isConst(opAt(v))) << v;
     }
@@ -238,7 +237,7 @@ TEST(MjAsmInsnTest, ClassificationMatchesLegacyInsnUtilSemantics)
     }
 }
 
-/// 旧 InsnUtilTest::invertIfRoundTripsAllConditionalOpcodes 的移植。
+/// invertIf 对全部条件跳转 opcode 往返还原。
 TEST(MjAsmInsnTest, InvertIfRoundTripsAllConditionalOpcodes)
 {
     const Op cond[] = {Op::IFEQ,      Op::IFNE,       Op::IFLT,      Op::IFGE,
@@ -274,13 +273,13 @@ TEST(MjAsmInsnTest, TerminatorAndPureComputation)
     EXPECT_FALSE(mjbase::asm_insn::isTerminator(Op::ISTORE));
     EXPECT_FALSE(mjbase::asm_insn::isTerminator(Op::IADD));
     EXPECT_FALSE(mjbase::asm_insn::isTerminator(Op::GETSTATIC));
-    // 纯计算：常量/算术/转换/栈操作（旧语义；不含 compare）。
+    // 纯计算：常量/算术/转换/栈操作（不含 compare）。
     EXPECT_TRUE(mjbase::asm_insn::isPureComputation(Op::ICONST_1));
     EXPECT_TRUE(mjbase::asm_insn::isPureComputation(Op::BIPUSH));
     EXPECT_TRUE(mjbase::asm_insn::isPureComputation(Op::IADD));
     EXPECT_TRUE(mjbase::asm_insn::isPureComputation(Op::I2L));
     EXPECT_TRUE(mjbase::asm_insn::isPureComputation(Op::DUP_X2));
-    EXPECT_FALSE(mjbase::asm_insn::isPureComputation(Op::LCMP));   // 旧语义不含 compare
+    EXPECT_FALSE(mjbase::asm_insn::isPureComputation(Op::LCMP));   // 不含 compare
     EXPECT_FALSE(mjbase::asm_insn::isPureComputation(Op::ILOAD));
     EXPECT_FALSE(mjbase::asm_insn::isPureComputation(Op::IFEQ));
     EXPECT_FALSE(mjbase::asm_insn::isPureComputation(Op::GETFIELD));
@@ -471,7 +470,7 @@ TEST(MjAsmInsnTest, FieldAndInvokeStackEffectsFollowDescriptors)
 }
 
 // ---------------------------------------------------------------------------
-// 栈效应 × FrameEngine 对拍（oracle = jbc::analysis 的槽位迁移）
+// 栈效应 × FrameEngine 对拍（oracle = jbc::analysis）
 // ---------------------------------------------------------------------------
 
 /// 线性样本：进入每条指令的栈深度 == 静态表逐条累加值。
@@ -1016,8 +1015,7 @@ TEST(MjAsmInsnTest, FactoryOutputEncodesAndReimports)
     EXPECT_EQ(resolvedPos(u.dom, s1->targets[1]), 4u);
 }
 
-/// 常量工厂的短形态选择（旧 InsnUtil::get*Insn 的行为断言移植；
-/// 超范围值）。
+/// 常量工厂的短形态选择；超范围值返回 Err。
 TEST(MjAsmInsnTest, ConstFactoriesPickShortestForm)
 {
     using namespace mjbase::asm_insn;

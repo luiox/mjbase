@@ -380,8 +380,8 @@ public:
             }
             return ReflectionValue{};
         }
-        // CHECKCAST/ANEWARRAY/NEW/load 族 fallback：旧解释器一元/二元路径产
-        // unknown（反射值被截断）；引擎把它们统一路由到 newValue，语义一致。
+        // CHECKCAST/ANEWARRAY/NEW/load 族 fallback：非反射产值一律 unknown
+        // （反射值在此截断）；引擎把它们统一路由到 newValue，语义一致。
         return ReflectionValue{};
     }
 
@@ -389,7 +389,7 @@ public:
     {
         (void)localIdx;
         (void)shape;
-        return ReflectionValue{};   // 旧栈 newValue(type) → unknown
+        return ReflectionValue{};   // 参数值无反射信息：恒 unknown
     }
 
     ReflectionValue newException(const jbc::ir::CodeUnit::Exc&) override

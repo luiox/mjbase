@@ -1,8 +1,8 @@
 /// @file        shadow_token_test.cpp
 /// @brief       #1156 shadow 引用 token T2：resolve(s, pos) 单一收口 + name 槽
-///              文法专测（mjbase 移植版；表/条目 API 为驻留视图口径）。
+///              文法专测（表/条目 API 为驻留视图口径）。
 ///
-/// 钉扎面（规范 doc_ai/shadow-reference-token-spec.md §2/§3/§6）：
+/// 钉扎面（规范 §2/§3/§6）：
 /// - §2 文法唯一形态：ClassRef/MemberRef 形状矩阵 + $${ 转义；
 /// - §3 位置三分：name 槽整串二选一、无子串扫描；字符串常量恒等（含 ${...}
 ///   的常量文本永不判为 Ref —— 文法性质，非运行时功能）；
@@ -206,7 +206,6 @@ TEST(MjShadowTokenTest, EmptyTableAnyReferenceShapeIsMissingSidecarHardError)
 TEST(MjShadowTokenTest, NonNamePositionsFailLoudUntilWired)
 {
     // Descriptor/JasmBody 未接线：fail-loud（MalformedHandle + 指引），不做文法。
-    // （mjbase 移植版指引措辞见实现，语义同。）
     ShadowSlotQuery query;
     query.position = ShadowSlotPosition::Descriptor;
     const auto desc = resolveShadowSlot(makeTable(), kClassRef, query);

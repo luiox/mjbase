@@ -33,8 +33,7 @@ bool intValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, c
 bool longValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, ca::i64& out)
 {
     using jbc::core::Op;
-    // 旧栈可观测行为：LCONST_0/1 + ldc 族装载 Long（旧读取器把 LDC2_W 折叠
-    // 为 tree LDC 节点，getLongValue 的 LDC 臂在 classfile 面即覆盖 LDC2_W）。
+    // 覆盖：LCONST_0/1 + ldc 族（LDC/LDC_W/LDC2_W）装载 Long。
     if (in.op == Op::LCONST_0 || in.op == Op::LCONST_1) {
         out = in.op == Op::LCONST_1 ? 1 : 0;
         return true;

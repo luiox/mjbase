@@ -1,12 +1,11 @@
 /// @file        summary_parity_test.cpp
-/// @brief       E3 骨架扫描对拍与失败面用例：旧栈 listClassSummaries 口径
-///              逐字段对拍 + KeyPool 驻留稳定性 + fail-closed 错误路径。
+/// @brief       E3 骨架扫描对拍与失败面用例：摘要七字段逐字段核对 +
+///              KeyPool 驻留稳定性 + fail-closed 错误路径。
 ///
 /// 与 class_source_test.cpp 互补：那边钉 API 行为（fail-closed/枚举序/
 /// first-wins/hasCode 分流），本文件钉扫描产物的字段级口径——
 /// internalName/superName/access/version/interfaceCount/fieldCount/methodCount
-/// 与 旧栈 WorkspaceBase::listClassSummaries 逐字段相等（version 编码同口径
-/// `(minor << 16) | major`，即）；期望值全部
+/// 逐项核对（version 编码：`(minor << 16) | major`）；期望值全部
 /// 由夹具规格独立给出，不经被测代码换算。降级读入（Recovered）照常出骨架、
 /// 截断逐字节全 sweep 拒收，也在此钉死。
 #include <gtest/gtest.h>
@@ -35,7 +34,7 @@ using mjbase::reference::test_support::FieldSpec;
 using mjbase::reference::test_support::MethodSpec;
 
 /// 对拍夹具：public final 类、自定义父类、双接口、双字段、三方法
-///（一具体一 abstract 一 static final）——旧栈摘要的每个计数字段都非平凡。
+///（一具体一 abstract 一 static final）——每个计数字段都非平凡。
 /// 汇编器固定 V1_8（minor=0, major=52）。
 Bytes makeParityClass()
 {
@@ -59,8 +58,8 @@ Bytes makeParityClass()
     return b.assemble(methods);
 }
 
-/// E3-9：旧栈 listClassSummaries 口径逐字段对拍——期望值由夹具规格独立给出，
-/// 成员序 = classfile 声明序（计数即容器 size，与 ）。
+/// E3-9：摘要七字段逐项对拍——期望值由夹具规格独立给出，
+/// 成员序 = classfile 声明序（计数即容器 size）。
 TEST(MjConsumerSummaryParityTest, FieldsMatchLegacySummaryContract)
 {
     const Bytes               bytes   = makeParityClass();
@@ -70,12 +69,12 @@ TEST(MjConsumerSummaryParityTest, FieldsMatchLegacySummaryContract)
     ASSERT_TRUE(scanned.is_ok());
     const ClassSummary& s = scanned.unwrap();
 
-    // 旧栈 摘要七字段逐一对拍（internalName/superName/access/version/
+    // 摘要七字段逐一核对（internalName/superName/access/version/
     // interfaceCount/fieldCount/methodCount）。
     EXPECT_EQ(pool.str(s.self.id), "com/x/Sample");
     EXPECT_EQ(pool.str(s.super.id), "com/i/Base");
     EXPECT_EQ(s.access, 0x0031u);
-    EXPECT_EQ(s.version, 52u);   // V1_8 = (0 << 16) | 52，旧栈 visit(version) 同形
+    EXPECT_EQ(s.version, 52u);   // V1_8 = (0 << 16) | 52
     ASSERT_EQ(s.interfaces.size(), 2u);   // interfaceCount
     ASSERT_EQ(s.fields.size(), 2u);       // fieldCount
     ASSERT_EQ(s.methods.size(), 3u);      // methodCount

@@ -2,7 +2,7 @@
 /// @brief       统一 renamer 编排引擎：建议流 → 合法性过滤 → 裁决 → override
 ///              闭包 → 包展开 → 后缀消解 → 计划 + 审计记录。
 ///
-/// 流水线与裁决语义逐阶段照旧：
+/// 流水线与裁决语义：
 ///
 ///   收集建议流 → 合法性过滤（复用 IdentifierUtil，`<init>`/`<clinit>` 豁免，
 ///   内部名分段）→ 同 target confidence 裁决（同 confidence 先到先得）→ 同
@@ -17,7 +17,7 @@
 /// asm/remapper 域的 MemberRemapPlan，经 applyResourceRemapPlan+RemapPolicy
 /// 就地应用到容器；应用零变化（逐类失败被
 /// remapper 面按类跳过后的聚合信号）为 ApplyFailed + ok=false；
-/// planOnly=false 且计划为空保持旧栈 zero-applied 成功口径。容器入参因此收
+/// planOnly=false 且计划为空按 zero-applied 成功口径。容器入参因此收
 /// 非 const&（应用路径就地写回）。
 #pragma once
 
@@ -47,8 +47,7 @@ struct RenamerOptions
     /// 应用面门控（bytecode/reflectionStrings/annotations/signatures/resources），
     /// planOnly=false 时生效。默认 RemapPolicy{} 只改字节码面；类资源 URI 随
     /// 类改名移动需显式开 resources——remapper 批双门口径（bytecode+resources
-    /// 才换 URI），与旧栈 URI 单随 bytecode 门的行为差异为 remapper 批已锁定
-    /// 的语义面差异，renamer 应用面继承。
+    /// 才换 URI），renamer 应用面继承。
     mjbase::asm_remapper::RemapPolicy policy{};
 };
 
@@ -90,7 +89,7 @@ struct RejectedProposal
 ///
 /// 映射底座可经 MappingFormatRegistry 导出（Tiny-V2 往返恒等为验收基准）；
 /// 溯源与被拒流水随记录对象在内存中供审计。别名规则（继承字段/闭世界继承
-/// 方法）只入 plan，不入本记录——与旧栈口径一致。
+/// 方法）只入 plan，不入本记录。
 class NameChangeRecord
 {
 public:
@@ -132,8 +131,8 @@ private:
 /// @brief 一次 run 的产物：成败 + 错误消息 + 计划 + 审计记录 + 计数。
 ///
 /// ok=false 表示 run 失败（context 构建失败或应用面失败）；plan/record 仍随
-/// 结果交付供排查。旧栈 ca::Status 通道换 ok+error 值对（mjbase Result 值语义
-/// 纪律，不引 Status）。
+/// 结果交付供排查。成败以 ok+error 值对交付（mjbase Result 值语义
+/// 纪律）。
 struct RenamerRunResult
 {
     bool            ok     = false;

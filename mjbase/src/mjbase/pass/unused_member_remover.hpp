@@ -8,8 +8,7 @@
 
 namespace mjbase::pass {
 
-/// @defgroup unused_member_cleanup 未使用成员清理家族（移植自旧栈
-/// pass/opt/unused_member_remover 的容器级直写四件）。
+/// @defgroup unused_member_cleanup 未使用成员清理家族。
 ///
 /// 本家族把「可达性 / 引用索引分析证明不可达」的类、字段、方法转换为字节码删除。
 /// 四个 pass 按分析来源分层：
@@ -20,19 +19,21 @@ namespace mjbase::pass {
 /// - `UnusedFieldRemover` / `GlobalUnusedMethodRemover`：消费
 ///   ResolvedGlobalReachabilityAnalysis，删除可达类内不可达的 private 字段/方法。
 ///
-/// 共享策略（与）：根策略 = 资源 keep 名单（module 描述符、Manifest
+/// 共享策略：根策略 = 资源 keep 名单（module 描述符、Manifest
 /// 的 Main/Premain/Agent/Launcher-Agent/JavaFX 入口、META-INF/services 文件名与
 /// 内容）+ Java `public static main(String[])` + 类初始化器保留；方法体展开用
 /// ResolvedCallGraph，删除前保留虚调用和接口调用的覆写目标。可达类闭包为空
 /// （library jar、无根）时整 pass 原样保留输入。构造器、`<clinit>`、非 private
 /// 成员、keep metadata（Signature/注解族）成员均保留。分析未注册时抛
-/// `logic_error`（配置错误，稳定失败，对齐）。
+/// `logic_error`（配置错误，稳定失败）。
 ///
 /// ## keep 规则面（审计 P0-1/P0-2）
 ///
-/// 四个 pass 的构造器接受可选 `KeepRuleSet`（默认 nullptr = ）。规则集是
+/// 四个 pass 的构造器接受可选 `KeepRuleSet`（默认 nullptr = 无附加保留
+/// 规则）。规则集是
 /// **纯加法**输入：命中的类/成员在既有硬底线之上再保留一份，无法关闭任何硬底线
-/// （keep_rule.hpp「规则只加不减」契约）。类规则语义对齐 商业化 trim 工具的排除语义：命中类
+/// （keep_rule.hpp「规则只加不减」契约）。类规则与商业化 trim 工具的排除
+/// 语义一致：命中类
 /// 整体保留，其声明方法提升为可达性根（与资源 keep 同名类的提升策略一致）；成员
 /// 规则只对「否则会被删除」的 private 成员产生可观测差异（非私有成员本就地保留）。
 /// 运行时供给面（CLI/配置解析）属 cli 批，本层只提供程序化注入点。

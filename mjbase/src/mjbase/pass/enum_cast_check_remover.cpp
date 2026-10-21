@@ -23,7 +23,7 @@ using jbc::ir::InsnId;
 /// access_flags 的 ACC_ENUM 位（libjbc 不定义命名常量，按 u16 位面直用）。
 constexpr ca::u16 kAccEnum = 0x4000;
 
-/// 调用描述符 == 枚举数组类型的旧栈字面口径：`"[L" + 本类名 + ";"`。
+/// 调用描述符 == 枚举数组类型的字面口径：`"[L" + 本类名 + ";"`。
 std::string enumArrayDesc(const jbc::ir::ClassSession& session)
 {
     std::string desc = "[L";
@@ -42,7 +42,7 @@ mjbase::spi::PreservedAnalyses EnumCastCheckRemover::run(mjbase::spi::MethodScop
     if ((session.backing().access & kAccEnum) == 0)
         return mjbase::spi::PreservedAnalyses::all();
 
-    // 旧栈只进「首个方法」（javac 枚举的 values()）；驱动面按会话位序核对。
+    // 驱动面只处理「首个方法」（javac 枚举的 values()），按会话位序核对。
     const jbc::ir::ClassUnit& unit = session.unit();
     if (unit.methods.empty() || !(unit.methods.front().id == scope.method))
         return mjbase::spi::PreservedAnalyses::all();
@@ -56,7 +56,7 @@ mjbase::spi::PreservedAnalyses EnumCastCheckRemover::run(mjbase::spi::MethodScop
     bool                modified = false;
     std::vector<InsnId> toRemove;
 
-    // 与旧栈一致的扫描面：物理相邻（dom 顺序位直邻 == ）成对收桶。
+    // 扫描面：物理相邻（dom 顺序位直邻）成对收桶。
     for (ca::usize i = 0; i + 1 < ids.size(); ++i) {
         const Insn* call = dom.peek(ids[i]);
         if (call == nullptr || call->op != jbc::core::Op::INVOKEVIRTUAL) continue;
@@ -66,12 +66,12 @@ mjbase::spi::PreservedAnalyses EnumCastCheckRemover::run(mjbase::spi::MethodScop
             continue;
         const Insn* cast = dom.peek(ids[i + 1]);
         if (cast == nullptr || cast->op != jbc::core::Op::CHECKCAST) continue;
-        // cast 站点被锚定即旧栈「标签隔断物理相邻」面：不匹配（成对收不进）。
+        // cast 站点被标签锚定：阻断成对收桶，保持原样。
         if (method_rewrite_util::labelsAnchorAt(dom, ids[i + 1])) continue;
         toRemove.push_back(ids[i]);
         toRemove.push_back(ids[i + 1]);
         modified = true;
-        ++i;   // 成对的 cast 位不再二次候选，与旧栈 getNext 消费序一致
+        ++i;   // 成对的 cast 位不再二次候选
     }
     if (!modified)
         return mjbase::spi::PreservedAnalyses::all();

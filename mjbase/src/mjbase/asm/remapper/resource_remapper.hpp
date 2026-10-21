@@ -2,8 +2,7 @@
 /// @brief       把重映射计划应用到资源容器：类资源改写 + opt-in 资源面。
 ///
 /// 类字节改写经 libjbc 会话（makeSessionFromBytes → applyMemberRemapPlan →
-/// writeClass），容器与资源模型用 mjbase::model。畸形类资源跳过（旧栈
-/// catch(...) 同口径 fail-open，与 reference_index 容错纪律一致）。
+/// writeClass），容器与资源模型用 mjbase::model。畸形类资源跳过。
 ///
 /// 改写面（RemapPolicy 门控）：
 /// - bytecode + resources：类资源 URI 随类改名移动（`pkg/Old.class` →

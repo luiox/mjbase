@@ -1,20 +1,19 @@
 /// @file        resource_model.hpp
 /// @brief       资源模型：ResourceType 枚举 + IResource 接口与三实现 + ModelError。
 ///
-/// 语义对齐 model/resource_model（迁移来源）：资源是「URI + 类型化载荷」
-/// 的最小抽象——Class（class 字节）、Manifest（MANIFEST.MF 解析物）、Unknown
-/// （原样字节）。类型识别沿用 ca::core::tag_cast：每个叶子类型把 TypeOf<T>
-/// 特化到 ResourceType 标签值，与运行期 getType() 比较，零 RTTI。
+/// 资源是「URI + 类型化载荷」的最小抽象——Class（class 字节）、Manifest
+/// （MANIFEST.MF 解析物）、Unknown（原样字节）。类型识别用 ca::core::tag_cast：
+/// 每个叶子类型把 TypeOf<T> 特化到 ResourceType 标签值，与运行期 getType()
+/// 比较，零 RTTI。
 ///
-/// 与 旧栈 的差异（本批有意重设计，其余语义照旧）：
-/// - 错误：旧栈 侧以 throw std::runtime_error 报错，本模块统一走
-///   ModelResult<T>（= Result<T, ModelError>）值语义，错误码定义见 ModelError，
-///   各抛点消息文本的映射写在 resource_io 的对应返回处；
+/// 设计约定：
+/// - 错误统一走 ModelResult<T>（= Result<T, ModelError>）值语义，错误码定义
+///   见 ModelError，各分支的归因写在 resource_io 的对应返回处；
 /// - 字符串：借用的路径/URI 一律借用视图（容器/工具入参 std::string_view，
 ///   资源 location 返回 Utf8StringRef——与 mjbase::jar 的写条目口径对齐）；
 ///   自有存储用 ca::str 家族（Utf8String，原始字节保真不校验），不新增
 ///   std::string 存储；
-/// - jar 依赖换 mjbase::jar（并行迁移批：接口同名，错误走 Result<void, JarError>）。
+/// - jar 依赖用 mjbase::jar（接口同名，错误走 Result<void, JarError>）。
 #pragma once
 
 #include <array>
@@ -65,19 +64,16 @@ inline ResourceType resourceTypeFromString(std::string_view name) noexcept
 
 /// @brief model 模块错误码。
 ///
-/// 旧栈 对应实现以 throw std::runtime_error 报错，消息文本按位收进各码的
-/// 注释（来源 resource_io / helper），语义等价映射：
+/// 各码归因具体分支（按 resource_io / helper 的返回点定义）：
 enum class ModelError : ca::u8
 {
-    Io,                ///< 磁盘文件打开/写出失败（"failed to open/flush/close: <path>"）
-    BadArgument,       ///< 参数约束不满足（"uri is empty and container size is not 1"）
-    NotFound,          ///< 容器 URI / 归档文件 / 归档条目不存在（"uri not found in container: <uri>"、
-                       ///< "open archive failed" 的文件缺失分支、"entry not found in archive"）
-    TypeMismatch,      ///< 期望 ClassResource 实为其他类型（"resource is not ClassResource: <uri>"、
-                       ///< "the only resource is not ClassResource"）
-    BadEntry,          ///< 归档头/条目数据读取失败（"read header failed: <msg>"、read_data_block 失败）
-    PathEscape,        ///< 归档条目路径逃逸目标目录（"entry escapes target dir: <name>"，zip-slip 防线）
-    UnsupportedFormat, ///< 归档格式/过滤器嗅探失败（"open archive failed: <p> — <msg>" 的格式分支）
+    Io,                ///< 磁盘文件打开/写出失败
+    BadArgument,       ///< 参数约束不满足（如未指定 URI 而容器不是恰好 1 个资源）
+    NotFound,          ///< 容器 URI / 归档文件 / 归档条目不存在
+    TypeMismatch,      ///< 期望 ClassResource 实为其他类型
+    BadEntry,          ///< 归档头/条目数据读取失败
+    PathEscape,        ///< 归档条目路径逃逸目标目录（zip-slip 防线）
+    UnsupportedFormat, ///< 归档格式/过滤器嗅探失败
 };
 
 /// @brief 错误码 → 短名（日志/断言输出用）。

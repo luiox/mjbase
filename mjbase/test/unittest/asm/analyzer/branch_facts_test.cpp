@@ -2,13 +2,8 @@
 /// @brief       分支预测事实测试：一元/二元 int 条件、null 系、引用相等、
 ///        switch 键命中与未知操作数保守回退。
 ///
-/// 行为断言移植自旧栈 reanalyzer_test 的分支修剪族（prunesTaken /
-/// prunesFallthrough / keepsBothSuccessors / prunesKnownBinaryIntegerBranch /
-/// prunesKnownNullBranch / prunesKnownLookupSwitchTarget /
-/// keepsAllTableSwitchTargetsForUnknownKey / OutOfRangeSwitchIndex /
-/// prunesBranchAfterJavaOverflowArithmetic）。旧栈断言的是引擎级可达性修剪
-/// （predictor 返回 nullopt 时引擎保守入队双后继）；DomainEngine 无分支条件
-/// 钩子，本套件对拍的是被移植语义的查询面——predictBranch 的走向事实。
+/// DomainEngine 无分支条件钩子，本套件直接对 predictBranch 的走向事实断言
+/// （条件成立走目标、不成立走顺序后继；未知形状按 Unknown 保守双后继）。
 #include <gtest/gtest.h>
 
 #include <limits>
@@ -152,7 +147,7 @@ ConstAnalysis analyzeConst(ConstantPool pool, CodeDom dom)
 }   // namespace
 
 // ---------------------------------------------------------------------------
-// 一元 int 条件（移植 prunesTaken / prunesFallthrough / keepsBothSuccessors）
+// 一元 int 条件
 // ---------------------------------------------------------------------------
 
 TEST(MjAsmAnalyzerTest, BranchPredictsTakenUnaryWhenOperandZero)
@@ -213,7 +208,7 @@ TEST(MjAsmAnalyzerTest, BranchKeepsBothSuccessorsForUnknownOperand)
 }
 
 // ---------------------------------------------------------------------------
-// 二元 int 条件（移植 prunesKnownBinaryIntegerBranch）
+// 二元 int 条件
 // ---------------------------------------------------------------------------
 
 TEST(MjAsmAnalyzerTest, BranchPredictsBinaryIntComparison)
@@ -272,7 +267,7 @@ TEST(MjAsmAnalyzerTest, BranchPredictsBinaryIntComparison)
 }
 
 // ---------------------------------------------------------------------------
-// null 系（移植 prunesKnownNullBranch；String 常量为非空引用事实）
+// null 系；String 常量为非空引用事实
 // ---------------------------------------------------------------------------
 
 TEST(MjAsmAnalyzerTest, BranchPredictsNullChecksOnReferenceConstants)
@@ -331,8 +326,7 @@ TEST(MjAsmAnalyzerTest, BranchPredictsNullChecksOnReferenceConstants)
 }
 
 // ---------------------------------------------------------------------------
-// switch（移植 prunesKnownLookupSwitchTarget / keepsAllTableSwitchTargets /
-// OutOfRangeSwitchIndex）
+// switch
 // ---------------------------------------------------------------------------
 
 TEST(MjAsmAnalyzerTest, BranchPredictsLookupSwitchCase)
@@ -416,7 +410,7 @@ TEST(MjAsmAnalyzerTest, BranchPredictsDefaultForOutOfRangeTableKey)
 }
 
 // ---------------------------------------------------------------------------
-// 溢出算术喂分支（移植 prunesBranchAfterJavaOverflowArithmetic）
+// 溢出算术喂分支
 // ---------------------------------------------------------------------------
 
 TEST(MjAsmAnalyzerTest, BranchDecidesAfterOverflowArithmetic)

@@ -432,7 +432,7 @@ TEST(MjAsmClasspathTest, BuildsDeclaredAndExternalEdgesFromBytes)
     EXPECT_TRUE(g.outgoingSitesOf(missingKey(g)).empty());
     EXPECT_TRUE(g.incomingSitesOf(missingKey(g)).empty());
 
-    // 去重集合（旧 outgoingCallsOf/incomingCallsOf 的对应面）。
+    // 去重集合查询（calleesOf / callersOf）。
     EXPECT_EQ(g.calleesOf(entry).size(), 2u);
     EXPECT_TRUE(containsKey(g.calleesOf(entry), g.pool(), "java/lang/Integer", "parseInt",
                             "(Ljava/lang/String;)I"));
@@ -526,7 +526,7 @@ TEST(MjAsmClasspathTest, CallSiteCountCountsRepeatedSitesFromSameCaller)
     const mjbase::MemberKey twice = keyOf(g, "Caller", "twice", "()V");
     const mjbase::MemberKey callee = keyOf(g, "Lib", "callee", "()V");
 
-    // 同一调用方多处调用分别计数，与去重调用方集合互补（旧版验收语义）。
+    // 同一调用方多处调用分别计数，与去重调用方集合互补。
     const std::vector<CallSite> out = g.outgoingSitesOf(twice);
     ASSERT_EQ(out.size(), 2u);
     EXPECT_EQ(out[0].callee, callee);

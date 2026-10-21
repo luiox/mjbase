@@ -2,8 +2,8 @@
 /// @brief       renamer 测试族共享夹具：jasm 源码拼装 + 组装为 class 字节 +
 ///              容器登记助手（仅测试域；组装失败 fail-loud）。
 ///
-/// mjbase 线一律 jasm 组装
-/// （JvmJasmService），语义对齐点：`.super` 缺省 = 无 super 入口
+/// 夹具一律 jasm 组装
+/// （JvmJasmService）：`.super` 缺省 = 无 super 入口
 /// （java/lang/Object 夹具口径）、`{ }` 空体 abstract 方法、`.implements`。
 #pragma once
 

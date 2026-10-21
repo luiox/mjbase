@@ -1,7 +1,7 @@
 /// @file        match_sequence.hpp
 /// @brief       命名匹配序列与命中结果。
 ///
-/// 语义对齐旧实现的 match_sequence.hpp：
+/// 核心模型：
 ///   - MatchSequence = 名字 + 一个 step 树，作为匹配入口的最小单元；
 ///   - MatchedArea 用 order() 的整数下标窗口表达命中（与后续编辑解耦），
 ///     捕获表给出「捕获名 → InsnId」；

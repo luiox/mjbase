@@ -102,9 +102,7 @@ bool hasFieldKeepMetadata(const jbc::core::ClassFile& cf, const jbc::core::Membe
     return false;
 }
 
-/// 方法 keep metadata：字段面 + 参数注解 + AnnotationDefault（旧栈
-/// hasMethodKeepMetadata；局部变量注解在 libjbc 同属 Runtime*TypeAnnotations
-/// 属性，在场即 keep，判定等价）。
+/// 方法 keep metadata：字段面 + 参数注解 + AnnotationDefault。
 bool hasMethodKeepMetadata(const jbc::core::ClassFile& cf, const jbc::core::MemberInfo& method)
 {
     static constexpr std::string_view kKeepAttrs[] = {
@@ -180,8 +178,7 @@ bool collectResourceKeepClasses(mjbase::model::ResourceContainer& container,
         if (!serviceName.empty()) keepNames.insert(serviceName);
         if (const auto* unknown =
                 ca::core::tag_cast::dyn_cast<const mjbase::model::UnknownResource>(resource.get())) {
-            // 内容逐行：'#' 注释截断、CRLF 归一、二名 '.' → '/'（旧栈
-            // appendServiceClassNames 对齐）。
+            // 内容逐行：'#' 注释截断、CRLF 归一、二名 '.' → '/'。
             std::string content(unknown->get().begin(), unknown->get().end());
             std::size_t cursor = 0;
             while (cursor <= content.size()) {

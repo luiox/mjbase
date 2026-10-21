@@ -2,9 +2,8 @@
 /// @brief       常量传播域测试：格代数、JVM 折叠语义、store→load 穿透、
 ///        分支合并、MethodSig 播种（含 long/double 双槽）与句柄查询面。
 ///
-/// 行为断言移植自旧栈 constant_interpreter_test（JVM 环绕/移位掩码/MIN÷-1
-/// 特例、冲突合并丢常量）与 libjbc domain_test（穿透与播种布局）。
-///
+/// 断言覆盖 JVM 环绕/移位掩码/MIN÷-1 特例、冲突合并丢常量，与 store→load
+/// 穿透、入参播种布局。
 /// long 折叠语义在域钩子层直接断言：DomainEngine v0.3.8 的 popValue 对 cat2
 /// 读到的是底槽行（默认构造 V），宽度 2 的载荷经运算/存储会丢失——引擎级
 /// 方法体测试只覆盖当前可观察的行为（入栈行查询、入参播种），不锚定该缺陷。
@@ -101,7 +100,7 @@ CodeUnit unitOf(CodeDom&& d)
 }   // namespace
 
 // ---------------------------------------------------------------------------
-// 格代数（直接对域钩子断言，移植旧 mergeConflictingConstantsDropsKnownValue）
+// 格代数（直接对域钩子断言）
 // ---------------------------------------------------------------------------
 
 TEST(MjAsmAnalyzerTest, ConstMergeAlgebraFollowsJoinSemantics)
@@ -151,8 +150,7 @@ TEST(MjAsmAnalyzerTest, ConstEqualComparesPayloadNotIdentity)
 }
 
 // ---------------------------------------------------------------------------
-// 折叠语义（移植旧 integerArithmeticUsesJvmOverflowSemantics /
-// integerShiftDistanceUsesJvmMask / longArithmeticAndShiftUseJvmSemantics）
+// 折叠语义
 // ---------------------------------------------------------------------------
 
 TEST(MjAsmAnalyzerTest, ConstFoldsIntegerArithmetic)
@@ -298,8 +296,8 @@ TEST(MjAsmAnalyzerTest, ConstShiftDistanceUsesJvmMask)
 
 TEST(MjAsmAnalyzerTest, ConstLongFoldJvmSemanticsAtDomainHooks)
 {
-    // long 折叠在域钩子层直接断言（引擎 cat2 popValue 载荷缺陷不影响本层语义；
-    // 移植旧 longArithmeticAndShiftUseJvmSemantics 的期望值）。
+    // long 折叠在域钩子层直接断言（引擎 cat2 popValue 载荷缺陷不影响本层
+    // 语义，期望值直接按 JVM 语义给出）。
     ConstantPool cp;
     ConstDomain dom(cp);
     const jbc::ir::Insn dummy;
@@ -614,16 +612,13 @@ TEST(MjAsmAnalyzerTest, ConstDeadCodeFrameIsUnreachable)
 }
 
 // ---------------------------------------------------------------------------
-// 入参常量种子（移植旧 normalizesShortArgumentBeforeIntegerArithmetic /
-// normalizesCharArgumentBeforeIntegerArithmetic：入参值参与 int 算术）
+// 入参常量种子：入参值参与 int 算术
 // ---------------------------------------------------------------------------
 
 TEST(MjAsmAnalyzerTest, ConstSeededArgumentFeedsIntegerArithmetic)
 {
-    // 移植旧 addOne 用例族：iload_0; iconst_1; iadd; istore_1，入参种子 41
-    // → iadd 结果 42。旧栈按 short/char 归一
-    // （normalizeIntValue），新格层 int 宽度只有一类 Int 载荷，(S)/(C)/(I)
-    // 三种描述符同一种子语义。
+    // iload_0; iconst_1; iadd; istore_1，入参种子 41 → iadd 结果 42；
+    // 格层 int 宽度只有一类 Int 载荷，(S)/(C)/(I) 三种描述符同一种子语义。
     for (const char* desc : {"(S)I", "(C)I", "(I)I"}) {
         CodeDom dom;
         appendOp(dom, Op::ILOAD_0);

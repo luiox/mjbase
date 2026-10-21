@@ -1,14 +1,12 @@
 /// @file        pattern_matcher.hpp
-/// @brief       旧代 pattern matcher：线性窗口匹配 + 原子替换（值语义重建）。
+/// @brief       pattern matcher：线性窗口匹配 + 原子替换（值语义重建）。
 ///
-/// 语义来源 asm/matcher/pattern_matcher.hpp，按 libjbc 底座重写：
+/// 设计：
 ///   - 匹配目标是 @ref jbc::ir::CodeDom 的 order 序列。
-///   - 旧栈「不跨越 Label/Line/Frame 边界」在新栈的对应物是窗口纪律：
-///     窗口内部（首条豁免）不得有分支/switch 目标（jumpTargetMask 可判部分）。
-///     Line/Frame 是 classfile 嵌套属性，不在 DOM 层出现；异常表等
+///   - 窗口纪律：窗口内部（首条豁免）不得有分支/switch 目标（jumpTargetMask
+///     可判部分）。Line/Frame 是 classfile 嵌套属性，不在 DOM 层出现；异常表等
 ///     Boundary 标签锚定不可枚举，落到 apply 时由 erase 拒绝并整体回滚。
-///   - 上下文/替换全部是值拷贝：旧栈的 builder InsnList、cloneMatchedNode、
-///     Utf8StringArena 注入与节点 arena 在值语义下不存在。
+///   - 上下文/替换全部是值拷贝，无 arena/节点注册/串池寿命管理。
 #pragma once
 
 #include <functional>
@@ -118,7 +116,7 @@ std::vector<ca::u8> jumpTargetMask(const jbc::ir::CodeDom& dom);
 
 /// @brief 规则集合上的匹配与应用入口。
 ///
-/// apply 语义照旧：每条规则从后往前定位最后一个可替换窗口，每调用一次
+/// apply 语义：每条规则从后往前定位最后一个可替换窗口，每调用一次
 /// 至多替换一处；仅匹配（无策略）的规则止扫且不报告改动。调用方循环
 /// apply 到 Ok(false) 即得不动点。
 class PatternMatcher
@@ -135,7 +133,7 @@ public:
     /// 返回：Ok(true) 发生了替换；Ok(false) 没有；Err 窗口应用被 DOM
     /// 拒绝（该窗口内容已整体回滚，但指令句柄可能因回滚重插而改变；
     /// 此前已成功的其它窗口不回退）。整窗删除且首指令被窗口外分支
-    /// 引用时按旧栈语义把引用重定向到顺序后继，该重定向不参与回滚。
+    /// 引用时把引用重定向到顺序后继，该重定向不参与回滚。
     ca::core::Result<bool, MatcherError> apply(jbc::ir::CodeDom& dom) const;
 
 private:

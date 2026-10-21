@@ -98,7 +98,7 @@ target("mjbase")
         add_cxflags("/utf-8", {tools = "cl"})
         add_links("bcrypt")
         -- xmllite：libarchive 静态库内含 xar 格式读取（依赖 CreateXmlReader），
-        -- 链接 mjbase 的可执行需解析该符号。public 传递给下游（同）。
+        -- 链接 mjbase 的可执行需解析该符号。public 传递给下游。
         add_syslinks("xmllite", {public = true})
     end
 

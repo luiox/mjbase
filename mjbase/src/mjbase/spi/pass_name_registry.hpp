@@ -66,14 +66,14 @@ struct PassNameEntry
 /// @par 注册契约
 /// - 键为借用视图：注册方保证名字实体在注册表存活期内有效（惯例：字符串字面
 ///   量 / 驻留池）；注册表不复制存储，不收 std::string。
-/// - 重复注册显式 Err(DuplicateName)，不覆盖——旧栈「同名覆盖」的显式
-///   偏离：同名几乎必然是两个 pass 撞名的事故，静默覆盖会把错埋到 -p 选择时才
-///   炸；需要幂等种子时由调用方先 has() 判断（defaultPassRegistry 即如此）。
+/// - 重复注册显式 Err(DuplicateName)，不覆盖：同名几乎必然是两个 pass 撞名
+///   的事故，静默覆盖会把错埋到 -p 选择时才炸；需要幂等种子时由调用方先
+///   has() 判断（defaultPassRegistry 即如此）。
 /// - 查未知名：find 返回 Err(UnknownPass)；create 族对未知名返回
 ///   Err(UnknownPass)，不交哨兵空指针——空 unique_ptr 在 addPass 处是另一条
 ///   契约（配置错误抛 invalid_argument），两不相混。
 ///
-/// @warning 非线程安全：注册与查询应在初始化阶段完成（对齐 ）。
+/// @warning 非线程安全：注册与查询应在初始化阶段完成。
 class PassNameRegistry
 {
 public:
@@ -141,8 +141,8 @@ private:
 /// 种子面：三个结构级 pass 试点（ClassMemberSorter / IllegalClassFileCleaner /
 /// AccessModifierTightener）+ pass A 批方法体改写族（NopRemover /
 /// RedundantLoadValEliminator / CharArrToStrSimplifier / UnusedCheckCleaner）+
-/// B 批确定性垃圾插入（JunkCodeInserter），名字用真实类名——对齐 旧栈 旧栈
-/// 注册命名纪律。种子在首次访问内完成且自带 has 防护语义（新表重名不可能），
+/// B 批确定性垃圾插入（JunkCodeInserter），名字用真实类名。
+/// 种子在首次访问内完成且自带 has 防护语义（新表重名不可能），
 /// 调用方无需也不要对默认表重复注册；pass 后续批次落地时在此追加种子。
 PassNameRegistry& defaultPassRegistry();
 

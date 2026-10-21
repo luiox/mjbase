@@ -1,4 +1,4 @@
-/// 段（889 行起），并按任务补齐旧栈缺失的独立直接用例。断言口径：
+/// 按任务补齐的独立直接用例。断言口径：
 /// 不可解析字节原样保留；可解析资源清洗后仍可解析；改动走两阶段提交；
 /// PA 与实际改动一致。
 /// F 线清洗批起规则面为两级流水全量：libjclassfile 前置级 5 条挂账规则
@@ -90,7 +90,7 @@ ParsedCode parsedCodeOf(const std::vector<ca::u8>& bytes, ca::usize methodIdx)
 
 }   // namespace
 
-// 旧栈用例移植：3 字节垃圾不可解析 → PA all()、原字节原样保留。
+// 用例：3 字节垃圾不可解析 → PA all()、原字节原样保留。
 TEST(MjPassIllegalClassFileCleanerTest, PreservesUnparseableClassBytes)
 {
     const std::vector<ca::u8> invalidBytes{0xCA, 0xFE, 0xBA};
@@ -148,9 +148,9 @@ TEST(MjPassIllegalClassFileCleanerTest, StripsIllegalDescriptorMembers)
 }
 
 // 补齐直接用例：越界/空区间异常表条目剪除，合法条目保留。
-// 注意：合法条目取 (0,1,1)——前置级旧栈语义以「最后一条指令起始偏移」为
+// 注意：合法条目取 (0,1,1)——前置级以「最后一条指令起始偏移」为
 // startPc/endPc/handlerPc 上界（endPc==code_length 越过该上界的条目也会被
-// 剪），夹具取两边界语义下都合法的形态，验证「垃圾剪除、合法保留」本身。
+// 剪），夹具取两级边界下都合法的形态，验证「垃圾剪除、合法保留」本身。
 TEST(MjPassIllegalClassFileCleanerTest, PrunesJunkExceptionTableEntries)
 {
     FixtureBuilder builder("T");
@@ -229,9 +229,7 @@ TEST(MjPassIllegalClassFileCleanerTest, SkipsNonClassResources)
     EXPECT_EQ(res->get(), unknownBytes);
 }
 
-// 旧栈用例移植（proguard 真实样本冒烟）：逐资源断言「字节未动或改后仍可解析」
-// 与 PA 一致性。旧栈 changed>0 断言绑全量 IllegalStrippingTransformer 规则集
-// （属性级清洗），不在本批对齐子集的保证面内，故不照搬。
+// proguard 真实样本冒烟：逐资源断言「字节未动或改后仍可解析」与 PA 一致性。
 TEST(MjPassIllegalClassFileCleanerTest, ProguardFixtureStaysParseable)
 {
     const auto root = std::filesystem::path("libs/libjclassfile/test_resource/obfuscated/proguard");

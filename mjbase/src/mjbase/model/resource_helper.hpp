@@ -1,7 +1,7 @@
 /// @file        resource_helper.hpp
 /// @brief       资源操作辅助工具：导入导出静态便捷方法。
 ///
-/// 语义对齐 model/resource_helper（迁移来源）；错误改 ModelResult 值语义
+/// 错误以 ModelResult 值语义返回
 /// （mjbase::jar 的 Result<void, JarError> 经 toModelError 归一映射）。
 #pragma once
 

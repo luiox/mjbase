@@ -1,13 +1,13 @@
 /// @file        shadow_alias_test.cpp
 /// @brief       ShadowAliasTable + 机械占位名生成 + prune + jasm 显示层改写
-///              （#1072/#1156 mjbase 移植版）。
+///              （#1072/#1156）。
 ///
 /// 登记/查询/渲染口径、双向与范围查询、mapping roundtrip、生成器字典序稳定 +
 /// 幂等 + 手工名保留 + 撞号递增 + 容器遍历序无关、jar 字节零写入（红线）、
 /// 过期条目清理、jasm 整 token 替换契约、token8 随行。
 ///
-/// mjbase 底座差异（语义不变）：容器夹具用 jasm 组装；随机补号/生成器的
-/// 系统随机源失败走 Result（测试域 unwrap，成功路径与）。
+/// 底座形态：容器夹具用 jasm 组装；随机补号/生成器的
+/// 系统随机源失败走 Result（测试域 unwrap）。
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -48,8 +48,7 @@ model::ResourceContainer buildContainer(const ClassBytes& bytes)
     return container;
 }
 
-/// shadow 测试专用 B：<init> + oldMethod 两个方法（旧栈 shadow 夹具口径；
-/// 引擎夹具的 buildB 多一个 X 方法，编号断言不同，不共用）。
+/// shadow 测试专用 B：<init> + oldMethod 两个方法。
 std::vector<ca::u8> buildShadowB()
 {
     std::string members;

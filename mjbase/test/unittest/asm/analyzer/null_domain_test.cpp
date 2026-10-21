@@ -2,9 +2,8 @@
 /// @brief       nullness 域测试：四态合并代数、产点事实（aconst_null/ldc
 ///        字符串）、分支合并与 MethodSig 播种（含双槽）。
 ///
-/// 合并代数移植自旧栈 NullabilityUtil::merge（NotNull+Null→Nullable 族）；
-/// 产点事实移植自旧 NullabilityInterpreter::newOperation。旧分析的类型载荷
-/// 与 IFNULL/IFNONNULL 分支细化未迁（理由见域头注释与迁移报告）。
+/// 合并代数按 join 语义断言（NotNull+Null→Nullable 族）；产点事实直接对
+/// 域钩子断言。类型载荷与 IFNULL/IFNONNULL 分支细化不在本域范围。
 #include <gtest/gtest.h>
 
 #include <string_view>
@@ -83,7 +82,7 @@ CodeUnit unitOf(CodeDom&& d)
 }   // namespace
 
 // ---------------------------------------------------------------------------
-// 合并代数（直接对域钩子断言，移植旧 NullabilityUtil::merge）
+// 合并代数（直接对域钩子断言）
 // ---------------------------------------------------------------------------
 
 TEST(MjAsmAnalyzerTest, NullMergeAlgebraFollowsJoinSemantics)
@@ -97,7 +96,7 @@ TEST(MjAsmAnalyzerTest, NullMergeAlgebraFollowsJoinSemantics)
     EXPECT_EQ(dom.merge(NullValue::of(NullState::NotNull), NullValue::of(NullState::NotNull)).s,
               NullState::NotNull);
 
-    // NotNull 与 Null 汇合 → Nullable（旧代数核心）。
+    // NotNull 与 Null 汇合 → Nullable。
     EXPECT_EQ(dom.merge(NullValue::of(NullState::NotNull), NullValue::of(NullState::Null)).s,
               NullState::Nullable);
     EXPECT_EQ(dom.merge(NullValue::of(NullState::Null), NullValue::of(NullState::NotNull)).s,
@@ -109,8 +108,8 @@ TEST(MjAsmAnalyzerTest, NullMergeAlgebraFollowsJoinSemantics)
     EXPECT_EQ(dom.merge(NullValue::of(NullState::NotNull), NullValue::of(NullState::Nullable)).s,
               NullState::Nullable);
 
-    // Unknown 是顶：未知产点吞掉一切事实（对旧 UNKNOWN 单位元语义的显式
-    // 重排——引擎约定 top 必须吸收，数据流层面可靠）。
+    // Unknown 是顶：未知产点吞掉一切事实（引擎约定 top 必须吸收，
+    // 数据流层面可靠）。
     EXPECT_EQ(dom.merge(NullValue::of(NullState::Unknown), NullValue::of(NullState::Null)).s,
               NullState::Unknown);
     EXPECT_EQ(dom.merge(NullValue::of(NullState::Nullable), NullValue::of(NullState::Unknown)).s,
@@ -222,7 +221,7 @@ TEST(MjAsmAnalyzerTest, NullSameFactBothBranchesSurvives)
 
 TEST(MjAsmAnalyzerTest, NullUnknownProducerAbsorbsFact)
 {
-    // 一臂 aconst_null（Null），另一臂 new（旧语义：无事实）→ 汇合 = Unknown。
+    // 一臂 aconst_null（Null），另一臂 new（无 nullness 事实）→ 汇合 = Unknown。
     CodeDom dom;
     const InsnId i0 = appendOp(dom, Op::ICONST_0);
     const LabelId lElse = newLbl(dom, i0);

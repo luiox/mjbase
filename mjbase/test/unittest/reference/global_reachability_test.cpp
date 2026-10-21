@@ -1,11 +1,9 @@
 /// @file        global_reachability_test.cpp
-/// @brief       GlobalReachability 闭包移植用例。
+/// @brief       GlobalReachability 闭包用例。
 ///
-/// jbytecode ClassWriter 重写为手拼 classfile 字节（class_bytes_builder.hpp）。
-/// mjbase CallGraph 自建会话
-/// （call_graph 批语义），此处用 CallGraphBuilder 对同一批类字节建图——直接
-/// 编码调用边集合与旧栈 buildFromIndex 的 Direct 事实一致，闭包语义等强。
-/// 旧栈 GAM 注册的 ClassHierarchyAnalysis/MethodHierarchyAnalysis 由本批的
+/// 类字节由 class_bytes_builder.hpp 手拼；此处用 CallGraphBuilder 对同一
+/// 批类字节建图（call_graph 批语义），调用边集合按 Direct 事实编码驱动闭包。
+/// ClassHierarchyAnalysis/MethodHierarchyAnalysis 由本批的
 /// HierarchyBundleAnalysis 承载（停泊件，见 resolved_call_graph.hpp）。
 #include <gtest/gtest.h>
 

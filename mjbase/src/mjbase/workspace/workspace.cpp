@@ -56,7 +56,7 @@ namespace {
 
 using support::utf8Text;
 
-// ── 基础助手（照旧直迁）─────────────────────────────────────────────────
+// ── 基础助手 ──────────────────────────────────────────────────
 
 WorkspaceErrorInfo error(WorkspaceError code, const std::string& operation,
                          const std::string& detail)
@@ -171,7 +171,7 @@ WorkspaceResult<std::unique_ptr<model::ResourceContainer>> cloneContainer(
     return ca::core::Ok(std::move(result));
 }
 
-// ── class 解码（libjbc 会话；字段口径照旧）──────────────────────────────
+// ── class 解码（libjbc 会话）──────────────────────────────
 
 WorkspaceResult<std::shared_ptr<jbc::ir::ClassSession>> sessionOf(
     const std::vector<ca::u8>& bytes, const std::string& operation)
@@ -309,7 +309,7 @@ WorkspaceResult<ClassInfo> decodeClass(const std::string& uri, const model::Clas
     output.superName    = std::string{cf.superName()};
     output.signature    = support::signatureText(cf, cf.attrs);
     output.access       = static_cast<ca::i32>(cf.access);
-    // 旧栈 ASM 语义：version = major | (minor << 16)。
+    // 版本编码：version = major | (minor << 16)。
     output.version      = static_cast<ca::i32>(cf.major) | (static_cast<ca::i32>(cf.minor) << 16);
     for (const auto interfaceCp : cf.interfaces) {
         output.interfaces.push_back(std::string{cf.className(interfaceCp)});
@@ -325,7 +325,7 @@ WorkspaceResult<ClassInfo> decodeClass(const std::string& uri, const model::Clas
     return ca::core::Ok(std::move(output));
 }
 
-// ── 搜索（照旧直迁）──────────────────────────────────────────────────────
+// ── 搜索 ───────────────────────────────────────────────
 
 std::string lowercase(std::string value)
 {
@@ -514,8 +514,7 @@ std::string memberRefColonText(const jbc::core::ClassFile& cf, ca::u32 cpIndex)
     return owner + "." + name + ":" + desc;
 }
 
-/// @brief 成员引用 CP 索引 → 无冒号拼接（指令搜索文本口径，与旧栈 methodTarget
-///        一致：workspace/Subject.value()I）。
+/// @brief 成员引用 CP 索引 → 无冒号拼接（指令搜索文本口径）。
 std::string memberRefFlatText(const jbc::core::ClassFile& cf, ca::u32 cpIndex)
 {
     const std::string resolved = memberRefColonText(cf, cpIndex);
@@ -644,7 +643,7 @@ InstructionDetailInfo renderInstruction(const jbc::core::ClassFile& cf,
     return info;
 }
 
-// ── 字节 diff / 修复 / 指纹（照旧直迁）──────────────────────────────────
+// ── 字节 diff / 修复 / 指纹 ───────────────────────────────────
 
 std::vector<ByteDiff> diffContainers(const model::ResourceContainer& before,
                                      const model::ResourceContainer& after)
@@ -673,7 +672,7 @@ std::vector<ByteDiff> diffContainers(const model::ResourceContainer& before,
         }
         if (beforeBytes == afterBytes) continue;
 
-        // 单一公共前后缀收缩：第一个差异字节到最后一个差异字节（照旧口径）。
+        // 单一公共前后缀收缩：第一个差异字节到最后一个差异字节。
         ca::usize start = 0;
         while (start < beforeBytes.size() && start < afterBytes.size() &&
                beforeBytes[start] == afterBytes[start]) {
@@ -864,7 +863,7 @@ std::vector<ReferenceImpact> collectImpacts(const model::ResourceContainer& cont
     }
 }
 
-// ── 指纹（fnv1a64:16hex；长度按小端逐字节入串——照旧逐字节直迁）──────────
+// ── 指纹（fnv1a64:16hex；长度按小端逐字节入串）──────────
 
 void hashFingerprintBytes(ca::u64& state, const ca::u8* data, ca::usize size)
 {
@@ -919,7 +918,7 @@ WorkspaceResult<std::string> fingerprintContainer(const model::ResourceContainer
     return ca::core::Ok(output.str());
 }
 
-// ── 导出目的地与原子导出（照旧直迁）─────────────────────────────────────
+// ── 导出目的地与原子导出 ──────────────────────────────────────
 
 WorkspaceResult<std::string> normalizedRegularFile(const std::string& path,
                                                    const std::string& operation)
@@ -1106,7 +1105,7 @@ struct WorkspaceBase::SupportingResource
 /// @brief 层次/覆盖分析图：KeyPool + ClassHierarchy + 每类声明摘要。
 ///
 /// 未登记的超类型（java/lang/Object 等）物化为合成节点（无成员、access 0），
-/// 使 superclass 链/接口闭包与旧栈 ClassHierarchy 的 findOrCreateEntry 行为一致。
+/// 使 superclass 链/接口闭包在这些超类型上可解析。
 struct WorkspaceBase::AnalysisGraph
 {
     std::shared_ptr<mjbase::KeyPool>           pool      = std::make_shared<mjbase::KeyPool>();
@@ -1508,7 +1507,7 @@ WorkspaceResult<WorkspaceBase::AnalysisGraph> WorkspaceBase::analysisGraph() con
                     ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
                 if (classResource == nullptr) return;
                 auto session = sessionOf(classResource->get(), "build analysis classpath");
-                if (session.is_err()) return;   // 畸形支撑类不供层次事实（照旧容忍）
+                if (session.is_err()) return;   // 畸形支撑类不供层次事实（容忍畸形，跳过）
                 auto summary = hierarchy::fillSummary(*std::move(session).unwrap(), *graph.pool);
                 if (primaryOwner || registered.insert(summary.self.id).second)
                     pending.push_back(std::move(summary));
@@ -2064,7 +2063,7 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchStrings(
         if (classResource == nullptr) return;
         const std::string uri{uriView};
         auto              session = sessionOf(classResource->get(), "search strings");
-        if (session.is_err()) return;   // 搜索对畸形 class 宽容（照旧）
+        if (session.is_err()) return;   // 搜索对畸形 class 宽容
         auto                        held = std::move(session).unwrap();
         const jbc::core::ClassFile& cf   = held->backing();
         const auto                  owner = std::string{cf.thisName()};
@@ -2292,7 +2291,7 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchInstructions(
                         else
                         {
                             // CP2 形态含 invoke*virtual/static/special 与字段/类访问
-                            // 指令——成员引用文本与旧栈 methodTarget 口径一致。
+                            // 指令——成员引用文本走无冒号扁平拼接口径。
                             const auto reference = memberRefFlatText(cf, insn.cp);
                             if (!reference.empty()) output << ' ' << reference;
                         }
@@ -2420,10 +2419,9 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::calleesOfMethod(
         }
         else {
             // 解析展开（mjbase 面）：虚调用/接口调用沿层次图展开到「静态目标 +
-            // 后代中声明同名同描述符方法」的候选集合（虚分派可达面）。旧栈
-            // ResolvedCallGraph 的完整闭包设施未随迁，本近似覆盖 direct 与
-            // 单继承/接口分派的展开语义——完整闭包由主线 ResolvedCallGraph
-            // 设施接管（迁移报告项）。
+            // 后代中声明同名同描述符方法」的候选集合（虚分派可达面）。本展开
+            // 覆盖 direct 与单继承/接口分派的展开语义——完整闭包由主线
+            // ResolvedCallGraph 设施接管。
             auto graph = analysisGraph();
             if (graph.is_err()) return ca::core::Err(std::move(graph).unwrap_err());
             auto           analysis = std::move(graph).unwrap();
@@ -2526,7 +2524,7 @@ WorkspaceResult<ClassRelations> WorkspaceBase::classRelations(
         for (ca::usize at = 1; at < chain.size(); ++at) {
             result.superclasses.push_back(std::string{analysis.hierarchy->nameOf(chain[at])});
         }
-        // 接口闭包：super 链各类的直接接口 + 传递超接口（照旧 ancestors∩interface 语义）。
+        // 接口闭包：super 链各类的直接接口 + 传递超接口。
         for (const auto ancestor : analysis.hierarchy->interfaceClosure(index)) {
             if (ancestor == index || !analysis.hierarchy->isInterface(ancestor)) continue;
             result.interfaces.push_back(std::string{analysis.hierarchy->nameOf(ancestor)});
@@ -2600,8 +2598,6 @@ WorkspaceResult<std::vector<MethodOverrideInfo>> WorkspaceBase::overridesOfMetho
 
         // 覆盖组件（mjbase 面直算）：候选 = 全部声明同名同描述符方法的登记类；
         // 两候选之间是子类型关系（任一方向）即连通；并查集闭包给出组件。
-        // 旧栈经 renamer RenameContext 的组件游走未随迁，此处等价重建；
-        // 与引擎共用的组件解析设施由主线 renamer 接管（迁移报告项）。
         std::vector<mjbase::ClassKey> candidates;
         for (const auto& [id, summary] : analysis.summaries) {
             (void)summary;
@@ -2713,7 +2709,7 @@ MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> c
     result.exportable  = true;
     result.byteDiffs   = std::move(diffs);
     if (result.byteDiffs.empty()) {
-        // 空 diff 不产生新 revision、不进历史（照旧）。
+        // 空 diff 不产生新 revision、不进历史。
         result.revision = revision_;
         return result;
     }
@@ -3002,8 +2998,8 @@ WorkspaceErrorInfo WorkspaceBase::validateCandidate(
         const auto* classResource =
             ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
         if (classResource == nullptr) return;
-        // spi sanitize gate：引用语义损坏的 class 在候选入口前置拒绝（协作面，
-        // 迁移口径 2：workspace × sanitize gate 契约落点）。
+        // spi sanitize gate：引用语义损坏的 class 在候选入口前置拒绝
+        // （workspace × sanitize gate 契约落点）。
         const auto issues = spi::sanitizeClassFile(classResource->get());
         if (!issues.empty()) {
             for (const auto& issue : issues) {
@@ -3143,11 +3139,11 @@ WorkspaceResult<std::vector<ReferenceInfo>> workflowReferences(
 
 /// @brief 扫描 JDK 归档（.jar/.zip/.jmod，递归）建层次图。
 ///
-/// 旧栈 CommonSuperClassProvider::scan 的 mjbase 对应物：resolver 的数据获取
+/// resolver 的数据获取
 /// 是调用方的事，管线只消费已建好的图（pass-contract §9）。逐归档逐类
 /// fail-open——解析不了的归档/类不贡献层次事实，层次
 /// 缺口由 CommonSuperClassResolver 的回退路径兜住。jimage（lib/modules）不是
-/// zip 容器，不在扫描集（与 ）。
+/// zip 容器，不在扫描集。
 void scanJdkHierarchy(const std::string& jdkPath, mjbase::hierarchy::ClassHierarchy& hierarchy,
                       mjbase::KeyPool& pool)
 {
@@ -3206,8 +3202,7 @@ WorkspaceErrorInfo WorkspaceBase::runPipeline(model::ResourceContainer& candidat
         builder = spi::PassRegistry::instance().getPipeline("default-optimize");
     }
 
-    // jdkPath 非空：扫描 JDK 归档建层次图，Strict resolver 接入帧重算（旧栈
-    // COMPUTE_MAXS|COMPUTE_FRAMES 的对应物）。resolver 链的生命周期必须覆盖
+    // jdkPath 非空：扫描 JDK 归档建层次图，Strict resolver 接入帧重算。resolver 链的生命周期必须覆盖
     // buildNestedPipeline + runContainerPipeline 全程，故在 job 之前构造。
     mjbase::KeyPool                        jdkPool;
     mjbase::hierarchy::ClassHierarchy      jdkHierarchy{jdkPool};

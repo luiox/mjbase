@@ -41,11 +41,11 @@ namespace mjbase::spi {
 /// 生命周期内有效；借用外部指针的 pinned 结果必须由注入方在借用作用域结束时调用
 /// `clearPinned` 或恢复先前值。
 ///
-/// @par 与 旧栈 版的差异
-/// 移除 typeResolver 注入口（旧 ICommonSuperClassProvider 挂在 AM 上供 COMPUTE_FRAMES
-/// 写回取用）。libjbc 的写回面（lowerMethod relocation 契约 + writeClass copy-through）
-/// 不需要外部 resolver；公共父类求解改由 mjbase::spi::CommonSuperClassResolver 独立
-/// 供给（见 pass-contract.md），出现重算 StackMapTable 的 pass 时再经管线注入。
+/// @par 注入口形态
+/// 不设 typeResolver 注入口：libjbc 的写回面（lowerMethod relocation 契约 +
+/// writeClass copy-through）不需要外部 resolver；公共父类求解由
+/// mjbase::spi::CommonSuperClassResolver 独立供给（见 pass-contract.md），出现
+/// 重算 StackMapTable 的 pass 时再经管线注入。
 template<class IRUnitT>
 class AnalysisManager
 {

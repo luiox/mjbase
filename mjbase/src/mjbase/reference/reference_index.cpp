@@ -47,8 +47,7 @@ bool isTypeInstruction(Op op)
     return op == Op::NEW || op == Op::ANEWARRAY || op == Op::CHECKCAST || op == Op::INSTANCEOF;
 }
 
-// ── 描述符/签名内的类型抽取（旧栈 appendDescriptorTypes/appendSignatureTypes
-//    照迁；抽取结果是入参视图的子视图，随 intern 进索引池后长期有效）──
+// ── 描述符/签名内的类型抽取──
 
 void appendDescriptorTypes(std::string_view desc, std::vector<std::string_view>& out)
 {
@@ -776,7 +775,7 @@ void ReferenceIndex::indexMethodMetadata(jbc::ir::ClassSession&     session,
         }
     }
     // 方法级 Runtime 注解 + ParameterAnnotations + AnnotationDefault
-    //（*TypeAnnotation / 局部变量注解族 libjbc 未建模，本批放弃，见迁移报告）
+    //
     for (const std::string_view attrName :
          {std::string_view{"RuntimeVisibleAnnotations"},
           std::string_view{"RuntimeInvisibleAnnotations"}}) {
@@ -906,8 +905,7 @@ void ReferenceIndex::indexMethodBody(jbc::ir::ClassSession&                sessi
         }
     };
 
-    // 反射字符串/成员查找状态机（旧栈线性状态照迁；hasReflectionClassTarget
-    // 跨指令存续，仅被 forName 命中或查找命中消费）。
+    // 反射字符串/成员查找状态机。
     bool              hasLastStringConstant    = false;
     bool              hasReflectionClassTarget = false;
     bool              hasReflectionMemberName  = false;
@@ -1110,7 +1108,7 @@ void ReferenceIndex::indexMethodBody(jbc::ir::ClassSession&                sessi
                 }
             }
         }
-        // 其余指令：字符串状态复位（与）。
+        // 其余指令：字符串状态复位。
         hasLastStringConstant = stringLdc;
     }
 

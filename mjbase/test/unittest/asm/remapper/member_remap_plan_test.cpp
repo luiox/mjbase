@@ -1,10 +1,8 @@
 /// @file        member_remap_plan_test.cpp
 /// @brief       asm/remapper 模块测试：计划/类改写器/资源改写器/映射门面。
 ///
-/// 全量移植，语义为 oracle）；夹具从 ASM ClassNode 手拼改为
-/// class_bytes_builder.hpp 的受控字节装配 + libjbc 会话往返，断言面从内存树
-/// 改为 writeClass → readClass 的产物字节（更贴近旧栈 ClassWriter 输出的
-/// 可观察行为）。另补 MappingRemapper（utf8_remapper 去 visitor 重设计）用例。
+/// 夹具用 class_bytes_builder.hpp 的受控字节装配 + libjbc 会话往返装配，
+/// 断言面为 writeClass → readClass 的产物字节。另补 MappingRemapper 用例。
 #include <gtest/gtest.h>
 
 #include <cstring>
@@ -340,7 +338,7 @@ bool contains(const std::vector<std::string>& values, std::string_view value)
 }
 
 // ---------------------------------------------------------------------------
-// 共享夹具装配器（与）。
+// 共享夹具装配器。
 // ---------------------------------------------------------------------------
 
 /// @brief OldOwner 族 + 反射字符串 + 注解/签名三面。
@@ -877,7 +875,7 @@ std::string manifestText(const mjbase::jar::Manifest& manifest, const char* key)
 // 用例。
 // ---------------------------------------------------------------------------
 
-// 旧例 1：rewritesClassDescriptorsAndCallSites
+// 例 1：rewritesClassDescriptorsAndCallSites
 TEST(MjAsmRemapperTest, rewritesClassDescriptorsAndCallSites)
 {
     MemberRemapPlan plan;
@@ -942,7 +940,7 @@ TEST(MjAsmRemapperTest, rewritesClassDescriptorsAndCallSites)
     EXPECT_EQ("[[LNewType;", classTextOf(back->backing(), multiInsn->cp));
 }
 
-// 旧例 2：mapsDescriptorsWithoutApplyingClassTree
+// 例 2：mapsDescriptorsWithoutApplyingClassTree
 TEST(MjAsmRemapperTest, mapsDescriptorsWithoutApplyingClassTree)
 {
     MemberRemapPlan empty;
@@ -970,7 +968,7 @@ TEST(MjAsmRemapperTest, mapsDescriptorsWithoutApplyingClassTree)
               std::string(plan.mapFieldDescriptor("LOldOwner;")));
 }
 
-// 旧例 3：descriptorCacheFollowsClassMappingUpdates
+// 例 3：descriptorCacheFollowsClassMappingUpdates
 TEST(MjAsmRemapperTest, descriptorCacheFollowsClassMappingUpdates)
 {
     MemberRemapPlan plan;
@@ -986,7 +984,7 @@ TEST(MjAsmRemapperTest, descriptorCacheFollowsClassMappingUpdates)
     EXPECT_EQ("LFinalOwner;", std::string(plan.mapSignature("LOldOwner;")));
 }
 
-// 旧例 4：remapsTypeHandleInvokeDynamicAndFrameConstants
+// 例 4：remapsTypeHandleInvokeDynamicAndFrameConstants
 TEST(MjAsmRemapperTest, remapsTypeHandleInvokeDynamicAndFrameConstants)
 {
     MemberRemapPlan plan;
@@ -1100,7 +1098,7 @@ TEST(MjAsmRemapperTest, remapsTypeHandleInvokeDynamicAndFrameConstants)
     EXPECT_EQ("[Lpkg/NewType;", classTextOf(bcf, smt->frames[0].locals[1].cp));
 }
 
-// 旧例 5：remapsMethodDebugExceptionAndModuleClassMetadata
+// 例 5：remapsMethodDebugExceptionAndModuleClassMetadata
 TEST(MjAsmRemapperTest, remapsMethodDebugExceptionAndModuleClassMetadata)
 {
     MemberRemapPlan plan;
@@ -1178,7 +1176,7 @@ TEST(MjAsmRemapperTest, remapsMethodDebugExceptionAndModuleClassMetadata)
     }
 }
 
-// 旧例 6：remapsStructuralClassMetadata
+// 例 6：remapsStructuralClassMetadata
 TEST(MjAsmRemapperTest, remapsStructuralClassMetadata)
 {
     MemberRemapPlan plan;
@@ -1325,7 +1323,7 @@ TEST(MjAsmRemapperTest, remapsStructuralClassMetadata)
     }
 }
 
-// 旧例 7：descriptorlessFieldRuleMatchesByOwnerAndName
+// 例 7：descriptorlessFieldRuleMatchesByOwnerAndName
 TEST(MjAsmRemapperTest, descriptorlessFieldRuleMatchesByOwnerAndName)
 {
     MemberRemapPlan plan;
@@ -1359,7 +1357,7 @@ TEST(MjAsmRemapperTest, descriptorlessFieldRuleMatchesByOwnerAndName)
     EXPECT_EQ("LOldType;", ref.desc);
 }
 
-// 旧例 8：policyControlsReflectionStringsAnnotationsAndSignatures
+// 例 8：policyControlsReflectionStringsAnnotationsAndSignatures
 TEST(MjAsmRemapperTest, policyControlsReflectionStringsAnnotationsAndSignatures)
 {
     MemberRemapPlan plan;
@@ -1422,7 +1420,7 @@ TEST(MjAsmRemapperTest, policyControlsReflectionStringsAnnotationsAndSignatures)
     }
 }
 
-// 旧例 9：reflectionPolicyRewritesConstantMemberLookupNames
+// 例 9：reflectionPolicyRewritesConstantMemberLookupNames
 TEST(MjAsmRemapperTest, reflectionPolicyRewritesConstantMemberLookupNames)
 {
     MemberRemapPlan plan;
@@ -1471,7 +1469,7 @@ TEST(MjAsmRemapperTest, reflectionPolicyRewritesConstantMemberLookupNames)
     }
 }
 
-// 旧例 10：reflectionMemberLookupKeepsAmbiguousOverloadName
+// 例 10：reflectionMemberLookupKeepsAmbiguousOverloadName
 TEST(MjAsmRemapperTest, reflectionMemberLookupKeepsAmbiguousOverloadName)
 {
     MemberRemapPlan plan;
@@ -1502,7 +1500,7 @@ TEST(MjAsmRemapperTest, reflectionMemberLookupKeepsAmbiguousOverloadName)
     EXPECT_TRUE(methodOf(*cf, "oldMethod") == nullptr);
 }
 
-// 旧例 11：policyControlsAnnotationClassLiteralElements
+// 例 11：policyControlsAnnotationClassLiteralElements
 TEST(MjAsmRemapperTest, policyControlsAnnotationClassLiteralElements)
 {
     MemberRemapPlan plan;
@@ -1540,7 +1538,7 @@ TEST(MjAsmRemapperTest, policyControlsAnnotationClassLiteralElements)
     }
 }
 
-// 旧例 12：containerRemapKeepsResourceNamesByDefault
+// 例 12：containerRemapKeepsResourceNamesByDefault
 TEST(MjAsmRemapperTest, containerRemapKeepsResourceNamesByDefault)
 {
     MemberRemapPlan plan;
@@ -1562,7 +1560,7 @@ TEST(MjAsmRemapperTest, containerRemapKeepsResourceNamesByDefault)
     EXPECT_EQ("pkg/NewName", classTextOf(*cf, cf->thisClass));
 }
 
-// 旧例 13：remapsReflectionMemberAfterAliasWrapper
+// 例 13：remapsReflectionMemberAfterAliasWrapper
 TEST(MjAsmRemapperTest, remapsReflectionMemberAfterAliasWrapper)
 {
     MemberRemapPlan plan;
@@ -1585,9 +1583,8 @@ TEST(MjAsmRemapperTest, remapsReflectionMemberAfterAliasWrapper)
         EXPECT_TRUE(contains(strings, "newMethod")) << method;
         EXPECT_FALSE(contains(strings, "oldMethod")) << method;
     }
-    // 偏离点：consumedQueueUse 的 poll→checkcast 队列消费形态，mjbase
-    // AliasAnalysis 未建模（fail-open 保留原名）；旧栈别名引擎可证该接收者。
-    // 等价能力见迁移报告「共享设施请求」。
+    // 已知盲区：consumedQueueUse 的 poll→checkcast 队列消费形态，mjbase
+    // AliasAnalysis 未建模（fail-open 保留原名），接收者名不改写。
     {
         const std::vector<std::string> strings = ldcStringsOf(*session, "consumedQueueUse");
         EXPECT_TRUE(contains(strings, "oldMethod"));
@@ -1595,7 +1592,7 @@ TEST(MjAsmRemapperTest, remapsReflectionMemberAfterAliasWrapper)
     }
 }
 
-// 旧例 14：containerRemapMovesClassResourceNamesWhenPolicyAllows
+// 例 14：containerRemapMovesClassResourceNamesWhenPolicyAllows
 TEST(MjAsmRemapperTest, containerRemapMovesClassResourceNamesWhenPolicyAllows)
 {
     MemberRemapPlan plan;
@@ -1623,7 +1620,7 @@ TEST(MjAsmRemapperTest, containerRemapMovesClassResourceNamesWhenPolicyAllows)
     EXPECT_EQ(textBytes, text->get());
 }
 
-// 旧例 15：containerRemapRewritesServiceMetadataWhenPolicyAllows
+// 例 15：containerRemapRewritesServiceMetadataWhenPolicyAllows
 TEST(MjAsmRemapperTest, containerRemapRewritesServiceMetadataWhenPolicyAllows)
 {
     MemberRemapPlan plan;
@@ -1665,7 +1662,7 @@ TEST(MjAsmRemapperTest, containerRemapRewritesServiceMetadataWhenPolicyAllows)
     }
 }
 
-// 旧例 16：containerRemapRewritesEmbeddedMappingTextWhenPolicyAllows
+// 例 16：containerRemapRewritesEmbeddedMappingTextWhenPolicyAllows
 TEST(MjAsmRemapperTest, containerRemapRewritesEmbeddedMappingTextWhenPolicyAllows)
 {
     MemberRemapPlan plan;
@@ -1689,7 +1686,7 @@ TEST(MjAsmRemapperTest, containerRemapRewritesEmbeddedMappingTextWhenPolicyAllow
     EXPECT_EQ(toBytes("pkg/NewName Lpkg/NewType;\npkg/NewName.oldField\n"), mapping->get());
 }
 
-// 旧例 17：containerRemapRewritesBusinessTextOnlyWhenExplicitlyAuthorized
+// 例 17：containerRemapRewritesBusinessTextOnlyWhenExplicitlyAuthorized
 TEST(MjAsmRemapperTest, containerRemapRewritesBusinessTextOnlyWhenExplicitlyAuthorized)
 {
     MemberRemapPlan plan;
@@ -1728,7 +1725,7 @@ TEST(MjAsmRemapperTest, containerRemapRewritesBusinessTextOnlyWhenExplicitlyAuth
     }
 }
 
-// 旧例 18：containerRemapRewritesManifestClassAttributesWhenPolicyAllows
+// 例 18：containerRemapRewritesManifestClassAttributesWhenPolicyAllows
 TEST(MjAsmRemapperTest, containerRemapRewritesManifestClassAttributesWhenPolicyAllows)
 {
     MemberRemapPlan plan;
@@ -1781,7 +1778,7 @@ TEST(MjAsmRemapperTest, containerRemapRewritesManifestClassAttributesWhenPolicyA
     }
 }
 
-// 旧例 19：resourceSubSwitchesGateManifestAndServiceLoader
+// 例 19：resourceSubSwitchesGateManifestAndServiceLoader
 TEST(MjAsmRemapperTest, resourceSubSwitchesGateManifestAndServiceLoader)
 {
     MemberRemapPlan plan;
@@ -1859,7 +1856,7 @@ TEST(MjAsmRemapperTest, resourceSubSwitchesGateManifestAndServiceLoader)
     }
 }
 
-// 旧例 20：resourceRemapperKeepsAllPolicySurfacesIndependent
+// 例 20：resourceRemapperKeepsAllPolicySurfacesIndependent
 TEST(MjAsmRemapperTest, resourceRemapperKeepsAllPolicySurfacesIndependent)
 {
     MemberRemapPlan plan;
@@ -1952,7 +1949,7 @@ TEST(MjAsmRemapperTest, resourceRemapperKeepsAllPolicySurfacesIndependent)
     }
 }
 
-// 旧例 21：containerRemapPreservesDebugMetadata
+// 例 21：containerRemapPreservesDebugMetadata
 TEST(MjAsmRemapperTest, containerRemapPreservesDebugMetadata)
 {
     MemberRemapPlan plan;
@@ -1991,7 +1988,7 @@ TEST(MjAsmRemapperTest, containerRemapPreservesDebugMetadata)
 }
 
 // ---------------------------------------------------------------------------
-// MappingRemapper（utf8_remapper 去 visitor 重设计）补充用例。
+// MappingRemapper 补充用例。
 // ---------------------------------------------------------------------------
 
 TEST(MjAsmRemapperTest, mappingRemapperMapsClassAndMemberTexts)

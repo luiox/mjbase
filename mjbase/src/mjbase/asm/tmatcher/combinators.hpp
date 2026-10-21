@@ -1,7 +1,7 @@
 /// @file        combinators.hpp
 /// @brief       组合子库：叶子匹配节点 + 序列组合子 + 捕获。
 ///
-/// 语义对齐 asm/tmatcher 的 combinators.hpp，按新底座裁剪：
+/// 设计要点：
 ///   - 叶子按 `jbc::core::Op` 与操作数条件（cp 索引 / local 索引 /
 ///     立即数 / 分支目标标签解析结果）组合成谓词。
 ///   - 组合子覆盖任务清单：seq / any（任意单条）/ opt / repeat（贪婪与
@@ -9,8 +9,7 @@
 ///     捕获表与 DOM，可表达守卫与否定条件），不再单列节点。
 ///   - 捕获绑定「捕获名 → 窗口入口指令句柄」（InsnId），提取操作数是
 ///     调用方经 CodeDom::peek 的事。
-///   - 候选排序即优先级：贪婪降序、懒惰升序；与旧实现的差异见各步骤
-///     注释。
+///   - 候选排序即优先级：贪婪降序、懒惰升序；语义细节见各步骤注释。
 #pragma once
 
 #include <algorithm>
@@ -128,7 +127,7 @@ public:
 
 /// @brief 永不匹配的 step：非法构造参数（如 repeat 区间不合法）的显式失败态。
 ///
-/// 旧实现在构造函数抛异常；新约定不抛错，改为「构造成功、匹配恒败」，
+/// 构造不抛错：构造成功、匹配恒败，
 /// 失败原因写进 name() 与 trace detail，调用方可观察。
 class NeverMatchStep : public IMatchStep
 {
@@ -528,8 +527,7 @@ inline StepPtr branchTargetsCapture(std::string_view name)
 
 /// @brief 匹配 Local1 形状指令，且其局部索引 == 捕获 name 绑定指令的局部索引。
 ///
-/// 绑定指令也必须是 Local1 形状，否则不匹配（旧实现的 guardEquals 槽位
-/// 相等场景在此表达）。
+/// 绑定指令也必须是 Local1 形状，否则不匹配。
 inline StepPtr sameLocalIndexAs(std::string_view name)
 {
     return pred("sameLocalAs(" + std::string(name) + ")",

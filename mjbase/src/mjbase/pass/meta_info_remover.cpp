@@ -95,7 +95,7 @@ bool removeNamedSlots(ClassFile&                                   cf,
 }
 
 /// Utf8 字节视图的码点数（延续字节不计；与 ca::str::Utf8StringRef::length()
-/// 同口径——）。
+/// 同口径）。
 ca::usize codepointLength(std::string_view s)
 {
     ca::usize count = 0;
@@ -119,8 +119,8 @@ bool isMalformedAnnotationDesc(std::string_view desc)
     return false;
 }
 
-/// 旧栈 SpecificAnnotationRemover 黑名单描述符封闭集（原表原样，含重复条目
-/// ——集合语义，重复不影响判定）。
+/// SpecificAnnotationRemover 黑名单描述符封闭集（原表原样，含重复条目——
+/// 集合语义，重复不影响判定）。
 constexpr std::string_view kAnnotationBlacklist[] = {
     "Ltech/origincloud/OriginShieldMetadata;",
     "Ljvavx/annotation/Nullable;",
@@ -259,8 +259,8 @@ bool filterTypeAnnotationSlots(ClassFile&             cf,
 }
 
 /// 方法 Code 嵌套属性表里的 Runtime{Visible,Invisible}TypeAnnotations 槽内
-/// 过滤：code 目标形态（cast/instanceof/new/localvar 等）在旧栈树模型里平铺
-/// 在方法向量上，与成员级同面参与过滤。改动落盘需父 Code 槽连带置脏
+/// 过滤：code 目标形态（cast/instanceof/new/localvar 等）与成员级同面参与
+/// 过滤。改动落盘需父 Code 槽连带置脏
 /// （pass-contract §1：嵌套属性改动对 writeClass 不可见，除非 Code 槽本身
 /// 标脏重编码）。返回是否发生任何变化。
 bool filterCodeNestedTypeAnnotationSlots(ClassFile& cf, MemberInfo& m, const AnnoFilter filter)
@@ -318,8 +318,7 @@ std::string_view sourceFileValue(const ClassFile& cf, const AttrSlot& slot)
     return cf.utf8(idx);
 }
 
-/// SourceDebugExtension 槽载荷值（内联 Utf8 字节，非 CP 间接；旧栈
-/// sourceDebug 的序列化名即 JVMS 4.7.15 的 SourceDebugExtension）。
+/// SourceDebugExtension 槽载荷值（内联 Utf8 字节，非 CP 间接）。
 std::string_view sourceDebugValue(const ClassFile& cf, const AttrSlot& slot)
 {
     const auto view = cf.source().spanOrEmpty(slot.data);
@@ -350,9 +349,7 @@ bool isIllegalDebugInfo(std::string_view info)
     return false;
 }
 
-/// Signature 槽载荷是否为合法签名（与旧栈 ASM SignatureReader 分道对齐：
-/// 类/方法用类/方法签名文法，字段用类型签名文法）；空载荷合法（旧栈空串
-/// 保持）。解码失败按合法处理（fail-closed 保守，不动输入）。
+/// Signature 槽载荷是否为合法签名；空载荷合法。解码失败按合法处理（fail-closed 保守，不动输入）。
 bool signatureSlotIsValid(ClassFile& cf, AttrSlot& slot, jbc::type::SignatureForm form)
 {
     auto decoded = cf.decodeAttr(slot);
@@ -431,9 +428,8 @@ bool removeUnknownAttrSlots(const ClassFile& cf, std::vector<AttrSlot>& attrs)
 
 /// MethodParameters 槽内非法参数访问位清除（JVMS 4.7.24：u2 count +
 /// {u2 name_index, u2 access_flags}*；libjbc 未建模，Raw 槽原位改写）。
-/// 布局双道：标准 u2 count 形态与旧栈 writer 的遗留形态（u1 count——旧栈树
-/// writer 参数表计数字段按 u1 落盘，批 B 语料与 golden 皆此形态）都接，其余
-/// 形状保守跳过。返回是否发生改写。
+/// 布局双道：标准 u2 count 形态与遗留 u1 count 形态都接，其余形状保守跳过。
+/// 返回是否发生改写。
 bool clearIllegalParameterAccess(ClassFile& cf, std::vector<AttrSlot>& attrs)
 {
     AttrSlot* slot = findSlot(cf, attrs, kMethodParameters);
@@ -461,7 +457,7 @@ bool clearIllegalParameterAccess(ClassFile& cf, std::vector<AttrSlot>& attrs)
         }
     }
     if (base == 0) return false;
-    // 旧 ILLEGAL_PARAM_ACCESS 表的 u16 位并集（SUPER/VOLATILE/VARARGS 三常量
+    // 非法参数 access 位掩码 = u16 位并集（SUPER/VOLATILE/VARARGS 三常量
     // 承载 module 语境别名位 OPEN/TRANSITIVE/STATIC_PHASE 与 SYNCHRONIZED/
     // BRIDGE/TRANSIENT；FINAL/SYNTHETIC/MANDATED 幸存；RECORD/DEPRECATED 位
     // 超 u16 恒零无面）。
@@ -680,8 +676,8 @@ mjbase::spi::PreservedAnalyses IllegalTypeAnnotationRemover::run(jbc::ir::ClassS
     bool       changed = filterTypeAnnotationSlots(cf, cf.attrs, AnnoFilter::Malformed);
     for (MemberInfo& m : cf.methods) {
         changed |= filterTypeAnnotationSlots(cf, m.attrs, AnnoFilter::Malformed);
-        // code 目标形态（cast/instanceof/new/localvar）旧栈在方法向量上同面
-        // 参与——Code 嵌套槽内过滤（父 Code 槽连带置脏）。
+        // code 目标形态（cast/instanceof/new/localvar）与成员级同面过滤——
+        // Code 嵌套槽内过滤（父 Code 槽连带置脏）。
         changed |= filterCodeNestedTypeAnnotationSlots(cf, m, AnnoFilter::Malformed);
     }
     for (MemberInfo& f : cf.fields) {
@@ -787,10 +783,10 @@ mjbase::spi::PreservedAnalyses SpecificAnnotationRemover::run(jbc::ir::ClassSess
     bool       changed = filterAnnotationSlots(cf, cf.attrs, AnnoFilter::Blacklisted);
     for (MemberInfo& m : cf.methods) {
         changed |= filterAnnotationSlots(cf, m.attrs, AnnoFilter::Blacklisted);
-        // 参数注解两槽（Runtime{Visible,Invisible}ParameterAnnotations）的槽内
-        // 过滤是旧实现面，但 libjbc 未建模该族（attr_codec 按名分派不含参数
-        // 注解，解码为 Raw），槽内过滤需注解表读取面——本批保守跳过，挂账
-        // libjbc 建模后续批次（当前语料无参数注解，golden 对拍不受影响）。
+        // 参数注解两槽（Runtime{Visible,Invisible}ParameterAnnotations）不做
+        // 槽内过滤：libjbc 未建模该族（attr_codec 按名分派不含参数注解，
+        // 解码为 Raw），槽内过滤需注解表读取面——保守跳过，挂账 libjbc
+        // 建模后续批次（当前语料无参数注解，golden 对拍不受影响）。
     }
     for (MemberInfo& f : cf.fields) {
         changed |= filterAnnotationSlots(cf, f.attrs, AnnoFilter::Blacklisted);

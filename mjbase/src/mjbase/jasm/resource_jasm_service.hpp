@@ -12,11 +12,9 @@ namespace mjbase::jasm {
 /// 汇编仅在名称校验和候选工作区验证全部成功后替换 ClassResource，失败不会修改
 /// 资源内容。
 ///
-/// 与 旧栈 的差异（本批有意重设计）：旧栈 版经 GlobalAnalysisManager 挂
-/// ClassHierarchyAnalysis 缓存，并在成功替换后 clear 缓存；mjbase 无 spi 域，
-/// 层次图改为每次 assemble 按容器当前内容即时重建——服务不持任何跨调用缓存，
-/// 「成功替换后不得使用陈旧层次」的契约由构造保证。候选工作区验证仍用候选
-/// 容器即时重建的层次图，事务语义不变。
+/// 层次图不设跨调用缓存：每次 assemble 按容器当前内容即时重建，候选工作区
+/// 验证也用候选容器即时重建的层次图——「成功替换后不得使用陈旧层次」的契约
+/// 由构造保证，事务语义不变。
 class ResourceJasmService final
 {
 public:

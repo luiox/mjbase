@@ -1,11 +1,11 @@
 /// @file        field_hierarchy.hpp
 /// @brief       字段层次：沿 super 链的可见性解析（找到定义类 / shadow 判定）。
 ///
-/// 语义来源：
+/// 语义：
 /// - resolveField：receiver 起 super 链自近及远，第一个 name+desc 完全
 ///   匹配的声明即解析结果（JVM 字段解析不区分 static/instance）；
 /// - shadowsAncestor：实例字段遮蔽祖先链上的同名实例字段（static 字段
-///   不构成遮蔽，与旧 isSourceField 的反面语义一致——旧 canRename 不迁）。
+///   不构成遮蔽）。
 #pragma once
 
 #include <unordered_map>

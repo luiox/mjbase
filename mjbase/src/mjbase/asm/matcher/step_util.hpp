@@ -1,7 +1,7 @@
 /// @file        step_util.hpp
-/// @brief       常用语义谓词步骤与常量值读写助手（旧 StepUtil 的可移植面）。
+/// @brief       常用语义谓词步骤与常量值读写助手。
 ///
-/// 旧栈两块面不可移植，有意不迁：按 owner/name/desc 匹配 invoke 家族、
+/// 未提供两块面：按 owner/name/desc 匹配 invoke 家族、
 /// 按 CP 载荷判别 ldc 内容——都需要常量池语义，纯 CodeDom 层只有 cp 索引。
 /// 需要精确判别时用 MatchStep::opIf 携带调用方自己的谓词。
 #pragma once
@@ -33,7 +33,7 @@ struct Steps
 
     /// @brief DSL 类型标签 'I'|'J'|'F'|'D' 的常量装载判定。
     ///
-    /// 语义照旧：I 含 bipush/sipush/ldc/iconst 族；F 含 fconst 族/ldc；
+    /// 语义：I 含 bipush/sipush/ldc/iconst 族；F 含 fconst 族/ldc；
     /// J/D 只认 lconst/dconst；
     /// 'L' 归一为 'J'；其它标签恒 false。
     static bool isConstLoadOfType(char typeTag, const jbc::ir::Insn& insn) noexcept;

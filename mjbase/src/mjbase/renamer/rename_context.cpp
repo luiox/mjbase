@@ -126,7 +126,7 @@ Result<MemberKey, std::string> RenameContext::overrideComponentRootOf(
         return Err("override component root: owner not in container: " + std::string(owner));
     }
     // 族内最浅声明是族的规范根：同族任意成员求根恒等（method_hierarchy 决胜序
-    // 跨平台确定），可直接替代旧栈并查集根下标作去重键。
+    // 跨平台确定），直接作组件去重键。
     const MemberKey root = methods_.sourceDeclaration(keyOf(owner, name, desc));
     if (root.cls == 0) {
         return Err("override component root: method not declared: " + std::string(owner) +
@@ -138,8 +138,8 @@ Result<MemberKey, std::string> RenameContext::overrideComponentRootOf(
 ClassKey RenameContext::resolveInstanceFieldOwner(ClassKey start, std::string_view name,
                                                   std::string_view desc) const
 {
-    // ancestors 自反（含自身）、悬挂键计入后截断——与旧栈 while(current!=INVALID)
-    // 上溯逐类查声明的语义等值。
+    // ancestors 自反（含自身）、悬挂键计入后截断：沿祖先链逐类查字段声明，
+    // 命中最浅（最近）的声明者。
     for (const ClassKey current : hierarchy_.ancestors(start)) {
         const auto* summary = hierarchy_.summary(current);
         if (summary != nullptr && classDeclaresField(*summary, name, desc)) return current;

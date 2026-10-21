@@ -67,7 +67,7 @@ jbc::core::MemberInfo* findField(jbc::core::ClassFile& cf, const MemberSelector&
     return nullptr;
 }
 
-// ── 访问位校验（照旧直迁 validateVisibility/validateAccess）──────────────
+// ── 访问位校验（validateVisibility/validateAccess）──────────────
 
 WorkspaceErrorInfo validateVisibility(ca::i32 access, const std::string& operation)
 {
@@ -128,7 +128,7 @@ WorkspaceErrorInfo validateAccess(ca::i32 access, AnnotationTarget target,
 //
 // libjbc 常量池只追加面覆盖 Utf8/String/Class/Integer/Long/Float/Double 与
 // 成员引用（经会话 intern 去重）；MethodHandle/MethodType/Dynamic/
-// InvokeDynamic 无追加 API（主线缺口，迁移报告项）——对应请求在入口拒绝。
+// InvokeDynamic 无追加 API——对应请求在入口拒绝。
 
 WorkspaceErrorInfo validateHandle(const HandleSpec& spec)
 {
@@ -205,7 +205,7 @@ ca::u32 makeConstantCp(ClassSession& session, const ConstantSpec& spec)
     }
 }
 
-/// @brief 字段常量：种类须匹配描述符（照旧 fieldConstant 校验）。
+/// @brief 字段常量：种类须匹配描述符（fieldConstant 校验）。
 WorkspaceErrorInfo fieldConstant(const ClassMutation& mutation)
 {
     if (!mutation.hasFieldValue) return WorkspaceErrorInfo{};
@@ -225,7 +225,7 @@ WorkspaceErrorInfo fieldConstant(const ClassMutation& mutation)
     return validateConstant(mutation.fieldValue);
 }
 
-// ── 指令形状校验与物化（照旧 validInstructionShape/makeInstruction）──────
+// ── 指令形状校验与物化（validInstructionShape/makeInstruction）──────
 
 bool isSimpleOpcode(ca::i32 opcode)
 {
@@ -243,7 +243,7 @@ bool isSimpleOpcode(ca::i32 opcode)
            opcode == at(O::MONITORENTER) || opcode == at(O::MONITOREXIT);
 }
 
-/// @brief 指令形状校验；detail 输出旧栈同文本。
+/// @brief 指令形状校验；不合格时经 detail 输出原因文本。
 bool validInstructionShape(const InstructionSpec& spec, std::string& detail)
 {
     using O = Op;
@@ -468,7 +468,7 @@ void widenLdcIfNeeded(Insn& insn)
     if ((insn.op == Op::LDC || insn.op == Op::LDC_W) && insn.cp > 255) insn.op = Op::LDC_W;
 }
 
-/// @brief 在 labels 里找符号标签；空名/未知均按旧栈 "unknown label: <id>" 报错。
+/// @brief 在 labels 里找符号标签；空名/未知均以 "unknown label: <id>" 报错。
 WorkspaceErrorInfo findSymbolicLabel(const std::unordered_map<std::string, LabelId>& labels,
                                      const std::string& id, LabelId& out)
 {
@@ -487,7 +487,7 @@ bool labelAnchored(const jbc::ir::CodeDom& dom, LabelId label)
     return !std::move(resolved).unwrap().isEnd();
 }
 
-/// @brief COMPUTE_MAXS 等价物：帧引擎重算 maxStack/maxLocals 并叠加旧栈下限
+/// @brief COMPUTE_MAXS 等价物：帧引擎重算 maxStack/maxLocals 并叠加下限
 ///        （异常处理帧 ≥1 栈槽；maxLocals ≥ 参数槽位 + 非 static 的 this 槽）。
 WorkspaceErrorInfo recomputeFrameMaxes(ClassSession& session, jbc::ir::CodeUnit& unit,
                                        const jbc::core::MemberInfo& method)
@@ -733,7 +733,7 @@ WorkspaceErrorInfo buildMethodBody(ClassSession&                         session
 }
 
 /// @brief 把 BuiltBody 写进 Code 属性体（新建 CodeAttr + 调试表嵌套槽）。
-///        旧栈 COMPUTE_FRAMES 整体重建不带 StackMapTable（pass-contract §9）。
+///        整体重建产物不携带重建的 StackMapTable（pass-contract §9）。
 void applyBuiltBody(ClassSession& session, jbc::core::AttrSlot& slot, const BuiltBody& body)
 {
     auto code      = std::make_unique<CodeAttr>();
@@ -947,7 +947,7 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation)
             }
             if (!mutation.exceptions.empty()) {
                 // typed ExceptionsAttr（B3 分派接线后 Raw 形不再是该属性的
-                // 会话内合法形态；字节输出与旧 Raw 手拼逐字节一致）。
+                // 会话内合法形态）。
                 auto exc = std::make_unique<jbc::core::ExceptionsAttr>();
                 exc->exceptionCps.reserve(mutation.exceptions.size());
                 for (const std::string& exception : mutation.exceptions) {
@@ -1106,7 +1106,7 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation)
                                mutation.member.name);
                 break;
             }
-            // 空块 + 无绑定：照旧语义为成功无操作（不动方法体）。
+            // 空块 + 无绑定：语义为成功无操作（不动方法体）。
             if (mutation.tryCatchBlocks.empty() && mutation.existingLabels.empty()) break;
             const ca::usize methodIndex =
                 static_cast<ca::usize>(method - cf.methods.data());
@@ -1218,8 +1218,7 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation)
             status = buildMethodBody(*session, *method, mutation.initialInstructions,
                                      mutation.tryCatchBlocks, mutation.localVariables, body);
             if (status.is_err()) break;
-            // 整体重建：旧 Code 槽原位换体（含丢弃全部旧嵌套属性——旧栈
-            // COMPUTE_FRAMES + 空标签集合同样丢弃旧 LNT/LVT/SMT）。
+            // 整体重建：已有 Code 槽原位换体（丢弃其全部嵌套属性）。
             jbc::core::AttrSlot* codeSlot = support::findAttr(cf, method->attrs, "Code");
             if (codeSlot == nullptr) {
                 method->attrs.push_back(jbc::core::AttrSlot::makeNew(

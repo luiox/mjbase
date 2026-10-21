@@ -1,7 +1,7 @@
 /// @file        pattern_matcher_test.cpp
 /// @brief       旧代 pattern matcher 语义测试：窗口匹配、捕获、原子替换、回滚。
 ///
-/// 用例意图移植自旧栈 unittest/asm/matcher/pattern_matcher_test.cpp，
+/// 用例意图
 /// 底座换为纯 jbc::ir::CodeDom 构造。
 #include <gtest/gtest.h>
 
@@ -410,7 +410,7 @@ TEST(MjAsmMatcherTest, BranchTargetInsideWindowBlocksMatch)
     ASSERT_EQ(r1.size(), 1u);
     EXPECT_FALSE(r1[0].valid());
 
-    // 目标恰为窗口首条：豁免（等价）。
+    // 目标恰为窗口首条：豁免。
     PatternMatcher atHead;
     atHead.addRule(MatchRule({MatchStep::op(Op::IADD)}));
     const auto r2 = atHead.match(dom);

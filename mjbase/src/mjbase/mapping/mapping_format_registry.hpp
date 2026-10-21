@@ -39,8 +39,7 @@ public:
 
     /// @brief Parse text with a registered format.
     ///
-    /// 未注册的格式名返回 Err(UnknownFormat)（原 旧栈 静默返回空产物，改走
-    /// 错误通道）；已注册格式的行级宽容语义照旧。
+    /// 未注册的格式名返回 Err(UnknownFormat)（原）；已注册格式的行级宽容语义照旧。
     ca::Result<IntermediateMapping, MappingError> parse(
         ca::str::Utf8StringRef name, ca::str::Utf8StringRef mappingText) const;
 

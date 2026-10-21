@@ -451,8 +451,7 @@ public:
                 return value;
             }
             if (e.tag == CpTag::Class && env_.cp->isUtf8(e.a)) {
-                // 类常量转追踪名：数组取描述符原样，其余取内部名（旧栈
-                // classLiteralName 口径；CP Class 条目恒为 OBJECT/ARRAY 形态）。
+                // 类常量转追踪名：数组取描述符原样，其余取内部名。
                 const std::string_view n = env_.cp->utf8Of(e.a);
                 if (!n.empty()) {
                     value.kind = BindingValue::Kind::ClassObject;
@@ -761,7 +760,7 @@ BindingValue foldConcat(bool withConstants, std::string_view recipe,
 }
 
 /// @brief indy 拼接产点（StringConcatFactory.makeConcat*）；非拼接 indy 返回
-/// unknown（与）。
+/// unknown。
 BindingValue concatProduction(MethodPipeline& p, const jbc::ir::Insn& in, jbc::ir::InsnId id,
                               jbc::ir::ClassSession& session)
 {
@@ -953,7 +952,7 @@ bool recomputePureProductions(MethodPipeline& p, jbc::ir::ClassSession& session)
     return changed;
 }
 
-/// @brief 变异 pass（值轮收敛后按程序序一次性施加；）。
+/// @brief 变异 pass（值轮收敛后按程序序一次性施加）。
 ///
 /// 覆盖：NEW StringBuilder/StringBuffer（新对象登记）、SB append/insert/<init>
 /// （就地改内容 + 产出同一对象）、ANEWARRAY（新数组登记）、AASTORE（就地写元素）。
@@ -1584,7 +1583,7 @@ void ReflectionBindingAnalyzer::analyzeSession(jbc::ir::ClassSession& session)
     }
 }
 
-// ── 类级编排（旧栈 clear/summarize/bindingsOfClass/build/indexDeclarations 照迁；
+// ── 类级编排（clear/summarize/bindingsOfClass/build/indexDeclarations；
 //    文本一律 pool_ 驻留视图——键寿命与驻留池同在，内容寻址等值）──────────
 
 void ReflectionBindingAnalyzer::clear()
@@ -1631,7 +1630,7 @@ void ReflectionBindingAnalyzer::indexSession(jbc::ir::ClassSession& session)
 
     const std::string_view className = pool_.str(pool_.intern(syms.str(unit.thisClass)));
 
-    // 声明底表（first-seen wins；）。
+    // 声明底表（first-seen wins）。
     auto [it, inserted] = classes_.try_emplace(className);
     if (inserted) {
         ClassInfo& info = it->second;

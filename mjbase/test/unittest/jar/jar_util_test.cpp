@@ -41,8 +41,7 @@ TEST(MjJarUtilIsClassFileTest, nonClass)
     EXPECT_FALSE(JarUtil::isClassFile(S("Foo.class//")));
 }
 
-// ── 后缀判定的边界形态（os29/Jbytec 样本实测形态回归，判据溯源：
-//    私有侧 survey 笔记）──────────
+// ── 后缀判定的边界形态（实测样本形态回归）──────────
 
 // 恰好等于尾缀本身的最短输入：当前为纯文本尾缀判定，放行。
 // （".class" 是 6 字节、".class/" 是 7 字节，正好达到两个下限长度。）
@@ -224,11 +223,11 @@ TEST(MjJarUtilIsClassFileBytesTest, wideConstantTruncatedTailIsLenient)
     EXPECT_TRUE(JarUtil::isClassFile(bytes));
 }
 
-// stub 前缀 JAR（上游 98dd1f528 InfoImporterTest 用例移植）：文件头部形似
+// stub 前缀 JAR：文件头部形似
 // class（magic 合法）但首个 CP tag 越界（121），其后紧跟真实的 ZIP 数据
-// （"PK\x03\x04"…）。内容级嗅探必须判非 class——上游修复前这类文件被误判
-// 为"单个损坏 class"，整个容器按 illegal-class-suspect 处理导致条目全都不
-// 能加载；修复后内容嗅探放行给 ZIP/普通文件路径。
+// （"PK\x03\x04"…）。内容级嗅探必须判非 class，放行给 ZIP/普通文件路径；
+// 否则会被误判为"单个损坏 class"，整个容器按 illegal-class-suspect 处理，
+// 条目全部无法加载。
 TEST(MjJarUtilIsClassFileBytesTest, stubPrefixedJarBlobIsNotAClass)
 {
     auto bytes = classHeader(0x0005);

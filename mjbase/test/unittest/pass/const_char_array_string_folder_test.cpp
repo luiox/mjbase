@@ -310,8 +310,7 @@ TEST(ConstCharArrayStringFolderTest, wrongConstructorKept)
     EXPECT_EQ(r.out, in);
 }
 
-// ── 窗内锚定标签（GOTO 跳进 arm1 头）：保守整组保留（旧栈手工形态偏离差集，
-//    golden 字节对拍刻意避开，由本用例钉死口径）──
+// ── 窗内锚定标签（GOTO 跳进 arm1 头）：保守整组保留──
 TEST(ConstCharArrayStringFolderTest, midWindowAnchorKept)
 {
     FixtureBuilder b("t/F");
@@ -319,8 +318,7 @@ TEST(ConstCharArrayStringFolderTest, midWindowAnchorKept)
 
     // 字节布局：GOTO(3) | NEW(3) | DUP(1) | ICONST_3(1) | NEWARRAY(2)
     //   | arm0(5) | arm1 @pc15 | arm2 | INVOKESPECIAL | ARETURN
-    // GOTO 目标 = pc15（arm1 的 DUP 头，相对 pc0 偏移 +15，与 旧栈 侧
-    // hb_const_char_fold 语料的 m_keep_anchor 同布局）。
+    // GOTO 目标 = pc15（arm1 的 DUP 头，相对 pc0 偏移 +15）。
     Bytes code;
     appendBytes(code, {0xA7, 0x00, 0x0F});
     appendBytes(code, windowHead(cp));

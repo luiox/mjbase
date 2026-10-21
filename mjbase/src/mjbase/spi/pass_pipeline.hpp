@@ -82,10 +82,9 @@ struct InnerAMProxyResult
 /// 方法级 AM Proxy：注册在 ClassAnalysisManager 上（pinned），由管线 bootstrap
 /// 注入，ClassToMethodPassAdaptor 经 getPinned 取用。
 ///
-/// 与 旧栈 版的差异：旧 CurrentClassContext（pinned 注入「当前类」ClassNode*）
-/// 被并入 MethodScope——方法级单元自带 owner 身份（key.cls）与会话引用，
-/// 方法 pass 直接从作用域单元取所属类，不再需要二级 pinned 上下文及其
-/// save/restore 协议。跨层失效联动（S3）仍经本 proxy 传递。
+/// 方法级单元自带 owner 身份（key.cls）与会话引用，方法 pass 直接从
+/// 作用域单元取所属类；无二级 pinned 上下文及其 save/restore 协议。
+/// 跨层失效联动（S3）仍经本 proxy 传递。
 struct MethodAnalysisManagerProxy
 {
     using Result = InnerAMProxyResult<MethodAnalysisManager>;
@@ -115,8 +114,8 @@ public:
 };
 
 // ── 三个具体作用域 Pass 基类 ──
-//    旧名 AsmMethodPass/AsmClassPass/AsmGlobalPass 骑在 ASM tree 上；新名去
-//    "Asm" 前缀：单元是 libjbc 的 CodeUnit/ClassSession，不是 ASM 树。
+//    命名去 "Asm" 前缀：单元是 libjbc 的 CodeUnit/ClassSession，
+//    不是 ASM 树。
 using MethodPass = PassModel<MethodScope, MethodAnalysisManager>;
 using ClassPass  = PassModel<jbc::ir::ClassSession, ClassAnalysisManager>;
 using GlobalPass = PassModel<mjbase::model::ResourceContainer, GlobalAnalysisManager>;
@@ -418,10 +417,10 @@ private:
 /// 汇总（跳过数/失败类清单）经 options.faultReport 带出。诊断 reason 按失败阶段
 /// 区分：reader_error / pass_error / writer_error。默认关闭，语义不变。
 ///
-/// 与 旧栈 版的差异：classWriterFlags/typeResolver 参数移除——libjbc 写回面
+/// 参数面无 classWriterFlags/typeResolver：libjbc 写回面
 /// （lowerMethod relocation 契约 + writeClass copy-through）没有 COMPUTE_MAXS/
 /// COMPUTE_FRAMES 旗标，栈帧重算职责在方法级 lower，公共父类求解由
-/// CommonSuperClassResolver 独立供给（接frame 重算 pass 时再入管线）。
+/// CommonSuperClassResolver 独立供给（接 frame 重算 pass 时再入管线）。
 class GlobalToClassPassAdaptor : public PassModel<mjbase::model::ResourceContainer,
                                                   GlobalAnalysisManager>
 {

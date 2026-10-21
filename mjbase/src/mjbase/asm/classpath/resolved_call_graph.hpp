@@ -1,18 +1,13 @@
 /// @file        resolved_call_graph.hpp
 /// @brief       层次感知调用图：CHA 虚/接口分派扩展 + 反射织入挂点。
 ///
-/// 织入挂点）。与旧版的差异：
-///
-/// - 基座换 mjbase 件：调用点来自 ReferenceIndex（CodeDom order() 坐标的
+/// - 调用点来自 ReferenceIndex（CodeDom order() 坐标的
 ///   ReferenceSite），层次查询走 mjbase::hierarchy 的 ClassHierarchy/
-///   MethodHierarchy（键面 API，无 ）。
+///   MethodHierarchy（键面 API）。
 /// - 输入层次以 HierarchyBundle 交付（共享驻留池 + 类/方法层次图同生共死）：
 ///   mjbase MethodHierarchy 的查询键必须经类图绑定的池驻留，束把「池 + 两图」
 ///   的配对关系收口为单一载体。
-/// - RTA 精度档（buildRta）与 .rcg 持久化不在本批范围（旧栈独立测试承载，
-///   迁移批次未含其用例；后续批次补），见迁移报告。
-///
-/// ## 扩展规则（CHA 档）
+/// - RTA 精度档（buildRta）与 .rcg 持久化未提供。
 ///
 /// 对 ReferenceIndex 的每条方法引用：
 ///
@@ -96,11 +91,10 @@ struct ResolvedCallEdge
 
 /// @brief 层次分析束：共享驻留池 + 类/方法层次图的最小配对载体。
 ///
-/// 停泊件：旧栈 的 ClassHierarchyAnalysis/MethodHierarchyAnalysis（GAM 包装）
-/// 归层次批所有，本批不改其目录；resolved 图需要「查询键驻留池与两图绑定池
-/// 同一」的载体，此处给最小实现（build 从容器扫描 + fillSummary 逐类登记，
-/// 同名首到先得，登记 Err 的类跳过）。主线裁决点：层次批交付 GAM 包装后，
-/// 本束应改为其 Result 载体或被替换（见迁移报告）。
+/// 停泊件：层次批（pass 域 GAM 包装）未到前的最小载体；resolved 图需要
+/// 「查询键驻留池与两图绑定池同一」，此处给最小实现（build 从容器扫描 +
+/// fillSummary 逐类登记，同名首到先得，登记 Err 的类跳过）。主线裁决点：
+/// 层次批交付后，本束应改为其 Result 载体或被替换。
 class HierarchyBundle
 {
 public:
@@ -139,7 +133,7 @@ public:
     ///
     /// The direct `CallGraph` parameter is currently unused and kept in the
     /// signature so future policies can choose whether to retain external direct
-    /// nodes（与旧版 (void)callGraph 同口径）。
+    /// nodes。
     void build(const mjbase::reference::ReferenceIndex& index, const CallGraph& callGraph,
                const HierarchyBundle& hierarchy);
 

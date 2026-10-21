@@ -1,6 +1,5 @@
 // classfile 净化面 + 管线入口净化门（校验+拒绝）行为契约。
-// 诊断类别与门禁语义移植自 旧栈 侧 jbytecode class_file_sanitizer /
-// ClassFileSanitizeGate 的既有契约（诊断 kind 与拒绝路径逐条验收）。
+// 诊断 kind 与拒绝路径逐条验收。
 #include <gtest/gtest.h>
 
 #include <memory>

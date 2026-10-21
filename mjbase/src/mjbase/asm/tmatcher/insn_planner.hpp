@@ -1,14 +1,12 @@
 /// @file        insn_planner.hpp
 /// @brief       规则驱动器：在规则上滑窗匹配，产出替换计划。
 ///
-/// 对齐旧实现的 InsnReplacer（含 InsnMatchReplacer 的组合层职责），
-/// 但**不执行编辑**（任务约定：DSL 只产出计划）：
+/// DSL 只产出计划、不执行编辑：
 ///   - plansFor：匹配 → 有产出器的命中变成 ReplacePlan；无产出器的
-///     命中仅跳过窗口（对齐旧 noHandler 行为）。扫描纪律与旧 replace
-///     一致：Longest 裁决、区间不重叠、命中后游标跳到 endExclusive。
-///   - matchAll：纯匹配收集命中（对齐旧 InsnReplacer::matchResult），
-///     不产出计划、不触碰 DOM。
-/// 旧三层的 InsnMatcher（纯匹配器）仍由 insn_matcher.hpp 提供。
+///     命中仅跳过窗口。扫描纪律：Longest 裁决、区间不重叠、命中后
+///     游标跳到 endExclusive。
+///   - matchAll：纯匹配收集命中，不产出计划、不触碰 DOM。
+/// 纯匹配器由 insn_matcher.hpp 提供。
 #pragma once
 
 #include <vector>

@@ -392,8 +392,7 @@ Result<bool, RemapError> applyResourceRemapPlan(model::ResourceContainer& contai
 
     bool changed = false;
 
-    // 反射别名闭包只在反射字符串面开启时构建（旧栈无条件构建；消费面只有
-    // 反射轨道，此处惰性化是纯性能口径，结果语义不变）。
+    // 反射别名闭包只在反射字符串面开启时构建。
     mjbase::analysis::AliasAnalysis aliases;
     const analysis::AliasAnalysis*  aliasesPtr = nullptr;
     if (policy.reflectionStrings) {

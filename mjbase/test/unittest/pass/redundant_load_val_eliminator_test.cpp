@@ -110,7 +110,7 @@ TEST(RedundantLoadValEliminatorTest, nonCat2Ldc2wNotFolded)
 {
     // LDC2_W 指向 #1（Class 条目，非 long/double）——constOf 解析不出
     // Long/Double → 不折叠。合法 classfile 无此形态（long/double 恒走
-    // LDC2_W），此处钉死新栈自身的防御面。
+    // LDC2_W），此处钉死本 pass 的防御面。
     const Bytes in = oneMethod("m", {0x14, 0x00, 0x01, 0x58, 0xb1});
     const MethodPassRun r = runMethodPass(in, mjbase::pass::RedundantLoadValEliminator{});
     EXPECT_TRUE(r.pa.areAllPreserved());

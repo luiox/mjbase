@@ -15,15 +15,15 @@
 //
 // 生成头 i18n_mjbase_translations.generated.hpp 位于 mjbase target 的
 // autogendir(rule libca.i18n.embed-lang 以 public includedir 暴露),仅依赖
-// mjbase 的 target 可见。key 空间沿用 旧栈 单源表的 mbase.cli.* 前缀
-// (tr() 按字面 key 查表,迁移期不改前缀);后注册的产品线主表可覆盖同 key。
+// mjbase 的 target 可见。key 空间用 mbase.cli.* 前缀(tr() 按字面 key 查表),
+// 后注册的产品线主表可覆盖同 key。
 
 #include "i18n_mjbase_translations.generated.hpp"
 #include "libca/i18n/i18n.hpp"
 
 namespace mjbase::cli {
 
-/// mjbase 框架文本表(mbase.cli.* key,文案自 旧栈 单源表原样嵌入);
+/// mjbase 框架文本表(mbase.cli.* key);
 /// 后注册的产品线主表可覆盖同 key。
 inline constexpr ca::i18n::TableSet kCliI18nTableSet = kI18nTableSet_mjbase;
 

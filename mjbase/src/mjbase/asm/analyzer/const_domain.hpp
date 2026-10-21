@@ -1,21 +1,19 @@
 /// @file        const_domain.hpp
 /// @brief       常量传播域：ConstLattice 格 + ConstDomain 钩子 + 查询入口。
 ///
-/// ConstantInterpreter）。迁移纪律是语义照旧、实现重写：格、JVM 折叠语义与
-/// 合并规则按旧实现的公开语义移植；控制流 worklist、槽迁移、入参播种调度
-/// 全部交给 jbc::analysis::DomainEngine，本域只供给值。
+/// 格、JVM 折叠语义与合并规则定义在本域；控制流 worklist、槽迁移、入参播种
+/// 调度全部交给 jbc::analysis::DomainEngine，本域只供给值。
 ///
-/// 与旧实现的范围差（代表性子集，见迁移报告）：
+/// 范围：
 /// - 载荷收窄为 i64（int 符号扩展 / long）与引用常量（null / String CP 条目），
 ///   float/double 常量不折。
-/// - 旧实现的数组建模（newarray/aaload/astore 常量数组）与 reference handler
-///   注入（getfield/invoke 返回值）不迁：前者依赖旧栈 Any 载荷，后者属
-///   classpath/引用索引层能力，待后续模块接入。
-/// - 旧实现的入参值播种（args 向量）以常量种子形态保留：propagateConstants
-///   的 seeds 重载按描述符把 ConstLattice 种子落到入参槽。旧栈的
-///   short/char/bool 归一（normalizeIntValue）在新格层天然成立——int 宽度
-///   只有一类 Int 载荷，种子直接以 ofInt 给出；未给出种子的参数仍为 Top，
-///   形状/槽宽正确。
+/// - 数组建模（newarray/aaload/astore 常量数组）与 reference handler 注入
+///   （getfield/invoke 返回值）未建模：后者属 classpath/引用索引层能力，
+///   待后续模块接入。
+/// - 入参值播种以常量种子形态支持：propagateConstants 的 seeds 重载按描述符
+///   把 ConstLattice 种子落到入参槽；short/char/bool 归一在格层天然成立——
+///   int 宽度只有一类 Int 载荷，种子直接以 ofInt 给出；未给出种子的参数
+///   仍为 Top，形状/槽宽正确。
 #pragma once
 
 #include <string_view>
@@ -98,7 +96,7 @@ struct ConstLattice
 
 /// @brief 常量传播域（IValueDomain<ConstLattice>）。
 ///
-/// 折叠语义照旧实现：整数/长整数加减乘与位运算遵循 JVM 补码环绕；MIN/-1
+/// 折叠语义：整数/长整数加减乘与位运算遵循 JVM 补码环绕；MIN/-1
 /// 的除法与余数遵循 JVM 特例；移位距离按低 5/6 位屏蔽；除零不折（运行时
 /// 抛 ArithmeticException，数据流层面退回 Top）。loadLocal/storeLocal 用
 /// 引擎默认恒等——常量穿透 store→load。
@@ -112,7 +110,7 @@ public:
         : cp_(&cp)
     {}
 
-    /// @brief 带入参常量种子的构造（移植）。
+    /// @brief 带入参常量种子的构造。
     ///
     /// argSeeds 按描述符参数序给出（long/double 参数各占一项，种子宽度须与
     /// 参数类别一致——J/D 配 ofLong，其余配 1 槽种子）；种子按描述符落到

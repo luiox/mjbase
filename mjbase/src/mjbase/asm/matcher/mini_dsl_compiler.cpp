@@ -4,8 +4,7 @@
 /// 语义对照旧 
 ///   - ConstLoad 命名绑定按步骤下标从 matchedInsns 取值（ldc 载荷在纯
 ///     DOM 层不可读，读不到则不绑定，后续 require 报 UnboundVariable）；
-///   - 求值改为 I/J 走 i64、F/D 走 double 的分域实现（旧实现全程 double，
-///     超 2^53 的 long 失真；结果域内的取值一致）；
+///   - 求值改为 I/J 走 i64、F/D 走 double 的分域实现；
 ///   - Method 模式/替换（owner/name/desc）需要常量池语义，编译期
 ///     Err(DslSemantic)，不再静默降级为 opcode 匹配；
 ///   - VarLoad/VarStore 照旧编译为恒真步骤。

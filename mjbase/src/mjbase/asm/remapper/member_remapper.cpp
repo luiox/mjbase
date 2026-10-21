@@ -521,7 +521,7 @@ bool remapExceptionsAttr(const RemapCtx& ctx, MemberInfo& method)
 /// @brief EnclosingMethod 属性（typed EnclosingMethodAttr，u2 Class + u2 NAT）：
 ///        外围类/方法重映射。
 ///
-/// 旧栈 remapClassStructuralMetadata 外围段语义：规则命中改方法名与描述符
+/// 规则命中改方法名与描述符
 ///（新描述符空则按描述符映射面），无规则时描述符照描述符映射面改写；
 /// method_index==0（外围为初始化器）不指名方法，NAT 槽原样保留。typed 体经
 /// 公开解码入口读出（B3 分派接线前后同形）。
@@ -823,8 +823,7 @@ std::string_view recordComponentMappedName(const RemapCtx& ctx, std::string_view
 /// @brief Record 属性（typed RecordAttr，JVMS 4.7.30）：组件名/描述符 +
 ///        嵌套 Signature/注解按门重写。
 ///
-/// 组件名映射走字段/访问器规则择一（与旧栈 recordComponentMappedName 同
-/// 口径），描述符走字段描述符映射面；组件嵌套属性表逐槽手术——Signature
+/// 组件名映射走字段/访问器规则择一，描述符走字段描述符映射面；组件嵌套属性表逐槽手术——Signature
 /// 槽走 typed 签名手术、Runtime{Visible,Invisible}Annotations 槽走 typed
 /// 注解手术（与成员级同一条路径），其余嵌套属性槽不触碰走 copy-through。
 /// typed 体经公开解码入口读出（分派接线前后同形）；组件或嵌套命中才置脏
@@ -1163,8 +1162,7 @@ bool setLdcString(ClassSession& session, CodeUnit& code, InsnId id, std::string_
 /// LDC 是成员名；查找调用命中即改写。字面量对在任意无关方法调用处失效
 ///。
 /// 数据流轨道：域引擎快照给接收者，alias "class:X" 身份覆盖；名字实参取
-/// 直线回溯最近的字符串 LDC（旧栈经帧栈证明名字串后回溯产点；CodeDom 无
-/// 栈帧视图，最近串即实参产点近似——偏离点见迁移报告）。
+/// 直线回溯最近的字符串 LDC。
 bool remapReflectionNames(const RemapCtx& ctx, CodeUnit& code, std::string_view className,
                           std::string_view methodName, std::string_view methodDesc,
                           bool isStatic, const analysis::AliasAnalysis* aliases)

@@ -1,7 +1,7 @@
 /// @file        shadow_token.hpp
 /// @brief       #1156 shadow 引用 token —— resolve(s, pos) 单一收口 + name 槽文法。
 ///
-/// 规范：旧栈 doc_ai/shadow-reference-token-spec.md（唯一事实源）
+/// 规范：
 ///   §2 语法   ClassRef  := "${Class_" 1*DIGIT "." 8*HEXDIG "}"
 ///             MemberRef := ClassRef "." 1*(shadow 段) "." 8*HEXDIG
 ///             转义      $${...} 表示字面 "${"
@@ -13,9 +13,8 @@
 ///             形状 → 硬报错（missing-sidecar），不静默回落裸名。
 ///
 /// 边界：仅 Name 槽实现；Descriptor/JasmBody 分支未接线（传入即 fail-loud，
-/// 不做文法）。相对旧栈的实修：查表命中面一律按值/optional 交付——旧栈
-/// findClassByHandle 返回指向 findByShadowName 临时 vector 内部的指针（悬垂
-/// UB），本移植自始不带该形状。
+/// 不做文法）。查表命中面一律按值/optional 交付，
+/// 不返回指向表内部临时存储的指针。
 #pragma once
 
 #include <optional>

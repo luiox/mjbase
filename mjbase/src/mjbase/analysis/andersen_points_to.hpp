@@ -1,7 +1,7 @@
 /// @file        andersen_points_to.hpp
-/// @brief       Field-sensitive Andersen 包含约束求解器（纯算法件直迁）。
+/// @brief       Field-sensitive Andersen 包含约束求解器（纯算法件）。
 ///
-/// 约束图求解不含任何 jbytecode 语义，逐语义直迁：变量与抽象分配点是两个
+/// 约束图求解不含任何字节码语义：变量与抽象分配点是两个
 /// 独立命名空间；copy/load/store 约束单调，solve() 计算最小不动点；堆字段
 /// 以（分配点，字段名）为键，无关接收者的字段事实互不污染。
 ///

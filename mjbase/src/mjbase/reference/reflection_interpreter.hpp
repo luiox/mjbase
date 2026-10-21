@@ -22,7 +22,7 @@
 /// reflection_binding_analyzer（共享 normalizeClassName/classLiteralTrackingName/
 /// intConstantOf/primitiveDescriptorFromTypeField 等纯函数与 LDC 常量产出语义）。
 /// 与 mjbase::analysis::alias_analysis 内嵌反射接收者子集（buildReflectionClosure
-/// 的 reflectionReceivers）的重叠面与去重建议见迁移报告——本件不改已提交的
+/// 的 reflectionReceivers）的重叠面与去重建议——本件不改已提交的
 /// alias_analysis 实现。
 #pragma once
 
@@ -59,8 +59,7 @@ std::string classLiteralDescriptor(std::string_view trackingName);
 
 /// @brief 读取 int 常量（iconst_0..5 / bipush / sipush / iconst_m1 可选）。
 ///
-/// allowNegative=false 时 bipush/sipush 负值按不可判定处理（旧栈
-/// reflection_interpreter 的 readIntConstant 口径）；=true 时 iconst_m1 也
+/// allowNegative=false 时 bipush/sipush 负值按不可判定处理；=true 时 iconst_m1 也
 /// 识别。
 bool intConstantOf(const jbc::ir::Insn& insn, ca::i32& out, bool allowNegative);
 

@@ -7,8 +7,8 @@ namespace mjbase::pass {
 /// @brief 确定性垃圾代码插入器：在方法体的安全边界插入栈中性的垃圾分支块
 ///        （控制流混淆的垃圾代码插入族；本批 B 组，A1 帧链的首批真实消费者）。
 ///
-/// 语义参考旧栈混淆器线的垃圾代码类（方法体垃圾面 /
-/// CaesiumControlFlowObf 的栈中性分块），按 mjbase 底座重设计：**确定性**
+/// 垃圾代码插入族（方法体垃圾面 / 栈中性分块），按 mjbase 底座重设计：
+/// **确定性**
 /// 插入（无 RNG——插入点与垃圾形态都由位置决定），使产物可复现、可入
 /// golden 基线、可做字节级回归。
 ///
@@ -28,8 +28,7 @@ namespace mjbase::pass {
 ///   - 目标指令不是异常 handler 入口（handler 入口插桩会改写 handler 帧
 ///     语义的验证面，保守跳过）。
 ///
-/// maxStack 防御性抬升到 ≥1（垃圾块占栈 1；旧栈同类 pass 同样就地抬
-/// maxStack）。注入 resolver 的管线上，垃圾块的新分支目标由 A1 链再生
+/// maxStack 防御性抬升到 ≥1（垃圾块占栈 1）。注入 resolver 的管线上，垃圾块的新分支目标由 A1 链再生
 /// SMT 覆盖（Strict 帧 → buildStackMapTable → applyComputedMaxes）；未接
 /// resolver 时新目标无帧，产出类会被 V50+ verifier 拒收——本 pass 为
 /// `opt-in`，须与管线 typeResolver 联用。

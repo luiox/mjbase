@@ -40,8 +40,8 @@ std::string_view view(ca::str::Utf8StringRef value)
 }
 
 // mjbase::hierarchy::ClassHierarchy → jhasm InheritanceChecker 适配器。
-// 语义照 旧栈 ClassHierarchy 适配：任一侧未登记时 isSubclassOf 退化为
-// 名字相等，commonSuperclass 退化为 java/lang/Object。
+// 任一侧未登记时 isSubclassOf 退化为名字相等，commonSuperclass 退化为
+// java/lang/Object。
 class HierarchyInheritanceChecker final : public ::jhasm::analysis::InheritanceChecker
 {
 public:

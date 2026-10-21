@@ -2,29 +2,26 @@
 /// @brief       全程序别名分析：栈/局部别名事实 + 方法摘要 + 反射接收者身份
 ///              + Andersen 包含约束索引。
 ///
-/// + AndersenConstraintInterpreter，骑 jbytecode DataflowAnalyzer）。迁移纪律是
-/// 语义照旧、实现重写：
+/// 设计要点：
 ///
-/// - 值代数（AliasValue / mergeAliasValues / AliasFrame）逐语义直迁；身份串
+/// - 值代数（AliasValue / mergeAliasValues / AliasFrame）；身份串
 ///   一律经 aliasInterned 进程级驻留（内容相同 ⇔ 视图相同），事实形态
 ///   （"param:N"/"this:Owner"/"new:..."/"array:..."/"field:..."/"class:X"/
 ///   "string:S"）是 remapper/reference 消费契约，逐字保留——尤其 LDC 类常量
 ///   的 "class:X" 反射接收者身份。
-/// - 方法内传播双轨（与）：无分支方法走线性走查（自带栈/局部
+/// - 方法内传播双轨：无分支方法走线性走查（自带栈/局部
 ///   状态，操作数全程可见）；有分支方法以 libjbc DomainEngine 跑别名事实域
 ///   （AliasValue 即域载荷，join 即 mergeAliasValues），操作数依赖的产点
 ///   （GETFIELD/CHECKCAST/invoke 结果）经「探测帧注入」补齐——引擎产点钩子
 ///   看不到操作数栈，这是 libjbc DomainEngine 的能力缺口（挂账项），注入法
-///   在操作数链不穿过 invoke/GETFIELD 结果的常规形状下与旧解释器逐事实等值。
-/// - 跨类固定点：Jacobi 全量重算（旧 P1 memoized 版的轮序列与全量版逐方法
-///   等值，memoization 是性能优化不迁）；摘要持调用点绑定 + 惰性展开
-///   （旧 P2 语义照迁，测试钉死）。
-/// - Andersen 字节码约束：约束图求解为纯算法件（andersen_points_to 直迁）；
+///   在操作数链不穿过 invoke/GETFIELD 结果的常规形状下补全产点事实。
+/// - 跨类固定点：Jacobi 全量重算；摘要持调用点绑定 + 惰性展开（测试钉死）。
+/// - Andersen 字节码约束：约束图求解为纯算法件（andersen_points_to）；
 ///   节点身份 = 方法内临时（"method\ninsn:idx"）/形参/this/return/静态槽/
-///   合并节点，与旧实现逐串一致。
+///   合并节点。
 ///
-/// 反射接收者追踪不依赖 旧栈 ReflectionInterpreter（依赖方向相反：后者是
-/// alias 的消费方）；"class:X" 事实由 LDC 类常量产点直接维护。
+/// 反射接收者追踪不依赖独立的反射解释器；"class:X" 事实由 LDC 类常量产点
+/// 直接维护。
 #pragma once
 
 #include <optional>
@@ -58,13 +55,13 @@ enum class AliasValueKind
 
 /// @brief 进程级别名身份驻留（内容相同 ⇔ 返回视图相同）。
 ///
-/// 旧栈 aliasInterned 的对应物：别名引擎内 identity/pointsTo 一律存驻留视图，
+/// 别名引擎内 identity/pointsTo 一律存驻留视图，
 /// 拷贝廉价、等值比较退化为内容比较。表只增不减（进程期存活）。
 std::string_view aliasInterned(std::string_view text);
 
 /// @brief 方法/字段/绑定键的统一构造（别名分析身份池驻留）。
 ///
-/// MemberKey 取代旧栈 "owner\nname\ndesc" 拼接串键；测试与消费方构造摘要
+/// MemberKey 是 owner/name/desc 的内容寻址键；测试与消费方构造摘要
 /// 时必须经本入口建键，才能与分析产出的摘要键对上（同一驻留池、内容寻址）。
 MemberKey aliasMemberKey(std::string_view owner, std::string_view name, std::string_view desc);
 
@@ -218,7 +215,7 @@ struct AliasExpandedFacts
 };
 
 /// @brief 实例字段槽键：接收者身份（驻留视图；空 = unknown 接收者/静态槽）
-///        + 字段键。旧栈拼接串键的复合化（零串构造）。
+///        + 字段键（零串构造）。
 struct SlotKey
 {
     std::string_view identity;   ///< 接收者身份（池驻留，存活期覆盖本分析）
