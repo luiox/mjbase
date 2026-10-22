@@ -1,0 +1,5 @@
+#pragma once
+
+/// 构建期生成（mjbase/xmake.lua on_load，内容为 git 提交哈希）。
+/// 仅 build_stamp.cpp 消费，不入公开头面。
+#define MJBASE_BUILD_COMMIT "@MJBASE_COMMIT@"
