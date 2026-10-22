@@ -1,5 +1,5 @@
 /// @file        resource_io_test.cpp
-/// @brief       资源导入导出测试（移植自 mbase/unittest/model/resource_io_test.cpp，
+/// @brief       资源导入导出测试，
 ///              12 用例；末尾 3 个为本批新增的 Result 错误面用例）。
 #include <gtest/gtest.h>
 
@@ -146,7 +146,7 @@ TEST(MjModelIoTest, MixedEntriesClassifiedAndNormalized)
 // ── Recaf 98dd1f528 InfoImporterTest 两用例移植 ─────────────────
 //
 // 上游语义：头部形似 class 但 CP 首个 tag 越界（121）的伪 class 内容按普通
-// 文件处理；stub 前缀 JAR 整体按 ZIP 容器打开、条目全部可加载。morpher 的
+// 文件处理；stub 前缀 JAR 整体按 ZIP 容器打开、条目全部可加载。
 // 对应行为：条目级 isClassFile 双检（名字+内容）失败 → UnknownResource 保留
 // （不丢弃、不产出损坏 ClassResource），同容器的真实 class 条目照常加载。
 

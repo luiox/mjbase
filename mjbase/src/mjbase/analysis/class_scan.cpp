@@ -15,7 +15,7 @@ std::vector<ScannedClass> scanClassResources(const mjbase::model::ResourceContai
         if (cls == nullptr || cls->get().empty()) return;
         auto session = jbc::ir::makeSessionFromBytes(
             jbc::core::ByteView{cls->get().data(), cls->get().size()});
-        if (session.is_err()) return;   // 畸形类不产出事实（fail-open，旧栈同口径）
+        if (session.is_err()) return;   // 畸形类不产出事实（fail-open）
         ScannedClass scanned;
         scanned.session = session.unwrap();
         scanned.name    = scanned.session->unit().symbols().str(scanned.session->unit().thisClass);

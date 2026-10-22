@@ -7,7 +7,7 @@
 // （"default" target）输出诊断。门面在未注册 target 时静默丢弃，
 // 因此入口不初始化 = 诊断不可见——各入口必须调用。
 //
-// 迁移动机：subprocess.hpp 会 #undef stderr，任何在它之后解析的
+// 动机：subprocess.hpp 会 #undef stderr，任何在它之后解析的
 // TU 里裸用 stderr 宏直接编译失败（MSVC C2065）；统一走门面后
 // 诊断路径不再依赖 stderr 标识符。
 
@@ -21,7 +21,7 @@ namespace mjbase::log {
 /// 注册进程级 "default" 日志 target（SimpleLogBackend：stderr、彩色、HH:MM:SS，
 /// 不带 file:line——与 mjt-obf LogUtil 的门面范式一致）。幂等，可重复调用。
 ///
-/// 运行期级别取 Trace：诊断可见性与迁移前的 fprintf/stderr 打平，
+/// 运行期级别取 Trace：诊断可见性与 fprintf/stderr 打平，
 /// 输出开关仍由各调用点的既有门控（env 探针 / verbose 标志）负责。
 inline void initDefaultLogger()
 {

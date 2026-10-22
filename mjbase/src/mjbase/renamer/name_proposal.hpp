@@ -1,10 +1,8 @@
 /// @file        name_proposal.hpp
 /// @brief       改名建议契约值对象：ProposalKind / RejectionReason / NameProposal。
 ///
-/// 旧栈对应物：mbase/renamer/name_proposal（luiox/morpher#1025/#1032 P0 四类）。
-/// 语义照旧、载体重定型：旧栈字段是 move-only Utf8String 值；mjbase 底座按
-/// 「API 字符串 = 驻留视图」约定，全部字段是 aliasInterned（进程级内容寻址池）
-/// 的借用视图——内容相同 ⇔ 视图相同，本类型恢复可拷贝（视图在池存活期稳定）。
+/// 全部字段是 aliasInterned（进程级内容寻址池）
+/// 的借用视图——内容相同 ⇔ 视图相同，本类型可拷贝（视图在池存活期稳定）。
 /// 构造入口负责驻留，消费方不得绕过构造函数私填视图。
 #pragma once
 
@@ -14,7 +12,7 @@
 
 namespace mjbase::renamer {
 
-/// @brief 建议改名的目标类别（旧栈四类照旧）。
+/// @brief 建议改名的目标类别。
 enum class ProposalKind : ca::u8
 {
     Class,    ///< 类改名：oldName = 内部类名（a/b/C），owner 与 desc 留空
@@ -23,7 +21,7 @@ enum class ProposalKind : ca::u8
     Method,   ///< 方法改名：owner + oldName + desc 必填；引擎做 override 闭包整组同改
 };
 
-/// @brief 建议被拒原因（fail-closed 流水列；枚举序与旧栈逐值一致）。
+/// @brief 建议被拒原因（fail-closed 流水列）。
 enum class RejectionReason : ca::u8
 {
     None = 0,
@@ -37,7 +35,7 @@ enum class RejectionReason : ca::u8
     ApplyFailed,        ///< 应用阶段失败（全量不落盘口径）
 };
 
-/// @brief RejectionReason 的稳定字符串标签（审计/日志用；旧栈字面照搬）。
+/// @brief RejectionReason 的稳定字符串标签（审计/日志用）。
 std::string_view rejectionReasonName(RejectionReason reason);
 
 /// @brief 一条改名建议（驻留视图值语义）。

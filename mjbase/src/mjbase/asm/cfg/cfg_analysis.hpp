@@ -3,7 +3,7 @@
 ///
 /// 语义来源是 mbase asm/cfg 的 CfgTraversal / DominatorTree（冻结参考）。
 /// 遍历与支配计算的后继集都包含异常边（handler 入口可达、参与支配），
-/// 与旧实现一致。
+/// 与 CFG 一致。
 #pragma once
 
 #include <vector>

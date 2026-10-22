@@ -7,7 +7,7 @@
 /// 过期条目清理、jasm 整 token 替换契约、token8 随行。
 ///
 /// mjbase 底座差异（语义不变）：容器夹具用 jasm 组装；随机补号/生成器的
-/// 系统随机源失败走 Result（测试域 unwrap，成功路径与旧栈计数逐值一致）。
+/// 系统随机源失败走 Result（测试域 unwrap，成功路径与计数逐值一致）。
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -48,7 +48,7 @@ model::ResourceContainer buildContainer(const ClassBytes& bytes)
     return container;
 }
 
-/// shadow 测试专用 B：<init> + oldMethod 两个方法（旧栈 shadow 夹具口径；
+/// shadow 测试专用 B：<init> + oldMethod 两个方法；
 /// 引擎夹具的 buildB 多一个 X 方法，编号断言不同，不共用）。
 std::vector<ca::u8> buildShadowB()
 {

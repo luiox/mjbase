@@ -26,9 +26,9 @@
 /// - 数组元素 `aaload`：下标为常量时精确取值；非常量下标使该 sink 整体降级
 ///   Pending(ambiguous_array)
 ///
-/// ## 迁移形态（jbytecode → libjbc）
+/// ## 形态说明
 ///
-/// 旧栈骑 BasicInterpreter/Analyzer 基类体系；本件换 libjbc 域插件：
+/// 本件骑 BasicInterpreter/Analyzer 基类体系；换 libjbc 域插件：
 /// BindingDomain 实现 IValueDomain<BindingValue>（纯产值点在域钩子内：int 常量、
 /// ldc、GETSTATIC 常量/名表回填、CHECKCAST/ANEWARRAY/AALOAD/IADD/ISUB），
 /// 操作数依赖产点（invoke 家族、indy 拼接、SB 产出）经「迭代探测-注入」后处理

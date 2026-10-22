@@ -4,7 +4,7 @@
 /// 测试类字节经 reference 测试共享的手拼汇编器构造（每字节受控，不依赖
 /// 本地语料）；对拍口径与 golden 对拍测试（summary_parity_test）互补：
 /// 本文件钉 API 行为（fail-closed/枚举序/first-wins/hasCode 分流），对拍
-/// 钉与旧栈的字段级一致。
+/// 钉字段级一致。
 #include <gtest/gtest.h>
 
 #include <cstring>

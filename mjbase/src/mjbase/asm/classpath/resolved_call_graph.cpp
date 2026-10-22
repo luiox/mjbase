@@ -48,8 +48,8 @@ bool shouldExpand(ResolvedCallKind kind)
     return kind == ResolvedCallKind::Virtual || kind == ResolvedCallKind::Interface;
 }
 
-/// @brief 把调用点编码目标落解到声明者（键面重写；旧栈 resolveHierarchyMethod
-/// 三级口径照迁）：
+/// @brief 把调用点编码目标落解到声明者（键面重写；resolveHierarchyMethod
+/// 三级口径）：
 ///
 /// 1. 精确：编码 owner 自身声明（override 等价族非空即已声明，含非虚单例）；
 /// 2. 继承落边：owner 是容器内已知类型但未声明该方法时，沿 super 链首中即停

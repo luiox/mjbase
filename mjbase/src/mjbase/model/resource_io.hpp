@@ -1,10 +1,10 @@
 /// @file        resource_io.hpp
 /// @brief       资源导入导出：接口 + Jar/Class 导入导出器 + libarchive 解压工具。
 ///
-/// 语义对齐 mbase/model/resource_io（迁移来源）；本批有意重设计：
+/// 有意重设计：
 /// - 错误：mbase 以 throw std::runtime_error 报错，本模块全部改 ModelResult<T>
 ///   值语义，抛点消息文本 → 错误码的映射见各函数注释（码表见 ModelError）；
-/// - jar 依赖换 mjbase::jar（并行迁移批，错误走 Result<void, JarError>）——
+/// - jar 依赖换 mjbase::jar（错误走 Result<void, JarError>）——
 ///   JarError 经 toModelError 归一为本模块错误码；
 /// - 压缩包解包后端保留 libarchive（zip/tar/tar.xz/tar.gz/tar.zst 语义不丢），
 ///   include "archive.h" 照旧（xmake 已给 mjbase 接好 add_packages("libarchive")）。

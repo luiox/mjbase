@@ -2,7 +2,7 @@
 /// @brief       来源追踪域测试：store→load 穿透、分支合并退化、运算结果来源、
 ///        MethodSig 入参身份（含 long/double 双槽）与死代码探测。
 ///
-/// 行为断言移植自旧栈 original_source_interpreter_test（参数身份保持、
+/// 行为断言覆盖参数身份保持、
 /// 冲突合并丢事实、经 store/load 的来源保持）与 libjbc domain_test 的
 /// OriginDomain 用例。
 #include <gtest/gtest.h>
@@ -96,7 +96,7 @@ TEST(MjAsmAnalyzerTest, OriginMergeKeepsAgreeingFactOnly)
     ASSERT_TRUE(m1.isInsn());
     EXPECT_TRUE(m1.insn == a);
 
-    // 不同句柄 → Unknown（旧实现是 producer 并集；单来源域正确退化）。
+    // 不同句柄 → Unknown（producer 并集；单来源域正确退化）。
     const OriginValue m2 = dom.merge(OriginValue::ofInsn(a), OriginValue::ofInsn(b));
     EXPECT_TRUE(m2.isUnknown());
 

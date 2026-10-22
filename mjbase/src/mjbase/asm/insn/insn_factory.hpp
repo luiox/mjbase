@@ -116,8 +116,8 @@ BuildResult lookupSwitchInsn(jbc::ir::LabelId def, std::vector<ca::i32> keys,
 
 // ---- 最短常量装载（无 CP 池参与） ----
 //
-// 语义照旧 InsnUtil::getIntInsn/getLongInsn/getFloatInsn/getDoubleInsn 的
-// 「短形态优先」策略；超短形态覆盖范围的值返回 Err（旧实现回落 LdcInsnNode，
+// 语义：InsnUtil::getIntInsn/getLongInsn/getFloatInsn/getDoubleInsn 的
+// 「短形态优先」策略；超短形态覆盖范围的值返回 Err（回落 LdcInsnNode，
 // 新底座 ldc 需要池索引——由调用方 intern 后走 cpInsn(LDC…)/CodeEditor::loadConst）。
 
 /// @brief int 常量：[-1,5]→iconst；[-128,127]→bipush；[-32768,32767]→sipush。

@@ -1,7 +1,7 @@
 /// @file        jar_reader.hpp
 /// @brief       JAR 读取接口：条目遍历、进度回调、条目名宽容解码、条目元数据列表。
 ///
-/// 直迁自 mbase/jar/jar_reader（语义照旧）。差异点：
+/// 差异点：
 ///   - 错误通道：mbase 对文件级失败 throw，本版改为 Result<void, JarError>；
 ///   - 字符串：条目名/路径用 ca::str::Utf8String 家族，原始字节经
 ///     from_data_unchecked 直通（zip 条目名零解码口径不变）；

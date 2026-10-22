@@ -1,14 +1,13 @@
 /// @file        evaluator.hpp
 /// @brief       方法级具体求值栈机：CodeDom 只读遍历 + 步数熔断。
 ///
-/// 迁移自 mbase 的 asm/evaluator（Recaf 式迷你 VM）的数值子集：语义照旧
-/// （Java 溢出/移位/除法/NaN 语义），实现按 libjbc CodeDom 重写——分支经
-/// resolveLabel 走目标，不碰字节偏移。与旧实现的边界差异：
+/// 数值子集的迷你 VM：Java 溢出/移位/除法/NaN 语义，按 libjbc CodeDom 实现——分支经
+/// resolveLabel 走目标，不碰字节偏移。边界差异：
 ///   - 只做具体求值：不存在 unknown 值与优雅降级，遇不可求值形状返回
 ///     Err(Unsupported)，栈/局部变量状态不符返回 Err(BadState)；
-///   - 不做递归求值、字段缓存、JDK shim（属旧栈 workspace 级能力）；
+///   - 不做递归求值、字段缓存、JDK shim（属 workspace 级能力）；
 ///   - LDC* 依赖常量池，CodeDom 单方法视图无法解析，归入 Unsupported；
-///   - 整数除零在旧栈降级为 unknown，此处是 BadState（JVM 会抛
+///   - 整数除零降级为 BadState（JVM 会抛
 ///     ArithmeticException，求值器不猜结果）。
 #pragma once
 

@@ -102,8 +102,8 @@ struct JvmJasmMethodDisassembly final
 /// 首版仅处理完整 class，不提供 member/annotation overlay、Android、snippet、
 /// UI 配置或后台任务。返回值不会暴露 Jasm AST 或 BLW model。
 ///
-/// 移植自 mbase/jasm/jvm_jasm_service（语义照旧）；两处底座替换：
-/// - 内部名读取换 jbc::core::readClass（原 jbytecode ClassReader）；
+/// 两处底座替换：
+/// - 内部名读取换 jbc::core::readClass；
 /// - 层次查询换 mjbase::hierarchy::ClassHierarchy（原 mbase ClassHierarchy）。
 class JvmJasmService final
 {

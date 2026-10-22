@@ -1,12 +1,12 @@
 /// @file        resource_model.hpp
 /// @brief       资源模型：ResourceType 枚举 + IResource 接口与三实现 + ModelError。
 ///
-/// 语义对齐 mbase/model/resource_model（迁移来源）：资源是「URI + 类型化载荷」
+/// 资源是「URI + 类型化载荷」
 /// 的最小抽象——Class（class 字节）、Manifest（MANIFEST.MF 解析物）、Unknown
 /// （原样字节）。类型识别沿用 ca::core::tag_cast：每个叶子类型把 TypeOf<T>
 /// 特化到 ResourceType 标签值，与运行期 getType() 比较，零 RTTI。
 ///
-/// 与 mbase 的差异（本批有意重设计，其余语义照旧）：
+/// 设计差异：
 /// - 错误：mbase 侧以 throw std::runtime_error 报错，本模块统一走
 ///   ModelResult<T>（= Result<T, ModelError>）值语义，错误码定义见 ModelError，
 ///   各抛点消息文本的映射写在 resource_io 的对应返回处；
@@ -14,7 +14,7 @@
 ///   资源 location 返回 Utf8StringRef——与 mjbase::jar 的写条目口径对齐）；
 ///   自有存储用 ca::str 家族（Utf8String，原始字节保真不校验），不新增
 ///   std::string 存储；
-/// - jar 依赖换 mjbase::jar（并行迁移批：接口同名，错误走 Result<void, JarError>）。
+/// - jar 依赖换 mjbase::jar（接口同名，错误走 Result<void, JarError>）。
 #pragma once
 
 #include <array>

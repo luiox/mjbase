@@ -206,7 +206,6 @@ TEST(MjShadowTokenTest, EmptyTableAnyReferenceShapeIsMissingSidecarHardError)
 TEST(MjShadowTokenTest, NonNamePositionsFailLoudUntilWired)
 {
     // Descriptor/JasmBody 未接线：fail-loud（MalformedHandle + 指引），不做文法。
-    // （旧栈消息带 "T3" 里程碑词；mjbase 移植版指引措辞见实现，语义同。）
     ShadowSlotQuery query;
     query.position = ShadowSlotPosition::Descriptor;
     const auto desc = resolveShadowSlot(makeTable(), kClassRef, query);

@@ -12,8 +12,7 @@
 namespace mjbase::workspace {
 
 /// @file class_mutation_service.hpp
-/// @brief 结构化 class 修改服务（移植自 mbase/workspace/class_mutation_service，
-///        事务与校验语义照旧，指令载体按 libjbc 重定型）。
+/// @brief 结构化 class 修改服务（事务与校验语义，指令载体按 libjbc 定型）。
 
 /// @brief 结构化 class 修改的目标成员标识。
 struct MemberSelector final
@@ -90,7 +89,7 @@ struct ConstantSpec final
 
 /// @brief 单条结构化字节码指令；字段按 @p kind 解释。
 ///
-/// 索引语义（与旧栈的差异，类型面重定型）：`instructionIndex`/label 绑定的
+/// 索引语义（类型面定型）：`instructionIndex`/label 绑定的
 /// instructionIndex 均为方法体内**代码指令序号**（CodeDom 程序顺序，不含
 /// label/line 节点——mjbase 底座中标签是句柄不是指令）。
 struct InstructionSpec final
@@ -221,7 +220,6 @@ struct ClassMutationOutcome final
 /// 按libjbc 会话改写（骨架元数据直改 backing，方法体经 promote/CodeDom/lower 或
 /// 整体重建），产物统一经 spi::sanitizeClassFile 与 Jasm 验证后再写回。
 ///
-/// 与旧栈的职责差异：COMPUTE_MAXS 由 libjbc 帧引擎重算（maxStack/maxLocals）；
 /// COMPUTE_FRAMES 式 StackMapTable 重算在 libjbc 写回面无对应物（pass-contract §9），
 /// 布局改变的产物沿用原属性的 relocation 语义（lower 链路），整方法重建的产物
 /// 不携带重建的 StackMapTable。

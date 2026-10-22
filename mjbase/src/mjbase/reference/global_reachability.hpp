@@ -1,7 +1,7 @@
 /// @file        global_reachability.hpp
 /// @brief       全局可达性闭包：声明/引用事实 + 调用图边的保守闭包。
 ///
-/// 移植自 mbase/reference/global_reachability。闭包规则与旧版逐条同构：
+/// 闭包规则：
 ///
 /// - Class 可达只扩展声明级类型事实（直接超类/接口/字段声明描述符/Signature/
 ///   Annotation/结构元数据），不自动展开方法体；
@@ -23,7 +23,7 @@
 /// 但 GAM 包装缺失。CallGraphAnalysis 在此停泊：容器全类喂 builder 建图；建图
 /// Err（fail-fast 语义）时退化为空图并保留诊断开关——直接事实仍可从
 /// ReferenceIndex 获得。主线裁决点：call_graph 批交付自己的 GAM 包装后应迁回
-/// 其目录（见迁移报告）。
+/// 其目录。
 #pragma once
 
 #include <memory>

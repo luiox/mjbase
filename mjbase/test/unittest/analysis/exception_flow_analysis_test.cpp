@@ -1,8 +1,7 @@
 /// @file        exception_flow_analysis_test.cpp
 /// @brief       analysis 异常流模型测试：项目内异常类型传播与处理器覆盖判定。
 ///
-/// 旧栈对应物：mbase/unittest/analysis/exception_flow_analysis_test.cpp
-/// propagatesAndHandlesProjectExceptionTypes（1 用例全量移植：夹具字节化重写，
+/// propagatesAndHandlesProjectExceptionTypes（夹具字节化重写，
 /// 断言逐字等强——含未捕获类型集合、handled/unhandled 边的双向覆盖）。
 #include <gtest/gtest.h>
 
@@ -26,7 +25,7 @@ using mjbase::analysis::test_support::MethodSpec;
 
 namespace {
 
-/// 旧栈 buildExceptionFixture 的字节化形态：
+/// buildExceptionFixture 的字节化形态：
 /// - leaf：NEW IllegalStateException; DUP; INVOKESPECIAL <init>; ATHROW。
 /// - uncaught：INVOKESTATIC leaf; RETURN（未捕获沿调用边传播）。
 /// - caught：try { INVOKESTATIC leaf } catch (RuntimeException) {}——处理器吞掉。

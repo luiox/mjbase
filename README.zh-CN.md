@@ -1,6 +1,6 @@
 # mjbase
 
-`mjbase` 是基于 [libjbc](https://github.com/luiox/libjbc) 的跨类 JVM 字节码分析与变换库，是旧 `mbase` 栈的重写继任者线：跨类身份（keys）、类/方法/字段层次、调用图与引用索引、指令工程（asm 域）、映射与重映射、AIR/SIR 树 IR，以及驱动它们的 pass 管线。
+`mjbase` 是基于 [libjbc](https://github.com/luiox/libjbc) 的跨类 JVM 字节码分析与变换库：跨类身份（keys）、类/方法/字段层次、调用图与引用索引、指令工程（asm 域）、映射与重映射、AIR/SIR 树 IR，以及驱动它们的 pass 管线。
 
 与 libjbc 的分界是刻意的：**libjbc 只管单类/单方法**（classfile DOM、CodeDom、CodeEditor、帧与支配引擎），**mjbase 管跨类**。mjbase 不重新实现 libjbc 已有能力，也不把全局状态塞回 libjbc。
 
@@ -32,12 +32,9 @@ xmake run mjbase_unittest --gtest_brief=1
 mjbase/src/mjbase/     库源码，每个模块一个目录
 mjbase/test/           单元测试（gtest）
 mjbase/test_resource/  静态测试输入
-mjbase/doc_ai/         设计笔记与迁移模块地图
-mjbase/dev_plan.md     只记待办项
+mjbase/doc_ai/         设计笔记
 test_helper/           测试基建（gtest 集成、JDK 夹具）
 ```
-
-模块迁移状态与语义来源见 [`mjbase/doc_ai/module-map.md`](mjbase/doc_ai/module-map.md)。
 
 ## 约定
 
