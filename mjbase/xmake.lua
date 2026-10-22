@@ -30,6 +30,38 @@ target("mjbase")
     set_kind("static")
     add_rules("mjbase.i18n_src_sync")
 
+    -- plugin 构建戳：git 提交哈希编译期注入 build_stamp.h（仅
+    -- src/mjbase/plugin/build_stamp.cpp 消费），plugin 同源门据此在装配期
+    -- 比对宿主与 pack 的 mjbase 构建来源。内容按提交变化，只重编消费它的
+    -- TU；无 git 环境（发布包）落 "unknown"，同源两侧同为 unknown 仍等值。
+    on_load(function (target)
+        -- rev-parse 在有 .git 但无任何提交的仓（init 后未 commit）也会失败，
+        -- os.iorunv 失败即 raise；沙箱没有 pcall/xpcall，只有 try{} DSL。
+        local commit = "unknown"
+        local gitdir = path.join(os.projectdir(), ".git")
+        if os.isdir(gitdir) or os.isfile(gitdir) then
+            try
+            {
+                function ()
+                    local out = os.iorunv("git", {"rev-parse", "HEAD"})
+                    if out then
+                        commit = (out:gsub("%s+", ""))
+                    end
+                end
+            }
+        end
+        local dir     = path.join(target:autogendir(), "plugin")
+        local stamp   = path.join(dir, "build_stamp.h")
+        local content = '#pragma once\n#define MJBASE_BUILD_COMMIT "' .. commit .. '"\n'
+        if not os.isdir(dir) then
+            os.mkdir(dir)
+        end
+        if not os.isfile(stamp) or io.readfile(stamp) ~= content then
+            io.writefile(stamp, content)
+        end
+        target:add("includedirs", dir)
+    end)
+
     -- jar/model/mapping/project 批次新增：zip 读写（libjzip）、资源解包后端
     -- （libarchive，与 mbase 同源）、fs/json/crypto（mapping 与 project 直迁）。
     -- B3-A 批次新增：Java 整数语义（libjstd，expr_value）与日志/i18n 门面
@@ -74,6 +106,7 @@ target("mjbase")
     add_files("src/mjbase/reference/**.cpp")
     add_files("src/mjbase/spi/**.cpp")
     add_files("src/mjbase/pass/**.cpp")
+    add_files("src/mjbase/plugin/**.cpp")
     add_files("src/mjbase/asm/classpath/resolved_call_graph.cpp")
     add_files("src/mjbase/asm/remapper/**.cpp")
     -- 批 4：mcp 与 mjt-py 的直接消费面——renamer、workspace、jasm、log、cli。
@@ -143,6 +176,8 @@ target("mjbase_unittest")
     add_files("test/unittest/reference/*_test.cpp")
     add_files("test/unittest/spi/*_test.cpp")
     add_files("test/unittest/pass/*_test.cpp")
+    -- plugin：pass-pack 插件接口（doc_ai/plugin-api.md）。
+    add_files("test/unittest/plugin/*_test.cpp")
     -- golden 对拍子目录（旧栈 baseline 字节/指纹对拍机器，pass-golden-pipeline.md）。
     add_files("test/unittest/pass/golden/*_test.cpp")
     add_files("test/unittest/asm/remapper/*_test.cpp")
