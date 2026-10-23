@@ -11,6 +11,7 @@
 #include "mjbase/pass/const_char_array_string_folder.hpp"
 #include "mjbase/pass/enum_cast_check_remover.hpp"
 #include "mjbase/pass/constant_folder.hpp"
+#include "mjbase/pass/devirtualize_single_target.hpp"
 #include "mjbase/pass/illegal_class_file_cleaner.hpp"
 #include "mjbase/pass/junk_code_inserter.hpp"
 #include "mjbase/pass/meta_info_remover.hpp"
@@ -326,6 +327,14 @@ PassNameRegistry makeDefaultRegistry()
     seed(reg.registerGlobalPass(
         "ToolClassCombiner", [] { return std::make_unique<mjbase::pass::ToolClassCombiner>(); },
         "Merge static utility classes and remap their owners."));
+    // opt pass 波次（去虚拟化，P1）：CHA 证明调用点唯一活目标时把
+    // invokevirtual/invokeinterface 改写为 invokespecial 直接分派。标签：
+    // scope:global / action:rewrite / stability:opt-in（默认链不收，CLI -p
+    // 显式点名；JVMS 合法性依据与放弃清单见 pass 头注）。
+    seed(reg.registerGlobalPass(
+        "DevirtualizeSingleTarget",
+        [] { return std::make_unique<mjbase::pass::DevirtualizeSingleTarget>(); },
+        "Rewrite virtual/interface call sites with one provable target into invokespecial."));
     return reg;
 }
 
