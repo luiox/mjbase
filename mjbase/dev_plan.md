@@ -22,8 +22,19 @@
   跨 JAR 引用不可见时 fail-closed。研究已派。
 - [ ] P0-5 实例化类保守根：RTA 式按 `new` 点位收窄可达类集合，喂
   UnusedClassRemover 的 rootClasses；与现有 ResolvedCallGraph 的关系待定。
-- [ ] P0-6 多版本 JAR（Multi-Release）：META-INF/versions/N/ 条目版本分组，
+- [x] P0-6 多版本 JAR（Multi-Release）：META-INF/versions/N/ 条目版本分组，
   删除/重命名不得跨版本误伤。研究已派。
+  → 已落地：容器层族视图（resource_container 的
+  multiReleaseVersionOfClassUri / internalNameFromClassUri /
+  buildClassFamilyIndex，缺 base 族并存告警）；ClassRenamer 族契约
+  （排序 (内名,URI) 全序、同族共享同一新名只计一个编号、写回保持版本化
+  URI 形状——修复「族坍缩成单条目」破坏点）；内名选择器确定序（base 优先、
+  同级 URI 字节序，workspace resolveClassUri）+ replaceClassBytes 单条 URI
+  契约；MANIFEST Multi-Release 主属性守护（ensureMultiReleaseManifest，
+  exportToJar 接线，字节级保序）；删除族契约（类级同进退 / 成员级逐份一致
+  结算）与同内名重复声明 first-seen 结算以测试锁死；JVM 门真跑
+  --release 11 三源根 × 多运行时矩阵（11/17/21/25）。明确不做：base 缺失时
+  最小 N 变体升格 base 的布局重构（并存 + 告警，不改写 URI 布局）。
 - [x] P1 强度削减与常量折叠已落地并注册种子：StrengthReducer（2^k 乘/除 →
   移位/移位-加法序列，序列峰值 maxStack 按宽度抬升 int +1 / long +2，
   maxStack ≥ 0xFFFD 预检不改写）、ConstantFolder（栈常量链 30 条指令，

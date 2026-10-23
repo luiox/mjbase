@@ -1061,3 +1061,132 @@ TEST(MjPassKeepRuleTest, NonMatchingRuleKeepsBaselineBehavior)
     EXPECT_FALSE(hasMethod(reload(container, "App.class"), "deadPrivateMethod", "()V"));
     EXPECT_TRUE(hasMethod(reload(container, "App.class"), "livePrivateMethod", "()V"));
 }
+
+// ── Multi-Release 族删除契约 ────────────────────────────────────────────────
+//
+// 删除面按声明内名决策（可达性/引用索引全以内名键控），同名 base + versions/N
+// 变体「天然同进退」在实现上是巧合——本组用例把巧合固化为显式契约：
+//   - 类级：族成员要么同时删除、要么同时保留，绝不出现只删一份的半删态；
+//   - 成员级：族内每份各按（同名等价的）可达集独立结算，结果一致。
+
+/// app/Api 族成员：public static live()V + private static dead()V +
+/// private static deadField I（字段面删除载体）。
+Bytes buildApiFamilyMember()
+{
+    FixtureBuilder builder("app/Api");
+    builder.addField({"deadField", "I", kAccPrivate | kAccStatic});
+    FixtureMethod  live;
+    live.name      = "live";
+    live.desc      = "()V";
+    live.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
+    live.maxStack  = 0;
+    live.maxLocals = 0;
+    live.code      = bareReturn();
+    builder.addMethod(live);
+    FixtureMethod dead;
+    dead.name      = "dead";
+    dead.desc      = "()V";
+    dead.access    = static_cast<ca::u16>(kAccPrivate | kAccStatic);
+    dead.maxStack  = 0;
+    dead.maxLocals = 0;
+    dead.code      = bareReturn();
+    builder.addMethod(dead);
+    return builder.assemble();
+}
+
+/// app/Main：main 调 app/Api.live()V（可选引用面：withRef=false 时不引用 Api）。
+Bytes buildApiFamilyMain(bool withRef)
+{
+    FixtureBuilder builder("app/Main");
+    FixtureMethod  main;
+    main.name      = "main";
+    main.desc      = "([Ljava/lang/String;)V";
+    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
+    main.maxStack  = 0;
+    main.maxLocals = 1;
+    if (withRef) {
+        main.code = invokeStatic(builder.methodRef("app/Api", "live", "()V"));
+        main.code.push_back(0xB1);
+    }
+    else {
+        main.code = {0xB1};
+    }
+    builder.addMethod(main);
+    return builder.assemble();
+}
+
+TEST(MjPassUnusedClassRemoverTest, RemovesMultiReleaseFamilyTogether)
+{
+    ca::str::Utf8StringArena         arena;
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "app/Main.class", buildApiFamilyMain(/*withRef*/ false));
+    addClassResource(container, "app/Api.class", buildEmptyClassBytes("app/Api"));
+    addClassResource(container, "META-INF/versions/17/app/Api.class",
+                     buildEmptyClassBytes("app/Api"));
+    mjbase::spi::GlobalAnalysisManager gam(arena);
+    registerReachabilityAnalyses(gam);
+
+    mjbase::pass::UnusedClassRemover pass;
+    const auto                       pa = pass.run(container, gam);
+
+    // app/Api 不可达 → 族两份同时删除（「只删一份」的半删态不发生）。
+    EXPECT_FALSE(pa.areAllPreserved());
+    EXPECT_FALSE(container.hasResource("app/Api.class"));
+    EXPECT_FALSE(container.hasResource("META-INF/versions/17/app/Api.class"));
+    EXPECT_TRUE(container.hasResource("app/Main.class"));
+    EXPECT_EQ(container.size(), 1u);
+}
+
+TEST(MjPassUnusedClassRemoverTest, KeepsMultiReleaseFamilyTogether)
+{
+    ca::str::Utf8StringArena         arena;
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "app/Main.class", buildApiFamilyMain(/*withRef*/ true));
+    addClassResource(container, "app/Api.class", buildApiFamilyMember());
+    addClassResource(container, "META-INF/versions/17/app/Api.class",
+                     buildApiFamilyMember());
+    mjbase::spi::GlobalAnalysisManager gam(arena);
+    registerReachabilityAnalyses(gam);
+
+    mjbase::pass::UnusedClassRemover pass;
+    const auto                       pa = pass.run(container, gam);
+
+    // app/Api 可达 → 族两份同时保留。
+    EXPECT_TRUE(pa.areAllPreserved());
+    EXPECT_TRUE(container.hasResource("app/Api.class"));
+    EXPECT_TRUE(container.hasResource("META-INF/versions/17/app/Api.class"));
+    EXPECT_TRUE(container.hasResource("app/Main.class"));
+}
+
+TEST(MjPassUnusedMemberRemoverMultiReleaseTest, SettlesFamilyMembersConsistently)
+{
+    // 成员级删除对族内每份独立遍历、各按同名等价的可达集结算：两份的 dead()
+    // 同删、live() 同留，不因遍历序分叉。
+    const auto verify = [](auto& pass, auto&& check) {
+        ca::str::Utf8StringArena         arena;
+        mjbase::model::ResourceContainer container;
+        addClassResource(container, "app/Main.class", buildApiFamilyMain(/*withRef*/ true));
+        addClassResource(container, "app/Api.class", buildApiFamilyMember());
+        addClassResource(container, "META-INF/versions/17/app/Api.class",
+                         buildApiFamilyMember());
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachabilityAnalyses(gam);
+
+        EXPECT_FALSE(pass.run(container, gam).areAllPreserved());
+        for (const char* uri : {"app/Api.class", "META-INF/versions/17/app/Api.class"}) {
+            SCOPED_TRACE(uri);
+            check(reload(container, uri));
+        }
+        EXPECT_TRUE(container.hasResource("app/Main.class"));
+    };
+
+    mjbase::pass::GlobalUnusedMethodRemover methodPass;
+    mjbase::pass::UnusedFieldRemover        fieldPass;
+    verify(methodPass, [](const jbc::core::ClassFile& cf) {
+        EXPECT_TRUE(hasMethod(cf, "live", "()V"));
+        EXPECT_FALSE(hasMethod(cf, "dead", "()V"));
+    });   // 方法面：dead() 两份同删
+    verify(fieldPass, [](const jbc::core::ClassFile& cf) {
+        EXPECT_FALSE(hasField(cf, "deadField", "I"));
+    });   // 字段面：deadField 两份同删
+}

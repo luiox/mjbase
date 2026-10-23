@@ -41,6 +41,15 @@ namespace mjbase::pass {
 /// 在 classfile 中按 name/desc 经 CP 引用、无槽位索引依赖，删除结构安全）；
 /// 常量池不压缩，失引条目保留（append-only 契约，writer 级差异由 golden
 /// 声明类目收口）。需要 JVM 真跑门的产品化使用方为 `opt-in`。
+///
+/// ## Multi-Release 族删除契约
+///
+/// 全家族的删除决策以 classfile 头声明内名为唯一键（可达性 / 引用索引均内名
+/// 键控）：同名 base + `META-INF/versions/<N>/` 变体构成一个族，族成员
+/// **要么同时删除、要么同时保留**（类级），成员级删除族内每份各按同名等价的
+/// 可达集独立结算（结果一致）。这一性质源于内名键控的实现巧合，本仓以测试
+/// 锁定为显式契约（unused_member_remover_test 的 Multi-Release 族组）——
+/// 后续任何把资源路径/URI 引入删除决策的改动都须重审本契约。
 /// @{
 
 /// @brief 删除没有字段和方法的空 class 资源。
