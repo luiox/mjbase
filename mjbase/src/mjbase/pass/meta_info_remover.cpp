@@ -7,6 +7,7 @@
 
 #include "jbc/core/attr_codec.hpp"
 #include "jbc/core/attribute.hpp"
+#include "jbc/core/bytes.hpp"
 #include "jbc/core/class_file.hpp"
 #include "jbc/type/signature.hpp"
 #include "libca/core/tag_cast.hpp"
@@ -18,8 +19,11 @@ namespace {
 using jbc::core::AnnotationsAttr;
 using jbc::core::AttrKind;
 using jbc::core::AttrSlot;
+using jbc::core::ByteSink;
+using jbc::core::ByteView;
 using jbc::core::ClassFile;
 using jbc::core::CodeAttr;
+using jbc::core::Cursor;
 using jbc::core::MemberInfo;
 using jbc::core::RawAttr;
 using jbc::core::RecordAttr;
@@ -518,6 +522,165 @@ bool clearIllegalParameterAccess(ClassFile& cf, std::vector<AttrSlot>& attrs)
     return true;
 }
 
+// ── Runtime{Visible,Invisible}ParameterAnnotations 的 Raw 槽内过滤 ─────────
+//
+// libjbc 未建模该族（attr_codec 按名分派不含参数注解，解码为 Raw），槽内
+// 过滤没有 typed 读取面；路线与 MethodParameters 原位改写一致——Raw 载荷上
+// 做二进制级结构手术（remapper 域 AnnotationDefault 的原始注解字节改写同
+// 款），读写复用 libjbc 公开 Cursor/ByteSink，annotation 结构按 JVMS 4.7.20
+// 测量（u1 参数数 + {u2 注解数 + 条目}*，条目 = type_index + 键值对表，
+// element_value 按 tag 递归）。
+
+/// 原始 annotation 条目（Raw 载荷内）：类型描述符 CP + 字节区间。
+struct RawParamAnnoEntry
+{
+    ca::u32     typeCp = 0;
+    std::size_t begin  = 0;   ///< 条目首字节（type_index 起）
+    std::size_t end    = 0;   ///< 条目尾后
+};
+
+/// 原始 annotation 的键值对表段（u2 对数 + {u2 元素名 + element_value}*）；
+/// 形状非法返回 false。
+bool skipRawAnnoPairs(Cursor& cur);
+
+/// 原始 annotation 条目（type_index + 键值对表）的边界测量。
+bool skipRawAnnotation(Cursor& cur)
+{
+    if (cur.skip(2).is_err()) return false;   // type_index
+    return skipRawAnnoPairs(cur);
+}
+
+/// 原始 element_value 的边界测量（JVMS 4.7.16.1 按 tag 分派；未知 tag 视为
+/// 形状非法——调用方对整槽 fail-closed 保原样）。
+bool skipRawElemValue(Cursor& cur)
+{
+    const auto tag = cur.u8();
+    if (tag.is_err()) return false;
+    switch (static_cast<char>(tag.unwrap())) {
+    case 'B':
+    case 'C':
+    case 'D':
+    case 'F':
+    case 'I':
+    case 'J':
+    case 'S':
+    case 'Z':
+    case 's':
+    case 'c':
+        return cur.skip(2).is_ok();   // 常量 / 类信息 CP 索引
+    case 'e':
+        return cur.skip(4).is_ok();   // 枚举常量：type_name + const_name
+    case '@':
+        return skipRawAnnotation(cur);   // 嵌套注解
+    case '[': {
+        const auto n = cur.u16();
+        if (n.is_err()) return false;
+        for (ca::u32 i = 0; i < n.unwrap(); ++i) {
+            if (!skipRawElemValue(cur)) return false;
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+bool skipRawAnnoPairs(Cursor& cur)
+{
+    const auto pairs = cur.u16();
+    if (pairs.is_err()) return false;
+    for (ca::u32 i = 0; i < pairs.unwrap(); ++i) {
+        if (cur.skip(2).is_err()) return false;   // element_name_index
+        if (!skipRawElemValue(cur)) return false;
+    }
+    return true;
+}
+
+/// 参数注解两槽槽内过滤：命中谓词的条目摘除——部分摘除留槽（参数行数与行序
+/// 保持：num_parameters 与方法描述符参数数对应，不缩行）、全部条目摘空时连
+/// 槽摘除（旧栈 annotation 表清空后旧 writer 不再产出该属性，语义等价）。
+/// 布局不符/截尾/尾随字节一律整槽保守跳过（fail-closed，不产半截改写）。
+/// 返回是否发生任何变化。
+bool filterParameterAnnotationSlots(ClassFile&             cf,
+                                    std::vector<AttrSlot>& attrs,
+                                    const AnnoFilter       filter)
+{
+    bool changed = false;
+    for (std::size_t i = attrs.size(); i-- > 0;) {
+        AttrSlot& slot = attrs[i];
+        if (!slotNameIs(cf, slot, kRvpa) && !slotNameIs(cf, slot, kRipa)) continue;
+        auto decoded = cf.decodeAttr(slot);
+        if (decoded.is_err()) continue;
+        if (std::move(decoded).unwrap()->kind() != AttrKind::Raw) continue;
+        const std::vector<ca::u8>& bytes =
+            ca::core::tag_cast::cast<const RawAttr*>(slot.peek())->bytes();
+        if (bytes.empty()) continue;
+
+        // 形状解析（fail-closed：任一步不合规即整槽跳过）。
+        Cursor       cur{ByteView{bytes.data(), bytes.size()}};
+        const auto   numParams = cur.u8();
+        if (numParams.is_err()) continue;
+        std::vector<std::vector<RawParamAnnoEntry>> rows(numParams.unwrap());
+        bool                                        shapeOk = true;
+        for (std::vector<RawParamAnnoEntry>& row : rows) {
+            const auto n = cur.u16();
+            if (n.is_err()) {
+                shapeOk = false;
+                break;
+            }
+            for (ca::u32 e = 0; e < n.unwrap(); ++e) {
+                const std::size_t begin  = cur.pos();
+                const auto        typeCp = cur.u16();
+                if (typeCp.is_err() || !skipRawAnnoPairs(cur)) {
+                    shapeOk = false;
+                    break;
+                }
+                row.push_back({typeCp.unwrap(), begin, cur.pos()});
+            }
+            if (!shapeOk) break;
+        }
+        if (!shapeOk || !cur.eof()) continue;
+
+        // 谓词判定：无命中零触碰；全空摘槽；部分摘除重建载荷。
+        const auto hit = [&cf, filter](const RawParamAnnoEntry& e) {
+            return annoFilterMatches(filter, cf.utf8(e.typeCp));
+        };
+        bool anyHit  = false;
+        bool anyKept = false;
+        for (const std::vector<RawParamAnnoEntry>& row : rows) {
+            for (const RawParamAnnoEntry& e : row) {
+                if (hit(e)) {
+                    anyHit = true;
+                }
+                else {
+                    anyKept = true;
+                }
+            }
+        }
+        if (!anyHit) continue;
+        changed = true;
+        if (!anyKept) {
+            attrs.erase(attrs.begin() + static_cast<std::ptrdiff_t>(i));
+            continue;
+        }
+        ByteSink out;
+        out.u8(static_cast<ca::u8>(rows.size()));
+        for (const std::vector<RawParamAnnoEntry>& row : rows) {
+            ca::u32 kept = 0;
+            for (const RawParamAnnoEntry& e : row) {
+                if (!hit(e)) ++kept;
+            }
+            out.u16(static_cast<ca::u16>(kept));
+            for (const RawParamAnnoEntry& e : row) {
+                if (hit(e)) continue;
+                out.raw(ByteView{bytes.data() + e.begin, e.end - e.begin});
+            }
+        }
+        ca::core::tag_cast::cast<RawAttr*>(slot.mutate())->bytes() = std::move(out.bytes());
+    }
+    return changed;
+}
+
 /// 字段/方法访问位两面清位（unit() + backing 同步，pass-contract §1 双面
 /// 落盘义务——标志位在两面都有模型，任一面落单都会失真）。
 template <typename UnitMember>
@@ -816,10 +979,10 @@ mjbase::spi::PreservedAnalyses SpecificAnnotationRemover::run(jbc::ir::ClassSess
     bool       changed = filterAnnotationSlots(cf, cf.attrs, AnnoFilter::Blacklisted);
     for (MemberInfo& m : cf.methods) {
         changed |= filterAnnotationSlots(cf, m.attrs, AnnoFilter::Blacklisted);
-        // 参数注解两槽（Runtime{Visible,Invisible}ParameterAnnotations）的槽内
-        // 过滤是旧实现面，但 libjbc 未建模该族（attr_codec 按名分派不含参数
-        // 注解，解码为 Raw），槽内过滤需注解表读取面——本批保守跳过，挂账
-        // libjbc 建模后续批次（当前语料无参数注解，golden 对拍不受影响）。
+        // 参数注解两槽槽内过滤：libjbc 未建模该族（Raw 槽），按 JVMS 4.7.20
+        // 布局二进制级条目摘除——部分摘除留槽、全空摘槽（旧面
+        // removeAnnotationsIf 同语义：条目清空后旧 writer 不再产出该属性）。
+        changed |= filterParameterAnnotationSlots(cf, m.attrs, AnnoFilter::Blacklisted);
     }
     for (MemberInfo& f : cf.fields) {
         changed |= filterAnnotationSlots(cf, f.attrs, AnnoFilter::Blacklisted);

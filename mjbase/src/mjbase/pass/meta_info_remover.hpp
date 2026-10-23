@@ -33,14 +33,15 @@ namespace mjbase::pass {
 ///   显式、有界破例：破例面 = 属性表编辑（非指令、非 pc 编辑），仅此两处，
 ///   家族其余成员不触碰 Code。
 ///
-/// 与旧实现的挂账三处：record 组件的注解已收口（typed RecordAttr 组件
-/// AttrSlot 表可达，MetaInfoRemover 对组件的 Runtime{Visible,Invisible}-
-/// Annotations 与 TypeAnnotations 槽做与成员级同规则的槽内清空，typed 体经
-/// 公开解码入口读出、命中才 makeNew 置 New 走重编码）；Runtime{Visible,
-/// Invisible}ParameterAnnotations 的槽内过滤（SpecificAnnotationRemover 旧面
-/// ——解码为 Raw，槽内过滤需注解表读取面；MetaInfoRemover 对该两槽是整槽
-/// 摘除，照常落面）；code 目标形态普通注解（JVMS 无此挂载点，树读入即弃，
-/// 新载体如出现保持原样）。
+/// 与旧实现的原挂账三处：两处已收口——record 组件的注解（typed RecordAttr
+/// 组件 AttrSlot 表可达，MetaInfoRemover 对组件的 Runtime{Visible,Invisible}-
+/// Annotations 与 TypeAnnotations 槽做与成员级同规则的槽内清空，父 Record 槽
+/// 连带置脏驱动重编码）；Runtime{Visible,Invisible}Parameter-
+/// Annotations 的槽内过滤（SpecificAnnotationRemover——libjbc 未建模该族
+/// （解码 Raw），按 JVMS 4.7.20 布局做二进制级条目摘除，布局不符整槽保守
+/// 跳过；MetaInfoRemover 对该两槽是整槽摘除，照常落面）。余下 code 目标
+/// 形态普通注解是 JVMS 无此挂载点的非缺口（树读入即弃，新载体如出现保持
+/// 原样）。
 ///
 /// 家族内注解过滤一律**槽内过滤**（解码 AttrBody → 按描述符谓词删条目 →
 /// 槽置脏），槽内删空时连槽摘除（旧栈 annotation vector 清空后旧 writer
@@ -279,8 +280,10 @@ public:
 /// 槽内过滤，谓词 = IllegalAnnotationRemover 同款形状判定 ∪ 旧栈黑名单
 /// 描述符封闭集（origincloud/jvavx/jetbrains/skidonium 族，含旧表原样重复
 /// 条目——集合语义，重复不影响判定）。查类/字段/方法的 visible/invisible
-/// 注解两族；不查 type annotation。参数注解两槽的槽内过滤为旧实现面，
-/// libjbc 未建模该族（解码 Raw）——保守跳过并挂账（见家族头注）。
+/// 注解两族；不查 type annotation。参数注解两槽（Runtime{Visible,Invisible}-
+/// ParameterAnnotations）同谓词槽内过滤——libjbc 未建模该族（解码 Raw），
+/// 按 JVMS 4.7.20 布局做二进制级条目摘除：部分摘除留槽（参数行数与行序
+/// 保持）、全空摘槽、布局不符/截尾整槽保守保持原样。
 ///
 /// @par 标签
 /// - `scope:class`

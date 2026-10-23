@@ -82,6 +82,54 @@ Bytes paramAnnoTable(FixtureBuilder& b, std::initializer_list<const char*> descs
     return out;
 }
 
+/// 参数注解行载荷（JVMS 4.7.20 正形：u1 参数数 + {u2 注解数 + 条目}*），
+/// 行内容为已拼好的注解条目字节。
+Bytes paramAnnoRawRows(std::vector<std::vector<Bytes>> rows)
+{
+    Bytes out;
+    putU8(out, static_cast<ca::u8>(rows.size()));
+    for (const std::vector<Bytes>& row : rows) {
+        putU16(out, static_cast<ca::u16>(row.size()));
+        for (const Bytes& e : row) appendBytes(out, e);
+    }
+    return out;
+}
+
+/// 参数注解行载荷（正形 u1 参数数），行内容为描述符列表（零键值对条目）。
+Bytes paramAnnoRows(FixtureBuilder& b, std::vector<std::vector<const char*>> rows)
+{
+    std::vector<std::vector<Bytes>> entries;
+    entries.reserve(rows.size());
+    for (const std::vector<const char*>& row : rows) {
+        std::vector<Bytes> rowEntries;
+        rowEntries.reserve(row.size());
+        for (const char* d : row) {
+            Bytes e;
+            putU16(e, b.utf8(d));
+            putU16(e, 0);
+            rowEntries.push_back(std::move(e));
+        }
+        entries.push_back(std::move(rowEntries));
+    }
+    return paramAnnoRawRows(std::move(entries));
+}
+
+/// 带嵌套载荷的注解条目：type + 1 键值对（'[ 数组 → '@ 嵌套注解）——参数
+/// 注解条目测量器的递归面（条目随顶层描述符整体摘除）。
+Bytes nestedAnnoEntry(FixtureBuilder& b, const char* desc, const char* nestedDesc)
+{
+    Bytes out;
+    putU16(out, b.utf8(desc));
+    putU16(out, 1);                    // 键值对数
+    putU16(out, b.utf8("value"));      // 元素名
+    putU8(out, '[');                   // 数组
+    putU16(out, 1);                    // 数组元素数
+    putU8(out, '@');                   // 嵌套注解
+    putU16(out, b.utf8(nestedDesc));
+    putU16(out, 0);                    // 嵌套注解键值对数
+    return out;
+}
+
 /// Record 组件规格：名/描述符 + 嵌套属性槽。
 struct RecordCompSpec
 {
@@ -227,6 +275,19 @@ const RecordAttr* decodedRecordAttr(ClassFile& cf)
     return nullptr;
 }
 
+/// 属性表中指定名 Raw 槽的载荷字节（无槽/解码失败/非 Raw 为空）。
+const std::vector<ca::u8>* rawSlotBytes(ClassFile& cf, std::vector<AttrSlot>& attrs,
+                                        std::string_view name)
+{
+    for (AttrSlot& slot : attrs) {
+        if (cf.utf8(slot.nameCp) != name) continue;
+        auto d = cf.decodeAttr(slot);
+        if (d.is_err()) return nullptr;
+        if (std::move(d).unwrap()->kind() != AttrKind::Raw) return nullptr;
+        return &ca::core::tag_cast::cast<const RawAttr*>(slot.peek())->bytes();
+    }
+    return nullptr;
+}
 
 /// 组会话（按值收 builder，CP 物化在 assemble 内完成）。
 std::shared_ptr<jbc::ir::ClassSession> makeSession(FixtureBuilder builder)
@@ -914,6 +975,125 @@ TEST(MjPassSpecificAnnotationRemoverTest, BlacklistAndMalformedFiltered)
     MemberInfo* f = findMember(cf, cf.fields, "f");
     ASSERT_NE(f, nullptr);
     EXPECT_TRUE(attrNames(cf, f->attrs).count("RuntimeInvisibleAnnotations") == 0);
+}
+
+// 参数注解两槽槽内过滤（Raw 面 JVMS 4.7.20 布局二进制级条目摘除）。
+
+TEST(MjPassSpecificAnnotationRemoverTest, ParameterAnnotationEntriesFilteredSlotKept)
+{
+    FixtureBuilder builder("T");
+    builder.addMethod({"m", "(I)V", bareReturn(), 0x0009, {}, 1, 1,
+                       {{"RuntimeVisibleParameterAnnotations",
+                         paramAnnoRows(builder,
+                                       {{"Ltech/origincloud/Mapping;", "Lcom/app/Keep;"},
+                                        {"Lcom/app/Keep;"}})}}});
+    auto session = makeSession(builder);
+
+    ca::str::Utf8StringArena                arena;
+    mjbase::spi::ClassAnalysisManager       cam(arena);
+    mjbase::pass::SpecificAnnotationRemover pass;
+    EXPECT_TRUE(pass.run(*session, cam).changed());
+
+    ClassFile& cf = session->backing();
+    // 部分命中：槽存活，行数保持（num_parameters 与方法描述符参数数对应）。
+    const std::vector<ca::u8>* raw = rawSlotBytes(
+        cf, cf.methods[0].attrs, "RuntimeVisibleParameterAnnotations");
+    ASSERT_NE(raw, nullptr);
+    // 重建载荷逐字节断言：u1 参数数=2；行 0 摘黑名单留幸存；行 1 原样。
+    const ca::u16 keep = builder.utf8("Lcom/app/Keep;");
+    const Bytes   expected = {
+        0x02,
+        0x00, 0x01,
+        static_cast<ca::u8>(keep >> 8), static_cast<ca::u8>(keep), 0x00, 0x00,
+        0x00, 0x01,
+        static_cast<ca::u8>(keep >> 8), static_cast<ca::u8>(keep), 0x00, 0x00,
+    };
+    EXPECT_EQ(*raw, expected);
+}
+
+TEST(MjPassSpecificAnnotationRemoverTest, ParameterAnnotationNestedEntryRemovedWhole)
+{
+    FixtureBuilder builder("T");
+    // 黑名单条目带 '[' 数组 + '@ 嵌套注解载荷——条目随顶层描述符整体摘除，
+    // 嵌套形状测量不误切字节。
+    Bytes entry0 = nestedAnnoEntry(builder, "Ltech/origincloud/Mapping;", "Lfoo/Nested;");
+    Bytes entry1;
+    putU16(entry1, builder.utf8("Lcom/app/Keep;"));
+    putU16(entry1, 0);
+    builder.addMethod({"m", "(I)V", bareReturn(), 0x0009, {}, 1, 1,
+                       {{"RuntimeInvisibleParameterAnnotations",
+                         paramAnnoRawRows({{std::move(entry0), std::move(entry1)}})}}});
+    auto session = makeSession(builder);
+
+    ca::str::Utf8StringArena                arena;
+    mjbase::spi::ClassAnalysisManager       cam(arena);
+    mjbase::pass::SpecificAnnotationRemover pass;
+    EXPECT_TRUE(pass.run(*session, cam).changed());
+
+    ClassFile& cf = session->backing();
+    const std::vector<ca::u8>* raw = rawSlotBytes(
+        cf, cf.methods[0].attrs, "RuntimeInvisibleParameterAnnotations");
+    ASSERT_NE(raw, nullptr);
+    const ca::u16 keep     = builder.utf8("Lcom/app/Keep;");
+    const Bytes   expected = {
+        0x01, 0x00, 0x01,
+        static_cast<ca::u8>(keep >> 8), static_cast<ca::u8>(keep), 0x00, 0x00,
+    };
+    EXPECT_EQ(*raw, expected);
+}
+
+TEST(MjPassSpecificAnnotationRemoverTest, ParameterAnnotationSlotDroppedWhenAllEmptied)
+{
+    FixtureBuilder builder("T");
+    // 全条目命中（黑名单 + 空行）→ 槽摘除；幸存槽照常保留。
+    builder.addMethod({"m", "(I)V", bareReturn(), 0x0009, {}, 1, 1,
+                       {{"RuntimeVisibleParameterAnnotations",
+                         paramAnnoRows(builder, {{"Ljvavx/annotation/NotNull;"}, {}})}}});
+    builder.addMethod({"keep", "(I)V", bareReturn(), 0x0009, {}, 1, 1,
+                       {{"RuntimeVisibleParameterAnnotations",
+                         paramAnnoRows(builder, {{"Lcom/app/Keep;"}})}}});
+    auto session = makeSession(builder);
+
+    ca::str::Utf8StringArena                arena;
+    mjbase::spi::ClassAnalysisManager       cam(arena);
+    mjbase::pass::SpecificAnnotationRemover pass;
+    EXPECT_TRUE(pass.run(*session, cam).changed());
+
+    ClassFile& cf = session->backing();
+    MemberInfo* m = findMember(cf, cf.methods, "m");
+    MemberInfo* keepM = findMember(cf, cf.methods, "keep");
+    ASSERT_NE(m, nullptr);
+    ASSERT_NE(keepM, nullptr);
+    EXPECT_EQ(rawSlotBytes(cf, m->attrs, "RuntimeVisibleParameterAnnotations"), nullptr)
+        << "全空摘槽";
+    EXPECT_NE(rawSlotBytes(cf, keepM->attrs, "RuntimeVisibleParameterAnnotations"), nullptr)
+        << "非目标注解不动";
+}
+
+TEST(MjPassSpecificAnnotationRemoverTest, NonTargetAndMalformedParameterAnnotationsUntouched)
+{
+    FixtureBuilder builder("T");
+    // 非目标注解（谓词零命中）+ 畸形载荷（条目截尾：typeCp 后缺键值对表）
+    // → fail-closed，全类零改动字节恒等。
+    builder.addMethod({"m", "(I)V", bareReturn(), 0x0009, {}, 1, 1,
+                       {{"RuntimeVisibleParameterAnnotations",
+                         paramAnnoRows(builder, {{"Lcom/app/Keep;"}})}}});
+    builder.addMethod({"bad", "(I)V", bareReturn(), 0x0009, {}, 1, 1,
+                       {{"RuntimeInvisibleParameterAnnotations",
+                         Bytes{0x01, 0x00, 0x01, 0x12, 0x34}}}});
+    auto session = makeSession(builder);
+    auto beforeResult = jbc::core::writeClass(session->backing());
+    ASSERT_TRUE(beforeResult.is_ok());
+    const Bytes before = std::move(beforeResult).unwrap();
+
+    ca::str::Utf8StringArena                arena;
+    mjbase::spi::ClassAnalysisManager       cam(arena);
+    mjbase::pass::SpecificAnnotationRemover pass;
+    EXPECT_FALSE(pass.run(*session, cam).changed());
+
+    auto after = jbc::core::writeClass(session->backing());
+    ASSERT_TRUE(after.is_ok());
+    EXPECT_EQ(std::move(after).unwrap(), before);
 }
 
 // ── 注册面：13 件全可按名构造且 scope=Class ──
