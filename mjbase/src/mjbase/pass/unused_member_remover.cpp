@@ -24,10 +24,11 @@ namespace mjbase::pass {
 namespace {
 
 // JVM 访问标志位（JVMS 表；libjbc 未提供旗标常量）。
-constexpr ca::u16 kAccPrivate  = 0x0002;
-constexpr ca::u16 kAccStatic   = 0x0008;
-constexpr ca::u16 kAccNative   = 0x0100;
-constexpr ca::u16 kAccAbstract = 0x0400;
+constexpr ca::u16 kAccPublic    = 0x0001;
+constexpr ca::u16 kAccPrivate   = 0x0002;
+constexpr ca::u16 kAccStatic    = 0x0008;
+constexpr ca::u16 kAccNative    = 0x0100;
+constexpr ca::u16 kAccAbstract  = 0x0400;
 
 /// 装载完成的类：DOM + 写回目标（成员删除在低层 DOM 上进行，无需会话）。
 struct LoadedClass
@@ -201,6 +202,137 @@ bool collectResourceKeepClasses(mjbase::model::ResourceContainer& container,
     return true;
 }
 
+/// 闭包根收集器：classes/methods/fields 的 string_view 指向自身 strings 驻留集
+/// （unordered_set 节点地址稳定，存活至 run() 结束——对齐 UnusedClassRemover 的
+/// rootClasses 驻留纪律）。
+struct RetainedRoots
+{
+    std::unordered_set<std::string>             strings;
+    std::vector<std::string_view>               classes;
+    std::vector<mjbase::reference::MethodRefKey> methods;
+    std::vector<mjbase::reference::FieldRefKey>  fields;
+
+    std::string_view intern(std::string text)
+    {
+        return *strings.insert(std::move(text)).first;
+    }
+    void addClass(std::string_view name) { classes.push_back(intern(std::string(name))); }
+    void addMethod(std::string_view owner, std::string_view name, std::string_view desc)
+    {
+        methods.push_back({intern(std::string(owner)), intern(std::string(name)),
+                           intern(std::string(desc))});
+    }
+    void addField(std::string_view owner, std::string_view name, std::string_view desc)
+    {
+        fields.push_back({intern(std::string(owner)), intern(std::string(name)),
+                          intern(std::string(desc))});
+    }
+};
+
+/// 无条件保留面提升为闭包根（删除安全不变量的前提，见模块头注「删除安全不变量
+/// 与『调用点收尾』裁定」）：凡因策略面而非可达性保留的成员，其出边必须参与
+/// 闭包传播，否则「保留但不可达」代码引用的死成员会被删出悬垂引用。
+///
+/// - 资源 keep 类（module/Manifest/services）与 keep 规则命中类：类 + 全部声明
+///   成员（类在即成员全在，对齐 UnusedClassRemover 的声明方法提升策略；成员删除
+///   两件另提升声明字段——ServiceLoader/agent 等容器外入口面 fail-closed）。
+///   声明面取自 ReferenceIndex（与删除谓词同源口径）。
+/// - keep metadata（Signature/注解族）成员、keep 规则命中成员（DOM 属性面判定）。
+/// - native/abstract 方法（无方法体语义承载）与全部 `<init>`/`<clinit>`
+///   （`<clinit>` 与 includeClassInitializers 双保险，`<init>` 从不候选删除）。
+void collectRetainedRoots(const std::vector<LoadedClass>&          classes,
+                          const mjbase::reference::ReferenceIndex& index,
+                          const std::unordered_set<std::string>&   resourceKeepNames,
+                          const mjbase::reference::KeepRuleSet*    keepRules,
+                          RetainedRoots&                           roots)
+{
+    for (const LoadedClass& loaded : classes) {
+        const std::string& owner = loaded.name;
+        const bool wholeClassKeep = resourceKeepNames.count(owner) != 0 ||
+                                    (keepRules != nullptr && keepRules->matchesClass(owner));
+        if (wholeClassKeep) {
+            roots.addClass(owner);
+            for (const mjbase::reference::MethodDeclaration& method :
+                 index.declaredMethodsIn(owner)) {
+                roots.addMethod(method.method.owner, method.method.name, method.method.desc);
+            }
+            for (const mjbase::reference::FieldDeclaration& field :
+                 index.declaredFieldsIn(owner)) {
+                roots.addField(field.field.owner, field.field.name, field.field.desc);
+            }
+            continue;
+        }
+        for (const jbc::core::MemberInfo& method : loaded.cf->methods) {
+            const std::string name(loaded.cf->nameOf(method));
+            const std::string desc(loaded.cf->descOf(method));
+            const bool classInit   = name == "<init>" || name == "<clinit>";
+            const bool noBody      = (method.access & (kAccNative | kAccAbstract)) != 0;
+            const bool ruleKeep =
+                keepRules != nullptr && keepRules->matchesMember(owner, name, desc);
+            if (classInit || noBody || hasMethodKeepMetadata(*loaded.cf, method) || ruleKeep) {
+                roots.addMethod(owner, name, desc);
+            }
+        }
+        for (const jbc::core::MemberInfo& field : loaded.cf->fields) {
+            const std::string name(loaded.cf->nameOf(field));
+            const std::string desc(loaded.cf->descOf(field));
+            if (hasFieldKeepMetadata(*loaded.cf, field) ||
+                (keepRules != nullptr && keepRules->matchesMember(owner, name, desc))) {
+                roots.addField(owner, name, desc);
+            }
+        }
+    }
+}
+
+/// 自建闭包（Resolved 展开）：共享根策略（main、`<clinit>`）+ 保留面根。闭包对象
+/// 为 pass 局部——根集合是 pass 策略面，不与共享 ResolvedGlobalReachabilityAnalysis
+/// 缓存混用；索引/调用图/解析图仍取自 GAM（与共享分析同源）。
+mjbase::reference::GlobalReachability buildRetainedClosure(
+    mjbase::spi::GlobalAnalysisManager& am, mjbase::model::ResourceContainer& container,
+    const RetainedRoots& roots)
+{
+    auto&             index            = am.getResult<mjbase::reference::ReferenceIndexAnalysis>(container);
+    auto&             callGraph        = am.getResult<mjbase::reference::CallGraphAnalysis>(container);
+    auto&             resolvedCallGraph = am.getResult<mjbase::asm_classpath::ResolvedCallGraphAnalysis>(container);
+
+    mjbase::reference::GlobalReachabilityOptions options;
+    options.callExpansion = mjbase::reference::GlobalReachabilityCallExpansion::Resolved;
+    options.rootClasses   = roots.classes;
+    options.rootMethods   = roots.methods;
+    options.rootFields    = roots.fields;
+
+    mjbase::reference::GlobalReachability reachability;
+    reachability.build(index, callGraph, resolvedCallGraph, options);
+    return reachability;
+}
+
+/// 档位可见性谓词：候选访问面。NonPublic 的「非 public」= private /
+/// package-private / protected（无标志位即 package-private）。
+bool matchesTier(ca::u16 access, UnusedMemberAccessTier tier)
+{
+    switch (tier) {
+    case UnusedMemberAccessTier::PrivateOnly: return (access & kAccPrivate) != 0;
+    case UnusedMemberAccessTier::NonPublic:   return (access & kAccPublic) == 0;
+    case UnusedMemberAccessTier::All:         return true;
+    }
+    return false;
+}
+
+/// 预载容器全部 class 资源 DOM（保留面 guard 收集与删除改写共用一轮解析）；
+/// 任一不可解析返回 false（调用方整 pass 放弃）。
+bool loadAllClasses(mjbase::model::ResourceContainer& container, std::vector<LoadedClass>& out)
+{
+    for (auto& [uri, resource] : container.getResources()) {
+        (void)uri;
+        if (!ca::core::tag_cast::isa<mjbase::model::ClassResource>(resource.get())) continue;
+        auto* cls = ca::core::tag_cast::cast<mjbase::model::ClassResource>(resource.get());
+        LoadedClass loaded;
+        if (!loadClass(*cls, loaded)) return false;
+        out.push_back(std::move(loaded));
+    }
+    return true;
+}
+
 }   // namespace
 
 // ── EmptyClassRemover ────────────────────────────────────────────────────────
@@ -336,27 +468,37 @@ mjbase::spi::PreservedAnalyses UnusedClassRemover::run(mjbase::model::ResourceCo
 // ── UnusedFieldRemover ───────────────────────────────────────────────────────
 
 UnusedFieldRemover::UnusedFieldRemover(
-    std::shared_ptr<const mjbase::reference::KeepRuleSet> keepRules)
-    : keepRules_(std::move(keepRules))
+    std::shared_ptr<const mjbase::reference::KeepRuleSet> keepRules,
+    UnusedMemberAccessTier                                tier)
+    : keepRules_(std::move(keepRules)), tier_(tier)
 {}
 
 mjbase::spi::PreservedAnalyses UnusedFieldRemover::run(mjbase::model::ResourceContainer&     container,
                                                        mjbase::spi::GlobalAnalysisManager& am)
 {
     if (!allClassResourcesReadable(container)) return mjbase::spi::PreservedAnalyses::all();
-    auto& reachability = am.getResult<mjbase::reference::ResolvedGlobalReachabilityAnalysis>(container);
+
+    std::unordered_set<std::string> resourceKeepNames;
+    if (!collectResourceKeepClasses(container, resourceKeepNames)) {
+        return mjbase::spi::PreservedAnalyses::all();
+    }
+
+    std::vector<LoadedClass> classes;
+    if (!loadAllClasses(container, classes)) return mjbase::spi::PreservedAnalyses::all();
+
+    auto& index = am.getResult<mjbase::reference::ReferenceIndexAnalysis>(container);
+    RetainedRoots roots;
+    collectRetainedRoots(classes, index, resourceKeepNames, keepRules_.get(), roots);
+    const mjbase::reference::GlobalReachability reachability =
+        buildRetainedClosure(am, container, roots);
+
+    // 没有根（library jar、无 main、无资源根）时保持不变——调用方提供显式保留
+    // 策略前不删库型容器。
     if (reachability.reachableClasses().empty()) return mjbase::spi::PreservedAnalyses::all();
 
     mjbase::spi::ClassResourcePendingCommit pending;
-    for (auto& [uri, resource] : container.getResources()) {
-        (void)uri;
-        if (!ca::core::tag_cast::isa<mjbase::model::ClassResource>(resource.get())) continue;
-        auto* cls = ca::core::tag_cast::cast<mjbase::model::ClassResource>(resource.get());
-
-        LoadedClass loaded;
-        if (!loadClass(*cls, loaded)) return mjbase::spi::PreservedAnalyses::all();
-
-        const std::string owner(loaded.cf->thisName());
+    for (LoadedClass& loaded : classes) {
+        const std::string& owner = loaded.name;
         if (!reachability.isClassReachable(owner)) continue;
         // keep 规则（只加不减）：类规则命中 → 整类跳过；成员规则命中 → 该字段保留。
         if (keepRules_ != nullptr && keepRules_->matchesClass(owner)) continue;
@@ -366,7 +508,7 @@ mjbase::spi::PreservedAnalyses UnusedFieldRemover::run(mjbase::model::ResourceCo
             const jbc::core::MemberInfo& field = *it;
             const std::string            name(loaded.cf->nameOf(field));
             const std::string            desc(loaded.cf->descOf(field));
-            if ((field.access & kAccPrivate) != 0 &&
+            if (matchesTier(field.access, tier_) &&
                 !hasFieldKeepMetadata(*loaded.cf, field) &&
                 !(keepRules_ != nullptr && keepRules_->matchesMember(owner, name, desc)) &&
                 !reachability.isFieldReachable(owner, name, desc)) {
@@ -383,7 +525,7 @@ mjbase::spi::PreservedAnalyses UnusedFieldRemover::run(mjbase::model::ResourceCo
             throw std::runtime_error(std::string("UnusedFieldRemover: write failed for '") +
                                      owner + "'");
         }
-        pending.stage(cls, std::move(written).unwrap());
+        pending.stage(loaded.resource, std::move(written).unwrap());
     }
 
     if (pending.empty()) return mjbase::spi::PreservedAnalyses::all();
@@ -394,27 +536,37 @@ mjbase::spi::PreservedAnalyses UnusedFieldRemover::run(mjbase::model::ResourceCo
 // ── GlobalUnusedMethodRemover ────────────────────────────────────────────────
 
 GlobalUnusedMethodRemover::GlobalUnusedMethodRemover(
-    std::shared_ptr<const mjbase::reference::KeepRuleSet> keepRules)
-    : keepRules_(std::move(keepRules))
+    std::shared_ptr<const mjbase::reference::KeepRuleSet> keepRules,
+    UnusedMemberAccessTier                                tier)
+    : keepRules_(std::move(keepRules)), tier_(tier)
 {}
 
 mjbase::spi::PreservedAnalyses GlobalUnusedMethodRemover::run(
     mjbase::model::ResourceContainer& container, mjbase::spi::GlobalAnalysisManager& am)
 {
     if (!allClassResourcesReadable(container)) return mjbase::spi::PreservedAnalyses::all();
-    auto& reachability = am.getResult<mjbase::reference::ResolvedGlobalReachabilityAnalysis>(container);
+
+    std::unordered_set<std::string> resourceKeepNames;
+    if (!collectResourceKeepClasses(container, resourceKeepNames)) {
+        return mjbase::spi::PreservedAnalyses::all();
+    }
+
+    std::vector<LoadedClass> classes;
+    if (!loadAllClasses(container, classes)) return mjbase::spi::PreservedAnalyses::all();
+
+    auto& index = am.getResult<mjbase::reference::ReferenceIndexAnalysis>(container);
+    RetainedRoots roots;
+    collectRetainedRoots(classes, index, resourceKeepNames, keepRules_.get(), roots);
+    const mjbase::reference::GlobalReachability reachability =
+        buildRetainedClosure(am, container, roots);
+
+    // 没有根（library jar、无 main、无资源根）时保持不变——调用方提供显式保留
+    // 策略前不删库型容器。
     if (reachability.reachableClasses().empty()) return mjbase::spi::PreservedAnalyses::all();
 
     mjbase::spi::ClassResourcePendingCommit pending;
-    for (auto& [uri, resource] : container.getResources()) {
-        (void)uri;
-        if (!ca::core::tag_cast::isa<mjbase::model::ClassResource>(resource.get())) continue;
-        auto* cls = ca::core::tag_cast::cast<mjbase::model::ClassResource>(resource.get());
-
-        LoadedClass loaded;
-        if (!loadClass(*cls, loaded)) return mjbase::spi::PreservedAnalyses::all();
-
-        const std::string owner(loaded.cf->thisName());
+    for (LoadedClass& loaded : classes) {
+        const std::string& owner = loaded.name;
         if (!reachability.isClassReachable(owner)) continue;
         // keep 规则（只加不减）：类规则命中 → 整类跳过；成员规则命中 → 该方法保留。
         if (keepRules_ != nullptr && keepRules_->matchesClass(owner)) continue;
@@ -429,7 +581,7 @@ mjbase::spi::PreservedAnalyses GlobalUnusedMethodRemover::run(
             }
             const std::string desc(loaded.cf->descOf(method));
             const bool unsupportedBody = (method.access & (kAccNative | kAccAbstract)) != 0;
-            if ((method.access & kAccPrivate) != 0 && !unsupportedBody &&
+            if (matchesTier(method.access, tier_) && !unsupportedBody &&
                 !hasMethodKeepMetadata(*loaded.cf, method) &&
                 !(keepRules_ != nullptr && keepRules_->matchesMember(owner, name, desc)) &&
                 !reachability.isMethodReachable(owner, name, desc)) {
@@ -446,7 +598,7 @@ mjbase::spi::PreservedAnalyses GlobalUnusedMethodRemover::run(
             throw std::runtime_error(std::string("GlobalUnusedMethodRemover: write failed for '") +
                                      owner + "'");
         }
-        pending.stage(cls, std::move(written).unwrap());
+        pending.stage(loaded.resource, std::move(written).unwrap());
     }
 
     if (pending.empty()) return mjbase::spi::PreservedAnalyses::all();

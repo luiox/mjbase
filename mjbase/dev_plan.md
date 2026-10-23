@@ -17,9 +17,14 @@
   GlobalUnusedMethod）。
 - [ ] P0-3 可配置无用调用删除（RemoveMethodCallsHandler 等价物）：
   scope:global，CLI 白名单供调用点，删除后同步调用图边；研究已派。
-- [ ] P0-4 非私有成员删除 + 调用修复：GlobalUnusedMethodRemover 扩展到
-  package-private/protected 死方法，删除后 invoke 指令与调用图边修复；
-  跨 JAR 引用不可见时 fail-closed。研究已派。
+- [x] P0-4 非私有成员删除 + 调用修复：UnusedFieldRemover / GlobalUnusedMethodRemover
+  按 `UnusedMemberAccessTier` 三档放开（PrivateOnly 旧策略 / NonPublic 默认删
+  package-private/protected、public 面 fail-closed 保守 / All 闭程序激进）；
+  无条件保留面（keep metadata、keep 规则命中、资源 keep 类与 keep 规则类的全部
+  声明成员、构造器、native/abstract）提升为闭包根，堵「保留但不可达代码引用被
+  删成员」的悬垂引用；裁定「可达性判死 ⇒ 保留代码无引用 ⇒ 删除后 invoke 指令面
+  无需清扫」（删除族与 MethodCallRemover 无正确性顺序约束），调用图边经
+  PreservedAnalyses 失效链重建。
 - [ ] P0-5 实例化类保守根：RTA 式按 `new` 点位收窄可达类集合，喂
   UnusedClassRemover 的 rootClasses；与现有 ResolvedCallGraph 的关系待定。
 - [ ] P0-6 多版本 JAR（Multi-Release）：META-INF/versions/N/ 条目版本分组，
