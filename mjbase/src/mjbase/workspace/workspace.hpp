@@ -226,6 +226,12 @@ public:
                                       const MutationRequest& request = {}) override;
 
     /// @brief 原子替换一个 class 的原始字节；dry-run 时只返回完整验证和 diff。
+    ///
+    /// 选择器语义（URI 或内名）：内名命中 Multi-Release 族时按 resolveClassUri
+    /// 的确定序选定唯一条目。**单条 URI 语义**：替换只作用于选定条目，同族
+    /// 其它条目（versions/&lt;N&gt; 变体）字节不动、不传播——族员字节本就随
+    /// release 各自独立，逐条 URI 调用即完整族语义；本层不提供族批量替换面。
+    /// 候选字节内名必须与目标 URI 推导内名一致（版本化目标按 JEP 238 ≥ 9 口径）。
     MutationResult replaceClassBytes(const std::string& uriOrInternalName,
                                      const std::vector<ca::u8>& bytes,
                                      const MutationRequest& request = {}) override;
@@ -322,6 +328,12 @@ private:
     ///        主容器 URI 优先，同 URI 的支撑资源跳过）。
     std::unique_ptr<model::ResourceContainer> analysisScanContainer() const;
     WorkspaceResult<AnalysisGraph>            analysisGraph() const;
+    /// @brief 内名/URI 选择器 → 唯一 class 资源 URI（Multi-Release 族确定序）。
+    ///
+    /// 选择器为既有 class URI 时原样返回；否则按 class 字节内名匹配。同内名
+    /// 族（base 与 META-INF/versions/&lt;N&gt; 变体并存）按确定序选定唯一条目：
+    /// base 形条目优先于版本化条目（JEP 238 口径版本 ≥ 9），同层级取 URI 字节
+    /// 序最小——不依赖容器迭代序。
     WorkspaceResult<std::string>       resolveClassUri(const model::ResourceContainer& container,
                                                        const std::string& uriOrInternalName) const;
     WorkspaceErrorInfo validateCandidate(const model::ResourceContainer& candidate,
