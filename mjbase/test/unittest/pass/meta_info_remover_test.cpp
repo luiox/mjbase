@@ -33,6 +33,7 @@ using jbc::core::ClassFile;
 using jbc::core::CodeAttr;
 using jbc::core::MemberInfo;
 using jbc::core::RawAttr;
+using jbc::core::RecordAttr;
 using jbc::core::TypeAnnotationsAttr;
 
 // ── 载荷拼装（CP 索引经 builder 先行物化）──
@@ -77,6 +78,33 @@ Bytes paramAnnoTable(FixtureBuilder& b, std::initializer_list<const char*> descs
     for (const char* d : descs) {
         putU16(out, b.utf8(d));
         putU16(out, 0);
+    }
+    return out;
+}
+
+/// Record 组件规格：名/描述符 + 嵌套属性槽。
+struct RecordCompSpec
+{
+    std::string_view         name;
+    std::string_view         desc;
+    std::vector<FixtureAttr> attrs;
+};
+
+/// Record 属性载荷（JVMS 4.7.30）：u2 组件数 + {u2 名 CP, u2 描述符 CP,
+/// u2 属性数 + 嵌套属性槽}*（组件嵌套属性槽在手拼夹具内前置物化名字 CP）。
+Bytes recordAttrPayload(FixtureBuilder& b, std::vector<RecordCompSpec> comps)
+{
+    Bytes out;
+    putU16(out, static_cast<ca::u16>(comps.size()));
+    for (const RecordCompSpec& c : comps) {
+        putU16(out, b.utf8(c.name));
+        putU16(out, b.utf8(c.desc));
+        putU16(out, static_cast<ca::u16>(c.attrs.size()));
+        for (const FixtureAttr& a : c.attrs) {
+            putU16(out, b.utf8(a.name));
+            putU32(out, static_cast<ca::u32>(a.payload.size()));
+            appendBytes(out, a.payload);
+        }
     }
     return out;
 }
@@ -185,6 +213,21 @@ CodeAttr* decodeCodeAttr(ClassFile& cf, MemberInfo& m)
     return nullptr;
 }
 
+/// 类级 Record 槽的 typed 体（经 decodeAttr 挂体；无槽/解码失败/类型不符
+/// 为空）。
+const RecordAttr* decodedRecordAttr(ClassFile& cf)
+{
+    for (AttrSlot& slot : cf.attrs) {
+        if (cf.utf8(slot.nameCp) != "Record") continue;
+        auto d = cf.decodeAttr(slot);
+        if (d.is_err()) return nullptr;
+        if (std::move(d).unwrap()->kind() != AttrKind::Record) return nullptr;
+        return ca::core::tag_cast::cast<const RecordAttr*>(slot.peek());
+    }
+    return nullptr;
+}
+
+
 /// 组会话（按值收 builder，CP 物化在 assemble 内完成）。
 std::shared_ptr<jbc::ir::ClassSession> makeSession(FixtureBuilder builder)
 {
@@ -292,6 +335,96 @@ TEST(MjPassMetaInfoRemoverTest, CleanClassIsByteIdentical)
     auto written = jbc::core::writeClass(session->backing());
     ASSERT_TRUE(written.is_ok());
     EXPECT_EQ(written.unwrap(), before);
+}
+
+// record 组件嵌套注解清空（typed RecordAttr 组件 AttrSlot 表，父 Record 槽
+// 连带置脏）。
+
+TEST(MjPassMetaInfoRemoverTest, ClearsRecordComponentAnnotationSlots)
+{
+    FixtureBuilder builder("T");
+    builder.addClassAttr({"Record", recordAttrPayload(builder,
+        {
+            {"x", "I",
+             {{"RuntimeVisibleAnnotations", annoTable(builder, {"LFoo/Keep;"})},
+              {"RuntimeVisibleTypeAnnotations", typeAnnoTable(builder, 0x13, {"LFoo/Keep;"})},
+              {"Signature", signaturePayload(builder, "I")}}},
+            {"y", "Ljava/lang/String;",
+             {{"Signature", signaturePayload(builder, "Ljava/lang/String;")}}},
+        })});
+    builder.addMethod({"m", "()V", bareReturn()});
+    auto session = makeSession(builder);
+
+    ca::str::Utf8StringArena          arena;
+    mjbase::spi::ClassAnalysisManager cam(arena);
+    mjbase::pass::MetaInfoRemover     pass;
+    const auto                        pa = pass.run(*session, cam);
+    EXPECT_TRUE(pa.changed());
+
+    ClassFile& cf = session->backing();
+    EXPECT_EQ(attrNames(cf, cf.attrs).count("Record"), 1u) << "Record 槽本身不动";
+    const RecordAttr* rec = decodedRecordAttr(cf);
+    ASSERT_NE(rec, nullptr);
+    ASSERT_EQ(rec->components.size(), 2u);
+    EXPECT_EQ(cf.utf8(rec->components[0].nameCp), "x");
+    // 组件 x：注解与 TypeAnnotation 两槽清空，Signature 幸存。
+    ASSERT_EQ(rec->components[0].attrs.size(), 1u);
+    EXPECT_EQ(cf.utf8(rec->components[0].attrs[0].nameCp), "Signature");
+    // 组件 y 无注解面：原样。
+    ASSERT_EQ(rec->components[1].attrs.size(), 1u);
+    EXPECT_EQ(cf.utf8(rec->components[1].attrs[0].nameCp), "Signature");
+    // 父 Record 槽置脏后的重编码写回面可落盘。
+    auto written = jbc::core::writeClass(cf);
+    ASSERT_TRUE(written.is_ok());
+}
+
+TEST(MjPassMetaInfoRemoverTest, RecordWithoutComponentAnnotationsUntouched)
+{
+    // 组件只有 Signature（清空面零命中）→ 零改动，copy-through 字节恒等
+    // （decode 不置脏，不触发 Record 重编码）。
+    FixtureBuilder builder("T");
+    builder.addClassAttr({"Record", recordAttrPayload(builder,
+        {
+            {"x", "I", {{"Signature", signaturePayload(builder, "I")}}},
+            {"y", "Ljava/lang/String;", {}},
+        })});
+    builder.addMethod({"m", "()V", bareReturn()});
+    auto session = makeSession(builder);
+    auto beforeResult = jbc::core::writeClass(session->backing());
+    ASSERT_TRUE(beforeResult.is_ok());
+    const Bytes before = std::move(beforeResult).unwrap();
+
+    ca::str::Utf8StringArena          arena;
+    mjbase::spi::ClassAnalysisManager cam(arena);
+    mjbase::pass::MetaInfoRemover     pass;
+    EXPECT_FALSE(pass.run(*session, cam).changed()) << "组件无注解面——条件 PA 应 all()";
+
+    auto after = jbc::core::writeClass(session->backing());
+    ASSERT_TRUE(after.is_ok());
+    EXPECT_EQ(std::move(after).unwrap(), before);
+}
+
+TEST(MjPassMetaInfoRemoverTest, RecordComponentAnnotationsOutsideFaceUntouched)
+{
+    // opt-in 面外：清空面只归 MetaInfoRemover——KotlinMetadataRemover 对
+    // record 组件嵌套注解零触碰。
+    FixtureBuilder builder("T");
+    builder.addClassAttr({"Record", recordAttrPayload(builder,
+        {{"x", "I", {{"RuntimeVisibleAnnotations", annoTable(builder, {"LFoo/Keep;"})}}}})});
+    builder.addMethod({"m", "()V", bareReturn()});
+    auto session = makeSession(builder);
+    auto beforeResult = jbc::core::writeClass(session->backing());
+    ASSERT_TRUE(beforeResult.is_ok());
+    const Bytes before = std::move(beforeResult).unwrap();
+
+    ca::str::Utf8StringArena            arena;
+    mjbase::spi::ClassAnalysisManager   cam(arena);
+    mjbase::pass::KotlinMetadataRemover pass;
+    EXPECT_FALSE(pass.run(*session, cam).changed());
+
+    auto after = jbc::core::writeClass(session->backing());
+    ASSERT_TRUE(after.is_ok());
+    EXPECT_EQ(std::move(after).unwrap(), before);
 }
 
 // ── FinalRemover ──

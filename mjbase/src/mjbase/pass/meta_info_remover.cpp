@@ -5,6 +5,7 @@
 #include <string_view>
 #include <vector>
 
+#include "jbc/core/attr_codec.hpp"
 #include "jbc/core/attribute.hpp"
 #include "jbc/core/class_file.hpp"
 #include "jbc/type/signature.hpp"
@@ -21,6 +22,7 @@ using jbc::core::ClassFile;
 using jbc::core::CodeAttr;
 using jbc::core::MemberInfo;
 using jbc::core::RawAttr;
+using jbc::core::RecordAttr;
 using jbc::core::TypeAnnotationsAttr;
 
 // ── JVM 访问标志位（JVMS 表；libjbc 未提供旗标常量，与 unused_member_remover
@@ -60,6 +62,7 @@ constexpr std::string_view kRvta                      = "RuntimeVisibleTypeAnnot
 constexpr std::string_view kRita                      = "RuntimeInvisibleTypeAnnotations";
 constexpr std::string_view kRvpa                      = "RuntimeVisibleParameterAnnotations";
 constexpr std::string_view kRipa                      = "RuntimeInvisibleParameterAnnotations";
+constexpr std::string_view kRecord                    = "Record";
 
 /// 槽名是否等于给定名（逐字节，零分配）。
 bool slotNameIs(const ClassFile& cf, const AttrSlot& slot, std::string_view name)
@@ -309,6 +312,31 @@ bool removeCodeNestedDebugInfo(ClassFile& cf, MemberInfo& m)
     return changed;
 }
 
+/// Record 属性（typed RecordAttr，JVMS 4.7.30）组件嵌套注解槽清空：每个组件
+/// 的 Runtime{Visible,Invisible}Annotations 与 Runtime{Visible,Invisible}-
+/// TypeAnnotations 槽按与成员级同规则做槽内过滤（filter = All 时条目全删、
+/// 删空连槽摘除）；组件 Signature 与未知属性不触碰。typed 体经公开解码入口
+/// 读出（remapper 域 Record 手术同款：命中才 makeNew 置 New 走重编码，写回
+/// 侧组件嵌套置脏与 Code 嵌套同一闸门，未触碰组件嵌套槽照旧 copy-through）。
+/// 无 Record 槽/解码失败/类型不符保守保持原样。返回是否发生任何变化。
+bool clearRecordComponentAnnotationSlots(ClassFile& cf)
+{
+    AttrSlot* recordSlot = findSlot(cf, cf.attrs, kRecord);
+    if (recordSlot == nullptr) return false;
+    auto d = decodeRecordBody(cf, *recordSlot);
+    if (d.is_err()) return false;
+    auto  body = std::move(d).unwrap();
+    auto& rec  = static_cast<RecordAttr&>(*body);
+    bool  changed = false;
+    for (RecordAttr::Component& component : rec.components) {
+        changed |= filterAnnotationSlots(cf, component.attrs, AnnoFilter::All);
+        changed |= filterTypeAnnotationSlots(cf, component.attrs, AnnoFilter::All);
+    }
+    if (!changed) return false;
+    *recordSlot = AttrSlot::makeNew(recordSlot->nameCp, std::move(body));
+    return true;
+}
+
 /// SourceFile 槽载荷值（u2 CP 索引 → Utf8；载荷不足/索引无效为空视图）。
 std::string_view sourceFileValue(const ClassFile& cf, const AttrSlot& slot)
 {
@@ -407,7 +435,7 @@ constexpr std::string_view kKnownAttrNames[] = {
     "ModulePackages",         "ModuleMainClass",
     "ModuleResolution",       "NestHost",
     "NestMembers",            "PermittedSubclasses",
-    "Record",                 "CharacterRangeTable",
+    kRecord,                  "CharacterRangeTable",
 };
 
 bool isKnownAttrName(std::string_view name)
@@ -518,11 +546,12 @@ mjbase::spi::PreservedAnalyses MetaInfoRemover::run(jbc::ir::ClassSession&      
     // 未知属性不触碰（旧面 classNode.attrs 清空在旧树恒为空操作——tree reader
     // 从不回填 attrs 向量，未知属性在读入即弃；新载体按头注契约保持原样，
     // 摘除归 UnknownAttributeCleaner）。record 组件的注解旧面同步清空——
-    // Record 组件嵌套属性面 libjbc 已立 typed（组件 AttrSlot 表可达），本
-    // pass 的组件注解清空面仍挂账（清空语义与测试随其接线批落地）。
+    // 组件嵌套注解/TypeAnnotation 槽与成员级同规则槽内过滤，父 Record 槽
+    // 连带置脏（组件 Signature 与未知属性不动，与旧面一致）。
     changed |= removeNamedSlots(cf, cf.attrs, {kSourceFile, kSourceDebug});
     changed |= filterAnnotationSlots(cf, cf.attrs, AnnoFilter::All);
     changed |= filterTypeAnnotationSlots(cf, cf.attrs, AnnoFilter::All);
+    changed |= clearRecordComponentAnnotationSlots(cf);
     for (MemberInfo& f : cf.fields) {
         changed |= filterAnnotationSlots(cf, f.attrs, AnnoFilter::All);
         changed |= filterTypeAnnotationSlots(cf, f.attrs, AnnoFilter::All);

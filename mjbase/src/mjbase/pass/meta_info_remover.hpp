@@ -33,13 +33,14 @@ namespace mjbase::pass {
 ///   显式、有界破例：破例面 = 属性表编辑（非指令、非 pc 编辑），仅此两处，
 ///   家族其余成员不触碰 Code。
 ///
-/// 与旧实现的三处能力差距（保守跳过并挂账）：record 组件的注解（Record
-/// 组件嵌套属性面 libjbc 已立 typed、组件 AttrSlot 表可达，清空面待其接线
-/// 批）；Runtime{Visible,Invisible}Parameter-
-/// Annotations 的槽内过滤（SpecificAnnotationRemover 旧面——解码为 Raw，槽内
-/// 过滤需注解表读取面；MetaInfoRemover 对该两槽是整槽摘除，照常落面）；
-/// code 目标形态普通注解（JVMS 无此挂载点，树读入即弃，新载体如出现保持
-/// 原样）。
+/// 与旧实现的挂账三处：record 组件的注解已收口（typed RecordAttr 组件
+/// AttrSlot 表可达，MetaInfoRemover 对组件的 Runtime{Visible,Invisible}-
+/// Annotations 与 TypeAnnotations 槽做与成员级同规则的槽内清空，typed 体经
+/// 公开解码入口读出、命中才 makeNew 置 New 走重编码）；Runtime{Visible,
+/// Invisible}ParameterAnnotations 的槽内过滤（SpecificAnnotationRemover 旧面
+/// ——解码为 Raw，槽内过滤需注解表读取面；MetaInfoRemover 对该两槽是整槽
+/// 摘除，照常落面）；code 目标形态普通注解（JVMS 无此挂载点，树读入即弃，
+/// 新载体如出现保持原样）。
 ///
 /// 家族内注解过滤一律**槽内过滤**（解码 AttrBody → 按描述符谓词删条目 →
 /// 槽置脏），槽内删空时连槽摘除（旧栈 annotation vector 清空后旧 writer
@@ -65,7 +66,9 @@ namespace mjbase::pass {
 /// AnnotationDefault（整槽摘除）+ Code 嵌套 LNT/LVT/LVTT。保持不变：
 /// Signature、ConstantValue、Exceptions、未知属性（Raw）与一切指令语义——
 /// 旧栈 tree 域 attrs 向量从不被 reader 填充，旧实现对其清除恒为空操作，新
-/// 载体按头注契约保持未知属性原样。record 组件注解面挂账（见家族头注）。
+/// 载体按头注契约保持未知属性原样。record 组件注解清空：组件嵌套注解/
+/// TypeAnnotation 槽与成员级同规则槽内过滤（组件 Signature 与未知属性不动，
+/// 与旧面一致）。
 ///
 /// @par 标签
 /// - `scope:class`
