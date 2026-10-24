@@ -1,16 +1,13 @@
 /// @file        rename_plan.hpp
-/// @brief       改名计划：类映射 + 字段/方法规则（旧栈 MemberRemapPlan 的
-///              mjbase renamer 内部等价物）。
+/// @brief       改名计划：类映射 + 字段/方法规则（renamer 引擎的计划结构）。
 ///
-/// 旧栈对应物：mbase/asm/remapper/member_remap_plan（旧栈引擎直接产出
-/// MemberRemapPlan）。remapper 批并行迁移期间 renamer 自持同名语义的计划
-/// 结构（类映射 + 成员规则 newOwner/newDesc 预映像 + 描述符预映像查询）；
+/// remapper 域的计划结构（类映射 + 成员规则 newOwner/newDesc 预映像 + 描述符预映像查询）；
 /// 应用面接线后本结构仍是引擎产物面，应用时按登记序搬运成 asm/remapper 域
-/// MemberRemapPlan 消费（见 rename_engine step 8）。语义对旧实现：
+/// MemberRemapPlan 消费（见 rename_engine step 8）。
 ///
 /// - 规则的 newOwner/newDesc 必须**预映像**（类映射先入 plan）：留原值会让
-///   应用面的指令同步路径把调用点 owner/描述符写回旧名（旧栈 P1 实证）；
-/// - 方法槽查撞在 mapped-desc 空间进行（luiox/morpher#1037）：类改名同步改写
+///   应用面的指令同步路径把调用点 owner/描述符写回旧名；
+/// - 方法槽查撞在 mapped-desc 空间进行：类改名同步改写
 ///   方法描述符中的类类型，最终类文件状态在 mapped-desc 空间；
 /// - mapInternalName / mapFieldDescriptor / mapMethodDescriptor 对未命中的
 ///   输入恒等返回（描述符只改写 L...; 段内类名，数组与前缀原样）。

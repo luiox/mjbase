@@ -67,7 +67,7 @@ jbc::core::MemberInfo* findField(jbc::core::ClassFile& cf, const MemberSelector&
     return nullptr;
 }
 
-// ── 访问位校验（照旧直迁 validateVisibility/validateAccess）──────────────
+// ── 访问位校验 ────────────────────────────────────────────────
 
 WorkspaceErrorInfo validateVisibility(ca::i32 access, const std::string& operation)
 {
@@ -199,7 +199,7 @@ WorkspaceErrorInfo parseClassAccessFlagList(const std::vector<std::string>& name
 //
 // libjbc 常量池只追加面覆盖 Utf8/String/Class/Integer/Long/Float/Double 与
 // 成员引用（经会话 intern 去重）；MethodHandle/MethodType/Dynamic/
-// InvokeDynamic 无追加 API（主线缺口，迁移报告项）——对应请求在入口拒绝。
+// InvokeDynamic 无追加 API（主线缺口）——对应请求在入口拒绝。
 
 WorkspaceErrorInfo validateHandle(const HandleSpec& spec)
 {
@@ -314,7 +314,7 @@ bool isSimpleOpcode(ca::i32 opcode)
            opcode == at(O::MONITORENTER) || opcode == at(O::MONITOREXIT);
 }
 
-/// @brief 指令形状校验；detail 输出旧栈同文本。
+/// @brief 指令形状校验；detail 输出 "unknown label: <id>" 同文本。
 bool validInstructionShape(const InstructionSpec& spec, std::string& detail)
 {
     using O = Op;
@@ -533,13 +533,13 @@ WorkspaceErrorInfo makeInstruction(ClassSession& session, const InstructionSpec&
     }
 }
 
-/// @brief LDC 的 u8 CP 索引拓宽（旧栈 ASM ClassWriter 自动拓宽的等价物）。
+/// @brief LDC 的 u8 CP 索引拓宽（自动拓宽等价物）。
 void widenLdcIfNeeded(Insn& insn)
 {
     if ((insn.op == Op::LDC || insn.op == Op::LDC_W) && insn.cp > 255) insn.op = Op::LDC_W;
 }
 
-/// @brief 在 labels 里找符号标签；空名/未知均按旧栈 "unknown label: <id>" 报错。
+/// @brief 在 labels 里找符号标签；空名/未知均按 "unknown label: <id>" 报错。
 WorkspaceErrorInfo findSymbolicLabel(const std::unordered_map<std::string, LabelId>& labels,
                                      const std::string& id, LabelId& out)
 {
@@ -558,7 +558,7 @@ bool labelAnchored(const jbc::ir::CodeDom& dom, LabelId label)
     return !std::move(resolved).unwrap().isEnd();
 }
 
-/// @brief COMPUTE_MAXS 等价物：帧引擎重算 maxStack/maxLocals 并叠加旧栈下限
+/// @brief COMPUTE_MAXS 等价物：帧引擎重算 maxStack/maxLocals 并叠加下限
 ///        （异常处理帧 ≥1 栈槽；maxLocals ≥ 参数槽位 + 非 static 的 this 槽）。
 WorkspaceErrorInfo recomputeFrameMaxes(ClassSession& session, jbc::ir::CodeUnit& unit,
                                        const jbc::core::MemberInfo& method)
@@ -594,7 +594,7 @@ struct BuiltBody
 /// 标签语义按 libjbc 重定型：Label 规格是「下一条指令的前置边界」（方法末尾
 /// 悬空时锚到方法末），Line 规格绑定到下一条指令的导出 PC。try/catch 边界
 /// 先符号标签、后代码指令序号（序号边界是 libjbc 面「标签非指令」的等价物，
-/// 旧栈要求该序号恰是 LabelNode）。局部变量/行号行由导出 PC 落表。
+/// 序号须恰是标签边界）。局部变量/行号行由导出 PC 落表。
 WorkspaceErrorInfo buildMethodBody(ClassSession&                         session,
                                    jbc::core::MemberInfo&                method,
                                    const std::vector<InstructionSpec>&   specs,
@@ -602,7 +602,7 @@ WorkspaceErrorInfo buildMethodBody(ClassSession&                         session
                                    const std::vector<LocalVariableSpec>& locals,
                                    BuiltBody&                            out)
 {
-    // 标签 ID 唯一且非空（旧栈 replaceMethodBody 的前置校验）。
+    // 标签 ID 唯一且非空（前置校验）。
     std::unordered_set<std::string> labelIds;
     for (const InstructionSpec& spec : specs) {
         if (spec.kind != InstructionKind::Label) continue;
@@ -804,7 +804,7 @@ WorkspaceErrorInfo buildMethodBody(ClassSession&                         session
 }
 
 /// @brief 把 BuiltBody 写进 Code 属性体（新建 CodeAttr + 调试表嵌套槽）。
-///        旧栈 COMPUTE_FRAMES 整体重建不带 StackMapTable（pass-contract §9）。
+///        整体重建不带 StackMapTable（pass-contract §9）。
 void applyBuiltBody(ClassSession& session, jbc::core::AttrSlot& slot, const BuiltBody& body)
 {
     auto code      = std::make_unique<CodeAttr>();
@@ -1346,7 +1346,7 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
             status = buildMethodBody(*session, *method, mutation.initialInstructions,
                                      mutation.tryCatchBlocks, mutation.localVariables, body);
             if (status.is_err()) break;
-            // 整体重建：旧 Code 槽原位换体（含丢弃全部旧嵌套属性——旧栈
+            // 整体重建：旧 Code 槽原位换体（含丢弃全部旧嵌套属性——
             // COMPUTE_FRAMES + 空标签集合同样丢弃旧 LNT/LVT/SMT）。
             jbc::core::AttrSlot* codeSlot = support::findAttr(cf, method->attrs, "Code");
             if (codeSlot == nullptr) {
@@ -1391,7 +1391,7 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
             }
             const InsnId targetId = order[static_cast<ca::usize>(index)];
 
-            // 符号标签绑定（旧栈 existingLabels：绑定 ID → 指令序号）。
+            // 符号标签绑定（existingLabels：绑定 ID → 指令序号）。
             std::unordered_map<std::string, LabelId> labels;
             bool bindingInvalid = false;
             for (const LabelBindingSpec& binding : mutation.existingLabels) {

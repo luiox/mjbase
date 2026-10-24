@@ -57,7 +57,7 @@ namespace mjbase::pass {
 /// - double：DCONST_0/1 / ldc 族(Double)（method_rewrite_util::doubleValueOf）。
 /// 任务书列的最小集（iconst/bipush/sipush/ldc(int,float)/ldc2_w(long,
 /// double)）之外，LCONST/FCONST/DCONST 与 ldc 族的跨形态读取是超集——
-/// 它们同是精确已知常量，且与旧栈 get*Value 的可观测面对齐。
+/// 它们同是精确已知常量。
 /// 字符串/Class/MethodHandle 等装载不进链。
 ///
 /// @par 保守停止清单（任一命中 → 整链不动，禁止部分折叠）
@@ -67,12 +67,12 @@ namespace mjbase::pass {
 ///   LSHL/LSHR/LUSHR，只认「int 常量 push + long 移位」成对形态）；
 /// - div/rem 除数为常量 0；int/long 的 MIN/-1；
 /// - 链中段成员（i+1..foldEnd）前置边界有标签锚定（分支目标/异常表边界
-///   ——旧栈 LabelNode 阻断语义的 CodeDom 等价，见
+///   ——LabelNode 阻断语义的 CodeDom 等价，见
 ///   method_rewrite_util::labelsAnchorAt 头注）；
 /// - CP 容量预检失败（cp.size() + 待追加槽数 > 0xFFFF）或 CP 物化失败；
 /// - 插入/删除编辑失败（带恢复：回迁标签、删除已插替换头，本链跳过）。
 ///
-/// @par 物化策略（输出形态，对齐旧栈 InsnUtil::get*Insn）
+/// @par 物化策略（输出形态）
 ///
 /// - int：-1..5 → ICONST；-128..127 → BIPUSH；-32768..32767 → SIPUSH；
 ///   其余 → LDC(internInteger，去重)。

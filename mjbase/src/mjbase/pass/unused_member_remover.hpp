@@ -20,13 +20,13 @@ namespace mjbase::pass {
 /// - `UnusedFieldRemover` / `GlobalUnusedMethodRemover`：消费
 ///   ResolvedGlobalReachabilityAnalysis，删除可达类内不可达的 private 字段/方法。
 ///
-/// 共享策略（与旧栈逐条对齐）：根策略 = 资源 keep 名单（module 描述符、Manifest
+/// 共享策略：根策略 = 资源 keep 名单（module 描述符、Manifest
 /// 的 Main/Premain/Agent/Launcher-Agent/JavaFX 入口、META-INF/services 文件名与
 /// 内容）+ Java `public static main(String[])` + 类初始化器保留；方法体展开用
 /// ResolvedCallGraph，删除前保留虚调用和接口调用的覆写目标。可达类闭包为空
 /// （library jar、无根）时整 pass 原样保留输入。构造器、`<clinit>`、非 private
 /// 成员、keep metadata（Signature/注解族）成员均保留。分析未注册时抛
-/// `logic_error`（配置错误，稳定失败，对齐旧栈）。
+/// `logic_error`（配置错误，稳定失败）。
 ///
 /// ## keep 规则面（审计 P0-1/P0-2）
 ///
@@ -41,6 +41,15 @@ namespace mjbase::pass {
 /// 在 classfile 中按 name/desc 经 CP 引用、无槽位索引依赖，删除结构安全）；
 /// 常量池不压缩，失引条目保留（append-only 契约，writer 级差异由 golden
 /// 声明类目收口）。需要 JVM 真跑门的产品化使用方为 `opt-in`。
+///
+/// ## Multi-Release 族删除契约
+///
+/// 全家族的删除决策以 classfile 头声明内名为唯一键（可达性 / 引用索引均内名
+/// 键控）：同名 base + `META-INF/versions/<N>/` 变体构成一个族，族成员
+/// **要么同时删除、要么同时保留**（类级），成员级删除族内每份各按同名等价的
+/// 可达集独立结算（结果一致）。这一性质源于内名键控的实现巧合，本仓以测试
+/// 锁定为显式契约（unused_member_remover_test 的 Multi-Release 族组）——
+/// 后续任何把资源路径/URI 引入删除决策的改动都须重审本契约。
 /// @{
 
 /// @brief 删除没有字段和方法的空 class 资源。

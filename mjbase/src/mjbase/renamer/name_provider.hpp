@@ -1,10 +1,9 @@
 /// @file        name_provider.hpp
 /// @brief       改名引擎只读上下文（RenameContext）+ 建议来源抽象（NameProvider）。
 ///
-/// 旧栈对应物：mbase/renamer/name_provider（ClassHierarchy+MethodHierarchy 借
-/// ClassNode 活在 mbase 树上）。mjbase 重写线：容器经 class_scan 建libjbc 会话，
+/// 容器经 class_scan 建 libjbc 会话，
 /// fillSummary 抽骨架值建 mjbase::hierarchy 图；override 闭包组件 =
-/// MethodHierarchy::overrideFamily（并查集等价语义已在 hierarchy 批对拍）。
+/// MethodHierarchy::overrideFamily。
 ///
 /// 建键纪律：provider/引擎侧一律以 (owner, name, desc) 文本查询，本对象经
 /// 自有 KeyPool 驻留后落 MemberKey（跨类身份原语）；不发明跨模块字符串键。
@@ -38,7 +37,7 @@ struct OverrideComponentMember
     std::string_view desc;
 };
 
-/// @brief 改名引擎的只读上下文视图（旧栈 Q2 结论照旧：只暴露存在性/层级/闭包
+/// @brief 改名引擎的只读上下文视图（只暴露存在性/层级/闭包
 ///        查询，不暴露可变句柄）。
 ///
 /// 由引擎在 run() 入口从容器一次性构建（类会话扫描 + 类/方法层级），provider
@@ -79,14 +78,14 @@ public:
     /// @brief 方法 override 闭包组件（等价族全部声明，含自身；登记序）。
     ///
     /// 目标方法不在容器中时 Err（NotFound 语义，调用方自行决定降级为单例组）。
-    /// mjbase 层级只含容器内声明：旧栈「组件延伸至容器外」的成员本就不参与
+    /// mjbase 层级只含容器内声明：组件延伸至容器外的成员本就不参与
     /// 改名，新图上天然不出现。
     Result<std::vector<OverrideComponentMember>, std::string> overrideComponentOf(
         std::string_view owner, std::string_view name, std::string_view desc) const;
 
     /// @brief 方法所属 override 组件的规范根（族内最浅声明，run 内稳定）。
     ///
-    /// 旧栈并查集根下标的替代品：同一族内任意成员的 sourceDeclaration 恒等，
+    /// 并查集根下标的替代品：同一族内任意成员的 sourceDeclaration 恒等，
     /// 引擎据此按组件去重。目标方法不在容器/未声明时 Err。
     Result<MemberKey, std::string> overrideComponentRootOf(std::string_view owner,
                                                            std::string_view name,
@@ -112,13 +111,13 @@ private:
                             std::string_view desc) const;
 
     /// @brief 沿 super 链上溯，返回声明 (name, desc) 字段的最近类；无处声明返回
-    ///        invalid（旧栈 resolveInstanceFieldOwnerIndex 口径）。
+    ///        invalid。
     ClassKey resolveInstanceFieldOwner(ClassKey start, std::string_view name,
                                        std::string_view desc) const;
 
     /// @brief 闭世界判定：自 start 沿 super + interfaces 闭包可达的全部类名都在
     ///        容器中有真实类（java/lang/Object 豁免）。false = 虚分派闭包延伸
-    ///        到容器外，继承引用不可安全补别名（旧栈同口径）。
+    ///        到容器外，继承引用不可安全补别名。
     bool hierarchyClosedForVirtualRename(ClassKey start) const;
 
     /// 查询按需 intern（keyOf/声明查证把入参文本驻留进池），故为 mutable。
@@ -127,7 +126,7 @@ private:
     hierarchy::MethodHierarchy methods_;
 };
 
-/// @brief 名字建议 provider 抽象（旧栈语义照旧：只产建议流、不触字节码）。
+/// @brief 名字建议 provider 抽象（只产建议流、不触字节码）。
 ///
 /// 判定与消解都在 RenamerEngine：provider 只回答"改成什么"，引擎管
 /// "怎么改才合法"。单条建议非法由引擎逐条拒并记录；provider 整体硬失败走

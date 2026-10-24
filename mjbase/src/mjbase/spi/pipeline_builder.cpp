@@ -40,7 +40,7 @@ GlobalPassManager PipelineBuilder::buildNestedPipeline(PassJobContext&          
                                                        const PassPipelineOptions&  options) const
 {
     GlobalPassManager mgr;
-    // 输入净化门（issue #963 纪律照迁）：head 位置先于一切 pass 校验每个
+    // 输入净化门（issue #963）：head 位置先于一切 pass 校验每个
     // ClassResource 的 CP 引用语义。失败语义跟随容错档位。
     mgr.addPass(std::make_unique<ClassFileSanitizeGate>(options));
 

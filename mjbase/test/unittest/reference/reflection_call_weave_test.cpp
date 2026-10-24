@@ -1,10 +1,8 @@
 /// @file        reflection_call_weave_test.cpp
-/// @brief       反射绑定织入调用图（weaveReflectionBindings）移植用例（旧栈
-///              4 用例逐字等强）。
+/// @brief       反射绑定织入调用图（weaveReflectionBindings）用例（4 用例逐字等强）。
 ///
-/// 旧栈对应物：mbase/unittest/reference/reflection_call_weave_test.cpp。夹具
-/// 从 jbytecode ClassWriter 重写为手拼 classfile 字节（class_bytes_builder.hpp）；
-/// 层次输入由 mbase 的 ClassHierarchy/MethodHierarchy 换成本批 HierarchyBundle
+/// 夹具为手拼 classfile 字节（class_bytes_builder.hpp）；
+/// 层次输入由 ClassHierarchy/MethodHierarchy 换成 HierarchyBundle
 /// （池 + 两图同生共死的停泊载体）。断言逐字等强：Resolved 方法级目标织入为
 /// Reflect 动态边、resolved 模式沿反射边扩展可达闭包、Pending/落不进声明集的
 /// 目标计入 dropped、类级绑定只计量不产生边。

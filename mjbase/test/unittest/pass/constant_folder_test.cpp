@@ -825,7 +825,7 @@ TEST(ConstantFolderTest, maximalChainFolds)
 TEST(ConstantFolderTest, trailingPushAfterFoldKept)
 {
     // BIPUSH 1; BIPUSH 2; IADD; BIPUSH 3 → ICONST_3; BIPUSH 3。
-    // 产物 3 ∈ [-1,5] 落 ICONST_3 短形态（intConstInsn 分级，对齐旧栈
+    // 产物 3 ∈ [-1,5] 落 ICONST_3 短形态（intConstInsn 分级，
     // InsnUtil）；链尾 push 不经折叠，原样保留 BIPUSH 3。
     Bytes code;
     bipush(code, 1);

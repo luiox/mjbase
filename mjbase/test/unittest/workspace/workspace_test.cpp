@@ -1,49 +1,8 @@
 /// @file        workspace_test.cpp
-/// @brief       WorkspaceBase 事务/查询面单测（移植自
-///              mbase/unittest/workspace/workspace_test.cpp，26 用例处置见下）。
+/// @brief       WorkspaceBase 事务/查询面单测。
 ///
-/// 移植口径（批次 B6-B）：gtest 套件名加 Mj 前缀；命名空间 mjbase::workspace；
-/// 错误通道 ca::StatusCode → WorkspaceError（断言码一一对应）；access 常量
-/// jbytecode Opcodes → workspace_types kAcc*。夹具全部经 mjbase jasm 现汇编
-/// （零拷贝红线：无样本字节入库）。
-///
-/// 26 用例处置清单：
-/// - 直迁 15：ProvidesStructuredQueriesAndSupportingResources /
-///   KeepsLargeSignaturesOutOfClassSummaries / OpensEditsUndoesAndExportsSingleClass /
-///   RejectsInvalidSingleClassWithoutChangingLoadedState / OpensAndExportsUtf8ArtifactPaths /
-///   SearchesClassesMembersConstantsAndInstructions / AppliesValidatedJasmWithRevisionAndHistory /
-///   AppliesStructuredClassMutationsThroughOneTransactionPath /
-///   ReplacesListsAndRevertsRawClassBytesTransactionally /
-///   DiffsAllResourcesAndRepairsSelectedJarDamageTransactionally /
-///   ReportsOverrideComponentWithPrimaryAndSupportingDecoration（组件闭包已在新栈
-///   mjbase 层次图上等价重建，不依赖 renamer 编排面）/
-///   RejectsInvalidJasmAndProtectsInputDuringAtomicExport /
-///   UsesIWorkspaceThroughInterfacePolymorphism / summary 三例（单后端化，见
-///   MjWorkspaceSummaryTest）。
-/// - 等价改写 2：
-///   - CommitsPrivateWorkflowCandidateJarAtomically：候选产物旧栈经 applyRemap
-///     整库重命名构造；mjbase 重映射器未随迁，改经两次 applyClassBytes 等价构造
-///     （Subject→RenamedSubject + Child super 同步改指），候选 JAR 协议断言
-///     （dry-run/导出原子性/revision 门/ABORTED 清理）逐条保留；
-///   - BuildsExecutableInstructionFamiliesFromSymbolicLabels：指令索引从 ASM
-///     树序号（含 label/line 节点）换算为 CodeDom 代码指令序号（ifeq 2→1、
-///     "zero" 绑定 5→4）；LdcHandle/LdcDynamic/InvokeDynamic 家族改断言入口拒绝
-///     （libjbc 常量池无 MethodHandle/Dynamic/InvokeDynamic 追加 API——主线
-///     裁决点，见迁移报告）；LdcType 传 JVM 内部名（mjbase InstructionSpec
-///     契约）；夹具本就 V17（mjbase jasm 缺省 major=61），withClassVersion 面
-///     不再需要。
-///   - RenameLocal 直通（旧 RoutesLocalRenameThroughClassMutationDirectly）：
-///     rename 编排面未随迁，Local 能力由 ClassMutationKind::RenameLocal 承载，
-///     断言 LVT 记录名 held→kept、index/descriptor 不变与 NOT_FOUND 负例。
-/// - 缓迁 7（依赖的共享设施未在 mjbase 落地，待主线裁决后补）：
-///   RunsRemapAndPipelineAsOneWorkflowTransaction /
-///   RunsPassPipelinesThroughCandidateTransactions（MemberRemapPlan/RemapPolicy
-///   + pass-registry 内置 pass）；AnalyzesAndAppliesWorkspaceRenamesThroughRemapPlan /
-///   RequiresReviewBeforeRenamingOverrideComponent /
-///   PinsRenameErrorCodeMatrixForInvalidRequests /
-///   EmitsVerbatimRenameMappingStringsForEveryKind /
-///   KeepsCascadeTwoStatePlansOnIdenticalMappings（renamer 引擎 RenameContext/
-///   RenameRequest 编排面；Local 形态已由上面改写用例承载）。
+/// 夹具全部经 mjbase jasm 现汇编（零拷贝红线：无样本字节入库）；
+/// 错误通道 WorkspaceError；access 常量 workspace_types kAcc*。
 #include <gtest/gtest.h>
 #include <test_helper.hpp>
 
@@ -219,6 +178,27 @@ std::filesystem::path writeClassFixture(const std::string& fileName,
     return path;
 }
 
+/// Multi-Release 族夹具：base 与 versions/17 变体内名相同（workspace/Subject，
+/// 字节内容一致），另带一个独立类保证容器非平凡。
+std::filesystem::path writeMultiReleaseFamilyFixture()
+{
+    model::ResourceContainer container;
+    const std::vector<ca::u8> base = assemble("workspace/Subject", "1");
+    container.addResource("workspace/Subject.class",
+                          std::make_unique<model::ClassResource>("workspace/Subject.class",
+                                                                 base));
+    container.addResource("META-INF/versions/17/workspace/Subject.class",
+                          std::make_unique<model::ClassResource>(
+                              "META-INF/versions/17/workspace/Subject.class", base));
+    container.addResource("workspace/Caller.class",
+                          std::make_unique<model::ClassResource>(
+                              "workspace/Caller.class",
+                              assembleSource("workspace/Caller", callerSource())));
+    const auto path = test::getTempOutPath("mjbase_workspace_mr_family_input.jar");
+    model::ResourceHelper::exportToJar(container, path.string());
+    return path;
+}
+
 std::filesystem::path writeMalformedClassFixture()
 {
     model::ResourceContainer container;
@@ -354,7 +334,7 @@ MutationRequest expected(ca::u64 revision, bool dryRun = false)
 
 }   // namespace
 
-// ── 结构化查询 + supporting 生命周期（test 1 直迁）───────────────────────
+// ── 结构化查询 + supporting 生命周期 ───────────────────────────
 
 TEST(MjWorkspaceCoreTest, ProvidesStructuredQueriesAndSupportingResources)
 {
@@ -631,7 +611,7 @@ TEST(MjWorkspaceCoreTest, KeepsLargeSignaturesOutOfClassSummaries)
     EXPECT_EQ(signature, detail.unwrap().signature);
 }
 
-// ── 单 class 工作区（test 3/4 直迁）─────────────────────────────────────
+// ── 单 class 工作区 ─────────────────────────────────────
 
 TEST(MjWorkspaceCoreTest, OpensEditsUndoesAndExportsSingleClass)
 {
@@ -779,7 +759,7 @@ TEST(MjWorkspaceCoreTest, OpensAndExportsUtf8ArtifactPaths)
     EXPECT_TRUE(fs::exists(exportedJar));
 }
 
-// ── 搜索面（test 6 直迁）────────────────────────────────────────────────
+// ── 搜索面 ────────────────────────────────────────────────
 
 TEST(MjWorkspaceCoreTest, SearchesClassesMembersConstantsAndInstructions)
 {
@@ -892,8 +872,8 @@ TEST(MjWorkspaceCoreTest, CommitsPrivateWorkflowCandidateJarAtomically)
     const auto input = writeWorkspaceFixture();
     WorkspaceBase candidateWorkspace;
     ASSERT_TRUE(candidateWorkspace.openJar(input.string()).is_ok());
-    // 候选产物：旧栈经 applyRemap 整库重命名 Subject→RenamedSubject；mjbase
-    // 重映射器未随迁，改经两次 applyClassBytes 等价构造（类内部名迁移 +
+    // 候选产物：两次 applyClassBytes 等价构造
+    // （类内部名改写 +
     // Child super 同步改指），候选 JAR 协议断言逐条保留。
     auto renamedSubject = assembleSource("workspace/RenamedSubject",
                                          classSource("workspace/RenamedSubject", "1"));
@@ -961,7 +941,7 @@ TEST(MjWorkspaceCoreTest, CommitsPrivateWorkflowCandidateJarAtomically)
     EXPECT_FALSE(std::filesystem::exists(staleExport));
 }
 
-// ── JASM 变更事务（test 9 直迁）─────────────────────────────────────────
+// ── JASM 变更事务 ──────────────────────────────────────────
 
 TEST(MjWorkspaceCoreTest, AppliesValidatedJasmWithRevisionAndHistory)
 {
@@ -1010,7 +990,7 @@ TEST(MjWorkspaceCoreTest, AppliesValidatedJasmWithRevisionAndHistory)
     EXPECT_FALSE(workspace.isDirty());
 }
 
-// ── 结构化 class 变更（test 10 直迁；RemoveInstruction 负例改序号越界）────
+// ── 结构化 class 变更（RemoveInstruction 负例改序号越界）────
 
 TEST(MjWorkspaceCoreTest, AppliesStructuredClassMutationsThroughOneTransactionPath)
 {
@@ -1086,7 +1066,7 @@ TEST(MjWorkspaceCoreTest, AppliesStructuredClassMutationsThroughOneTransactionPa
     ASSERT_EQ(1U, annotatedField.unwrap().annotations.size());
     EXPECT_EQ("Lworkspace/Marker;", annotatedField.unwrap().annotations[0].descriptor);
 
-    // 负例改写（类型面）：旧栈树序号 0 命中 label 节点被拒；mjbase 代码指令
+    // 负例改写（类型面）：树序号 0 命中 label 节点被拒；代码指令
     // 序号 0 是未引用 ldc、移除会成功——拒收面改断言序号越界（同一错误通道）。
     ClassMutation invalidDelete;
     invalidDelete.classUri         = "workspace/Subject.class";
@@ -1099,7 +1079,7 @@ TEST(MjWorkspaceCoreTest, AppliesStructuredClassMutationsThroughOneTransactionPa
     EXPECT_EQ(5U, workspace.revision());
 }
 
-// ── 原始字节替换 / revert（test 11 直迁）────────────────────────────────
+// ── 原始字节替换 / revert ─────────────────────────────────
 
 TEST(MjWorkspaceCoreTest, ReplacesListsAndRevertsRawClassBytesTransactionally)
 {
@@ -1251,8 +1231,8 @@ TEST(MjWorkspaceCoreTest, BuildsExecutableInstructionFamiliesFromSymbolicLabels)
     ASSERT_TRUE(branchResult.status.is_ok()) << branchResult.status.message;
 
     // 代码指令序号口径：branch 体序号 = [iload 0, ifeq, ldc 1, ireturn, ldc 0,
-    // ireturn, pop, ldc -1, ireturn]——ifeq 为 1（旧栈树序号 2），ldc 0 为 4
-    //（旧栈树序号 5 的 "zero" 绑定点）。
+    // ireturn, pop, ldc -1, ireturn]——ifeq 为 1，ldc 0 为 4
+    //（"zero" 绑定点）。
     ClassMutation replaceJump;
     replaceJump.classUri          = "workspace/Subject.class";
     replaceJump.kind              = ClassMutationKind::ReplaceInstruction;
@@ -1322,7 +1302,7 @@ TEST(MjWorkspaceCoreTest, BuildsExecutableInstructionFamiliesFromSymbolicLabels)
                                      simple(0x57), simple(0xb1 /* RETURN */)};
     ASSERT_TRUE(addMethod(constants).status.is_ok());
 
-    // indy 拒收钉子：旧栈 AddMethod(InvokeDynamic) 成功；mjbase 入口即拒
+    // indy 拒收钉子：AddMethod(InvokeDynamic) 成功；入口即拒
     //（InvalidArgument），产物不出半成品。
     ClassMutation indy;
     indy.member = {"concat", "(I)Ljava/lang/String;"};
@@ -1365,7 +1345,7 @@ TEST(MjWorkspaceCoreTest, BuildsExecutableInstructionFamiliesFromSymbolicLabels)
     EXPECT_EQ(revision, workspace.revision());
 }
 
-// ── diff + 修复事务（test 13 直迁）──────────────────────────────────────
+// ── diff + 修复事务 ───────────────────────────────────────
 
 TEST(MjWorkspaceCoreTest, DiffsAllResourcesAndRepairsSelectedJarDamageTransactionally)
 {
@@ -1487,7 +1467,7 @@ TEST(MjWorkspaceCoreTest, RejectsInvalidJasmAndProtectsInputDuringAtomicExport)
     EXPECT_EQ(0U, reverted.revision);
 }
 
-// ── 接口多态（test 14 直迁）─────────────────────────────────────────────
+// ── 接口多态 ──────────────────────────────────────────────
 
 TEST(MjWorkspaceCoreTest, UsesIWorkspaceThroughInterfacePolymorphism)
 {
@@ -1601,7 +1581,7 @@ TEST(MjWorkspaceCoreTest, RenamesLocalsThroughClassMutationTransaction)
 }
 
 // ── 覆盖组件报告（旧 ReportsOverrideComponentWithPrimaryAndSupportingDecoration
-// 直迁）：组件游走在新栈已等价重建（mjbase 层次图并查集闭包，不经 renamer），
+// 组件游走已等价重建（mjbase 层次图并查集闭包，不经 renamer），
 // 断言逐字保留：owner 字典序、primary 只落请求点名的声明、支撑库成员带
 // supporting/supportId 装饰、owner 未登记与 owner 在但方法未声明双 NOT_FOUND。
 TEST(MjWorkspaceCoreTest, ReportsOverrideComponentWithPrimaryAndSupportingDecoration)
@@ -1639,10 +1619,9 @@ TEST(MjWorkspaceCoreTest, ReportsOverrideComponentWithPrimaryAndSupportingDecora
     EXPECT_EQ(WorkspaceError::NotFound, missingMethod.unwrap_err().code);
 }
 
-// ── summary 扫描单后端字段契约（旧 JbcSummaryScanTest 三例单后端化）──────
+// ── summary 扫描单后端字段契约 ───────
 //
-// 旧栈是 legacy（jbytecode SKIP）× jbc 双后端字段级对拍；mjbase 只有 libjbc
-// 一个底座，对拍面收敛为单后端字段契约：对同一 (uri, bytes) 断言 internalName/
+// 单底座对拍面收敛为单后端字段契约：对同一 (uri, bytes) 断言 internalName/
 // superName/access/version/interfaceCount/fieldCount/methodCount（resourceUri
 // 原样回填），强度与双后端逐字段相等断言一致。
 
@@ -1734,6 +1713,41 @@ TEST(MjWorkspaceSummaryTest, RejectsGarbage)
     auto decoded = decodeClassSummary("parity/Garbage.class", resource);
     ASSERT_TRUE(decoded.is_err());
     EXPECT_EQ(WorkspaceError::DataLoss, decoded.unwrap_err().code);
+}
+
+
+
+// ── Multi-Release 族：内名选择器确定序 + 单条 URI 替换语义 ─────────────────
+//
+// 内名命中 base + versions/<N> 变体并存的族时，选择器按确定序取 base（不依赖
+// 容器迭代序）；replaceClassBytes 是单条 URI 语义——替换只落选定条目，族内
+// 其它条目字节不动。
+
+TEST(MjWorkspaceCoreTest, ResolvesAndReplacesBaseEntryOfMultiReleaseFamily)
+{
+    WorkspaceBase workspace;
+    ASSERT_TRUE(workspace.openJar(writeMultiReleaseFamilyFixture().string()).is_ok());
+
+    // 内名命中族：确定序选 base 条目。
+    auto resolved = workspace.readClassBytes("workspace/Subject");
+    ASSERT_TRUE(resolved.is_ok());
+    EXPECT_EQ(std::move(resolved).unwrap().resourceUri, std::string("workspace/Subject.class"));
+
+    // 内名选择器替换：只落 base 条目，versions/17 变体字节不动。
+    const auto replacement = assemble("workspace/Subject", "42");
+    auto       applied     = workspace.replaceClassBytes("workspace/Subject", replacement,
+                                                         expected(0));
+    ASSERT_TRUE(applied.status.is_ok());
+    EXPECT_TRUE(applied.committed);
+
+    auto baseAfter = workspace.readClassBytes("workspace/Subject.class");
+    ASSERT_TRUE(baseAfter.is_ok());
+    EXPECT_EQ(std::move(baseAfter).unwrap().bytes, replacement);
+
+    const auto original = assemble("workspace/Subject", "1");
+    auto  variantAfter  = workspace.readClassBytes("META-INF/versions/17/workspace/Subject.class");
+    ASSERT_TRUE(variantAfter.is_ok());
+    EXPECT_EQ(std::move(variantAfter).unwrap().bytes, original);
 }
 
 }   // namespace mjbase::workspace

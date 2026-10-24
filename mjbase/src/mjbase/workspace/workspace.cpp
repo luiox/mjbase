@@ -36,6 +36,7 @@
 #include "mjbase/jasm/resource_jasm_service.hpp"
 #include "mjbase/keys.hpp"
 #include "mjbase/mapping/identifier_util.hpp"
+#include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_helper.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/project/edit_ledger.hpp"
@@ -61,7 +62,7 @@ namespace {
 
 using support::utf8Text;
 
-// ── 基础助手（照旧直迁）─────────────────────────────────────────────────
+// ── 基础助手 ─────────────────────────────────────────────────────
 
 WorkspaceErrorInfo error(WorkspaceError code, const std::string& operation,
                          const std::string& detail)
@@ -97,7 +98,7 @@ std::string locationText(const model::IResource& resource)
     return std::string(reinterpret_cast<const char*>(location.data()), location.byte_length());
 }
 
-/// @brief 资源类型短名（旧栈小写口径："class"/"manifest"/"jar"/"resource"）。
+/// @brief 资源类型短名（小写口径："class"/"manifest"/"jar"/"resource"）。
 std::string resourceTypeName(model::ResourceType type)
 {
     switch (type) {
@@ -110,7 +111,7 @@ std::string resourceTypeName(model::ResourceType type)
 
 /// @brief model 模块错误 → workspace 错误值。
 ///
-/// 旧栈这些路径以异常携带文本、统一落 DATA_LOSS；mjbase 值语义下按码分流：
+/// 值语义下按码分流：
 /// 文件/条目缺失 → NotFound，zip-slip → InvalidArgument，其余（Io/BadEntry/
 /// UnsupportedFormat/TypeMismatch/BadArgument）保持 DataLoss 兜底。
 WorkspaceErrorInfo modelFailure(const std::string& operation, model::ModelError modelError)
@@ -314,7 +315,7 @@ WorkspaceResult<ClassInfo> decodeClass(const std::string& uri, const model::Clas
     output.superName    = std::string{cf.superName()};
     output.signature    = support::signatureText(cf, cf.attrs);
     output.access       = static_cast<ca::i32>(cf.access);
-    // 旧栈 ASM 语义：version = major | (minor << 16)。
+    // version = major | (minor << 16)。
     output.version      = static_cast<ca::i32>(cf.major) | (static_cast<ca::i32>(cf.minor) << 16);
     for (const auto interfaceCp : cf.interfaces) {
         output.interfaces.push_back(std::string{cf.className(interfaceCp)});
@@ -330,7 +331,7 @@ WorkspaceResult<ClassInfo> decodeClass(const std::string& uri, const model::Clas
     return ca::core::Ok(std::move(output));
 }
 
-// ── 搜索（照旧直迁）──────────────────────────────────────────────────────
+// ── 搜索 ────────────────────────────────────────────────────────
 
 std::string lowercase(std::string value)
 {
@@ -519,8 +520,7 @@ std::string memberRefColonText(const jbc::core::ClassFile& cf, ca::u32 cpIndex)
     return owner + "." + name + ":" + desc;
 }
 
-/// @brief 成员引用 CP 索引 → 无冒号拼接（指令搜索文本口径，与旧栈 methodTarget
-///        一致：workspace/Subject.value()I）。
+/// @brief 成员引用 CP 索引 → 无冒号拼接（指令搜索文本口径：workspace/Subject.value()I）。
 std::string memberRefFlatText(const jbc::core::ClassFile& cf, ca::u32 cpIndex)
 {
     const std::string resolved = memberRefColonText(cf, cpIndex);
@@ -649,7 +649,7 @@ InstructionDetailInfo renderInstruction(const jbc::core::ClassFile& cf,
     return info;
 }
 
-// ── 字节 diff / 修复 / 指纹（照旧直迁）──────────────────────────────────
+// ── 字节 diff / 修复 / 指纹 ──────────────────────────────────────
 
 std::vector<ByteDiff> diffContainers(const model::ResourceContainer& before,
                                      const model::ResourceContainer& after)
@@ -723,26 +723,8 @@ bool hasClassExtension(const std::string& uri)
     return true;
 }
 
-std::string internalNameFromClassUri(const std::string& uri)
-{
-    constexpr char kMultiReleasePrefix[] = "META-INF/versions/";
-    std::string    path                  = uri;
-    if (path.rfind(kMultiReleasePrefix, 0) == 0) {
-        const auto versionEnd = path.find('/', sizeof(kMultiReleasePrefix) - 1);
-        if (versionEnd == std::string::npos || versionEnd + 1 >= path.size()) return {};
-        const auto version = path.substr(sizeof(kMultiReleasePrefix) - 1,
-                                         versionEnd - (sizeof(kMultiReleasePrefix) - 1));
-        if (version.empty() ||
-            !std::all_of(version.begin(), version.end(), [](unsigned char character) {
-                return std::isdigit(character) != 0;
-            }))
-            return {};
-        path = path.substr(versionEnd + 1);
-    }
-    if (!hasClassExtension(path)) return {};
-    path.resize(path.size() - (sizeof(".class") - 1));
-    return path;
-}
+// 内名推导（模型层族视图原语，Multi-Release 版本化 URI 剥离口径见
+// model/resource_container.hpp）：本文件不再持有副本。
 
 /// @brief class 字节 → 内部名（骨架解析；失败为空）。
 std::string internalNameOfBytes(const std::vector<ca::u8>& bytes)
@@ -879,7 +861,7 @@ std::vector<ReferenceImpact> collectImpacts(const model::ResourceContainer& cont
     }
 }
 
-// ── 指纹（fnv1a64:16hex；长度按小端逐字节入串——照旧逐字节直迁）──────────
+// ── 指纹（fnv1a64:16hex；长度按小端逐字节入串）─────────────────
 
 void hashFingerprintBytes(ca::u64& state, const ca::u8* data, ca::usize size)
 {
@@ -934,7 +916,7 @@ WorkspaceResult<std::string> fingerprintContainer(const model::ResourceContainer
     return ca::core::Ok(output.str());
 }
 
-// ── 导出目的地与原子导出（照旧直迁）─────────────────────────────────────
+// ── 导出目的地与原子导出 ───────────────────────────────────────
 
 WorkspaceResult<std::string> normalizedRegularFile(const std::string& path,
                                                    const std::string& operation)
@@ -1116,7 +1098,7 @@ struct WorkspaceBase::SupportingResource
 /// @brief 层次/覆盖分析图：KeyPool + ClassHierarchy + 每类声明摘要。
 ///
 /// 未登记的超类型（java/lang/Object 等）物化为合成节点（无成员、access 0），
-/// 使 superclass 链/接口闭包与旧栈 ClassHierarchy 的 findOrCreateEntry 行为一致。
+/// 使 superclass 链/接口闭包可统一遍历。
 struct WorkspaceBase::AnalysisGraph
 {
     std::shared_ptr<mjbase::KeyPool>           pool      = std::make_shared<mjbase::KeyPool>();
@@ -1430,7 +1412,7 @@ std::vector<PassDescription> WorkspaceBase::availablePasses()
 {
     std::vector<PassDescription> result;
     for (const auto& pass : spi::defaultPassRegistry().list()) {
-        // scope 输出小写（mbase 契约照迁）；mjbase 第四 scope Cf 无默认种子，
+        // scope 输出小写；mjbase 第四 scope Cf 无默认种子，
         // 仅为穷尽 switch 兜底。
         const std::string scope = pass.scope == spi::PassScope::Method   ? "method"
                                   : pass.scope == spi::PassScope::Class  ? "class"
@@ -1690,13 +1672,27 @@ WorkspaceResult<std::string> WorkspaceBase::resolveClassUri(
     if (ca::core::tag_cast::isa<model::ClassResource>(container.getResource(uriOrInternalName)))
         return ca::core::Ok(uriOrInternalName);
     try {
+        // 内名 selector 命中 Multi-Release 族（base 与 versions/<N> 变体并存，
+        // 内名相同）时按确定序选定：base 形条目优先于版本化条目（JEP 238 口径
+        // 版本 ≥ 9），同层级取 URI 字节序最小。不得依赖容器迭代序——那会让
+        // 同一容器在不同进程/标准库里解析到不同族员。
         std::string match;
+        ca::i64     matchVersion = -1;
         container.visitResources([&](std::string_view uri, const model::IResource& resource) {
             const auto* classResource =
                 ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
-            if (classResource == nullptr || !match.empty()) return;
-            if (internalNameOfBytes(classResource->get()) == uriOrInternalName)
-                match = std::string(uri);
+            if (classResource == nullptr) return;
+            if (internalNameOfBytes(classResource->get()) != uriOrInternalName) return;
+            const ca::i64 version = model::multiReleaseVersionOfClassUri(uri);
+            const bool    candidateVersioned = version >= 9;
+            const bool    currentVersioned   = matchVersion >= 9;
+            const bool    better = match.empty() ||
+                                   (!candidateVersioned && currentVersioned) ||
+                                   (candidateVersioned == currentVersioned &&
+                                    std::string_view(uri) < std::string_view(match));
+            if (!better) return;
+            match        = std::string(uri);
+            matchVersion = version;
         });
         if (match.empty())
             return ca::core::Err(
@@ -2358,7 +2354,7 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchInstructions(
                         else
                         {
                             // CP2 形态含 invoke*virtual/static/special 与字段/类访问
-                            // 指令——成员引用文本与旧栈 methodTarget 口径一致。
+                            // 指令——成员引用文本采用无冒号扁平口径。
                             const auto reference = memberRefFlatText(cf, insn.cp);
                             if (!reference.empty()) output << ' ' << reference;
                         }
@@ -2486,10 +2482,9 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::calleesOfMethod(
         }
         else {
             // 解析展开（mjbase 面）：虚调用/接口调用沿层次图展开到「静态目标 +
-            // 后代中声明同名同描述符方法」的候选集合（虚分派可达面）。旧栈
-            // ResolvedCallGraph 的完整闭包设施未随迁，本近似覆盖 direct 与
-            // 单继承/接口分派的展开语义——完整闭包由主线 ResolvedCallGraph
-            // 设施接管（迁移报告项）。
+            // 后代中声明同名同描述符方法」的候选集合（虚分派可达面）。本近似
+            // 覆盖 direct 与单继承/接口分派的展开语义——完整闭包由主线
+            // ResolvedCallGraph 设施接管。
             auto graph = analysisGraph();
             if (graph.is_err()) return ca::core::Err(std::move(graph).unwrap_err());
             auto           analysis = std::move(graph).unwrap();
@@ -2666,8 +2661,7 @@ WorkspaceResult<std::vector<MethodOverrideInfo>> WorkspaceBase::overridesOfMetho
 
         // 覆盖组件（mjbase 面直算）：候选 = 全部声明同名同描述符方法的登记类；
         // 两候选之间是子类型关系（任一方向）即连通；并查集闭包给出组件。
-        // 旧栈经 renamer RenameContext 的组件游走未随迁，此处等价重建；
-        // 与引擎共用的组件解析设施由主线 renamer 接管（迁移报告项）。
+        // 与引擎共用的组件解析设施由主线 renamer 接管。
         std::vector<mjbase::ClassKey> candidates;
         for (const auto& [id, summary] : analysis.summaries) {
             (void)summary;
@@ -3054,7 +3048,7 @@ MutationResult WorkspaceBase::replaceClassBytes(const std::string&         uriOr
     auto resolved = resolveClassUri(*working_, uriOrInternalName);
     if (resolved.is_err()) return stateFailure(std::move(resolved).unwrap_err());
     const auto uri                  = std::move(resolved).unwrap();
-    const auto expectedInternalName = internalNameFromClassUri(uri);
+    const auto expectedInternalName = mjbase::model::internalNameFromClassUri(uri);
     if (expectedInternalName.empty())
         return stateFailure(error(WorkspaceError::InvalidArgument, "replace class bytes",
                                   "target URI is not a canonical class or multi-release class "
@@ -3194,7 +3188,7 @@ WorkspaceErrorInfo WorkspaceBase::validateCandidate(const model::ResourceContain
             ca::core::tag_cast::dyn_cast<const model::ClassResource>(candidate.getResource(uri));
         if (classResource == nullptr) continue;   // 作用域内已删除条目（修复移除等）
         // spi sanitize gate：引用语义损坏的 class 在候选入口前置拒绝（协作面，
-        // 迁移口径 2：workspace × sanitize gate 契约落点）。
+        // workspace × sanitize gate 契约落点）。
         const auto issues = spi::sanitizeClassFile(classResource->get());
         if (!issues.empty()) {
             for (const auto& issue : issues) {
@@ -3248,7 +3242,7 @@ WorkspaceErrorInfo WorkspaceBase::validateCandidate(const model::ResourceContain
     return status;
 }
 
-// ── workflow 事务助手（mbase 语义照迁，错误通道换 WorkspaceErrorInfo）─────
+// ── workflow 事务助手（错误通道 WorkspaceErrorInfo）──────────────
 
 void removeWorkflowExport(const WorkflowResult& result)
 {
@@ -3427,8 +3421,8 @@ WorkspaceErrorInfo WorkspaceBase::runPipeline(model::ResourceContainer& candidat
         builder = spi::PassRegistry::instance().getPipeline("default-optimize");
     }
 
-    // jdkPath 非空：扫描 JDK 归档建层次图，Strict resolver 接入帧重算（旧栈
-    // COMPUTE_MAXS|COMPUTE_FRAMES 的对应物）。resolver 链的生命周期必须覆盖
+    // jdkPath 非空：扫描 JDK 归档建层次图，Strict resolver 接入帧重算。
+    // resolver 链的生命周期必须覆盖
     // buildNestedPipeline + runContainerPipeline 全程，故在 job 之前构造。
     mjbase::KeyPool                        jdkPool;
     mjbase::hierarchy::ClassHierarchy      jdkHierarchy{jdkPool};

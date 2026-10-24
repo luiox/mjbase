@@ -145,7 +145,7 @@ struct AnalysisProjectError
     ca::str::Utf8String      message;
 };
 
-/// @brief 分析工程最小库：实体登记 + 严格 JSON v1/v2 读写（luiox/morpher#1092）。
+/// @brief 分析工程最小库：实体登记 + 严格 JSON v1/v2 读写。
 ///
 /// 纯数据层，不感知 CLI/MCP/执行接口（P2 起）与工作区会话；值语义存储
 /// （人工规模实体量，无热路径，不引入 arena 视图生命周期）。返回指针/引用

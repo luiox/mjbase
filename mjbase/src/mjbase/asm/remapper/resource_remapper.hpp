@@ -1,9 +1,9 @@
 /// @file        resource_remapper.hpp
 /// @brief       把重映射计划应用到资源容器：类资源改写 + opt-in 资源面。
 ///
-/// 旧栈对应物：mbase/asm/remapper/resource_remapper。语义照旧、实现重写：
+/// 实现重写：
 /// 类字节改写经 libjbc 会话（makeSessionFromBytes → applyMemberRemapPlan →
-/// writeClass），容器与资源模型用 mjbase::model。畸形类资源跳过（旧栈
+/// writeClass），容器与资源模型用 mjbase::model。畸形类资源跳过（
 /// catch(...) 同口径 fail-open，与 reference_index 容错纪律一致）。
 ///
 /// 改写面（RemapPolicy 门控）：

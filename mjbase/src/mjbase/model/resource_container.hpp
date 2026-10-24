@@ -1,18 +1,19 @@
 /// @file        resource_container.hpp
 /// @brief       资源容器：IResourceContainer 接口 + unordered_map 默认实现。
 ///
-/// URI 键语义（mbase 行为照旧 + 字符串约定迁移）：键文本驻留在容器自有的
+/// URI 键语义（字符串约定）：键文本驻留在容器自有的
 /// Utf8StringArena（只增不移、内容去重），对外一律以 std::string_view 借用——
 /// addResource 的入参视图在调用返回后即可释放；visitResources /
 /// duplicateResourceUris 发出的视图指向 arena，容器存活期内有效。
 ///
-/// 重复条目纪律（issue #962 语义照旧）：addResource 对已知 URI first-wins
+/// 重复条目纪律：addResource 对已知 URI first-wins
 /// 保留首条目（对齐 JVM 类加载），后条目丢弃并记录；有意替换走
 /// replaceResource / getResources()。
 #pragma once
 
 #include <functional>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -108,5 +109,53 @@ private:
     std::vector<std::string_view>                                    duplicateResourceUris_;
     ca::str::Utf8StringArena                                         arena_;
 };
+
+// ── Multi-Release 族视图（JEP 238）─────────────────────────────────────────
+//
+// 版本化条目（META-INF/versions/<N>/ 下的 class）与 base 条目共用同一类内部名，
+// 语义上是同一个类的多个 release 变体（一个「族」）。容器层按 URI 形状提供族
+// 视图，供改名/删除/选择器各面把「按内名结算」从巧合固化为契约——任何按内名
+// 键控的结算都必须对族内全部成员一致生效。
+
+/// @brief class URI 的版本段解析。
+///
+/// `META-INF/versions/<纯数字>/…` 形返回版本段数值；其余形状（前缀不符、版本
+/// 段缺失或非纯数字、数值溢出）返回 -1。这是形状级判定（任何数字段都算版本化
+/// 形状）；JEP 238 的语义口径（版本 ≥ 9 才被 JVM 识别为版本化类条目）由调用
+/// 方叠加 `version >= 9` 判定。
+ca::i64 multiReleaseVersionOfClassUri(std::string_view uri);
+
+/// @brief class URI → 类内部名。
+///
+/// 剥 `META-INF/versions/<N>/` 前缀（JEP 238 口径：N 为 ≥ 9 的纯数字）与
+/// `.class` 后缀；其余形状（含 N < 9 或非数字版本段）返回空串——它们不是
+/// JVM 可识别的 canonical class URI。与 jar 层条目名判定一致按大小写敏感
+/// 处理后缀。
+std::string internalNameFromClassUri(std::string_view uri);
+
+/// @brief 同内名 versioned 族视图（非拥有）。
+struct ClassFamilyView
+{
+    /// base 形条目 URI（借用容器 arena 视图）；容器无 base 形条目时为空视图。
+    std::string_view baseUri;
+
+    /// 版本化条目：版本号 + URI 借用视图。
+    struct Variant
+    {
+        ca::i64          version;   ///< 版本段数值（≥ 9）
+        std::string_view uri;       ///< 条目 URI（借用容器 arena 视图）
+    };
+    /// 版本化条目列表，按 (版本号, URI) 升序。
+    std::vector<Variant> variants;
+};
+
+/// @brief 容器 class 资源的同内名族索引（URI 形状推导，不解析字节）。
+///
+/// 键 = internalNameFromClassUri 推导的内部名（自有存储）；值中的 URI 视图
+/// 借用容器 arena，容器存活期内有效。推导不出内名的条目（非 class 资源、非
+/// class 形状、版本段 N < 9）不入索引。base 缺失而仅存版本化变体的族原样
+/// 呈现（baseUri 空视图）——本层不做「最小变体升格 base」的布局重构。
+std::unordered_map<std::string, ClassFamilyView> buildClassFamilyIndex(
+    const IResourceContainer& container);
 
 }   // namespace mjbase::model

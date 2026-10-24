@@ -1,8 +1,7 @@
 /// @file        member_remap_plan.hpp
 /// @brief       成员重映射规则计划：类/字段/方法的精确旧值到新值规则。
 ///
-/// 旧栈对应物：mbase/asm/remapper/member_remap_plan（Utf8StringRef + 私有
-/// Utf8StringArena）。语义照旧、实现重写：驻留存储换成 mjbase::KeyPool
+/// 驻留存储换成 mjbase::KeyPool
 /// （内容寻址 u32 id），规则键统一为 @ref mjbase::MemberKey——remap 计划的
 /// 键类型与 alias/reference 消费契约对齐；文本入参 intern 进计划自有池，
 /// 返回的 string_view 均指向池驻留文本，计划存活期内有效。
@@ -22,7 +21,7 @@
 
 namespace mjbase::asm_remapper {
 
-/// @brief 字段声明/引用重写规则（旧栈 FieldRemapRule 语义照迁，键 MemberKey 化）。
+/// @brief 字段声明/引用重写规则（键 MemberKey 化）。
 ///
 /// oldKey 三段（owner/name/desc）是映射前的成员身份；oldKey.desc 为空 =
 /// 无描述符规则（映射文件形态），按 owner/name 匹配并保留现状描述符。
@@ -81,7 +80,7 @@ public:
     std::string_view mapMethodDescriptor(std::string_view desc) const;
 
     /// @brief 重写泛型签名文本：逐个 `L...;`（遇 `<` 泛型嵌套不停）类名重映射，
-    ///        其余字符原样保留（旧栈 remapSignatureWith 语义照迁）。
+    ///        其余字符原样保留。
     std::string_view mapSignature(std::string_view signature) const;
 
     /// @brief 精确字段规则查询；退化匹配描述符为空的 owner/name 规则。
@@ -102,7 +101,7 @@ public:
 
     /// @brief owner 槽统一映射入口：直接类名走 mapInternalName；`[L...;`/
     ///        `[[L...;` 数组型 owner（enum values() 的 clone 引用等）按字段
-    ///        描述符整体重映射（旧栈 mapOwnerRef 语义照迁）。
+    ///        描述符整体重映射。
     std::string_view mapOwnerRef(std::string_view owner) const;
 
     /// @brief 无任何类/字段/方法映射时为 true。

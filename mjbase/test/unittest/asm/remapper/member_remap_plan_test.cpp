@@ -1,10 +1,10 @@
 /// @file        member_remap_plan_test.cpp
 /// @brief       asm/remapper 模块测试：计划/类改写器/资源改写器/映射门面。
 ///
-/// 旧栈对应物：mbase/unittest/asm/remapper/member_remap_plan_test.cpp（21 用例
+/// 21 用例
 /// 全量移植，语义为 oracle）；夹具从 ASM ClassNode 手拼改为
 /// class_bytes_builder.hpp 的受控字节装配 + libjbc 会话往返，断言面从内存树
-/// 改为 writeClass → readClass 的产物字节（更贴近旧栈 ClassWriter 输出的
+/// 改为 writeClass → readClass 的产物字节（更贴近 ClassWriter 输出的
 /// 可观察行为）。另补 MappingRemapper（utf8_remapper 去 visitor 重设计）用例。
 #include <gtest/gtest.h>
 
@@ -341,10 +341,10 @@ bool contains(const std::vector<std::string>& values, std::string_view value)
 }
 
 // ---------------------------------------------------------------------------
-// 共享夹具装配器（与旧栈 fixture 一一对应）。
+// 共享夹具装配器。
 // ---------------------------------------------------------------------------
 
-/// @brief 旧栈 buildRemapClass：OldOwner 族 + 反射字符串 + 注解/签名三面。
+/// @brief buildRemapClass：OldOwner 族 + 反射字符串 + 注解/签名三面。
 ///        字段 oldField、方法 oldMethod/use；use 体覆盖 invoke/getfield/
 ///        NEW/ANEWARRAY/MULTIANEWARRAY/ldc 字符串。
 Bytes buildRemapClass()
@@ -875,7 +875,7 @@ std::string manifestText(const mjbase::jar::Manifest& manifest, const char* key)
 }
 
 // ---------------------------------------------------------------------------
-// 用例（旧栈 21 例全量移植 + MappingRemapper 2 例）。
+// 用例（21 例全量 + MappingRemapper 2 例）。
 // ---------------------------------------------------------------------------
 
 // 旧例 1：rewritesClassDescriptorsAndCallSites
@@ -1587,8 +1587,8 @@ TEST(MjAsmRemapperTest, remapsReflectionMemberAfterAliasWrapper)
         EXPECT_FALSE(contains(strings, "oldMethod")) << method;
     }
     // 偏离点：consumedQueueUse 的 poll→checkcast 队列消费形态，mjbase
-    // AliasAnalysis 未建模（fail-open 保留原名）；旧栈别名引擎可证该接收者。
-    // 等价能力见迁移报告「共享设施请求」。
+    // AliasAnalysis 未建模（fail-open 保留原名）；别名引擎可证该接收者。
+    // 等价能力见共享设施请求。
     {
         const std::vector<std::string> strings = ldcStringsOf(*session, "consumedQueueUse");
         EXPECT_TRUE(contains(strings, "oldMethod"));
@@ -2031,7 +2031,7 @@ TEST(MjAsmRemapperTest, mappingRemapperRewritesDescriptorsAndSignatures)
               std::string(remapper.mapMethodDescriptor("(LOldType;)LOldType;")));
     EXPECT_EQ("(LNewOwner;)LNewOwner;",
               std::string(remapper.mapMethodDescriptor("(LOldOwner;)LOldOwner;")));
-    // 非描述符文本原样返回（旧栈 Utf8Remapper 空命中语义）。
+    // 非描述符文本原样返回（Utf8Remapper 空命中语义）。
     EXPECT_EQ("I", std::string(remapper.mapFieldDescriptor("I")));
     EXPECT_EQ("Ljava/lang/Object;LNewType;",
               std::string(remapper.mapSignature("Ljava/lang/Object;LOldType;")));

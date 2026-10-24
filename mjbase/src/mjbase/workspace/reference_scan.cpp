@@ -48,7 +48,7 @@ void ReferenceScan::build(const model::ResourceContainer& container)
         const auto* classResource = ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
         if (!classResource) return;
         // 净化预检与 WorkspaceBase::validateCandidate 同口径：引用语义损坏的
-        // class 不进扫描（旧栈索引对畸形 class 的跳过纪律）。
+        // class 不进扫描（畸形 class 的跳过纪律）。
         if (!spi::sanitizeClassFile(classResource->get()).empty()) return;
         auto session = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(classResource->get()));
         if (session.is_err()) return;
