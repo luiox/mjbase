@@ -110,6 +110,9 @@ struct MutationRequest final
     ca::u64     expectedRevision = kAnyRevision;
     bool        dryRun           = false;
     std::string label;
+    /// @brief 编辑校验门模式：默认 relaxed（JVM 赋值兼容语义）；上层
+    ///        可透传 strict（原精确匹配）或 off（跳过门禁）。无参调用点零改动。
+    jasm::ValidationMode validationMode = jasm::ValidationMode::Relaxed;
 };
 
 /// @brief 一个变更字节区间，长度分别描述变更前后内容。
@@ -439,6 +442,10 @@ struct SupportingResourceInfo final
     std::string fingerprint;
     ca::usize   resourceCount = 0;
     ca::usize   classCount = 0;
+    /// @brief 注册角色标签："support"（缺省遗留值）/"library"/"runtime"
+    ///        （model::to_string(ContainerRole) 口径）。同一容器只产生一条记录，
+    ///        改变的是本标签而不是追加新条目。
+    std::string role = "support";
 };
 
 /// @brief 精确 xref 查询返回的引用位置和目标。

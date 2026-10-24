@@ -110,7 +110,13 @@ ca::Result<ca::i64, AnalysisProjectError> requiredInt(
 
 const char* roleTag(AnalysisInputRole role)
 {
-    return role == AnalysisInputRole::Primary ? "primary" : "support";
+    switch (role) {
+    case AnalysisInputRole::Primary: return "primary";
+    case AnalysisInputRole::Support: return "support";
+    case AnalysisInputRole::Library: return "library";
+    case AnalysisInputRole::Runtime: return "runtime";
+    }
+    return "primary";
 }
 
 bool parseRole(const Utf8StringRef& tag, AnalysisInputRole& role)
@@ -121,6 +127,14 @@ bool parseRole(const Utf8StringRef& tag, AnalysisInputRole& role)
     }
     if (tag.equals(refOf("support"))) {
         role = AnalysisInputRole::Support;
+        return true;
+    }
+    if (tag.equals(refOf("library"))) {
+        role = AnalysisInputRole::Library;
+        return true;
+    }
+    if (tag.equals(refOf("runtime"))) {
+        role = AnalysisInputRole::Runtime;
         return true;
     }
     return false;
@@ -311,6 +325,10 @@ bool AnalysisProject::addInput(AnalysisInput input)
 {
     const std::string key = input.path.to_std_string();
     if (key.empty() || inputIndex_.count(key) > 0) return false;
+    // parent（v2）：引用必须已登记。挂载树无环不变量由归纳保证——已登记集
+    // 合无环，新节点只有一条指向已有节点的出边，不可能引入环；解析期整表
+    // 装载才需要显式查环（见 parseAnalysisProjectText）。
+    if (!input.parent.is_empty() && inputIndex_.count(toStd(input.parent)) == 0) return false;
     inputIndex_.emplace(key, inputs_.size());
     inputs_.push_back(std::move(input));
     return true;
@@ -320,6 +338,10 @@ ca::usize AnalysisProject::removeInput(const Utf8StringRef& path)
 {
     const auto  it = inputIndex_.find(toStd(path));
     if (it == inputIndex_.end()) return 0;
+    // v2 挂载树：被其他条目 parent 引用时拒绝摘除（不构造悬垂引用）。
+    for (const auto& input : inputs_) {
+        if (input.parent.ref().equals(path)) return 0;
+    }
     const auto  victim = it->second;
     inputs_.erase(inputs_.begin() + static_cast<std::ptrdiff_t>(victim));
     inputIndex_.clear();
@@ -493,12 +515,17 @@ ca::Result<AnalysisProject, AnalysisProjectError> parseAnalysisProjectText(
     if (version == nullptr) {
         return ca::Err(makeError(AnalysisProjectErrorKind::Schema, "missing version"));
     }
-    if (!version->is_int() || version->as_int() != static_cast<ca::i64>(kAnalysisProjectFileVersion)) {
-        const ca::i64 actual = version->is_int() ? version->as_int() : -1;
+    if (!version->is_int()) {
+        return ca::Err(makeError(AnalysisProjectErrorKind::Schema, "version must be an integer"));
+    }
+    const ca::i64 fileVersion = version->as_int();
+    if (fileVersion < static_cast<ca::i64>(kAnalysisProjectFileVersionBase) ||
+        fileVersion > static_cast<ca::i64>(kAnalysisProjectFileVersion)) {
         return ca::Err(makeError(
             AnalysisProjectErrorKind::Schema,
-            "unsupported schema version " + std::to_string(actual) +
-                " (supported: " + std::to_string(kAnalysisProjectFileVersion) + "); refusing to load"));
+            "unsupported schema version " + std::to_string(fileVersion) +
+                " (supported: " + std::to_string(kAnalysisProjectFileVersionBase) + ".." +
+                std::to_string(kAnalysisProjectFileVersion) + "); refusing to load"));
     }
     if (kind == nullptr || !kind->is_string() || !kind->as_string().equals(refOf(kAnalysisProjectKind))) {
         return ca::Err(makeError(AnalysisProjectErrorKind::Schema,
@@ -527,6 +554,7 @@ ca::Result<AnalysisProject, AnalysisProjectError> parseAnalysisProjectText(
         const ca::json::JsonValue* path        = nullptr;
         const ca::json::JsonValue* fingerprint = nullptr;
         const ca::json::JsonValue* role        = nullptr;
+        const ca::json::JsonValue* parent      = nullptr;
         for (const auto& [key, value] : entry.as_object()) {
             const ca::json::JsonValue** slot  = nullptr;
             const char*                 known = nullptr;
@@ -541,6 +569,10 @@ ca::Result<AnalysisProject, AnalysisProjectError> parseAnalysisProjectText(
             else if (key.equals(refOf("role"))) {
                 slot  = &role;
                 known = "role";
+            }
+            else if (key.equals(refOf("parent"))) {
+                slot  = &parent;
+                known = "parent";
             }
             else {
                 return ca::Err(makeError(AnalysisProjectErrorKind::Schema,
@@ -566,14 +598,68 @@ ca::Result<AnalysisProject, AnalysisProjectError> parseAnalysisProjectText(
             return ca::Err(makeError(AnalysisProjectErrorKind::Schema,
                                      context + "unknown role '" +
                                          toStd(roleValue.unwrap()->as_string()) +
-                                         "' (expected primary|support)"));
+                                         "' (expected primary|support|library|runtime)"));
+        }
+        // 版本门即兼容契约的边界：version 标 1 就必须真是 v1——v2 特有值
+        // （library/runtime、非空 parent）出现在 v1 文件按 Schema 拒载。
+        if (fileVersion == static_cast<ca::i64>(kAnalysisProjectFileVersionBase) &&
+            isV2InputRole(input.role)) {
+            return ca::Err(makeError(
+                AnalysisProjectErrorKind::Schema,
+                context + "role '" + toStd(roleValue.unwrap()->as_string()) +
+                    "' requires schema version " +
+                    std::to_string(kAnalysisProjectFileVersion) + " (file declares version " +
+                    std::to_string(fileVersion) + ")"));
+        }
+        auto parentValue = optionalString(parent, context, "parent");
+        if (parentValue.is_err()) return ca::Err(std::move(parentValue).unwrap_err());
+        if (parentValue.unwrap() != nullptr) {
+            if (fileVersion == static_cast<ca::i64>(kAnalysisProjectFileVersionBase)) {
+                return ca::Err(makeError(
+                    AnalysisProjectErrorKind::Schema,
+                    context + "input field 'parent' requires schema version " +
+                        std::to_string(kAnalysisProjectFileVersion) + " (file declares version " +
+                        std::to_string(fileVersion) + ")"));
+            }
+            if (parentValue.unwrap()->as_string().equals(input.path.ref())) {
+                return ca::Err(makeError(AnalysisProjectErrorKind::Schema,
+                                         context + "input parent must not reference itself"));
+            }
+            input.parent = copyOf(parentValue.unwrap()->as_string());
         }
         if (!seenPaths.insert(input.path.to_std_string()).second) {
             return ca::Err(makeError(AnalysisProjectErrorKind::Schema,
                                      context + "duplicate input path: " + input.path.to_std_string()));
         }
-        project.addInput(std::move(input));
+        // 直插不入 addInput：文件内允许前向引用（子条目可先于父条目出现），
+        // parent 存在性/无环由装载后的挂载树整表校验统一裁决（§1.5）；addInput
+        // 的增量 parent 检查只服务于增量 API，不适用于整文件装载。
+        project.inputs_.push_back(std::move(input));
+        project.inputIndex_[project.inputs_.back().path.to_std_string()] =
+            project.inputs_.size() - 1;
         ++inputIndex;
+    }
+
+    //-- 挂载树（v2）：parent 引用存在性 + 无环（整表装载后才可判） ------------
+    for (const auto& input : project.inputs_) {
+        if (input.parent.is_empty()) continue;
+        std::set<std::string> visited;
+        std::string           cursor = toStd(input.path);
+        while (true) {
+            if (!visited.insert(cursor).second) {
+                return ca::Err(makeError(AnalysisProjectErrorKind::Schema,
+                                         "inputs mount tree is cyclic at: " + cursor));
+            }
+            const auto  it = project.inputIndex_.find(cursor);
+            if (it == project.inputIndex_.end()) {
+                return ca::Err(makeError(AnalysisProjectErrorKind::Schema,
+                                         "inputs mount tree references unregistered path: " +
+                                             cursor));
+            }
+            const std::string next = toStd(project.inputs_[it->second].parent);
+            if (next.empty()) break;
+            cursor = next;
+        }
     }
 
     //-- shadow_sidecar（可选单槽） ------------------------------------------
@@ -765,10 +851,18 @@ ca::Result<ca::str::Utf8String, AnalysisProjectError> writeAnalysisProjectText(
                   return a->id < b->id;
               });
 
+    // 懒升级（设计文档 §1.1）：实体携带 v2 特性才写 version 2，否则恒写 1，
+    // 让未用 v2 特性的工程对 #1096 冻结 v1 读者保持逐字节可读。
+    bool carriesV2 = false;
+    for (const auto* input : sortedInputs) {
+        if (isV2InputRole(input->role) || !input->parent.is_empty()) carriesV2 = true;
+    }
+    const ca::u32 emittedVersion =
+        carriesV2 ? kAnalysisProjectFileVersion : kAnalysisProjectFileVersionBase;
+
     ca::json::JsonValue::ObjectStorage rootMembers;
     rootMembers.emplace_back(refOf("version"),
-                             ca::json::JsonValue::make_int(
-                                 static_cast<ca::i64>(kAnalysisProjectFileVersion)));
+                             ca::json::JsonValue::make_int(static_cast<ca::i64>(emittedVersion)));
     rootMembers.emplace_back(refOf("kind"),
                              ca::json::JsonValue::make_string(refOf(kAnalysisProjectKind)));
 
@@ -780,6 +874,10 @@ ca::Result<ca::str::Utf8String, AnalysisProjectError> writeAnalysisProjectText(
                              ca::json::JsonValue::make_string(input->fingerprint.ref()));
         members.emplace_back(refOf("role"),
                              ca::json::JsonValue::make_string(refOf(roleTag(input->role))));
+        if (!input->parent.is_empty()) {
+            members.emplace_back(refOf("parent"),
+                                 ca::json::JsonValue::make_string(input->parent.ref()));
+        }
         inputsJson.append(ca::json::JsonValue::make_object_from(std::move(members)));
     }
     rootMembers.emplace_back(refOf("inputs"), std::move(inputsJson));

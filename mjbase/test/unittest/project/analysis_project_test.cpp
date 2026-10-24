@@ -187,7 +187,7 @@ TEST(MjProjectAnalysisTest, strictParseRejectsSchemaViolations)
     };
     const std::vector<Violation> violations = {
         // 锚点均为单 token 级、与 pretty 排版无关。
-        {"unsupported version", "\"version\": 1", "\"version\": 2"},
+        {"unsupported version", "\"version\": 1", "\"version\": 3"},
         {"wrong kind", "\"mjt-analysis-project\"", "\"something-else\""},
         {"unknown top field", "\"inputs\"", "\"suspicious_extra\": 1, \"inputs\""},
         {"unknown role", "\"role\": \"primary\"", "\"role\": \"hub\""},
@@ -393,4 +393,181 @@ TEST(MjProjectAnalysisTest, shadowSidecarTextIsRejectedAsProjectFile)
     const auto  err = std::move(parsed).unwrap_err();
     EXPECT_EQ(AnalysisProjectErrorKind::Schema, err.kind);
     EXPECT_NE(std::string::npos, err.message.to_std_string().find("unknown analysis project field"));
+}
+
+// ── schema v2：role 扩展 + 挂载树 + 懒版本写出 ──────────────────────────
+
+TEST(MjProjectAnalysisTest, v2RolesAndMountTreeRoundtripAsVersion2)
+{
+    auto project = AnalysisProject::createEmpty();
+    ASSERT_TRUE(project.addInput(makeInput("samples/jdk", "sha256:11", AnalysisInputRole::Runtime)));
+    ASSERT_TRUE(project.addInput(makeInput("samples/app.jar", "sha256:22", AnalysisInputRole::Primary)));
+    ASSERT_TRUE(project.addInput(makeInput("samples/lib.jar", "sha256:33", AnalysisInputRole::Library)));
+
+    // parent 引用已登记 path（挂载树）：登记时即带 parent。
+    AnalysisInput patch = makeInput("samples/patch.jar", "sha256:44", AnalysisInputRole::Library);
+    patch.parent        = Utf8String::from_cstr("samples/lib.jar");
+    ASSERT_TRUE(project.addInput(std::move(patch)));
+
+    auto written = writeAnalysisProjectText(project);
+    ASSERT_FALSE(written.is_err());
+    const auto  body = std::move(written).unwrap().to_std_string();
+    EXPECT_NE(std::string::npos, body.find("\"version\": 2"));
+    EXPECT_NE(std::string::npos, body.find("\"library\""));
+    EXPECT_NE(std::string::npos, body.find("\"runtime\""));
+    EXPECT_NE(std::string::npos, body.find("\"parent\": \"samples/lib.jar\""));
+
+    auto parsed = parseAnalysisProjectText(
+        Utf8StringRef::from_string_view(std::string_view(body.data(), body.size())));
+    ASSERT_FALSE(parsed.is_err());
+    auto reloaded = std::move(parsed).unwrap();
+    ASSERT_EQ(4U, reloaded.inputCount());
+    const auto* runtime = reloaded.findInput(S("samples/jdk"));
+    ASSERT_NE(nullptr, runtime);
+    EXPECT_EQ(AnalysisInputRole::Runtime, runtime->role);
+    const auto* library = reloaded.findInput(S("samples/lib.jar"));
+    ASSERT_NE(nullptr, library);
+    EXPECT_EQ(AnalysisInputRole::Library, library->role);
+    const auto* mounted = reloaded.findInput(S("samples/patch.jar"));
+    ASSERT_NE(nullptr, mounted);
+    EXPECT_EQ("samples/lib.jar", mounted->parent.to_std_string());
+    EXPECT_TRUE(mounted->parent.ref().equals(library->path.ref()));
+}
+
+TEST(MjProjectAnalysisTest, projectWithoutV2FeaturesStaysVersion1ByteCompatible)
+{
+    // 懒版本（设计文档 §1.2）：只用 v1 特性 → 恒写 "version": 1，与 v1 读者
+    // 逐字节兼容；两个 v2 input 全摘除后回落 v1。
+    auto project = AnalysisProject::createEmpty();
+    ASSERT_TRUE(project.addInput(makeInput("a.jar", "sha256:1", AnalysisInputRole::Primary)));
+    ASSERT_TRUE(project.addInput(makeInput("b.jar", "sha256:2", AnalysisInputRole::Library)));
+    auto withV2 = writeAnalysisProjectText(project);
+    ASSERT_FALSE(withV2.is_err());
+    EXPECT_NE(std::string::npos,
+              std::move(withV2).unwrap().to_std_string().find("\"version\": 2"));
+
+    ASSERT_EQ(1U, project.removeInput(S("b.jar")));
+    auto withoutV2 = writeAnalysisProjectText(project);
+    ASSERT_FALSE(withoutV2.is_err());
+    const auto  body = std::move(withoutV2).unwrap().to_std_string();
+    EXPECT_NE(std::string::npos, body.find("\"version\": 1"));
+    EXPECT_EQ(std::string::npos, body.find("\"library\""));
+
+    // v1 字节再次解析 → 再写出 → 仍逐字节一致（v1 读者零波及）。
+    auto reparsed = parseAnalysisProjectText(
+        Utf8StringRef::from_string_view(std::string_view(body.data(), body.size())));
+    ASSERT_FALSE(reparsed.is_err());
+    auto rewritten = writeAnalysisProjectText(std::move(reparsed).unwrap());
+    ASSERT_FALSE(rewritten.is_err());
+    EXPECT_EQ(body, std::move(rewritten).unwrap().to_std_string());
+}
+
+TEST(MjProjectAnalysisTest, v1FileCarryingV2ValuesIsRejected)
+{
+    // 版本标 1 就必须真是 v1：v2 值出现在 v1 文件按 Schema 拒载（懒升级的
+    // 反向纪律，设计文档 §1.2）。
+    auto project = AnalysisProject::createEmpty();
+    ASSERT_TRUE(project.addInput(makeInput("a.jar", "sha256:1", AnalysisInputRole::Library)));
+    auto written = writeAnalysisProjectText(project);
+    ASSERT_FALSE(written.is_err());
+    auto  body = std::move(written).unwrap().to_std_string();
+    const auto  at = body.find("\"version\": 2");
+    ASSERT_NE(std::string::npos, at);
+    body.replace(at, std::string("\"version\": 2").size(), "\"version\": 1");
+
+    auto byRole = parseAnalysisProjectText(
+        Utf8StringRef::from_string_view(std::string_view(body.data(), body.size())));
+    ASSERT_TRUE(byRole.is_err());
+    EXPECT_EQ(AnalysisProjectErrorKind::Schema, std::move(byRole).unwrap_err().kind);
+
+    // parent 同判：v1 文件带 parent 也拒载。
+    auto withParent = AnalysisProject::createEmpty();
+    ASSERT_TRUE(withParent.addInput(makeInput("a.jar", "sha256:1", AnalysisInputRole::Primary)));
+    AnalysisInput mounted = makeInput("b.jar", "sha256:2", AnalysisInputRole::Support);
+    mounted.parent        = Utf8String::from_cstr("a.jar");
+    ASSERT_TRUE(withParent.addInput(std::move(mounted)));
+    auto parentWritten = writeAnalysisProjectText(withParent);
+    ASSERT_FALSE(parentWritten.is_err());
+    auto  parentBody = std::move(parentWritten).unwrap().to_std_string();
+    const auto  parentAt = parentBody.find("\"version\": 2");
+    ASSERT_NE(std::string::npos, parentAt);
+    parentBody.replace(parentAt, std::string("\"version\": 2").size(), "\"version\": 1");
+    auto byParent = parseAnalysisProjectText(refOf(parentBody));
+    ASSERT_TRUE(byParent.is_err());
+    const auto  err = std::move(byParent).unwrap_err();
+    EXPECT_EQ(AnalysisProjectErrorKind::Schema, err.kind);
+    EXPECT_NE(std::string::npos, err.message.to_std_string().find("requires schema version 2"));
+}
+
+TEST(MjProjectAnalysisTest, mountTreeViolationsAreRejectedOnLoad)
+{
+    const auto buildWith = [](const std::string& parentValue) {
+        auto project = AnalysisProject::createEmpty();
+        EXPECT_TRUE(project.addInput(makeInput("a.jar", "sha256:1", AnalysisInputRole::Primary)));
+        EXPECT_TRUE(project.addInput(makeInput("b.jar", "sha256:2", AnalysisInputRole::Library)));
+        auto written = writeAnalysisProjectText(project);
+        EXPECT_FALSE(written.is_err());
+        auto body = written.is_err() ? std::string()
+                                     : std::move(written).unwrap().to_std_string();
+        // 给 b.jar 的条目注入 parent 字段（锚在其 fingerprint 行尾后插一行）。
+        const auto  anchor = body.find("\"fingerprint\": \"sha256:2\"");
+        EXPECT_NE(std::string::npos, anchor);
+        const auto  lineEnd = body.find('\n', anchor);
+        EXPECT_NE(std::string::npos, lineEnd);
+        return body.insert(lineEnd + 1, std::string("    \"parent\": ") + parentValue + ",\n");
+    };
+
+    // 自环。
+    auto self = parseAnalysisProjectText(refOf(buildWith("\"b.jar\"")));
+    ASSERT_TRUE(self.is_err());
+    EXPECT_NE(std::string::npos,
+              std::move(self).unwrap_err().message.to_std_string().find("must not reference itself"));
+
+    // 二节点环：b.parent = a.jar 注入后再给 a.parent = b.jar。
+    auto cycleBody = buildWith("\"a.jar\"");
+    {
+        const auto  anchor = cycleBody.find("\"fingerprint\": \"sha256:1\"");
+        ASSERT_NE(std::string::npos, anchor);
+        const auto  lineEnd = cycleBody.find('\n', anchor);
+        ASSERT_NE(std::string::npos, lineEnd);
+        cycleBody.insert(lineEnd + 1, "    \"parent\": \"b.jar\",\n");
+    }
+    auto cycle = parseAnalysisProjectText(refOf(cycleBody));
+    ASSERT_TRUE(cycle.is_err());
+    EXPECT_NE(std::string::npos,
+              std::move(cycle).unwrap_err().message.to_std_string().find("cyclic"));
+
+    // 悬垂引用。
+    auto dangling = parseAnalysisProjectText(refOf(buildWith("\"missing.jar\"")));
+    ASSERT_TRUE(dangling.is_err());
+    EXPECT_NE(std::string::npos,
+              std::move(dangling).unwrap_err().message.to_std_string().find("unregistered"));
+}
+
+TEST(MjProjectAnalysisTest, addInputRequiresRegisteredParentAndRemoveRejectsReferenced)
+{
+    auto project = AnalysisProject::createEmpty();
+
+    // parent 未登记 → false（不改动；被拒条目不进索引）。
+    const auto makeOrphan = [] {
+        AnalysisInput orphan = makeInput("patch.jar", "sha256:2", AnalysisInputRole::Library);
+        orphan.parent        = Utf8String::from_cstr("base.jar");
+        return orphan;
+    };
+    AnalysisInput firstOrphan = makeOrphan();
+    ASSERT_FALSE(project.addInput(std::move(firstOrphan)));
+    EXPECT_EQ(0U, project.inputCount());
+
+    ASSERT_TRUE(project.addInput(makeInput("base.jar", "sha256:1", AnalysisInputRole::Primary)));
+    AnalysisInput secondOrphan = makeOrphan();
+    ASSERT_TRUE(project.addInput(std::move(secondOrphan)));
+
+    // 被 parent 引用的目标不可摘除（v2 挂载树不构造悬垂）。
+    ASSERT_EQ(0U, project.removeInput(S("base.jar")));
+    ASSERT_EQ(2U, project.inputCount());
+
+    // 先摘子节点再摘父节点成功。
+    ASSERT_EQ(1U, project.removeInput(S("patch.jar")));
+    ASSERT_EQ(1U, project.removeInput(S("base.jar")));
+    EXPECT_EQ(0U, project.inputCount());
 }

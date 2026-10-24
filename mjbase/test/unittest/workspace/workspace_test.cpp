@@ -1393,31 +1393,35 @@ TEST(MjWorkspaceCoreTest, DiffsAllResourcesAndRepairsSelectedJarDamageTransactio
     EXPECT_FALSE(inspected.issues[0].selectedForRemoval);
     EXPECT_TRUE(inspected.mutation.byteDiffs.empty());
 
-    JarRepairRequest incompleteRepair;
-    incompleteRepair.removeCorruptOutputMarkers = true;
-    const auto rejectedRepair =
-        repairWorkspace.applyJarRepair(incompleteRepair, expected(0));
-    EXPECT_EQ(WorkspaceError::InvalidArgument, rejectedRepair.mutation.status.code);
-    EXPECT_FALSE(rejectedRepair.mutation.committed);
-    EXPECT_EQ(0U, repairWorkspace.revision());
-    EXPECT_TRUE(repairWorkspace.readResource("logs/corrupt_output_stream.txt").is_ok());
+    // P18a：验证门只覆盖操作触碰的类——只摘 marker 的部分修复不再被未触碰
+    // 的 broken/Truncated.class 卡死（旧整体门语义废除）；未触碰的坏类原样
+    // 留存，修复与否由后续修复请求决定。
+    JarRepairRequest partialRepair;
+    partialRepair.removeCorruptOutputMarkers = true;
+    const auto partial =
+        repairWorkspace.applyJarRepair(partialRepair, expected(0));
+    ASSERT_TRUE(partial.mutation.status.is_ok());
+    EXPECT_TRUE(partial.mutation.committed);
+    EXPECT_EQ(1U, partial.mutation.revision);
+    EXPECT_FALSE(repairWorkspace.readResource("logs/corrupt_output_stream.txt").is_ok());
+    EXPECT_TRUE(repairWorkspace.readResource("broken/Truncated.class").is_ok());
 
     JarRepairRequest repair;
     repair.removeInvalidClassEntries  = true;
     repair.removeCorruptOutputMarkers = true;
-    const auto preview = repairWorkspace.analyzeJarRepair(repair, expected(0, true));
+    const auto preview = repairWorkspace.analyzeJarRepair(repair, expected(1, true));
     ASSERT_TRUE(preview.mutation.status.is_ok());
     EXPECT_FALSE(preview.mutation.committed);
-    ASSERT_EQ(3U, preview.mutation.byteDiffs.size());
+    ASSERT_EQ(2U, preview.mutation.byteDiffs.size());
     EXPECT_TRUE(std::all_of(preview.issues.begin(), preview.issues.end(),
                             [](const JarRepairIssue& issue) {
                                 return issue.selectedForRemoval;
                             }));
 
-    const auto applied = repairWorkspace.applyJarRepair(repair, expected(0));
+    const auto applied = repairWorkspace.applyJarRepair(repair, expected(1));
     ASSERT_TRUE(applied.mutation.status.is_ok());
     EXPECT_TRUE(applied.mutation.committed);
-    EXPECT_EQ(1U, applied.mutation.revision);
+    EXPECT_EQ(2U, applied.mutation.revision);
     auto resources = repairWorkspace.listResources();
     ASSERT_TRUE(resources.is_ok());
     auto resourceList = std::move(resources).unwrap();
@@ -1428,9 +1432,9 @@ TEST(MjWorkspaceCoreTest, DiffsAllResourcesAndRepairsSelectedJarDamageTransactio
               resourceList.end());
     EXPECT_TRUE(repairWorkspace.readResource("workspace/RepairSubject.class").is_ok());
 
-    const auto restored = repairWorkspace.undo(expected(1));
+    const auto restored = repairWorkspace.undo(expected(2));
     ASSERT_TRUE(restored.status.is_ok());
-    EXPECT_EQ(2U, restored.revision);
+    EXPECT_EQ(3U, restored.revision);
     EXPECT_TRUE(repairWorkspace.readResource("broken/Invalid.class").is_ok());
 }
 

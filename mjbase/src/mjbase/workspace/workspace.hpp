@@ -7,6 +7,7 @@
 
 #include "mjbase/jar/jar_reader.hpp"
 #include "mjbase/model/resource_container.hpp"
+#include "mjbase/project/edit_ledger_store.hpp"
 #include "mjbase/workspace/i_workspace.hpp"
 #include "mjbase/workspace/workspace_types.hpp"
 
@@ -70,6 +71,17 @@ public:
     /// @brief 添加只读 supporting JAR，用于后续层次和调用解析。
     /// @return 返回当前 Workspace 内稳定的 support ID 和内容 fingerprint；重复路径或内容被拒绝。
     WorkspaceResult<SupportingResourceInfo> addSupportingJar(const std::string& path) override;
+
+    /// @brief 带角色注册 supporting 容器：library/runtime 挂载只产生一条
+    ///        容器记录（与 support 共表，路径/内容唯一约束跨角色生效）；support
+    ///        ID 是该容器全部角色注册的唯一 detach 句柄。
+    WorkspaceResult<SupportingResourceInfo> addSupportingContainer(
+        const std::string& path, model::ContainerRole role) override;
+
+    /// @brief 角色标签化的在册表登记内核（addSupportingJar/Container 共用；
+    ///        一容器一记录，role 只是记录标签）。
+    WorkspaceResult<SupportingResourceInfo> addSupportingRole(const std::string& path,
+                                                              const std::string& roleLabel);
 
     /// @brief 按 support ID 移除只读 supporting JAR，并失效依赖 classpath 的分析缓存。
     /// @return 返回被移除的 supporting resource 描述；ID 不存在时返回 NotFound。
@@ -288,6 +300,10 @@ public:
     MutationResult revertClass(const std::string& uri, const MutationRequest& request = {}) override;
 
     /// @brief 保存当前工作副本的具名快照，不改变 revision。
+    ///
+    /// 台账换底后快照 = 台账书签（命名指针指向当前头事务），零字节代价；
+    /// flush 后以书签行持久（跨 flush 存活是相对旧克隆实现的已声明语义变化，
+    /// 见 doc_ai/analysis-project-schema-v2.md §4）。
     WorkspaceResult<void> createSavepoint(const std::string& name) override;
 
     /// @brief 恢复具名快照，产生新 revision。
@@ -300,6 +316,28 @@ public:
     /// @brief 重做上一次撤销的事务。
     MutationResult redo(const MutationRequest& request = {}) override;
 
+    /// @brief 绑定工程 bundle 的台账持久层（可选——不绑定则台账
+    ///        纯内存，undo/redo/savepoint 行为不变、随对象销毁蒸发）。
+    ///
+    /// 打开/复用 bundle 的活动台账代：装载在册事务链与书签；链非空时工作副本
+    /// 物化为「基线 ⊕ 重放」（基线 = 压缩基线 section 或本会话原始快照）。持有
+    /// bundle 单写者锁至对象销毁；revision 从 0 重计（会话内乐观控制语义不变，
+    /// 台账事务号独立单调）。失败 = LedgerOpen 族错误（WorkspaceErrorInfo）。
+    WorkspaceResult<void> bindLedgerStore(const std::string& bundleDir);
+
+    /// @brief 把 pending overlay 与台账事务落盘到绑定 bundle（无绑定 = no-op）。
+    ///
+    /// close/export 前的挂点：exportJar/exportClass 内部已前置调用。崩溃安全
+    /// 与代际协议见 doc_ai/analysis-project-schema-v2.md §3。
+    WorkspaceResult<void> flushLedger();
+
+    /// @brief 手动台账压缩（RFC §6.4；自动阈值触发走 flush/savepoint 时机）。
+    ///
+    /// 保留参数语义见 LedgerCompactRequest；结果列明保留点、被显式丢弃书签与
+    /// 释放的 section。压缩前需无 pending（先 flushLedger）。
+    WorkspaceResult<project::LedgerCompactReport> compactLedger(
+        const project::LedgerCompactRequest& request);
+
     /// @brief 将当前工作副本原子写入一个此前不存在的输出 JAR。
     WorkspaceResult<void> exportJar(const std::string& outputPath) const override;
 
@@ -310,7 +348,6 @@ public:
     std::vector<SupportingResourceInfo> supportingResources() const override;
 
 private:
-    struct Snapshot;
     struct SupportingResource;
     struct AnalysisGraph;
 
@@ -321,6 +358,35 @@ private:
     MutationResult commit(std::unique_ptr<model::ResourceContainer> candidate,
                           std::vector<jasm::Diagnostic> diagnostics,
                           const MutationRequest& request);
+    /// @brief 台账错误 → workspace 错误面（kind 映射 + operation 前缀）。
+    WorkspaceErrorInfo ledgerFailure(const std::string& operation,
+                                     const project::ProjectStoreError& cause) const;
+    /// @brief 容器 canonical digest（SHA-256 口径，schema v2 裁决；§1.6）。
+    WorkspaceResult<std::string> ledgerBaseDigest() const;
+    /// @brief 把台账事务正向应用到容器（redo/restore/重放共用）。
+    WorkspaceErrorInfo applyLedgerTransaction(model::ResourceContainer&      container,
+                                              const project::LedgerTransaction& txn,
+                                              const std::string& operation) const;
+    /// @brief 反向应用一条事务（undo 的逆操作：before 字节恢复/新增撤销/删除还原）。
+    WorkspaceErrorInfo inverseApplyLedgerTransaction(model::ResourceContainer&         container,
+                                                     const project::LedgerTransaction& txn,
+                                                     const std::string& operation) const;
+    /// @brief before 侧字节解析：上一次 touch 的 overlay 载荷，缺 touch 则回落
+    ///        基线（压缩基线 section 或原始快照）；digest 不符 = 数据损坏错误。
+    WorkspaceResult<std::vector<ca::u8>> resolveBeforeBytes(
+        const project::LedgerTransaction& txn, const project::LedgerEntry& entry) const;
+    /// @brief 头位置物化为候选容器：forward 应用 (head, txn]，reverse 应用
+    ///        (txn, head]。
+    WorkspaceErrorInfo materializeState(std::unique_ptr<model::ResourceContainer>& candidate,
+                                        ca::u64 txn, const std::string& operation) const;
+    /// @brief 台账自动压缩挂点（flush/savepoint 时机；阈值未到/未绑定即跳过）。
+    void autoCompactLedger();
+    /// @brief 按 uri 形态选择资源类型重建条目（.class → Class、MANIFEST.MF →
+    ///        Manifest、其余 Unknown）。
+    static std::unique_ptr<model::IResource> resourceFromBytes(const std::string& uri,
+                                                               std::vector<ca::u8> bytes);
+    /// @brief 重放基线容器：有压缩基线 section 读之，否则克隆原始快照。
+    WorkspaceResult<std::unique_ptr<model::ResourceContainer>> replayBaseline() const;
 
     std::unique_ptr<model::ResourceContainer> cloneWorking() const;
     std::unique_ptr<model::ResourceContainer> cloneOriginal() const;
@@ -336,8 +402,17 @@ private:
     /// 序最小——不依赖容器迭代序。
     WorkspaceResult<std::string>       resolveClassUri(const model::ResourceContainer& container,
                                                        const std::string& uriOrInternalName) const;
-    WorkspaceErrorInfo validateCandidate(const model::ResourceContainer& candidate,
-                                         std::vector<jasm::Diagnostic>& diagnostics) const;
+    /// @brief 编辑校验门：只校验 @p scopeUris 列出的类（门禁作用域 =
+    ///        操作受影响面；容器基线未编辑类不参与门禁——它们编辑前就存在）。
+    ///
+    /// mode 三档：relaxed（默认，JVM 赋值兼容语义）/ strict（原精确
+    /// 匹配）/ off（直通零校验）。同类多条诊断聚合为 per-class 条目（类名 +
+    /// 计数 + 截断明细），不再逐方法刷屏。层次图按候选容器即时重建
+    /// （外部/JDK 类型不可解析不判非法）。
+    WorkspaceErrorInfo validateCandidate(const model::ResourceContainer&  candidate,
+                                         std::vector<jasm::Diagnostic>&  diagnostics,
+                                         jasm::ValidationMode            mode,
+                                         const std::vector<std::string>& scopeUris) const;
     /// @brief 在候选副本上组装并运行 pass/pipeline（runWorkflow 前置协议见
     ///        i_workspace.hpp：pipeline/passNames 互斥，均空取 default-optimize）。
     WorkspaceErrorInfo runPipeline(model::ResourceContainer& candidate,
@@ -359,9 +434,12 @@ private:
     std::unique_ptr<model::ResourceContainer> original_;
     std::unique_ptr<model::ResourceContainer> working_;
     std::vector<SupportingResource> supporting_;
-    std::vector<Snapshot> undo_;
-    std::vector<Snapshot> redo_;
-    std::unordered_map<std::string, std::unique_ptr<model::ResourceContainer>> savepoints_;
+    /// 台账引擎：undo/redo = 头指针回退/前进，savepoint = 书签；
+    /// 未绑定为纯内存台账（行为与旧克隆实现一致，随对象销毁蒸发）。mutable：
+    /// 导出路径（const）前置 flush 挂点。
+    mutable project::EditLedgerStore ledger_;
+    /// redo 目标栈（undo 压入、redo 弹出、commit 清空——对齐旧 redo_ 语义）。
+    std::vector<ca::u64> redoHint_;
     ArtifactKind artifactKind_ = ArtifactKind::None;
     std::string  sourcePath_;
     std::string  primaryClassUri_;

@@ -748,10 +748,11 @@ ca::Result<StoreManifest, ProjectStoreError> parseStoreManifestText(const Utf8St
             makeError(ProjectStoreErrorKind::Open, "store manifest root must be an object"));
     }
 
-    const ca::json::JsonValue* version  = nullptr;
-    const ca::json::JsonValue* kind     = nullptr;
-    const ca::json::JsonValue* engine   = nullptr;
-    const ca::json::JsonValue* sections = nullptr;
+    const ca::json::JsonValue* version      = nullptr;
+    const ca::json::JsonValue* kind         = nullptr;
+    const ca::json::JsonValue* engine       = nullptr;
+    const ca::json::JsonValue* ledgerConfig = nullptr;
+    const ca::json::JsonValue* sections     = nullptr;
     // 顶层未知字段忽略（加法演进，§4.2），但重复键一律拒载——未知键重复也要抓。
     std::set<std::string>      seenIgnoredKeys;
     for (const auto& [key, value] : root.as_object()) {
@@ -768,6 +769,10 @@ ca::Result<StoreManifest, ProjectStoreError> parseStoreManifestText(const Utf8St
         else if (key.equals(refOf("engine"))) {
             slot  = &engine;
             known = "engine";
+        }
+        else if (key.equals(refOf("ledger_config"))) {
+            slot  = &ledgerConfig;
+            known = "ledger_config";
         }
         else if (key.equals(refOf("sections"))) {
             slot  = &sections;
@@ -821,6 +826,52 @@ ca::Result<StoreManifest, ProjectStoreError> parseStoreManifestText(const Utf8St
     StoreManifest manifest;
     if (engineValue.unwrap() != nullptr) {
         manifest.engine = copyOf(engineValue.unwrap()->as_string());
+    }
+
+    //-- ledger_config（顶层加法演进；结构内部宽松——未知键忽略，值类型违约拒载）
+    if (ledgerConfig != nullptr) {
+        if (!ledgerConfig->is_object()) {
+            return ca::Err(
+                makeError(ProjectStoreErrorKind::Schema, "ledger_config must be an object"));
+        }
+        LedgerEngineConfig config;
+        for (const auto& [key, value] : ledgerConfig->as_object()) {
+            auto badType = [&](const char* field, const char* expected) {
+                return ca::Err(makeError(ProjectStoreErrorKind::Schema,
+                                         std::string("ledger_config field '") + field +
+                                             "' must be " + expected));
+            };
+            if (key.equals(refOf("auto_compact"))) {
+                if (!value.is_bool()) return badType("auto_compact", "a boolean");
+                config.autoCompact = value.as_bool();
+            }
+            else if (key.equals(refOf("compact_max_transactions"))) {
+                if (!value.is_int() || value.as_int() < 1) {
+                    return badType("compact_max_transactions", "an integer >= 1");
+                }
+                config.compactMaxTransactions = static_cast<ca::u64>(value.as_int());
+            }
+            else if (key.equals(refOf("compact_max_ledger_bytes"))) {
+                if (!value.is_int() || value.as_int() < 1) {
+                    return badType("compact_max_ledger_bytes", "an integer >= 1");
+                }
+                config.compactMaxLedgerBytes = static_cast<ca::u64>(value.as_int());
+            }
+            else if (key.equals(refOf("compact_max_distance"))) {
+                if (!value.is_int() || value.as_int() < 1) {
+                    return badType("compact_max_distance", "an integer >= 1");
+                }
+                config.compactMaxDistance = static_cast<ca::u64>(value.as_int());
+            }
+            else if (key.equals(refOf("min_undo_depth"))) {
+                if (!value.is_int() || value.as_int() < 0) {
+                    return badType("min_undo_depth", "an integer >= 0");
+                }
+                config.minUndoDepth = static_cast<ca::u64>(value.as_int());
+            }
+            // 未知键忽略（结构宽松，设计文档 §5.3）。
+        }
+        manifest.ledgerConfig = config;
     }
 
     std::set<std::string> seenNames;
@@ -907,6 +958,29 @@ ca::Result<ca::str::Utf8String, ProjectStoreError> writeStoreManifestText(
         rootMembers.emplace_back(refOf("engine"),
                                  ca::json::JsonValue::make_string(manifest.engine.ref()));
     }
+    if (manifest.ledgerConfig.has_value()) {
+        ca::json::JsonValue::ObjectStorage configMembers;
+        configMembers.emplace_back(refOf("auto_compact"),
+                                   ca::json::JsonValue::make_bool(manifest.ledgerConfig->autoCompact));
+        configMembers.emplace_back(
+            refOf("compact_max_transactions"),
+            ca::json::JsonValue::make_int(
+                static_cast<ca::i64>(manifest.ledgerConfig->compactMaxTransactions)));
+        configMembers.emplace_back(
+            refOf("compact_max_ledger_bytes"),
+            ca::json::JsonValue::make_int(
+                static_cast<ca::i64>(manifest.ledgerConfig->compactMaxLedgerBytes)));
+        configMembers.emplace_back(
+            refOf("compact_max_distance"),
+            ca::json::JsonValue::make_int(
+                static_cast<ca::i64>(manifest.ledgerConfig->compactMaxDistance)));
+        configMembers.emplace_back(
+            refOf("min_undo_depth"),
+            ca::json::JsonValue::make_int(
+                static_cast<ca::i64>(manifest.ledgerConfig->minUndoDepth)));
+        rootMembers.emplace_back(refOf("ledger_config"),
+                                 ca::json::JsonValue::make_object_from(std::move(configMembers)));
+    }
 
     std::set<std::string> seenNames;
     auto                  sectionsJson = ca::json::JsonValue::make_array();
@@ -985,24 +1059,17 @@ unsigned long currentPid()
 #endif
 }
 
-/// 精确字节 SHA-256 → "sha256:" + 64 hex（§4.2 content_hash 口径；小写
-/// canonical，get_hash 之上防御性归一，保证清单形态稳定）。
-Utf8String sha256HexOf(const ca::u8* data, ca::usize size)
-{
-    ca::crypto::SHA256 digest;
-    if (size > 0) digest.add(data, static_cast<std::size_t>(size));
-    std::string hex = digest.get_hash();
-    for (char& c : hex) {
-        if (c >= 'A' && c <= 'F') c = static_cast<char>(c - 'A' + 'a');
-    }
-    return copyOf("sha256:" + hex);
-}
-
 /// hash 诊断前缀（§8.3：失配消息含期望/实际 hash 前缀，不全量铺开）。
 std::string hashPrefix(const Utf8StringRef& hash)
 {
     const std::string full = toStd(hash);
     return full.size() <= 7 + 16 ? full : full.substr(0, 7 + 16) + "...";
+}
+
+/// 本文件内部对公开 sectionContentHash 的短名引用（同口径）。
+Utf8String sha256HexOf(const ca::u8* data, ca::usize size)
+{
+    return sectionContentHash(data, size);
 }
 
 /// 提交换名（§8.1：撞 Windows 读者句柄重试 3 次 × 50ms 退避，耗尽 = Io）。
@@ -1083,6 +1150,17 @@ ca::Result<Utf8String, ProjectStoreError> readVerifiedSection(const std::string&
 }
 
 }   // namespace
+
+Utf8String sectionContentHash(const ca::u8* data, ca::usize size)
+{
+    ca::crypto::SHA256 digest;
+    if (size > 0) digest.add(data, static_cast<std::size_t>(size));
+    std::string hex = digest.get_hash();
+    for (char& c : hex) {
+        if (c >= 'A' && c <= 'F') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return copyOf("sha256:" + hex);
+}
 
 ca::Result<SectionWriteResult, ProjectStoreError> writeSectionBytes(
     const Utf8StringRef& bundleDir, const Utf8StringRef& name, SectionFormat format,
@@ -1921,10 +1999,6 @@ StorePruneReport pruneOrphanSections(const Utf8StringRef& bundleDir,
 
 //-- 单写者锁（C5：§7.1 全路径 + §7.2 PID fail-closed 过期判定）------------------
 
-namespace {
-
-/// RFC 3339 UTC 时间戳（daemon_protocol.cpp mjtraceUtcNow 同款口径）。仅诊断
-/// 用——§7.2 明言 v1 不做时间戳/启动时间启发式，created_at 只是锁的人读上下文。
 std::string rfc3339UtcNow()
 {
     std::time_t now = std::time(nullptr);
@@ -1938,6 +2012,8 @@ std::string rfc3339UtcNow()
     out << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
     return out.str();
 }
+
+namespace {
 
 /// owner 串的最小 JSON 转义（引号/反斜杠/控制字符）——owner 是调用方给定串，
 /// 不得能破坏锁文件的单行 JSON 形状。

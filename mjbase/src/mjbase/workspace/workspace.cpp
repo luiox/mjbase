@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <optional>
 #include <regex>
 #include <set>
@@ -30,6 +31,7 @@
 #include "mjbase/asm/remapper/member_remap_plan.hpp"
 #include "mjbase/asm/remapper/resource_remapper.hpp"
 #include "mjbase/jar/jar_reader.hpp"
+#include "mjbase/jar/jar_util.hpp"
 #include "mjbase/jasm/jvm_jasm_service.hpp"
 #include "mjbase/jasm/resource_jasm_service.hpp"
 #include "mjbase/keys.hpp"
@@ -37,6 +39,9 @@
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_helper.hpp"
 #include "mjbase/model/resource_model.hpp"
+#include "mjbase/project/edit_ledger.hpp"
+#include "mjbase/project/edit_ledger_store.hpp"
+#include "mjbase/project/project_store.hpp"
 #include "mjbase/spi/class_file_sanitize.hpp"
 #include "mjbase/spi/common_super_resolver.hpp"
 #include "mjbase/spi/job_context.hpp"
@@ -696,6 +701,16 @@ std::vector<ByteDiff> diffContainers(const model::ResourceContainer& before,
     return diffs;
 }
 
+/// @brief 编辑校验门的作用域：前后差异条目的 URI 集——操作受影响面。
+///        容器基线未编辑类不参与门禁（它们本来就是这个样子，编辑前就存在）。
+std::vector<std::string> changedUris(const std::vector<ByteDiff>& diffs)
+{
+    std::vector<std::string> uris;
+    uris.reserve(diffs.size());
+    for (const auto& diff : diffs) uris.push_back(diff.uri);
+    return uris;
+}
+
 bool hasClassExtension(const std::string& uri)
 {
     constexpr char kExtension[] = ".class";
@@ -1071,17 +1086,12 @@ const char* to_string(WorkspaceError errorCode) noexcept
 
 // ── WorkspaceBase 内部结构 ──────────────────────────────────────────────
 
-struct WorkspaceBase::Snapshot
-{
-    std::unique_ptr<model::ResourceContainer> container;
-    std::string                               label;
-};
-
 struct WorkspaceBase::SupportingResource
 {
     std::string                               id;
     std::string                               path;
     std::string                               fingerprint;
+    std::string                               role = "support";   ///< 角色标签
     std::unique_ptr<model::ResourceContainer> container;
 };
 
@@ -1152,9 +1162,26 @@ WorkspaceResult<void> WorkspaceBase::openJar(
         sourcePath_       = path;
         primaryClassUri_.clear();
         supporting_.clear();
-        undo_.clear();
-        redo_.clear();
-        savepoints_.clear();
+        // 会话史清零（旧语义：打开新主资源丢弃 undo/redo/savepoint）。绑定态
+        // 先落盘旧容器台账再重置链（新容器台账随下次 flush 落盘；旧容器已落盘
+        // 历史入待释放清单随之清理——台账作用域 = 容器）。
+        auto digest = ledgerBaseDigest();
+        if (digest.is_err()) return ca::core::Err(std::move(digest).unwrap_err());
+        if (ledger_.bound()) {
+            if (ledger_.hasPending()) {
+                auto flushed = ledger_.flush(project::rfc3339UtcNow());
+                if (flushed.is_err())
+                    return ca::core::Err(ledgerFailure("open JAR", std::move(flushed).unwrap_err()));
+            }
+            ledger_.resetSession(project::copyLedgerText(digest.unwrap()));
+        }
+        else {
+            auto fresh = project::EditLedgerStore::createInMemory(project::copyLedgerText(digest.unwrap()));
+            if (fresh.is_err())
+                return ca::core::Err(ledgerFailure("open JAR", std::move(fresh).unwrap_err()));
+            ledger_ = std::move(fresh).unwrap();
+        }
+        redoHint_.clear();
         revision_         = 0;
         nextSupportingId_ = 1;
         return ca::core::Ok();
@@ -1203,10 +1230,13 @@ WorkspaceResult<void> WorkspaceBase::openClass(const std::string& path)
         loaded.addResource(uri,
                            std::make_unique<model::ClassResource>(uri, importedClass->get()));
         std::vector<jasm::Diagnostic> diagnostics;
-        const WorkspaceErrorInfo      validation = validateCandidate(loaded, diagnostics);
+        // openClass 门禁只覆盖本类（作用域收窄；relaxed 语义下协变捷径
+        // 基线类照常打开）。
+        const WorkspaceErrorInfo      validation =
+            validateCandidate(loaded, diagnostics, jasm::ValidationMode::Relaxed, {uri});
         if (validation.is_err()) {
             return ca::core::Err(error(WorkspaceError::DataLoss, "open class",
-                                       "class did not pass strict validation"));
+                                       "class did not pass validation"));
         }
 
         auto original = cloneContainer(loaded);
@@ -1220,9 +1250,24 @@ WorkspaceResult<void> WorkspaceBase::openClass(const std::string& path)
         sourcePath_       = path;
         primaryClassUri_  = uri;
         supporting_.clear();
-        undo_.clear();
-        redo_.clear();
-        savepoints_.clear();
+        auto digest = ledgerBaseDigest();
+        if (digest.is_err()) return ca::core::Err(std::move(digest).unwrap_err());
+        if (ledger_.bound()) {
+            if (ledger_.hasPending()) {
+                auto flushed = ledger_.flush(project::rfc3339UtcNow());
+                if (flushed.is_err())
+                    return ca::core::Err(
+                        ledgerFailure("open class", std::move(flushed).unwrap_err()));
+            }
+            ledger_.resetSession(project::copyLedgerText(digest.unwrap()));
+        }
+        else {
+            auto fresh = project::EditLedgerStore::createInMemory(project::copyLedgerText(digest.unwrap()));
+            if (fresh.is_err())
+                return ca::core::Err(ledgerFailure("open class", std::move(fresh).unwrap_err()));
+            ledger_ = std::move(fresh).unwrap();
+        }
+        redoHint_.clear();
         revision_         = 0;
         nextSupportingId_ = 1;
         return ca::core::Ok();
@@ -1234,12 +1279,29 @@ WorkspaceResult<void> WorkspaceBase::openClass(const std::string& path)
 
 WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingJar(const std::string& path)
 {
+    return addSupportingRole(path, "support");
+}
+
+WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingContainer(
+    const std::string& path, model::ContainerRole role)
+{
+    // primary 由 project_open 绑定，不接受挂载登记。
+    if (role == model::ContainerRole::Primary)
+        return ca::core::Err(error(WorkspaceError::InvalidArgument, "add supporting container",
+                                   "primary role is bound by project open"));
+    return addSupportingRole(path, std::string{model::to_string(role)});
+}
+
+WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingRole(
+    const std::string& path, const std::string& roleLabel)
+{
     WorkspaceErrorInfo loaded = ensureLoaded("add supporting JAR");
     if (loaded.is_err()) return ca::core::Err(std::move(loaded));
     auto normalized = normalizedRegularFile(path, "add supporting JAR");
     if (normalized.is_err()) return ca::core::Err(std::move(normalized).unwrap_err());
     const auto normalPath = std::move(normalized).unwrap();
     for (const auto& support : supporting_) {
+        // 路径唯一约束跨角色生效：同一容器换角色挂载不追加第二条记录。
         if (support.path == normalPath) {
             return ca::core::Err(error(WorkspaceError::AlreadyExists, "add supporting JAR",
                                        "supporting path is already attached"));
@@ -1266,10 +1328,12 @@ WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingJar(const st
         info.path          = normalPath;
         info.fingerprint   = fingerprintText;
         info.resourceCount = container->size();
+        info.role          = roleLabel;
         container->visitResources([&](std::string_view, const model::IResource& resource) {
             if (resource.getType() == model::ResourceType::Class) ++info.classCount;
         });
-        supporting_.push_back({info.id, info.path, info.fingerprint, std::move(container)});
+        supporting_.push_back(
+            {info.id, info.path, info.fingerprint, roleLabel, std::move(container)});
         return ca::core::Ok(std::move(info));
     }
     catch (const std::exception& exception) {
@@ -1292,11 +1356,13 @@ WorkspaceResult<SupportingResourceInfo> WorkspaceBase::removeSupportingJar(const
     if (found == supporting_.end())
         return ca::core::Err(error(WorkspaceError::NotFound, "remove supporting JAR", id));
 
+    // 一容器一记录：摘除即清理该容器的全部角色注册，无残留半边。
     SupportingResourceInfo info;
     info.id            = found->id;
     info.path          = found->path;
     info.fingerprint   = found->fingerprint;
     info.resourceCount = found->container->size();
+    info.role          = found->role;
     found->container->visitResources([&](std::string_view, const model::IResource& resource) {
         if (resource.getType() == model::ResourceType::Class) ++info.classCount;
     });
@@ -2668,10 +2734,15 @@ MutationResult WorkspaceBase::validateJasm(const std::string&      uri,
     WorkspaceErrorInfo status = ensureLoaded("validate JASM");
     if (status.is_err()) return stateFailure(std::move(status));
     if (!accepts(request)) return revisionConflict();
+    // 选择器与结构化补丁同口径：裸内部名按容器字节内容解析到规范 URI。
+    auto resolvedUri = resolveClassUri(*working_, uri);
+    if (resolvedUri.is_err()) return stateFailure(std::move(resolvedUri).unwrap_err());
     try {
         auto                 candidate = cloneWorking();
         ClassMutationService service(*candidate);
-        auto                 assembled = service.applyJasm(uri, sourceName, source);
+        auto                 assembled = service.applyJasm(std::move(resolvedUri).unwrap(),
+                                                           sourceName, source,
+                                                           request.validationMode);
 
         MutationResult result;
         result.revision    = revision_;
@@ -2698,8 +2769,7 @@ MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> c
                                      const MutationRequest&        request)
 {
     if (!accepts(request)) return revisionConflict();
-    auto before = cloneWorking();
-    auto diffs  = diffContainers(*before, *candidate);
+    auto diffs = diffContainers(*working_, *candidate);
 
     MutationResult result;
     result.status      = WorkspaceErrorInfo{};
@@ -2712,15 +2782,73 @@ MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> c
         return result;
     }
 
-    result.affectedClasses    = changedClassNames(*candidate, result.byteDiffs);
-    result.affectedReferences = collectImpacts(*candidate, result.affectedClasses);
-    undo_.push_back({std::move(before), request.label});
-    redo_.clear();
-    working_ = std::move(candidate);
-    ++revision_;
-    result.revision  = revision_;
-    result.committed = true;
-    return result;
+    //-- 台账事务装配（RFC §6.2：uri 字节级 entries，before/after digest 链）----
+    std::set<std::string> uris;
+    working_->visitResources(
+        [&](std::string_view uri, const model::IResource&) { uris.insert(std::string(uri)); });
+    candidate->visitResources(
+        [&](std::string_view uri, const model::IResource&) { uris.insert(std::string(uri)); });
+
+    try {
+        project::LedgerAppendInput input;
+        input.label      = request.label;
+        input.producedBy = "mjbase-workspace/1";
+        input.createdAt  = project::rfc3339UtcNow();
+        const ca::u64 txnId = ledger_.nextTxnId();
+        ca::u32       seq   = 0;
+        for (const auto& uri : uris) {
+            const model::IResource* beforeResource = working_->getResource(uri);
+            const model::IResource* afterResource  = candidate->getResource(uri);
+            std::vector<ca::u8>     beforeBytes;
+            std::vector<ca::u8>     afterBytes;
+            if (beforeResource != nullptr) {
+                auto bytes = bytesOf(*beforeResource);
+                if (bytes.is_err())
+                    return stateFailure(std::move(bytes).unwrap_err());
+                beforeBytes = std::move(bytes).unwrap();
+            }
+            if (afterResource != nullptr) {
+                auto bytes = bytesOf(*afterResource);
+                if (bytes.is_err()) return stateFailure(std::move(bytes).unwrap_err());
+                afterBytes = std::move(bytes).unwrap();
+            }
+            if (beforeBytes == afterBytes) continue;
+
+            project::LedgerEntry entry;
+            entry.uri = project::copyLedgerText(uri);
+            if (afterResource == nullptr) {
+                entry.op     = project::LedgerEntryOp::Remove;
+                entry.before = project::ledgerDigestOfBytes(beforeBytes.data(),
+                                                            beforeBytes.size());
+            }
+            else {
+                entry.after = project::ledgerDigestOfBytes(afterBytes.data(), afterBytes.size());
+                entry.op    = beforeResource == nullptr ? project::LedgerEntryOp::Add
+                                                        : project::LedgerEntryOp::Replace;
+                if (beforeResource != nullptr) {
+                    entry.before = project::ledgerDigestOfBytes(beforeBytes.data(),
+                                                                beforeBytes.size());
+                }
+                entry.payloadRef = project::overlaySectionName(txnId, seq++);
+                input.payloads.push_back({entry.payloadRef.clone(), afterBytes});
+            }
+            input.entries.push_back(std::move(entry));
+        }
+        auto appended = ledger_.append(input);
+        if (appended.is_err()) return stateFailure(ledgerFailure("commit", std::move(appended).unwrap_err()));
+
+        result.affectedClasses    = changedClassNames(*candidate, result.byteDiffs);
+        result.affectedReferences = collectImpacts(*candidate, result.affectedClasses);
+        redoHint_.clear();
+        working_ = std::move(candidate);
+        ++revision_;
+        result.revision  = revision_;
+        result.committed = true;
+        return result;
+    }
+    catch (const std::exception& exception) {
+        return stateFailure(error(WorkspaceError::Internal, "commit", exception.what()));
+    }
 }
 
 MutationResult WorkspaceBase::applyJasm(const std::string&      uri,
@@ -2732,10 +2860,15 @@ MutationResult WorkspaceBase::applyJasm(const std::string&      uri,
     WorkspaceErrorInfo status = ensureLoaded("apply JASM");
     if (status.is_err()) return stateFailure(std::move(status));
     if (!accepts(request)) return revisionConflict();
+    // 选择器与结构化补丁同口径：裸内部名按容器字节内容解析到规范 URI。
+    auto resolvedUri = resolveClassUri(*working_, uri);
+    if (resolvedUri.is_err()) return stateFailure(std::move(resolvedUri).unwrap_err());
     try {
         auto                 candidate = cloneWorking();
         ClassMutationService service(*candidate);
-        auto                 assembled = service.applyJasm(uri, sourceName, source);
+        auto                 assembled = service.applyJasm(std::move(resolvedUri).unwrap(),
+                                                           sourceName, source,
+                                                           request.validationMode);
         if (!assembled.isOk()) {
             MutationResult result;
             result.status = error(WorkspaceError::InvalidArgument, "apply JASM",
@@ -2777,7 +2910,9 @@ MutationResult WorkspaceBase::validateClassBytes(const std::string&         uri,
         MutationResult result;
         result.revision   = revision_;
         result.exportable = canExport();
-        result.status     = validateCandidate(*candidate, result.diagnostics);
+        // 门禁作用域 = 本次替换的类。
+        result.status     = validateCandidate(*candidate, result.diagnostics,
+                                              request.validationMode, {uri});
         if (result.status.is_err()) return result;
         result.byteDiffs          = diffContainers(*working_, *candidate);
         result.affectedClasses    = changedClassNames(*candidate, result.byteDiffs);
@@ -2813,7 +2948,8 @@ MutationResult WorkspaceBase::applyClassBytes(const std::string&         uri,
         candidate->replaceResource(uri,
                                    std::make_unique<model::ClassResource>(uri, classBytes));
         std::vector<jasm::Diagnostic> diagnostics;
-        status = validateCandidate(*candidate, diagnostics);
+        // 门禁作用域 = 本次替换的类。
+        status = validateCandidate(*candidate, diagnostics, request.validationMode, {uri});
         if (status.is_err()) {
             MutationResult result;
             result.status      = std::move(status);
@@ -2839,7 +2975,7 @@ MutationResult WorkspaceBase::validateClassMutation(const ClassMutation&   mutat
     try {
         auto                 candidate = cloneWorking();
         ClassMutationService service(*candidate);
-        auto                 outcome = service.apply(mutation);
+        auto                 outcome = service.apply(mutation, request.validationMode);
 
         MutationResult result;
         result.revision    = revision_;
@@ -2864,14 +3000,20 @@ MutationResult WorkspaceBase::validateClassMutation(const ClassMutation&   mutat
 MutationResult WorkspaceBase::applyClassMutation(const ClassMutation&   mutation,
                                                  const MutationRequest& request)
 {
-    if (request.dryRun) return validateClassMutation(mutation, request);
     WorkspaceErrorInfo status = ensureLoaded("apply class mutation");
     if (status.is_err()) return stateFailure(std::move(status));
+    //选择器契约对齐 replaceClassBytes：精确资源 URI 直接命中，内部名按字节
+    //内容解析到规范 URI。
+    auto resolvedUri = resolveClassUri(*working_, mutation.classUri);
+    if (resolvedUri.is_err()) return stateFailure(std::move(resolvedUri).unwrap_err());
+    ClassMutation resolvedMutation = mutation;
+    resolvedMutation.classUri = std::move(resolvedUri).unwrap();
+    if (request.dryRun) return validateClassMutation(resolvedMutation, request);
     if (!accepts(request)) return revisionConflict();
     try {
         auto                 candidate = cloneWorking();
         ClassMutationService service(*candidate);
-        auto                 outcome = service.apply(mutation);
+        auto                 outcome = service.apply(resolvedMutation, request.validationMode);
         if (outcome.status.is_err()) {
             MutationResult result;
             result.status      = std::move(outcome.status);
@@ -2926,7 +3068,8 @@ MutationResult WorkspaceBase::replaceClassBytes(const std::string&         uriOr
         candidate->replaceResource(
             uri, std::make_unique<model::ClassResource>(locationText(*current), bytes));
         std::vector<jasm::Diagnostic> diagnostics;
-        status = validateCandidate(*candidate, diagnostics);
+        // 门禁作用域 = 本次替换的类。
+        status = validateCandidate(*candidate, diagnostics, request.validationMode, {uri});
         if (status.is_err()) {
             MutationResult result = stateFailure(std::move(status));
             result.diagnostics    = std::move(diagnostics);
@@ -2986,38 +3129,116 @@ WorkspaceResult<std::vector<ModifiedClassInfo>> WorkspaceBase::modifiedClasses()
     }
 }
 
-WorkspaceErrorInfo WorkspaceBase::validateCandidate(
-    const model::ResourceContainer& candidate, std::vector<jasm::Diagnostic>& diagnostics) const
+/// @brief 候选容器 → 层次图即时重建（校验门用；resource_jasm_service 同款容
+///        错口径）：只读 Class 骨架，畸形/重复/环条目跳过。容器内类可解析走
+///        子类型判定；外部/JDK 类型不进图——relaxed 语义按不可解析处置。
+void buildValidationHierarchy(const model::ResourceContainer&   container,
+                              mjbase::hierarchy::ClassHierarchy& hierarchy, mjbase::KeyPool& pool)
 {
-    jasm::JvmJasmService validator;
-    WorkspaceErrorInfo   status;
-    candidate.visitResources([&](std::string_view uri, const model::IResource& resource) {
-        if (status.is_err()) return;
+    container.visitResources([&](std::string_view, const model::IResource& resource) {
         const auto* classResource =
             ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
         if (classResource == nullptr) return;
+        auto read = jbc::core::readClass(jbc::core::ByteView(classResource->get()));
+        if (read.is_err()) return;
+        auto        parsed = std::move(read).unwrap();
+        const auto& file   = *parsed.file;
+
+        mjbase::hierarchy::ClassSummary summary;
+        summary.self = mjbase::classKeyOf(pool, file.thisName());
+        const std::string_view superName = file.superName();
+        summary.super = superName.empty() ? mjbase::ClassKey{} : mjbase::classKeyOf(pool, superName);
+        for (const ca::u16 ifaceCp : file.interfaces) {
+            summary.interfaces.push_back(mjbase::classKeyOf(pool, file.className(ifaceCp)));
+        }
+        (void)hierarchy.addClass(summary);
+    });
+}
+
+WorkspaceErrorInfo WorkspaceBase::validateCandidate(const model::ResourceContainer&  candidate,
+                                                    std::vector<jasm::Diagnostic>&  diagnostics,
+                                                    jasm::ValidationMode            mode,
+                                                    const std::vector<std::string>& scopeUris) const
+{
+    // off：跳过门禁（直通零诊断）。
+    if (mode == jasm::ValidationMode::Off) return WorkspaceErrorInfo{};
+    jasm::JvmJasmService validator;
+    // 层次图按候选容器即时重建：relaxed 下容器内类走子类型判定，外部
+    // /JDK 类型不可解析不判非法。
+    mjbase::KeyPool                   pool;
+    mjbase::hierarchy::ClassHierarchy hierarchy{pool};
+    buildValidationHierarchy(candidate, hierarchy, pool);
+    jasm::JvmJasmContext  context;
+    context.hierarchy      = &hierarchy;
+    context.validationMode = mode;
+
+    // per-class 聚合缓冲：类 uri → 计数 + 截断明细，不再逐方法刷屏。
+    struct ClassAggregate
+    {
+        std::string                     internalName;
+        ca::usize                       errors   = 0;
+        ca::usize                       warnings = 0;
+        std::vector<ca::str::Utf16String> details;   ///< 截断明细（前 3 条）
+    };
+    std::map<std::string, ClassAggregate> aggregates;
+
+    WorkspaceErrorInfo status;
+    for (const auto& uri : scopeUris) {
+        const auto* classResource =
+            ca::core::tag_cast::dyn_cast<const model::ClassResource>(candidate.getResource(uri));
+        if (classResource == nullptr) continue;   // 作用域内已删除条目（修复移除等）
         // spi sanitize gate：引用语义损坏的 class 在候选入口前置拒绝（协作面，
         // workspace × sanitize gate 契约落点）。
         const auto issues = spi::sanitizeClassFile(classResource->get());
         if (!issues.empty()) {
             for (const auto& issue : issues) {
                 diagnostics.push_back({jasm::DiagnosticSeverity::Error,
-                                       jasm::DiagnosticStage::Validate,
+                                       jasm::DiagnosticStage::EditGate,
                                        utf16("sanitize: " + issue.message.to_std_string()),
                                        std::nullopt});
             }
-            status = error(WorkspaceError::InvalidArgument, "validate workspace candidate",
-                           "class failed sanitize gate: " + std::string(uri));
-            return;
+            return error(WorkspaceError::InvalidArgument, "validate workspace candidate",
+                         "class failed sanitize gate: " + uri);
         }
-        auto validated = validator.validate(classResource->get());
-        diagnostics.insert(diagnostics.end(),
-                           std::make_move_iterator(validated.diagnostics.begin()),
-                           std::make_move_iterator(validated.diagnostics.end()));
-        if (!validated.isOk())
+        auto validated = validator.validate(classResource->get(), context);
+        if (validated.diagnostics.empty()) continue;
+        auto& aggregate = aggregates[uri];
+        aggregate.internalName = internalNameOfBytes(classResource->get());
+        for (const auto& diagnostic : validated.diagnostics) {
+            if (diagnostic.severity == jasm::DiagnosticSeverity::Error) ++aggregate.errors;
+            else
+                ++aggregate.warnings;
+            if (aggregate.details.size() < 3) aggregate.details.push_back(diagnostic.message.clone());
+        }
+    }
+    for (auto& entry : aggregates) {
+        auto&       aggregate = entry.second;
+        const bool  failing   = aggregate.errors > 0;
+        const auto& label =
+            aggregate.internalName.empty() ? entry.first : aggregate.internalName;
+        std::string message = "class " + label + ": " + std::to_string(aggregate.errors) +
+                              " error(s), " + std::to_string(aggregate.warnings) + " warning(s)";
+        if (!aggregate.details.empty()) {
+            message +=
+                "\n  " + aggregate.details[0].to_utf8_string().to_std_string();
+            if (aggregate.details.size() > 1)
+                message +=
+                    "\n  " + aggregate.details[1].to_utf8_string().to_std_string();
+            if (aggregate.details.size() > 2)
+                message +=
+                    "\n  " + aggregate.details[2].to_utf8_string().to_std_string();
+            const ca::usize total = aggregate.errors + aggregate.warnings;
+            if (total > aggregate.details.size())
+                message += "\n  ... and " + std::to_string(total - aggregate.details.size()) +
+                           " more";
+        }
+        diagnostics.push_back({failing ? jasm::DiagnosticSeverity::Error
+                                       : jasm::DiagnosticSeverity::Warning,
+                               jasm::DiagnosticStage::EditGate, utf16(message), std::nullopt});
+        if (failing && status.is_ok())
             status = error(WorkspaceError::InvalidArgument, "validate workspace candidate",
-                           "class did not pass validation: " + std::string(uri));
-    });
+                           "class did not pass validation: " + entry.first);
+    }
     return status;
 }
 
@@ -3248,9 +3469,13 @@ ImpactAnalysis WorkspaceBase::analyzeRemap(const asm_remapper::MemberRemapPlan& 
                                       asm_remapper::to_string(std::move(remapped).unwrap_err()));
             return result;
         }
-        result.status = validateCandidate(*candidate, result.diagnostics);
+        // 门禁作用域 = remap 改动的类；diff 只算一次，scope 与报告共用。
+        const auto byteDiffs = diffContainers(*working_, *candidate);
+        result.status =
+            validateCandidate(*candidate, result.diagnostics, jasm::ValidationMode::Relaxed,
+                              changedUris(byteDiffs));
         if (result.status.is_err()) return result;
-        result.byteDiffs         = diffContainers(*working_, *candidate);
+        result.byteDiffs         = std::move(byteDiffs);
         const auto beforeClasses = changedClassNames(*working_, result.byteDiffs);
         const auto afterClasses  = changedClassNames(*candidate, result.byteDiffs);
         result.beforeReferences  = collectImpacts(*working_, beforeClasses);
@@ -3296,7 +3521,10 @@ MutationResult WorkspaceBase::applyRemap(const asm_remapper::MemberRemapPlan& pl
                                           asm_remapper::to_string(std::move(remapped).unwrap_err())));
         }
         std::vector<jasm::Diagnostic> diagnostics;
-        auto status = validateCandidate(*candidate, diagnostics);
+        // 门禁作用域 = remap 改动的类。
+        const auto byteDiffs = diffContainers(*working_, *candidate);
+        auto status = validateCandidate(*candidate, diagnostics, request.validationMode,
+                                        changedUris(byteDiffs));
         if (status.is_err()) {
             MutationResult result;
             result.status      = std::move(status);
@@ -3326,9 +3554,13 @@ MutationResult WorkspaceBase::validatePipeline(const PipelineRequest& pipeline,
         MutationResult result;
         result.revision   = revision_;
         result.exportable = canExport();
-        result.status     = validateCandidate(*candidate, result.diagnostics);
+        // 门禁作用域 = pipeline 改动的类；diff 只算一次，scope 与报告共用。
+        const auto byteDiffs = diffContainers(*working_, *candidate);
+        result.status =
+            validateCandidate(*candidate, result.diagnostics, request.validationMode,
+                              changedUris(byteDiffs));
         if (result.status.is_err()) return result;
-        result.byteDiffs          = diffContainers(*working_, *candidate);
+        result.byteDiffs          = std::move(byteDiffs);
         result.affectedClasses    = changedClassNames(*candidate, result.byteDiffs);
         result.affectedReferences = collectImpacts(*candidate, result.affectedClasses);
         return result;
@@ -3351,7 +3583,10 @@ MutationResult WorkspaceBase::applyPipeline(const PipelineRequest& pipeline,
         if (status.is_err()) return stateFailure(std::move(status));
 
         std::vector<jasm::Diagnostic> diagnostics;
-        status = validateCandidate(*candidate, diagnostics);
+        // 门禁作用域 = pipeline 改动的类。
+        const auto byteDiffs = diffContainers(*working_, *candidate);
+        status = validateCandidate(*candidate, diagnostics, request.validationMode,
+                                   changedUris(byteDiffs));
         if (status.is_err()) {
             MutationResult result;
             result.status      = std::move(status);
@@ -3412,7 +3647,11 @@ WorkflowResult WorkspaceBase::runWorkflow(const WorkflowRequest& workflow,
         }
 
         std::vector<jasm::Diagnostic> diagnostics;
-        const auto validation = validateCandidate(*candidate, diagnostics);
+        // 门禁作用域 = workflow 改动的类。
+        const auto byteDiffs = diffContainers(*working_, *candidate);
+        const auto validation =
+            validateCandidate(*candidate, diagnostics, jasm::ValidationMode::Relaxed,
+                              changedUris(byteDiffs));
         if (validation.is_err()) {
             result.stages.push_back({"validation", validation});
             result.mutation.status      = validation;
@@ -3701,7 +3940,11 @@ WorkflowCandidateCommitResult WorkspaceBase::commitWorkflowCandidateJar(
         }
 
         std::vector<jasm::Diagnostic> diagnostics;
-        const WorkspaceErrorInfo      validation = validateCandidate(*candidate, diagnostics);
+        // 门禁作用域 = 候选 JAR 相对工作副本的改动面。
+        const auto byteDiffs = diffContainers(*working_, *candidate);
+        const WorkspaceErrorInfo validation =
+            validateCandidate(*candidate, diagnostics, jasm::ValidationMode::Relaxed,
+                              changedUris(byteDiffs));
         if (validation.is_err()) {
             result.mutation.status      = validation;
             result.mutation.revision    = revision_;
@@ -3822,9 +4065,14 @@ JarRepairResult WorkspaceBase::analyzeJarRepair(const JarRepairRequest& repair,
         if (!hasSelectedRepairIssues(result.issues)) return result;
         removeSelectedRepairIssues(*candidate, result.issues);
 
-        result.mutation.status = validateCandidate(*candidate, result.mutation.diagnostics);
+        // 门禁作用域 = 修复改动面：删除型修复的改动条目已不在候选中，
+        // 其余条目未动不参与门禁（基线类编辑前就存在）。
+        const auto byteDiffs              = diffContainers(*working_, *candidate);
+        result.mutation.status =
+            validateCandidate(*candidate, result.mutation.diagnostics,
+                              jasm::ValidationMode::Relaxed, changedUris(byteDiffs));
         if (result.mutation.status.is_err()) return result;
-        result.mutation.byteDiffs = diffContainers(*working_, *candidate);
+        result.mutation.byteDiffs = std::move(byteDiffs);
         result.mutation.affectedClasses =
             changedClassNames(*candidate, result.mutation.byteDiffs);
         result.mutation.affectedReferences =
@@ -3865,7 +4113,11 @@ JarRepairResult WorkspaceBase::applyJarRepair(const JarRepairRequest& repair,
         removeSelectedRepairIssues(*candidate, result.issues);
 
         std::vector<jasm::Diagnostic> diagnostics;
-        const WorkspaceErrorInfo      status = validateCandidate(*candidate, diagnostics);
+        // 门禁作用域 = 修复改动面：删除型修复的改动条目已不在候选中，
+        // 其余条目未动不参与门禁。
+        const auto byteDiffs                 = diffContainers(*working_, *candidate);
+        const WorkspaceErrorInfo      status = validateCandidate(
+            *candidate, diagnostics, request.validationMode, changedUris(byteDiffs));
         if (status.is_err()) {
             result.mutation.status      = status;
             result.mutation.revision    = revision_;
@@ -3901,7 +4153,9 @@ MutationResult WorkspaceBase::revertClass(const std::string& uri, const Mutation
                                    std::make_unique<model::ClassResource>(
                                        locationText(*original), original->get()));
         std::vector<jasm::Diagnostic> diagnostics;
-        status = validateCandidate(*candidate, diagnostics);
+        // 门禁作用域 = 本次还原的类——undo/revert 自救路径不再被容器
+        // 基线类的既存形态卡死。
+        status = validateCandidate(*candidate, diagnostics, request.validationMode, {uri});
         if (status.is_err()) {
             MutationResult result = stateFailure(std::move(status));
             result.diagnostics    = std::move(diagnostics);
@@ -3932,14 +4186,13 @@ WorkspaceResult<void> WorkspaceBase::createSavepoint(const std::string& name)
     if (name.empty())
         return ca::core::Err(
             error(WorkspaceError::InvalidArgument, "create savepoint", "name is empty"));
-    try {
-        savepoints_[name] = cloneWorking();
-        return ca::core::Ok();
-    }
-    catch (const std::exception& exception) {
-        return ca::core::Err(
-            error(WorkspaceError::Internal, "create savepoint", exception.what()));
-    }
+    // 台账换底：savepoint = 书签（零字节命名指针，§4）。savepoint 时机查自动
+    // 压缩阈值（尽力而为：失败不影响 savepoint 本身）。
+    auto bookmarked = ledger_.setBookmark(name, project::rfc3339UtcNow());
+    if (bookmarked.is_err())
+        return ca::core::Err(ledgerFailure("create savepoint", std::move(bookmarked).unwrap_err()));
+    autoCompactLedger();
+    return ca::core::Ok();
 }
 
 MutationResult WorkspaceBase::restoreSavepoint(const std::string&     name,
@@ -3948,13 +4201,16 @@ MutationResult WorkspaceBase::restoreSavepoint(const std::string&     name,
     WorkspaceErrorInfo status = ensureLoaded("restore savepoint");
     if (status.is_err()) return stateFailure(std::move(status));
     if (!accepts(request)) return revisionConflict();
-    auto it = savepoints_.find(name);
-    if (it == savepoints_.end())
+    const auto* bookmark = ledger_.bookmark(name);
+    if (bookmark == nullptr)
         return stateFailure(error(WorkspaceError::NotFound, "restore savepoint", name));
     try {
-        auto candidate = cloneContainer(*it->second);
-        if (candidate.is_err()) return stateFailure(std::move(candidate).unwrap_err());
-        return commit(std::move(candidate).unwrap(), {}, request);
+        // 台账换底：restore = 物化书签事务位状态再走一次普通提交（记一条反向
+        // 事务，undo 窗不受损；书签可位于头之前或之后——undo/redo 皆可越过）。
+        auto candidate = cloneWorking();
+        const auto restored = materializeState(candidate, bookmark->txn, "restore savepoint");
+        if (restored.is_err()) return stateFailure(restored);
+        return commit(std::move(candidate), {}, request);
     }
     catch (const std::exception& exception) {
         return stateFailure(
@@ -3967,16 +4223,21 @@ MutationResult WorkspaceBase::undo(const MutationRequest& request)
     WorkspaceErrorInfo status = ensureLoaded("undo");
     if (status.is_err()) return stateFailure(std::move(status));
     if (!accepts(request)) return revisionConflict();
-    if (undo_.empty())
+    if (!ledger_.canUndo())
         return stateFailure(
             error(WorkspaceError::FailedPrecondition, "undo", "history is empty"));
     try {
         auto before = cloneWorking();
-        auto target = std::move(undo_.back());
-        undo_.pop_back();
-        auto diffs = diffContainers(*before, *target.container);
-        redo_.push_back({std::move(before), target.label});
-        working_ = std::move(target.container);
+        const ca::u64       head    = ledger_.headTxn();
+        const auto*         txn     = ledger_.transaction(head);
+        const WorkspaceErrorInfo applied =
+            inverseApplyLedgerTransaction(*before, *txn, "undo");
+        if (applied.is_err()) return stateFailure(applied);
+        auto moved = ledger_.moveHead(txn->parent);
+        if (moved.is_err()) return stateFailure(ledgerFailure("undo", std::move(moved).unwrap_err()));
+        redoHint_.push_back(head);
+        auto diffs = diffContainers(*working_, *before);
+        working_ = std::move(before);
         ++revision_;
 
         MutationResult result;
@@ -3999,16 +4260,23 @@ MutationResult WorkspaceBase::redo(const MutationRequest& request)
     WorkspaceErrorInfo status = ensureLoaded("redo");
     if (status.is_err()) return stateFailure(std::move(status));
     if (!accepts(request)) return revisionConflict();
-    if (redo_.empty())
+    if (redoHint_.empty())
         return stateFailure(
             error(WorkspaceError::FailedPrecondition, "redo", "history is empty"));
     try {
+        const ca::u64 target = redoHint_.back();
+        const auto*   txn    = ledger_.transaction(target);
+        if (txn == nullptr || txn->parent != ledger_.headTxn())
+            return stateFailure(
+                error(WorkspaceError::Internal, "redo", "redo target is no longer reachable"));
         auto before = cloneWorking();
-        auto target = std::move(redo_.back());
-        redo_.pop_back();
-        auto diffs = diffContainers(*before, *target.container);
-        undo_.push_back({std::move(before), target.label});
-        working_ = std::move(target.container);
+        const auto  applied = applyLedgerTransaction(*before, *txn, "redo");
+        if (applied.is_err()) return stateFailure(applied);
+        auto moved = ledger_.moveHead(target);
+        if (moved.is_err()) return stateFailure(ledgerFailure("redo", std::move(moved).unwrap_err()));
+        redoHint_.pop_back();
+        auto diffs = diffContainers(*working_, *before);
+        working_ = std::move(before);
         ++revision_;
 
         MutationResult result;
@@ -4036,6 +4304,13 @@ WorkspaceResult<void> WorkspaceBase::exportJar(const std::string& outputPath) co
         return ca::core::Err(error(WorkspaceError::FailedPrecondition, "export JAR",
                                    "workspace artifact is not a JAR"));
     }
+    // close/export 前 flush 挂点（§3.2）：导出物离开内存前台账定稿。未绑定 =
+    // no-op；flush 失败 fail-closed（不产出一个后台无账的导出物）。
+    if (ledger_.bound() && ledger_.hasPending()) {
+        auto flushed = ledger_.flush(project::rfc3339UtcNow());
+        if (flushed.is_err())
+            return ca::core::Err(ledgerFailure("export JAR", std::move(flushed).unwrap_err()));
+    }
     const WorkspaceErrorInfo exported =
         exportContainerToJar(*working_, sourcePath_, outputPath, revision_);
     if (exported.is_err()) return ca::core::Err(std::move(exported));
@@ -4049,6 +4324,11 @@ WorkspaceResult<void> WorkspaceBase::exportClass(const std::string& outputPath) 
     if (artifactKind_ != ArtifactKind::Class || primaryClassUri_.empty()) {
         return ca::core::Err(error(WorkspaceError::FailedPrecondition, "export class",
                                    "workspace artifact is not a class"));
+    }
+    if (ledger_.bound() && ledger_.hasPending()) {
+        auto flushed = ledger_.flush(project::rfc3339UtcNow());
+        if (flushed.is_err())
+            return ca::core::Err(ledgerFailure("export class", std::move(flushed).unwrap_err()));
     }
     const WorkspaceErrorInfo exported =
         exportContainerToClass(*working_, primaryClassUri_, sourcePath_, outputPath, revision_);
@@ -4065,12 +4345,387 @@ std::vector<SupportingResourceInfo> WorkspaceBase::supportingResources() const
         info.path          = support.path;
         info.fingerprint   = support.fingerprint;
         info.resourceCount = support.container->size();
+        info.role          = support.role;
         support.container->visitResources([&](std::string_view, const model::IResource& resource) {
             if (resource.getType() == model::ResourceType::Class) ++info.classCount;
         });
         result.push_back(std::move(info));
     }
     return result;
+}
+
+// ── 台账换底：引擎接线与重放辅助 ──────────────────────────────────
+
+WorkspaceErrorInfo WorkspaceBase::ledgerFailure(const std::string& operation,
+                                                const project::ProjectStoreError& cause) const
+{
+    WorkspaceErrorInfo failure;
+    switch (cause.kind) {
+    case project::ProjectStoreErrorKind::Open: failure.code = WorkspaceError::NotFound; break;
+    case project::ProjectStoreErrorKind::Lock:
+        failure.code = WorkspaceError::PermissionDenied;
+        break;
+    case project::ProjectStoreErrorKind::Section:
+    case project::ProjectStoreErrorKind::Schema:
+        failure.code = WorkspaceError::DataLoss;
+        break;
+    case project::ProjectStoreErrorKind::Io: failure.code = WorkspaceError::Internal; break;
+    }
+    failure.message = operation + ": " + cause.message.to_std_string();
+    return failure;
+}
+
+WorkspaceResult<std::string> WorkspaceBase::ledgerBaseDigest() const
+{
+    if (original_ == nullptr) {
+        return ca::core::Err(
+            error(WorkspaceError::Internal, "ledger digest", "no container loaded"));
+    }
+    try {
+        std::vector<std::string> uris;
+        original_->visitResources(
+            [&](std::string_view uri, const model::IResource&) { uris.push_back(std::string(uri)); });
+        std::sort(uris.begin(), uris.end());
+        project::ContainerDigestBuilder builder;
+        for (const auto& uri : uris) {
+            const auto* resource = original_->getResource(uri);
+            if (resource == nullptr) continue;
+            auto bytes = bytesOf(*resource);
+            if (bytes.is_err()) return ca::core::Err(std::move(bytes).unwrap_err());
+            const auto& content = bytes.unwrap();
+            builder.add(uri, content.data(), content.size());
+        }
+        return ca::core::Ok(builder.finish().to_std_string());
+    }
+    catch (const std::exception& exception) {
+        return ca::core::Err(
+            error(WorkspaceError::Internal, "ledger digest", exception.what()));
+    }
+}
+
+std::unique_ptr<model::IResource> WorkspaceBase::resourceFromBytes(const std::string& uri,
+                                                                   std::vector<ca::u8> bytes)
+{
+    if (uri == std::string(mjbase::jar::JarUtil::kManifestFileName)) {
+        return std::make_unique<model::ManifestResource>(model::ManifestResource::fromBytes(bytes));
+    }
+    if (hasClassExtension(uri)) {
+        return std::make_unique<model::ClassResource>(uri, std::move(bytes));
+    }
+    return std::make_unique<model::UnknownResource>(uri, std::move(bytes));
+}
+
+WorkspaceResult<std::unique_ptr<model::ResourceContainer>> WorkspaceBase::replayBaseline() const
+{
+    if (!ledger_.hasBaselineSection()) return cloneContainer(*original_);
+    auto bytes = ledger_.baselineBytes();
+    if (bytes.is_err())
+        return ca::core::Err(ledgerFailure("replay baseline", std::move(bytes).unwrap_err()));
+    auto baseline = std::move(bytes).unwrap();
+    auto container = std::make_unique<model::ResourceContainer>();
+    WorkspaceErrorInfo failure;
+    auto scanned = project::forEachContainerEntry(
+        reinterpret_cast<const ca::u8*>(baseline.data()), baseline.size(),
+        [&](std::string_view uri, const ca::u8* payload, ca::usize payloadSize) {
+            container->addResource(uri, resourceFromBytes(
+                                            std::string(uri),
+                                            std::vector<ca::u8>(payload, payload + payloadSize)));
+            return true;
+        });
+    if (scanned.is_err()) {
+        failure = ledgerFailure("replay baseline", std::move(scanned).unwrap_err());
+        return ca::core::Err(std::move(failure));
+    }
+    return ca::core::Ok(std::move(container));
+}
+
+WorkspaceResult<std::vector<ca::u8>> WorkspaceBase::resolveBeforeBytes(
+    const project::LedgerTransaction& txn, const project::LedgerEntry& entry) const
+{
+    const std::string uri = entry.uri.to_std_string();
+    std::vector<ca::u8> bytes;
+    const auto          last = ledger_.lastTouchOf(uri, txn.parent);
+    if (last != 0) {
+        const auto* touch = ledger_.transaction(last);
+        for (const auto& prior : touch->entries) {
+            if (!prior.uri.ref().equals(entry.uri.ref())) continue;
+            auto payload = ledger_.payloadBytes(prior.payloadRef);
+            if (payload.is_err())
+                return ca::core::Err(ledgerFailure("resolve before bytes",
+                                                   std::move(payload).unwrap_err()));
+            bytes = std::move(payload).unwrap();
+            break;
+        }
+    }
+    else {
+        // 基线侧：压缩基线 section 或原始快照。
+        if (ledger_.hasBaselineSection()) {
+            auto baseline = ledger_.baselineBytes();
+            if (baseline.is_err())
+                return ca::core::Err(
+                    ledgerFailure("resolve before bytes", std::move(baseline).unwrap_err()));
+            auto baselineBytes = std::move(baseline).unwrap();
+            std::vector<ca::u8> found;
+            auto hit = project::findContainerEntry(
+                reinterpret_cast<const ca::u8*>(baselineBytes.data()), baselineBytes.size(), uri,
+                found);
+            if (hit.is_err())
+                return ca::core::Err(ledgerFailure("resolve before bytes",
+                                                   std::move(hit).unwrap_err()));
+            if (hit.unwrap()) bytes = std::move(found);
+        }
+        else {
+            const auto* resource = original_ != nullptr ? original_->getResource(uri) : nullptr;
+            if (resource != nullptr) {
+                auto content = bytesOf(*resource);
+                if (content.is_err()) return ca::core::Err(std::move(content).unwrap_err());
+                bytes = std::move(content).unwrap();
+            }
+        }
+    }
+    // digest 自检：before 侧字节必须与台账记录一致（载荷/基线损毁当场暴露）。
+    const auto digest =
+        project::ledgerDigestOfBytes(bytes.data(), bytes.size());
+    if (!digest.ref().equals(entry.before.ref())) {
+        return ca::core::Err(error(WorkspaceError::DataLoss, "resolve before bytes",
+                                   "digest mismatch for '" + uri + "': ledger says " +
+                                       entry.before.to_std_string() + ", resolved " +
+                                       digest.to_std_string()));
+    }
+    return ca::core::Ok(std::move(bytes));
+}
+
+WorkspaceErrorInfo WorkspaceBase::applyLedgerTransaction(
+    model::ResourceContainer& container, const project::LedgerTransaction& txn,
+    const std::string& operation) const
+{
+    for (const auto& entry : txn.entries) {
+        const std::string uri = entry.uri.to_std_string();
+        const bool        exists = container.hasResource(uri);
+        if (entry.op == project::LedgerEntryOp::Add && exists) {
+            return error(WorkspaceError::DataLoss, operation,
+                         "add entry but uri already exists: " + uri);
+        }
+        if (entry.op == project::LedgerEntryOp::Replace && !exists) {
+            return error(WorkspaceError::DataLoss, operation,
+                         "replace entry but uri is missing: " + uri);
+        }
+        if (entry.op == project::LedgerEntryOp::Remove) {
+            if (!exists)
+                return error(WorkspaceError::DataLoss, operation,
+                             "remove entry but uri is missing: " + uri);
+            auto& resources = container.getResources();
+            resources.erase(std::string_view(uri));
+            continue;
+        }
+        auto payload = ledger_.payloadBytes(entry.payloadRef);
+        if (payload.is_err()) return ledgerFailure(operation, std::move(payload).unwrap_err());
+        auto bytes = std::move(payload).unwrap();
+        const auto digest = project::ledgerDigestOfBytes(bytes.data(), bytes.size());
+        if (!digest.ref().equals(entry.after.ref())) {
+            return error(WorkspaceError::DataLoss, operation,
+                         "overlay digest mismatch for '" + uri + "': ledger says " +
+                             entry.after.to_std_string() + ", payload is " +
+                             digest.to_std_string());
+        }
+        container.replaceResource(uri, resourceFromBytes(uri, std::move(bytes)));
+    }
+    return WorkspaceErrorInfo{};
+}
+
+WorkspaceErrorInfo WorkspaceBase::inverseApplyLedgerTransaction(
+    model::ResourceContainer& container, const project::LedgerTransaction& txn,
+    const std::string& operation) const
+{
+    for (const auto& entry : txn.entries) {
+        const std::string uri    = entry.uri.to_std_string();
+        const bool        exists = container.hasResource(uri);
+        if (entry.op == project::LedgerEntryOp::Add) {
+            if (!exists)
+                return error(WorkspaceError::DataLoss, operation,
+                             "undo add but uri is missing: " + uri);
+            auto& resources = container.getResources();
+            resources.erase(std::string_view(uri));
+            continue;
+        }
+        if (entry.op == project::LedgerEntryOp::Remove && exists) {
+            return error(WorkspaceError::DataLoss, operation,
+                         "undo remove but uri already exists: " + uri);
+        }
+        if (entry.op == project::LedgerEntryOp::Replace && !exists) {
+            return error(WorkspaceError::DataLoss, operation,
+                         "undo replace but uri is missing: " + uri);
+        }
+        auto before = resolveBeforeBytes(txn, entry);
+        if (before.is_err()) return std::move(before).unwrap_err();
+        container.replaceResource(uri,
+                                  resourceFromBytes(uri, std::move(before).unwrap()));
+    }
+    return WorkspaceErrorInfo{};
+}
+
+WorkspaceErrorInfo WorkspaceBase::materializeState(
+    std::unique_ptr<model::ResourceContainer>& candidate, ca::u64 txn,
+    const std::string& operation) const
+{
+    const ca::u64 head = ledger_.headTxn();
+    if (txn == head) return WorkspaceErrorInfo{};
+    if (txn > head) {
+        for (const ca::u64 step : ledger_.chainTo(txn)) {
+            if (step <= head) continue;
+            const auto* row = ledger_.transaction(step);
+            const auto  applied = applyLedgerTransaction(*candidate, *row, operation);
+            if (applied.is_err()) return applied;
+        }
+        return WorkspaceErrorInfo{};
+    }
+    auto chain = ledger_.chainTo(head);
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        if (*it <= txn) continue;
+        const auto* row     = ledger_.transaction(*it);
+        const auto  applied = inverseApplyLedgerTransaction(*candidate, *row, operation);
+        if (applied.is_err()) return applied;
+    }
+    return WorkspaceErrorInfo{};
+}
+
+void WorkspaceBase::autoCompactLedger()
+{
+    if (!ledger_.bound() || !ledger_.shouldAutoCompact()) return;
+    // 自动压缩（尽力而为）：先落 pending（压缩前置），再按保留参数阈值推进；
+    // 任何失败留给下一次触发，不打断调用方主路径。
+    if (ledger_.hasPending()) {
+        auto flushed = ledger_.flush(project::rfc3339UtcNow());
+        if (flushed.is_err()) return;
+    }
+    const auto point = ledger_.retentionPoint(project::LedgerCompactRequest{}, true, nullptr);
+    if (point <= ledger_.baseTxn()) return;
+    try {
+        auto candidate = cloneWorking();
+        const auto materialized = materializeState(candidate, point, "ledger compaction");
+        if (materialized.is_err()) return;
+        std::vector<std::pair<ca::str::Utf8String, std::vector<ca::u8>>> entries;
+        std::vector<std::string>                                         uris;
+        candidate->visitResources(
+            [&](std::string_view uri, const model::IResource&) { uris.push_back(std::string(uri)); });
+        std::sort(uris.begin(), uris.end());
+        for (const auto& uri : uris) {
+            const auto* resource = candidate->getResource(uri);
+            if (resource == nullptr) continue;
+            auto bytes = bytesOf(*resource);
+            if (bytes.is_err()) return;
+            entries.emplace_back(project::copyLedgerText(uri), std::move(bytes).unwrap());
+        }
+        (void)ledger_.compact(project::LedgerCompactRequest{},
+                              project::serializeContainerEntries(entries),
+                              project::rfc3339UtcNow(), true);
+    }
+    catch (const std::exception&) {
+        return;
+    }
+}
+
+WorkspaceResult<void> WorkspaceBase::bindLedgerStore(const std::string& bundleDir)
+{
+    const WorkspaceErrorInfo loaded = ensureLoaded("bind ledger store");
+    if (loaded.is_err()) return ca::core::Err(std::move(loaded));
+    if (bundleDir.empty())
+        return ca::core::Err(
+            error(WorkspaceError::InvalidArgument, "bind ledger store", "path is empty"));
+    auto digest = ledgerBaseDigest();
+    if (digest.is_err()) return ca::core::Err(std::move(digest).unwrap_err());
+
+    // 采纳失败不破坏当前会话：先在旁路物化，成功才换底。
+    const std::string previousDigest = ledger_.baseContainerDigest().to_std_string();
+    auto opened = project::EditLedgerStore::openBundle(
+        project::copyLedgerText(bundleDir), project::copyLedgerText(digest.unwrap()));
+    if (opened.is_err())
+        return ca::core::Err(ledgerFailure("bind ledger store", std::move(opened).unwrap_err()));
+    ledger_ = std::move(opened).unwrap();
+    if (ledger_.headTxn() != ledger_.baseTxn()) {
+        // 候选处于基线态（刚打开的主资源）：从基点向头做前向重放——与
+        // materializeState（候选在头位，向书签位正/反向走）语义不同。
+        auto candidate = cloneWorking();
+        WorkspaceErrorInfo replayFailure;
+        for (const ca::u64 step : ledger_.chainTo(ledger_.headTxn())) {
+            const auto* row = ledger_.transaction(step);
+            if (row == nullptr) {
+                replayFailure = error(WorkspaceError::DataLoss, "bind ledger store",
+                                      "chain step " + std::to_string(step) +
+                                          " is not on the active chain");
+                break;
+            }
+            replayFailure = applyLedgerTransaction(*candidate, *row, "bind ledger store");
+            if (replayFailure.is_err()) break;
+        }
+        if (replayFailure.is_err()) {
+            // 回落纯内存引擎（持有锁已随 move 释放），保留旧基线 digest。
+            auto fallback = project::EditLedgerStore::createInMemory(
+                project::copyLedgerText(previousDigest));
+            if (fallback.is_err()) {
+                return ca::core::Err(ledgerFailure("bind ledger store",
+                                                   std::move(fallback).unwrap_err()));
+            }
+            ledger_ = std::move(fallback).unwrap();
+            return ca::core::Err(std::move(replayFailure));
+        }
+        working_ = std::move(candidate);
+    }
+    revision_ = 0;
+    redoHint_.clear();
+    return ca::core::Ok();
+}
+
+WorkspaceResult<void> WorkspaceBase::flushLedger()
+{
+    auto flushed = ledger_.flush(project::rfc3339UtcNow());
+    if (flushed.is_err())
+        return ca::core::Err(ledgerFailure("flush ledger", std::move(flushed).unwrap_err()));
+    autoCompactLedger();
+    return ca::core::Ok();
+}
+
+WorkspaceResult<project::LedgerCompactReport> WorkspaceBase::compactLedger(
+    const project::LedgerCompactRequest& request)
+{
+    const WorkspaceErrorInfo loaded = ensureLoaded("compact ledger");
+    if (loaded.is_err()) return ca::core::Err(std::move(loaded));
+    // 手动压缩前置无 pending（有则先 flush——数据安全序，见 §5.4）。
+    if (ledger_.hasPending()) {
+        auto flushed = ledger_.flush(project::rfc3339UtcNow());
+        if (flushed.is_err())
+            return ca::core::Err(ledgerFailure("compact ledger", std::move(flushed).unwrap_err()));
+    }
+    const auto point = ledger_.retentionPoint(request, false, nullptr);
+    if (point <= ledger_.baseTxn()) {
+        return ca::core::Err(error(WorkspaceError::FailedPrecondition, "compact ledger",
+                                   "retention point does not advance past anchor"));
+    }
+    try {
+        auto candidate = cloneWorking();
+        const auto materialized = materializeState(candidate, point, "compact ledger");
+        if (materialized.is_err()) return ca::core::Err(materialized);
+        std::vector<std::pair<ca::str::Utf8String, std::vector<ca::u8>>> entries;
+        std::vector<std::string>                                         uris;
+        candidate->visitResources(
+            [&](std::string_view uri, const model::IResource&) { uris.push_back(std::string(uri)); });
+        std::sort(uris.begin(), uris.end());
+        for (const auto& uri : uris) {
+            const auto* resource = candidate->getResource(uri);
+            if (resource == nullptr) continue;
+            auto bytes = bytesOf(*resource);
+            if (bytes.is_err()) return ca::core::Err(std::move(bytes).unwrap_err());
+            entries.emplace_back(project::copyLedgerText(uri), std::move(bytes).unwrap());
+        }
+        auto report = ledger_.compact(request, project::serializeContainerEntries(entries),
+                                      project::rfc3339UtcNow(), false);
+        if (report.is_err())
+            return ca::core::Err(ledgerFailure("compact ledger", std::move(report).unwrap_err()));
+        return ca::core::Ok(std::move(report).unwrap());
+    }
+    catch (const std::exception& exception) {
+        return ca::core::Err(error(WorkspaceError::Internal, "compact ledger", exception.what()));
+    }
 }
 
 }   // namespace mjbase::workspace

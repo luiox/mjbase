@@ -153,6 +153,7 @@ struct LocalVariableSpec final
 enum class ClassMutationKind : ca::u8
 {
     SetClassAccess,
+    ChangeClassAccess,   ///< 增量访问位编辑（set/clear 名单，未提及位保留）
     SetFieldAccess,
     SetMethodAccess,
     AddField,
@@ -181,12 +182,25 @@ enum class AnnotationTarget : ca::u8
 ///
 /// `classUri` 是工作区 class 资源 URI；涉及成员的操作使用 `member` 精确消除重载歧义。
 /// AddMethod 的非 abstract/native 方法必须提供能独立通过验证的 `initialInstructions`。
+///
+/// 访问位编辑的语义分界（版本兼容契约）：
+/// - `kind = SetClassAccess` + `access`（旧字段，保留）：整体重建 access 位——
+///   旧工程/旧调用点的既有语义照旧重放；access 里的 0x20000 是 Deprecated
+///   属性不是 flag，映射为属性追加（历史版本静默丢弃，禁止再丢）。
+/// - `kind = ChangeClassAccess` + `setFlags`/`clearFlags`（新 op，新语义）：
+///   增量编辑——set 置位、clear 清位、未提及位一律保留（ACC_SUPER 等
+///   不可表达 flag 不再丢失）；"deprecated" 名字映射为 Deprecated 属性增删。
+///   未知 flag 名报错并列出 class 目标合法 flag 全集。
 struct ClassMutation final
 {
     std::string                    classUri;
     ClassMutationKind              kind = ClassMutationKind::SetClassAccess;
     MemberSelector                 member;
     ca::i32                        access           = 0;
+    /// @brief ChangeClassAccess：置位 flag 名单（JVM 小写助记，如 "public"）。
+    std::vector<std::string>       setFlags;
+    /// @brief ChangeClassAccess：清位 flag 名单；两组都未提及的位保留原值。
+    std::vector<std::string>       clearFlags;
     ca::i32                        instructionIndex = -1;
     bool                           insertAfter      = false;
     ca::i32                        localIndex       = -1;
@@ -234,12 +248,20 @@ public:
     {}
 
     /// @brief 汇编完整 Jasm 并事务替换候选容器中的目标 class。
+    ///        validationMode 同时控制重建管线自带的字节码校验门：off 时重建
+    ///        后不再做 validate（汇编本身仍必须成功）。
     jasm::Result<jasm::JvmJasmClass> applyJasm(const std::string&      uri,
                                                ca::str::Utf16StringRef sourceName,
-                                               ca::str::Utf16StringRef source);
+                                               ca::str::Utf16StringRef source,
+                                               jasm::ValidationMode    validationMode
+                                                   = jasm::ValidationMode::Relaxed);
 
     /// @brief 应用一项结构化修改；失败时不会替换目标 ClassResource 的字节。
-    ClassMutationOutcome apply(const ClassMutation& mutation);
+    ///        validationMode 控制写回后的整类校验门（off 同样跳过），与
+    ///        jasm 重建路径同档位语义。
+    ClassMutationOutcome apply(const ClassMutation& mutation,
+                               jasm::ValidationMode validationMode
+                                   = jasm::ValidationMode::Relaxed);
 
 private:
     model::ResourceContainer* container_;

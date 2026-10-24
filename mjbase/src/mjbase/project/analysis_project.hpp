@@ -10,9 +10,9 @@
 
 namespace mjbase::project {
 
-/// @brief 分析工程文件 schema 当前版本（不识别的版本拒载）。
+/// @brief 分析工程文件 schema 基线版本（v1 契约，luiox/morpher#1092）。
 ///
-/// v1 契约（分析工程）：
+/// v1 顶层形状：
 /// ```
 /// {
 ///   "version": 1,
@@ -29,11 +29,30 @@ namespace mjbase::project {
 ///   ]
 /// }
 /// ```
+inline constexpr ca::u32 kAnalysisProjectFileVersionBase = 1;
+
+/// @brief 分析工程文件 schema 当前版本（v2；载入接受 1..2，写出按内容懒升级）。
+///
+/// v2 相对 v1 的增量（定稿依据 doc_ai/analysis-project-schema-v2.md）：
+/// - inputs 条目 role 枚举扩展 library|runtime（支撑挂载树的角色化解析栈）；
+/// - inputs 条目新增可选 parent 字段（引用同文件内另一 input 的 path，构成
+///   挂载树；空 = 顶层挂载）；
+/// - 容器 digest 口径裁决为 "sha256:" + 64 hex（schema 层不做内容校验，口径
+///   由调用方遵守；fnv1a64 遗留前缀兼容读，上层提示重算）。
+///
+/// 版本策略（懒升级）：写出 version 2 当且仅当实体携带 v2 特性（任一 role ∈
+/// {library, runtime} 或任一 parent 非空），否则恒写 1——未用 v2 特性的工程
+/// 对 #1096 冻结 v1 读者保持逐字节可读（零破坏边界最长化）。v1 读者遇 v2 文
+/// 件严格拒载（版本门原样拒绝，不提供读 v1 子集的降级；裁决理由见设计文档
+/// §1.2）。字段集合严格（未知字段/重复字段即整文件拒载），与 Shadow-Alias
+/// 同一纪律；version 1 文件中出现 v2 值（library/runtime role 或非空
+/// parent）按 Schema 拒载——版本标 1 就必须真是 v1。
 ///
 /// 实体口径：
 /// - **inputs**：被分析对象登记。`fingerprint` 必填（口径由调用方定，库不做
-///   内容校验）；`role` ∈ `primary|support`，primary=主分析对象（当前单主，
-///   v1 不强制个数，由上层裁决），support=辅助参考 jar。
+///   内容校验）；`role` 语义：primary=主分析对象、library=依赖库、
+///   runtime=运行时镜像（JDK）、support=遗留辅助参考（v1 遗留值，写出保真
+///   不静默归一）；`parent` 非空时必须引用已登记 input 的 path 且链条无环。
 /// - **shadow_sidecar**：对 shadow sidecar 文件的**引用**（path + 可选
 ///   fingerprint），sidecar 本体仍是显示别名的唯一事实源——工程文件绝不内嵌
 ///   别名表，避免双写分叉（#1072 产物引用而非复制）。
@@ -43,9 +62,8 @@ namespace mjbase::project {
 ///   加载时校验 ≥ max(id)+1）。
 ///
 /// 确定性：写出按 inputs 路径字典序、annotations 按 id 升序稳定排列；
-/// parse(write(parse(x))) 关键字段恒等。字段集合严格（未知字段/重复字段即
-/// 整文件拒载），与 Shadow-Alias 同一纪律。
-inline constexpr ca::u32 kAnalysisProjectFileVersion = 1;
+/// parse(write(parse(x))) 关键字段恒等（v1 与 v2 各自成立）。
+inline constexpr ca::u32 kAnalysisProjectFileVersion = 2;
 
 /// @brief 分析工程文件 kind 标记（与 shadow sidecar JSON 自描述区分）。
 inline constexpr const char* kAnalysisProjectKind = "mjt-analysis-project";
@@ -54,8 +72,18 @@ inline constexpr const char* kAnalysisProjectKind = "mjt-analysis-project";
 enum class AnalysisInputRole : ca::u8
 {
     Primary,  ///< 主分析对象
-    Support,  ///< 辅助参考（依赖 jar / 对比基准等）
+    Support,  ///< 辅助参考（v1 遗留值：遗留文件写出保真；新登记用 Library）
+    Library,  ///< 依赖库（v2；角色化解析序在 primary 之后）
+    Runtime,  ///< 运行时镜像即 JDK（v2；角色化解析序最后）
 };
+
+/// @brief role 串 → 枚举（解析共用；tag 集合见常量注释）。
+///
+/// 本体在 .cpp（roleTag/parseRole 对）；此处只暴露语义判定：v2 特有角色。
+inline bool isV2InputRole(AnalysisInputRole role) noexcept
+{
+    return role == AnalysisInputRole::Library || role == AnalysisInputRole::Runtime;
+}
 
 /// @brief 批注锚定目标的类别。
 enum class AnnotationTargetKind : ca::u8
@@ -70,8 +98,9 @@ enum class AnnotationTargetKind : ca::u8
 struct AnalysisInput
 {
     ca::str::Utf8String path;         ///< jar/工程路径（非空，工程内唯一）
-    ca::str::Utf8String fingerprint;  ///< 内容指纹（非空；口径调用方定）
+    ca::str::Utf8String fingerprint;  ///< 内容指纹（非空；v2 口径 "sha256:"+64hex）
     AnalysisInputRole   role = AnalysisInputRole::Primary;
+    ca::str::Utf8String parent;       ///< 挂载父容器的登记 path（v2；空 = 顶层挂载）
 };
 
 /// @brief 批注锚定目标。
@@ -116,7 +145,7 @@ struct AnalysisProjectError
     ca::str::Utf8String      message;
 };
 
-/// @brief 分析工程最小库：实体登记 + 严格 JSON v1 读写。
+/// @brief 分析工程最小库：实体登记 + 严格 JSON v1/v2 读写。
 ///
 /// 纯数据层，不感知 CLI/MCP/执行接口（P2 起）与工作区会话；值语义存储
 /// （人工规模实体量，无热路径，不引入 arena 视图生命周期）。返回指针/引用
@@ -131,10 +160,13 @@ public:
 
     //-- inputs ------------------------------------------------------------
 
-    /// @brief 登记输入；path 重复返回 false（不改动）。
+    /// @brief 登记输入；path 重复、parent 非空但未登记或构成环时返回 false（不改动）。
     bool addInput(AnalysisInput input);
 
     /// @brief 按 path 摘除输入；返回摘除条数（0 或 1）。
+    ///
+    /// 目标被其他条目的 parent 引用（v2 挂载树）时拒绝摘除返回 0——不允许
+    /// 在内存里构造悬垂挂载引用（解析期同款纪律）。
     ca::usize removeInput(const ca::str::Utf8StringRef& path);
 
     /// @brief 按 path 查输入；未登记返回 nullptr。
