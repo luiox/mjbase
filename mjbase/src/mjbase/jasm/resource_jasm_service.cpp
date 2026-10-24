@@ -139,6 +139,16 @@ Result<JvmJasmClass> ResourceJasmService::assemble(const std::string&      uri,
         if (expected.is_err()) return unreadableClassResult<JvmJasmClass>(expected.unwrap_err());
         const ca::str::Utf8String expectedName = std::move(expected).unwrap();
 
+        // 重写保持原类版本：Jasm 文本无版本指令，context 是唯一版本通道，
+        // 缺省 61 会把旧版本类静默抬高、改变产物最低 JVM 要求。原字节不可
+        // 解析时保留缺省——jasm 是坏类修复通道，不因读不出版本而拒绝。
+        auto original = jbc::core::readClass(jbc::core::ByteView(resource->get()));
+        if (original.is_ok()) {
+            auto originalClass        = std::move(original).unwrap();
+            context.classMajorVersion = static_cast<ca::i32>(originalClass.file->major);
+            context.classMinorVersion = static_cast<ca::i32>(originalClass.file->minor);
+        }
+
         // 当前容器的层次图（每次调用即时重建，无跨调用缓存）。
         mjbase::KeyPool               pool;
         mjbase::hierarchy::ClassHierarchy currentHierarchy = buildHierarchy(*container_, pool);
