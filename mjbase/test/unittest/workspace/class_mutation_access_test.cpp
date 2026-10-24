@@ -117,8 +117,9 @@ ClassMutation changeAccess(std::vector<std::string> setFlags,
 bool applyOk(WorkspaceBase& workspace, const ClassMutation& mutation, ca::u64 revision)
 {
     auto outcome = workspace.applyClassMutation(mutation, request(revision));
-    if (outcome.status.is_err()) return false;
-    return true;
+    if (outcome.status.is_err())
+        ADD_FAILURE() << "[diag] " << outcome.status.message;
+    return outcome.status.is_ok();
 }
 
 }   // namespace
