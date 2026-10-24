@@ -5,7 +5,9 @@
 #include <string_view>
 #include <vector>
 
+#include "jbc/core/attr_codec.hpp"
 #include "jbc/core/attribute.hpp"
+#include "jbc/core/bytes.hpp"
 #include "jbc/core/class_file.hpp"
 #include "jbc/type/signature.hpp"
 #include "libca/core/tag_cast.hpp"
@@ -17,10 +19,14 @@ namespace {
 using jbc::core::AnnotationsAttr;
 using jbc::core::AttrKind;
 using jbc::core::AttrSlot;
+using jbc::core::ByteSink;
+using jbc::core::ByteView;
 using jbc::core::ClassFile;
 using jbc::core::CodeAttr;
+using jbc::core::Cursor;
 using jbc::core::MemberInfo;
 using jbc::core::RawAttr;
+using jbc::core::RecordAttr;
 using jbc::core::TypeAnnotationsAttr;
 
 // ── JVM 访问标志位（JVMS 表；libjbc 未提供旗标常量，与 unused_member_remover
@@ -60,6 +66,7 @@ constexpr std::string_view kRvta                      = "RuntimeVisibleTypeAnnot
 constexpr std::string_view kRita                      = "RuntimeInvisibleTypeAnnotations";
 constexpr std::string_view kRvpa                      = "RuntimeVisibleParameterAnnotations";
 constexpr std::string_view kRipa                      = "RuntimeInvisibleParameterAnnotations";
+constexpr std::string_view kRecord                    = "Record";
 
 /// 槽名是否等于给定名（逐字节，零分配）。
 bool slotNameIs(const ClassFile& cf, const AttrSlot& slot, std::string_view name)
@@ -95,7 +102,7 @@ bool removeNamedSlots(ClassFile&                                   cf,
 }
 
 /// Utf8 字节视图的码点数（延续字节不计；与 ca::str::Utf8StringRef::length()
-/// 同口径）。
+/// 同口径——旧栈 desc.length() 判定按码点）。
 ca::usize codepointLength(std::string_view s)
 {
     ca::usize count = 0;
@@ -105,7 +112,7 @@ ca::usize codepointLength(std::string_view s)
     return count;
 }
 
-/// 注解描述符形状判定：空 / 码点
+/// 注解描述符形状判定（旧栈 isMalformedAnnotationDesc 逐条对齐）：空 / 码点
 /// 长度 ≤ 3 / 不以 'L' 开头 / 不以 ';' 结尾 / 含换行、NUL、空格。
 bool isMalformedAnnotationDesc(std::string_view desc)
 {
@@ -119,7 +126,7 @@ bool isMalformedAnnotationDesc(std::string_view desc)
     return false;
 }
 
-/// 黑名单描述符封闭集（原表原样，含重复条目
+/// 旧栈 SpecificAnnotationRemover 黑名单描述符封闭集（原表原样，含重复条目
 /// ——集合语义，重复不影响判定）。
 constexpr std::string_view kAnnotationBlacklist[] = {
     "Ltech/origincloud/OriginShieldMetadata;",
@@ -259,8 +266,8 @@ bool filterTypeAnnotationSlots(ClassFile&             cf,
 }
 
 /// 方法 Code 嵌套属性表里的 Runtime{Visible,Invisible}TypeAnnotations 槽内
-/// 过滤：code 目标形态（cast/instanceof/new/localvar 等）与成员级同面参与
-/// 过滤。改动落盘需父 Code 槽连带置脏
+/// 过滤：code 目标形态（cast/instanceof/new/localvar 等）在旧栈树模型里平铺
+/// 在方法向量上，与成员级同面参与过滤。改动落盘需父 Code 槽连带置脏
 /// （pass-contract §1：嵌套属性改动对 writeClass 不可见，除非 Code 槽本身
 /// 标脏重编码）。返回是否发生任何变化。
 bool filterCodeNestedTypeAnnotationSlots(ClassFile& cf, MemberInfo& m, const AnnoFilter filter)
@@ -309,6 +316,31 @@ bool removeCodeNestedDebugInfo(ClassFile& cf, MemberInfo& m)
     return changed;
 }
 
+/// Record 属性（typed RecordAttr，JVMS 4.7.30）组件嵌套注解槽清空：每个组件
+/// 的 Runtime{Visible,Invisible}Annotations 与 Runtime{Visible,Invisible}-
+/// TypeAnnotations 槽按与成员级同规则做槽内过滤（filter = All 时条目全删、
+/// 删空连槽摘除）；组件 Signature 与未知属性不触碰。typed 体经公开解码入口
+/// 读出（remapper 域 Record 手术同款：命中才 makeNew 置 New 走重编码，写回
+/// 侧组件嵌套置脏与 Code 嵌套同一闸门，未触碰组件嵌套槽照旧 copy-through）。
+/// 无 Record 槽/解码失败/类型不符保守保持原样。返回是否发生任何变化。
+bool clearRecordComponentAnnotationSlots(ClassFile& cf)
+{
+    AttrSlot* recordSlot = findSlot(cf, cf.attrs, kRecord);
+    if (recordSlot == nullptr) return false;
+    auto d = decodeRecordBody(cf, *recordSlot);
+    if (d.is_err()) return false;
+    auto  body = std::move(d).unwrap();
+    auto& rec  = static_cast<RecordAttr&>(*body);
+    bool  changed = false;
+    for (RecordAttr::Component& component : rec.components) {
+        changed |= filterAnnotationSlots(cf, component.attrs, AnnoFilter::All);
+        changed |= filterTypeAnnotationSlots(cf, component.attrs, AnnoFilter::All);
+    }
+    if (!changed) return false;
+    *recordSlot = AttrSlot::makeNew(recordSlot->nameCp, std::move(body));
+    return true;
+}
+
 /// SourceFile 槽载荷值（u2 CP 索引 → Utf8；载荷不足/索引无效为空视图）。
 std::string_view sourceFileValue(const ClassFile& cf, const AttrSlot& slot)
 {
@@ -318,14 +350,15 @@ std::string_view sourceFileValue(const ClassFile& cf, const AttrSlot& slot)
     return cf.utf8(idx);
 }
 
-/// SourceDebugExtension 槽载荷值（内联 Utf8 字节，非 CP 间接；JVMS 4.7.15）。
+/// SourceDebugExtension 槽载荷值（内联 Utf8 字节，非 CP 间接；旧栈
+/// sourceDebug 的序列化名即 JVMS 4.7.15 的 SourceDebugExtension）。
 std::string_view sourceDebugValue(const ClassFile& cf, const AttrSlot& slot)
 {
     const auto view = cf.source().spanOrEmpty(slot.data);
     return {reinterpret_cast<const char*>(view.data()), view.size()};
 }
 
-/// 非法 debug 信息判定：空合法；码点
+/// 非法 debug 信息判定（旧栈 isIllegalDebugInfo 逐条对齐）：空合法；码点
 /// 长度 > 100 / 不以 ".java" 结尾 / 基名空 / 基名首字节数字 / 基名含非 ASCII
 /// 字母数字字节 → 非法。
 bool isIllegalDebugInfo(std::string_view info)
@@ -349,8 +382,9 @@ bool isIllegalDebugInfo(std::string_view info)
     return false;
 }
 
-/// Signature 槽载荷是否为合法签名（类/方法用类/方法签名文法，字段用
-/// 类型签名文法）；空载荷合法。解码失败按合法处理（fail-closed 保守，不动输入）。
+/// Signature 槽载荷是否为合法签名（与旧栈 ASM SignatureReader 分道对齐：
+/// 类/方法用类/方法签名文法，字段用类型签名文法）；空载荷合法（旧栈空串
+/// 保持）。解码失败按合法处理（fail-closed 保守，不动输入）。
 bool signatureSlotIsValid(ClassFile& cf, AttrSlot& slot, jbc::type::SignatureForm form)
 {
     auto decoded = cf.decodeAttr(slot);
@@ -405,7 +439,7 @@ constexpr std::string_view kKnownAttrNames[] = {
     "ModulePackages",         "ModuleMainClass",
     "ModuleResolution",       "NestHost",
     "NestMembers",            "PermittedSubclasses",
-    "Record",                 "CharacterRangeTable",
+    kRecord,                  "CharacterRangeTable",
 };
 
 bool isKnownAttrName(std::string_view name)
@@ -429,8 +463,8 @@ bool removeUnknownAttrSlots(const ClassFile& cf, std::vector<AttrSlot>& attrs)
 
 /// MethodParameters 槽内非法参数访问位清除（JVMS 4.7.24：u2 count +
 /// {u2 name_index, u2 access_flags}*；libjbc 未建模，Raw 槽原位改写）。
-/// 布局双道：标准 u2 count 形态与遗留形态（u1 count——参数表计数字段按 u1
-/// 落盘，部分语料为该形态）都接，其余
+/// 布局双道：标准 u2 count 形态与旧栈 writer 的遗留形态（u1 count——旧栈树
+/// writer 参数表计数字段按 u1 落盘，批 B 语料与 golden 皆此形态）都接，其余
 /// 形状保守跳过。返回是否发生改写。
 bool clearIllegalParameterAccess(ClassFile& cf, std::vector<AttrSlot>& attrs)
 {
@@ -488,6 +522,165 @@ bool clearIllegalParameterAccess(ClassFile& cf, std::vector<AttrSlot>& attrs)
     return true;
 }
 
+// ── Runtime{Visible,Invisible}ParameterAnnotations 的 Raw 槽内过滤 ─────────
+//
+// libjbc 未建模该族（attr_codec 按名分派不含参数注解，解码为 Raw），槽内
+// 过滤没有 typed 读取面；路线与 MethodParameters 原位改写一致——Raw 载荷上
+// 做二进制级结构手术（remapper 域 AnnotationDefault 的原始注解字节改写同
+// 款），读写复用 libjbc 公开 Cursor/ByteSink，annotation 结构按 JVMS 4.7.20
+// 测量（u1 参数数 + {u2 注解数 + 条目}*，条目 = type_index + 键值对表，
+// element_value 按 tag 递归）。
+
+/// 原始 annotation 条目（Raw 载荷内）：类型描述符 CP + 字节区间。
+struct RawParamAnnoEntry
+{
+    ca::u32     typeCp = 0;
+    std::size_t begin  = 0;   ///< 条目首字节（type_index 起）
+    std::size_t end    = 0;   ///< 条目尾后
+};
+
+/// 原始 annotation 的键值对表段（u2 对数 + {u2 元素名 + element_value}*）；
+/// 形状非法返回 false。
+bool skipRawAnnoPairs(Cursor& cur);
+
+/// 原始 annotation 条目（type_index + 键值对表）的边界测量。
+bool skipRawAnnotation(Cursor& cur)
+{
+    if (cur.skip(2).is_err()) return false;   // type_index
+    return skipRawAnnoPairs(cur);
+}
+
+/// 原始 element_value 的边界测量（JVMS 4.7.16.1 按 tag 分派；未知 tag 视为
+/// 形状非法——调用方对整槽 fail-closed 保原样）。
+bool skipRawElemValue(Cursor& cur)
+{
+    const auto tag = cur.u8();
+    if (tag.is_err()) return false;
+    switch (static_cast<char>(tag.unwrap())) {
+    case 'B':
+    case 'C':
+    case 'D':
+    case 'F':
+    case 'I':
+    case 'J':
+    case 'S':
+    case 'Z':
+    case 's':
+    case 'c':
+        return cur.skip(2).is_ok();   // 常量 / 类信息 CP 索引
+    case 'e':
+        return cur.skip(4).is_ok();   // 枚举常量：type_name + const_name
+    case '@':
+        return skipRawAnnotation(cur);   // 嵌套注解
+    case '[': {
+        const auto n = cur.u16();
+        if (n.is_err()) return false;
+        for (ca::u32 i = 0; i < n.unwrap(); ++i) {
+            if (!skipRawElemValue(cur)) return false;
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+bool skipRawAnnoPairs(Cursor& cur)
+{
+    const auto pairs = cur.u16();
+    if (pairs.is_err()) return false;
+    for (ca::u32 i = 0; i < pairs.unwrap(); ++i) {
+        if (cur.skip(2).is_err()) return false;   // element_name_index
+        if (!skipRawElemValue(cur)) return false;
+    }
+    return true;
+}
+
+/// 参数注解两槽槽内过滤：命中谓词的条目摘除——部分摘除留槽（参数行数与行序
+/// 保持：num_parameters 与方法描述符参数数对应，不缩行）、全部条目摘空时连
+/// 槽摘除（旧栈 annotation 表清空后旧 writer 不再产出该属性，语义等价）。
+/// 布局不符/截尾/尾随字节一律整槽保守跳过（fail-closed，不产半截改写）。
+/// 返回是否发生任何变化。
+bool filterParameterAnnotationSlots(ClassFile&             cf,
+                                    std::vector<AttrSlot>& attrs,
+                                    const AnnoFilter       filter)
+{
+    bool changed = false;
+    for (std::size_t i = attrs.size(); i-- > 0;) {
+        AttrSlot& slot = attrs[i];
+        if (!slotNameIs(cf, slot, kRvpa) && !slotNameIs(cf, slot, kRipa)) continue;
+        auto decoded = cf.decodeAttr(slot);
+        if (decoded.is_err()) continue;
+        if (std::move(decoded).unwrap()->kind() != AttrKind::Raw) continue;
+        const std::vector<ca::u8>& bytes =
+            ca::core::tag_cast::cast<const RawAttr*>(slot.peek())->bytes();
+        if (bytes.empty()) continue;
+
+        // 形状解析（fail-closed：任一步不合规即整槽跳过）。
+        Cursor       cur{ByteView{bytes.data(), bytes.size()}};
+        const auto   numParams = cur.u8();
+        if (numParams.is_err()) continue;
+        std::vector<std::vector<RawParamAnnoEntry>> rows(numParams.unwrap());
+        bool                                        shapeOk = true;
+        for (std::vector<RawParamAnnoEntry>& row : rows) {
+            const auto n = cur.u16();
+            if (n.is_err()) {
+                shapeOk = false;
+                break;
+            }
+            for (ca::u32 e = 0; e < n.unwrap(); ++e) {
+                const std::size_t begin  = cur.pos();
+                const auto        typeCp = cur.u16();
+                if (typeCp.is_err() || !skipRawAnnoPairs(cur)) {
+                    shapeOk = false;
+                    break;
+                }
+                row.push_back({typeCp.unwrap(), begin, cur.pos()});
+            }
+            if (!shapeOk) break;
+        }
+        if (!shapeOk || !cur.eof()) continue;
+
+        // 谓词判定：无命中零触碰；全空摘槽；部分摘除重建载荷。
+        const auto hit = [&cf, filter](const RawParamAnnoEntry& e) {
+            return annoFilterMatches(filter, cf.utf8(e.typeCp));
+        };
+        bool anyHit  = false;
+        bool anyKept = false;
+        for (const std::vector<RawParamAnnoEntry>& row : rows) {
+            for (const RawParamAnnoEntry& e : row) {
+                if (hit(e)) {
+                    anyHit = true;
+                }
+                else {
+                    anyKept = true;
+                }
+            }
+        }
+        if (!anyHit) continue;
+        changed = true;
+        if (!anyKept) {
+            attrs.erase(attrs.begin() + static_cast<std::ptrdiff_t>(i));
+            continue;
+        }
+        ByteSink out;
+        out.u8(static_cast<ca::u8>(rows.size()));
+        for (const std::vector<RawParamAnnoEntry>& row : rows) {
+            ca::u32 kept = 0;
+            for (const RawParamAnnoEntry& e : row) {
+                if (!hit(e)) ++kept;
+            }
+            out.u16(static_cast<ca::u16>(kept));
+            for (const RawParamAnnoEntry& e : row) {
+                if (hit(e)) continue;
+                out.raw(ByteView{bytes.data() + e.begin, e.end - e.begin});
+            }
+        }
+        ca::core::tag_cast::cast<RawAttr*>(slot.mutate())->bytes() = std::move(out.bytes());
+    }
+    return changed;
+}
+
 /// 字段/方法访问位两面清位（unit() + backing 同步，pass-contract §1 双面
 /// 落盘义务——标志位在两面都有模型，任一面落单都会失真）。
 template <typename UnitMember>
@@ -516,11 +709,12 @@ mjbase::spi::PreservedAnalyses MetaInfoRemover::run(jbc::ir::ClassSession&      
     // 未知属性不触碰（旧面 classNode.attrs 清空在旧树恒为空操作——tree reader
     // 从不回填 attrs 向量，未知属性在读入即弃；新载体按头注契约保持原样，
     // 摘除归 UnknownAttributeCleaner）。record 组件的注解旧面同步清空——
-    // Record 组件嵌套属性面 libjbc 已立 typed（组件 AttrSlot 表可达），本
-    // pass 的组件注解清空面仍挂账（清空语义与测试随其接线批落地）。
+    // 组件嵌套注解/TypeAnnotation 槽与成员级同规则槽内过滤，父 Record 槽
+    // 连带置脏（组件 Signature 与未知属性不动，与旧面一致）。
     changed |= removeNamedSlots(cf, cf.attrs, {kSourceFile, kSourceDebug});
     changed |= filterAnnotationSlots(cf, cf.attrs, AnnoFilter::All);
     changed |= filterTypeAnnotationSlots(cf, cf.attrs, AnnoFilter::All);
+    changed |= clearRecordComponentAnnotationSlots(cf);
     for (MemberInfo& f : cf.fields) {
         changed |= filterAnnotationSlots(cf, f.attrs, AnnoFilter::All);
         changed |= filterTypeAnnotationSlots(cf, f.attrs, AnnoFilter::All);
@@ -590,7 +784,7 @@ mjbase::spi::PreservedAnalyses KotlinMetadataRemover::run(jbc::ir::ClassSession&
     ClassFile& cf = session.backing();
     bool       changed = false;
 
-    // 类级只查 visible 槽：@kotlin/Metadata。
+    // 类级只查 visible 槽（旧实现面）：@kotlin/Metadata。
     changed |= filterAnnotationSlots(cf, cf.attrs, AnnoFilter::Kotlin, {kRva});
     for (MemberInfo& m : cf.methods) {
         changed |= filterAnnotationSlots(cf, m.attrs, AnnoFilter::Jetbrains);
@@ -678,7 +872,7 @@ mjbase::spi::PreservedAnalyses IllegalTypeAnnotationRemover::run(jbc::ir::ClassS
     bool       changed = filterTypeAnnotationSlots(cf, cf.attrs, AnnoFilter::Malformed);
     for (MemberInfo& m : cf.methods) {
         changed |= filterTypeAnnotationSlots(cf, m.attrs, AnnoFilter::Malformed);
-        // code 目标形态（cast/instanceof/new/localvar）同面
+        // code 目标形态（cast/instanceof/new/localvar）旧栈在方法向量上同面
         // 参与——Code 嵌套槽内过滤（父 Code 槽连带置脏）。
         changed |= filterCodeNestedTypeAnnotationSlots(cf, m, AnnoFilter::Malformed);
     }
@@ -785,10 +979,10 @@ mjbase::spi::PreservedAnalyses SpecificAnnotationRemover::run(jbc::ir::ClassSess
     bool       changed = filterAnnotationSlots(cf, cf.attrs, AnnoFilter::Blacklisted);
     for (MemberInfo& m : cf.methods) {
         changed |= filterAnnotationSlots(cf, m.attrs, AnnoFilter::Blacklisted);
-        // 参数注解两槽（Runtime{Visible,Invisible}ParameterAnnotations）的槽内
-        // 过滤为已知缺口，但 libjbc 未建模该族（attr_codec 按名分派不含参数
-        // 注解，解码为 Raw），槽内过滤需注解表读取面——本批保守跳过，挂账
-        // libjbc 建模后续批次（当前语料无参数注解，golden 对拍不受影响）。
+        // 参数注解两槽槽内过滤：libjbc 未建模该族（Raw 槽），按 JVMS 4.7.20
+        // 布局二进制级条目摘除——部分摘除留槽、全空摘槽（旧面
+        // removeAnnotationsIf 同语义：条目清空后旧 writer 不再产出该属性）。
+        changed |= filterParameterAnnotationSlots(cf, m.attrs, AnnoFilter::Blacklisted);
     }
     for (MemberInfo& f : cf.fields) {
         changed |= filterAnnotationSlots(cf, f.attrs, AnnoFilter::Blacklisted);
