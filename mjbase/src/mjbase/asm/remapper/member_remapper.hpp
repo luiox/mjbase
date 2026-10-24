@@ -71,8 +71,10 @@ struct RemapPolicy
 /// @brief 改写失败码（libjbc 写回面的真失败；类字节解析失败不走此通道）。
 enum class RemapError : ca::u8
 {
-    PromoteFailed,   ///< 方法体升格失败（AttrNotDecoded / BadInstructions）
-    LowerFailed,     ///< 方法体写回失败（分支溢出 / relocation 未建模等）
+    PromoteFailed,     ///< 方法体升格失败（AttrNotDecoded / BadInstructions）
+    LowerFailed,       ///< 方法体写回失败（分支溢出 / relocation 未建模等）
+    WriteFailed,       ///< 重映射后的类字节写出失败
+    UnreadableClass,   ///< 计划命中的类字节不可解析（fail-closed，拒绝混合态产物）
 };
 
 /// @brief 错误码 → 短名（诊断输出用）。

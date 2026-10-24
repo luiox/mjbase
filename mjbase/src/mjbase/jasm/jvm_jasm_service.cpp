@@ -1,5 +1,6 @@
 #include "jvm_jasm_service.hpp"
 
+#include "classfile_utf8.hpp"
 #include "jhasm/jhasm.hpp"
 #include "jblw/version/java_version.hpp"
 #include "jbc/core/reader.hpp"
@@ -29,10 +30,13 @@ ca::str::Utf8String own(ca::str::Utf8StringRef value)
     return ca::str::Utf8String::from_data(value.data(), value.byte_length(), value.length());
 }
 
+// cp Utf8 是 modified UTF-8（增补字符按代理对编码），严格校验会拒绝合法
+// 类名；经 classfile_utf8.hpp 重组后再物化。
 ca::str::Utf8String ownBytes(std::string_view value)
 {
-    return ca::str::Utf8String::from_data(reinterpret_cast<const ca::u8*>(value.data()),
-                                          value.size());
+    const std::string converted = classFileUtf8ToString(value);
+    return ca::str::Utf8String::from_data(reinterpret_cast<const ca::u8*>(converted.data()),
+                                          converted.size());
 }
 
 std::string_view view(ca::str::Utf8StringRef value)

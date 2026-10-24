@@ -2040,4 +2040,106 @@ TEST(MjAsmRemapperTest, mappingRemapperRewritesDescriptorsAndSignatures)
     EXPECT_TRUE(remapper.mapSignature("").empty());
 }
 
+
+// ── 增补平面类名（modified UTF-8 ↔ UTF-8 形态分裂）回归 ─────────────────────
+//
+// cp Utf8 是 modified UTF-8（U+1033B = ED A0 80 ED BC BB），zip 条目名/计划
+// 键/资源文本是标准 UTF-8（F0 90 8C BB）。计划查表与 URI 比对必须跨形态
+// 命中，否则字节码面 miss 而资源面 hit，产出 Main-Class 指新名而类未改写
+// 的混合态 jar（issue #6 症状 2 的根因）。
+
+constexpr std::string_view kMutf8OmegaGoth =
+    "\xCE\xA9\xED\xA0\x80\xED\xBC\xBB";   // cp 形：Ω + U+1033B（代理对各 3 字节）
+constexpr std::string_view kUtf8OmegaGoth =
+    "\xCE\xA9\xF0\x90\x8C\xBB";           // 规范形：同码点标准 UTF-8
+
+TEST(MjAsmRemapperTest, containerRemapHitsSupplementaryPlaneAcrossEncodings)
+{
+    // 计划键是规范形（mjt 参数面/映射文件口径），cp 内是 modified UTF-8 形。
+    MemberRemapPlan plan;
+    plan.mapClass(std::string(kUtf8OmegaGoth), "Obf0");
+
+    mjbase::model::ResourceContainer container;
+    // zip 条目名按 jar 规范是标准 UTF-8 形。
+    addClassBytes(container, std::string(kUtf8OmegaGoth) + ".class",
+                  buildSimpleClass(std::string(kMutf8OmegaGoth)));
+    const Bytes manifestBytes = toBytes(
+        "Manifest-Version: 1.0\r\nMain-Class: \xCE\xA9\xF0\x90\x8C\xBB\r\n\r\n");
+    container.addResource(
+        mjbase::jar::JarUtil::kManifestFileName,
+        std::make_unique<mjbase::model::ManifestResource>(
+            mjbase::model::ManifestResource::fromBytes(manifestBytes)));
+
+    auto applied = mjbase::asm_remapper::applyResourceRemapPlan(container, plan, RemapPolicy::all());
+    ASSERT_FALSE(applied.is_err());
+    EXPECT_TRUE(applied.unwrap());
+
+    // 条目 URI 随改名迁移，类字节 this_class 改写为同一新名。
+    EXPECT_TRUE(container.getResource((std::string(kUtf8OmegaGoth) + ".class").c_str()) == nullptr);
+    auto* moved = classResourceOf(container.getResource("Obf0.class"));
+    ASSERT_TRUE(moved != nullptr);
+    auto cf = parseClass(moved->get());
+    ASSERT_TRUE(cf);
+    EXPECT_EQ("Obf0", classTextOf(*cf, cf->thisClass));
+
+    // 资源面与字节码面同批命中：MANIFEST 同步指向新名，无混合态。
+    auto* manifestResource = manifestResourceOf(
+        container.getResource(mjbase::jar::JarUtil::kManifestFileName));
+    ASSERT_TRUE(manifestResource != nullptr);
+    EXPECT_EQ("Obf0", manifestText(manifestResource->get(), "Main-Class"));
+}
+
+TEST(MjAsmRemapperTest, containerRemapFailsClosedWhenPlannedClassUnreadable)
+{
+    MemberRemapPlan plan;
+    plan.mapClass("pkg/OldName", "pkg/NewName");
+
+    mjbase::model::ResourceContainer container;
+    // URI 名在计划内的畸形类：字节读不出，资源面若改写将产出混合态，整批拒绝。
+    const Bytes garbage{'F', '0', '0', 'D', 'B', 'A', 'B', 'E'};
+    addClassBytes(container, "pkg/OldName.class", garbage);
+    const Bytes manifestBytes = toBytes("Manifest-Version: 1.0\r\nMain-Class: pkg.OldName\r\n\r\n");
+    container.addResource(
+        mjbase::jar::JarUtil::kManifestFileName,
+        std::make_unique<mjbase::model::ManifestResource>(
+            mjbase::model::ManifestResource::fromBytes(manifestBytes)));
+
+    auto applied = mjbase::asm_remapper::applyResourceRemapPlan(container, plan, RemapPolicy::all());
+    ASSERT_TRUE(applied.is_err());
+
+    // 容器零改动：类条目原样在原 URI，MANIFEST 原文保留。
+    auto* untouched = classResourceOf(container.getResource("pkg/OldName.class"));
+    ASSERT_TRUE(untouched != nullptr);
+    EXPECT_EQ(garbage, untouched->get());
+    auto* manifestResource = manifestResourceOf(
+        container.getResource(mjbase::jar::JarUtil::kManifestFileName));
+    ASSERT_TRUE(manifestResource != nullptr);
+    EXPECT_EQ("pkg.OldName", manifestText(manifestResource->get(), "Main-Class"));
+}
+
+TEST(MjAsmRemapperTest, containerRemapSkipsUnplannedUnreadableClasses)
+{
+    MemberRemapPlan plan;
+    plan.mapClass("pkg/OldName", "pkg/NewName");
+
+    mjbase::model::ResourceContainer container;
+    addClassBytes(container, "pkg/OldName.class", buildSimpleClass("pkg/OldName"));
+    // 计划外的畸形类与本次改名无关：跳过，不阻塞整批。
+    const Bytes garbage{'F', '0', '0', 'D', 'B', 'A', 'B', 'E'};
+    addClassBytes(container, "pkg/Broken.class", garbage);
+
+    auto applied = mjbase::asm_remapper::applyResourceRemapPlan(container, plan, RemapPolicy::all());
+    ASSERT_FALSE(applied.is_err());
+    EXPECT_TRUE(applied.unwrap());
+
+    EXPECT_TRUE(container.getResource("pkg/OldName.class") == nullptr);
+    auto* moved = classResourceOf(container.getResource("pkg/NewName.class"));
+    ASSERT_TRUE(moved != nullptr);
+    auto cf = parseClass(moved->get());
+    ASSERT_TRUE(cf);
+    EXPECT_EQ("pkg/NewName", classTextOf(*cf, cf->thisClass));
+    // 计划外畸形类原样保留。
+    EXPECT_TRUE(classResourceOf(container.getResource("pkg/Broken.class")) != nullptr);
+}
+
 }   // namespace

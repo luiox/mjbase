@@ -1,5 +1,6 @@
 #include "resource_jasm_service.hpp"
 
+#include "classfile_utf8.hpp"
 #include "jbc/core/reader.hpp"
 #include "libca/core/tag_cast.hpp"
 #include "mjbase/hierarchy/class_hierarchy.hpp"
@@ -47,8 +48,10 @@ readInternalName(const std::vector<ca::u8>& bytes)
     if (read.is_err()) return Err(std::move(read).unwrap_err());
     auto                parsed = std::move(read).unwrap();   // ReadResult 持 unique_ptr，只能移出
     const std::string_view name = parsed.file->thisName();
-    return Ok(ca::str::Utf8String::from_data(reinterpret_cast<const ca::u8*>(name.data()),
-                                             name.size()));
+    // cp Utf8 是 modified UTF-8，严格校验会拒绝增补平面类名；重组后物化。
+    const std::string converted = classFileUtf8ToString(name);
+    return Ok(ca::str::Utf8String::from_data(reinterpret_cast<const ca::u8*>(converted.data()),
+                                             converted.size()));
 }
 
 // 字节不可解析时的稳定 Error 诊断（落在 Resource 阶段）。
@@ -103,11 +106,14 @@ mjbase::hierarchy::ClassHierarchy buildHierarchy(const model::ResourceContainer&
         const auto& file   = *parsed.file;
 
         mjbase::hierarchy::ClassSummary summary;
-        summary.self = mjbase::classKeyOf(pool, file.thisName());
+        summary.self = mjbase::classKeyOf(pool, classFileUtf8ToString(file.thisName()));
         const std::string_view superName = file.superName();
-        summary.super = superName.empty() ? mjbase::ClassKey{} : mjbase::classKeyOf(pool, superName);
+        summary.super = superName.empty()
+                            ? mjbase::ClassKey{}
+                            : mjbase::classKeyOf(pool, classFileUtf8ToString(superName));
         for (const ca::u16 ifaceCp : file.interfaces) {
-            summary.interfaces.push_back(mjbase::classKeyOf(pool, file.className(ifaceCp)));
+            summary.interfaces.push_back(
+                mjbase::classKeyOf(pool, classFileUtf8ToString(file.className(ifaceCp))));
         }
         (void)hierarchy.addClass(summary);
     });

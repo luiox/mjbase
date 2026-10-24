@@ -32,6 +32,7 @@
 #include "mjbase/asm/remapper/resource_remapper.hpp"
 #include "mjbase/jar/jar_reader.hpp"
 #include "mjbase/jar/jar_util.hpp"
+#include "mjbase/jasm/classfile_utf8.hpp"
 #include "mjbase/jasm/jvm_jasm_service.hpp"
 #include "mjbase/jasm/resource_jasm_service.hpp"
 #include "mjbase/keys.hpp"
@@ -311,8 +312,10 @@ WorkspaceResult<ClassInfo> decodeClass(const std::string& uri, const model::Clas
 
     ClassInfo output;
     output.resourceUri  = uri;
-    output.internalName = std::string{cf.thisName()};
-    output.superName    = std::string{cf.superName()};
+    // cp modified UTF-8 → 规范形 UTF-8：内名/父类名与容器 URI、参数面同形，
+    // 增补平面类名（cp 内代理对形）不解码会与 UTF-8 形选择器比对 miss。
+    output.internalName = mjbase::jasm::classFileUtf8ToString(cf.thisName());
+    output.superName    = mjbase::jasm::classFileUtf8ToString(cf.superName());
     output.signature    = support::signatureText(cf, cf.attrs);
     output.access       = static_cast<ca::i32>(cf.access);
     // version = major | (minor << 16)。
@@ -771,12 +774,15 @@ bool hasClassExtension(const std::string& uri)
 // model/resource_container.hpp）：本文件不再持有副本。
 
 /// @brief class 字节 → 内部名（骨架解析；失败为空）。
+///
+/// 返回规范形 UTF-8：与容器 URI、workspace 索引与参数面同形（类索引用它
+/// 建键，resolveClassUri 用它比对选择器）。
 std::string internalNameOfBytes(const std::vector<ca::u8>& bytes)
 {
     auto read = jbc::core::readClass(jbc::core::ByteView(bytes));
     if (read.is_err()) return {};
     auto parsed = std::move(read).unwrap();
-    return std::string{parsed.file->thisName()};
+    return mjbase::jasm::classFileUtf8ToString(parsed.file->thisName());
 }
 
 std::vector<JarRepairIssue> scanJarRepairIssues(const model::ResourceContainer& container,
@@ -2173,7 +2179,7 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchStrings(
         if (session.is_err()) return;   // 搜索对畸形 class 宽容（照旧）
         auto                        held = std::move(session).unwrap();
         const jbc::core::ClassFile& cf   = held->backing();
-        const auto                  owner = std::string{cf.thisName()};
+        const auto                  owner = mjbase::jasm::classFileUtf8ToString(cf.thisName());
         if (!matchesSearchScope(owner, options)) return;
         //String 背书 utf8 去重：被 CONSTANT_String 引用的 utf8 条目由
         //constant_pool_string 行承载（string_literal 分面），不再以裸 utf8 行
@@ -2231,7 +2237,7 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchNumbers(
         if (session.is_err()) return;
         auto                  held = std::move(session).unwrap();
         jbc::core::ClassFile& cf   = held->backing();
-        const auto            owner = std::string{cf.thisName()};
+        const auto            owner = mjbase::jasm::classFileUtf8ToString(cf.thisName());
         if (!matchesSearchScope(owner, options)) return;
 
         if (options.opcode < 0) {
@@ -2355,7 +2361,7 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchInstructions(
         if (session.is_err()) return;
         auto                  held = std::move(session).unwrap();
         jbc::core::ClassFile& cf   = held->backing();
-        const auto            owner = std::string{cf.thisName()};
+        const auto            owner = mjbase::jasm::classFileUtf8ToString(cf.thisName());
         if (!matchesSearchScope(owner, options)) return;
         for (auto& visit : jbc::ir::collectCodeUnits(*held)) {
             if (visit.kind != jbc::ir::CodeVisit::Kind::Ok) continue;
@@ -3211,11 +3217,14 @@ void buildValidationHierarchy(const model::ResourceContainer&   container,
         const auto& file   = *parsed.file;
 
         mjbase::hierarchy::ClassSummary summary;
-        summary.self = mjbase::classKeyOf(pool, file.thisName());
+        summary.self = mjbase::classKeyOf(pool, mjbase::jasm::classFileUtf8ToString(file.thisName()));
         const std::string_view superName = file.superName();
-        summary.super = superName.empty() ? mjbase::ClassKey{} : mjbase::classKeyOf(pool, superName);
+        summary.super = superName.empty()
+                            ? mjbase::ClassKey{}
+                            : mjbase::classKeyOf(pool, mjbase::jasm::classFileUtf8ToString(superName));
         for (const ca::u16 ifaceCp : file.interfaces) {
-            summary.interfaces.push_back(mjbase::classKeyOf(pool, file.className(ifaceCp)));
+            summary.interfaces.push_back(mjbase::classKeyOf(
+                pool, mjbase::jasm::classFileUtf8ToString(file.className(ifaceCp))));
         }
         (void)hierarchy.addClass(summary);
     });
