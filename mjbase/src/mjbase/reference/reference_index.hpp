@@ -23,7 +23,7 @@
 /// - method/field owner 作为类型引用
 /// - 注解和签名中的元数据类型引用（类/字段/方法级 Runtime*Annotations + Signature；
 ///   方法级 AnnotationDefault 与 ParameterAnnotations；Record 组件内嵌注解。
-///   *TypeAnnotation 家族 libjbc 未建模且无用例承载，本批明确放弃，见迁移报告）
+///   *TypeAnnotation 家族 libjbc 未建模且无用例承载，本批明确放弃）
 /// - 结构 class 元数据（EnclosingMethod、nest host/members、permitted subclasses、
 ///   inner classes、record component 描述符）
 /// - class-string 反射使用、常量反射成员查找、method handle、lambda bootstrap 目标
@@ -156,7 +156,7 @@ struct FieldRefKey
 /// source* 为驻留视图；类级事实（class-header/结构元数据/字段声明）的
 /// sourceMethod/sourceDesc 为空视图且 insnIndex == -1。方法体内的
 /// insnIndex 是 jbc::ir::CodeDom::order() 程序序下标（CodeDom 无
-/// label/line 占位节点，与旧栈 InsnList 全表下标不同坐标系，见迁移报告）。
+/// label/line 占位节点，与 InsnList 全表下标不同坐标系）。
 struct ReferenceSite
 {
     std::string_view sourceClass;
@@ -169,7 +169,7 @@ struct ReferenceSite
 /// @brief Why a method reference was recorded.
 ///
 /// 枚举值即 .ridx 文件里的 kind 字节（kMethodKindMax = ReflectionExecution），
-/// 顺序与旧栈逐值一致，不得重排。
+/// 顺序与逐值一致，不得重排。
 enum class MethodReferenceKind
 {
     Direct,

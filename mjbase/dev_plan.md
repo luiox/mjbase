@@ -40,7 +40,8 @@
   maxStack ≥ 0xFFFD 预检不改写）、ConstantFolder（栈常量链 30 条指令，
   除零与 int/long MIN÷-1 红线保守不折）；余下 P1（GVN/CSE、去虚拟化、
   同步消除、StringBuilder 链化简）待批。
-- [ ] B 批 meta_info_remover 家族迁移（scope:class，在途）。
+- [x] B 批 meta_info_remover 家族迁移（scope:class）：类级 13 件已收口 +
+  两件挂账收口（record 组件注解清空 / 参数注解槽内过滤）。
 
 ## opt pass 余量批次裁决（W0 备料，mjt-deobf 消费面缺口对账）
 
@@ -156,7 +157,8 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   （isRecord/getRecordComponents/getName/getType/getGenericType 读新名、
   组件注解反射原样，JDK < 16 显式跳过）。mjbase_unittest 1275：1273/2
   （批前 1274：1272/2，+1 新用例）。MetaInfoRemover 对 record 组件嵌套
-  注解面的清空接线仍挂账（typed 面已可达，清空面待其接线批）。
+  注解面的清空接线已收口（挂账批：组件注解两族槽槽内清空 + 父 Record 槽
+  连带置脏）。
 - [x] Module 族消费面迁移（2026-10-16，libjbc design §32.12）：libjbc 将
   Module/ModulePackages/ModuleMainClass 立为 typed 属性（AttrKind
   18..20）并收编 CP 压缩封闭集后，mjbase 消费面同批接线不留半接线态——
@@ -239,10 +241,10 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     嵌套槽内过滤，父 Code 槽连带置脏）。tree 道 8 语料 golden 对拍（meta 语义
     矩阵口径：纯标志位触发类目允许与旧栈 golden 逐字节一致）+ JVM 真跑门
     （行为一致 + 反射按剥离后口径钉死）+ red-side 自检（13 件 run 一并钉死
-    no-op → 翻红 → 复原 → 复绿）收口。能力差距挂账（libjbc 未建模，保守
-    跳过，见家族头注）：record 组件注解面、SpecificAnnotationRemover 的
-    参数注解槽内过滤面。普查砍单：家族 method 级八件为 scope:method，归
-    C 方法级组；unused_member_remover 已由批 A 收口，不重迁。
+  no-op → 翻红 → 复原 → 复绿）收口。能力差距挂账（见家族头注）已收口：
+  record 组件注解清空 + SpecificAnnotationRemover 参数注解槽内过滤
+  （Raw 面 JVMS 4.7.20 布局条目摘除）。普查砍单：家族 method 级八件为
+  scope:method，归 C 方法级组；unused_member_remover 已由批 A 收口，不重迁。
   - [ ] pass 余量：类增删/重建类变换（挂账 libjbc A3/A4/A5：成员增删、
     整类构建）与结构化泛型/TypeAnnotation 读写 pass（挂账 libjbc B1/B2）
     暂不迁；方法级余量按 module-map 四批拆法继续。

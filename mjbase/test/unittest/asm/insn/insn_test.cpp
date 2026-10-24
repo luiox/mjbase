@@ -158,7 +158,7 @@ TEST(MjAsmInsnTest, PredicatesAgreeWithClassification)
     }
 }
 
-/// 旧 InsnUtil 分类断言的行为移植（含旧实现缺漏的 LDC_W/LDC2_W/GOTO_W 补齐）。
+/// InsnUtil 分类断言的行为（含缺漏的 LDC_W/LDC2_W/GOTO_W 补齐）。
 TEST(MjAsmInsnTest, ClassificationMatchesLegacyInsnUtilSemantics)
 {
     // isReturn：IRETURN..RETURN 全真；RET 不算 return（jsr/ret 遗留自成一族）。
@@ -205,7 +205,7 @@ TEST(MjAsmInsnTest, ClassificationMatchesLegacyInsnUtilSemantics)
     }
     EXPECT_TRUE(mjbase::asm_insn::isArray(Op::ARRAYLENGTH));
     // isConst：ACONST_NULL..DCONST_1 + BIPUSH/SIPUSH + ldc 族
-    //（旧实现漏 LDC_W/LDC2_W——被注释掉的行，本实现补齐）。
+    //（漏 LDC_W/LDC2_W——被注释掉的行，本实现补齐）。
     for (ca::u32 v = 0x01; v <= 0x14; ++v) {
         EXPECT_TRUE(mjbase::asm_insn::isConst(opAt(v))) << v;
     }
@@ -1017,7 +1017,7 @@ TEST(MjAsmInsnTest, FactoryOutputEncodesAndReimports)
 }
 
 /// 常量工厂的短形态选择（旧 InsnUtil::get*Insn 的行为断言移植；
-/// 超范围值旧实现回落 ldc，新实现返回 Err——需池索引由调用方 intern）。
+/// 超范围值回落 ldc，新实现返回 Err——需池索引由调用方 intern）。
 TEST(MjAsmInsnTest, ConstFactoriesPickShortestForm)
 {
     using namespace mjbase::asm_insn;

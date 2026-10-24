@@ -6,7 +6,7 @@
 /// first-wins/hasCode 分流），本文件钉扫描产物的字段级口径——
 /// internalName/superName/access/version/interfaceCount/fieldCount/methodCount
 /// 与 mbase WorkspaceBase::listClassSummaries 逐字段相等（version 编码同口径
-/// `(minor << 16) | major`，即旧栈 visit(version) 的 V1_8 形态）；期望值全部
+/// `(minor << 16) | major`）；期望值全部
 /// 由夹具规格独立给出，不经被测代码换算。降级读入（Recovered）照常出骨架、
 /// 截断逐字节全 sweep 拒收，也在此钉死。
 #include <gtest/gtest.h>
@@ -75,7 +75,7 @@ TEST(MjConsumerSummaryParityTest, FieldsMatchMbaseListClassSummariesContract)
     EXPECT_EQ(pool.str(s.self.id), "com/x/Sample");
     EXPECT_EQ(pool.str(s.super.id), "com/i/Base");
     EXPECT_EQ(s.access, 0x0031u);
-    EXPECT_EQ(s.version, 52u);   // V1_8 = (0 << 16) | 52，旧栈 visit(version) 同形
+    EXPECT_EQ(s.version, 52u);   // V1_8 = (0 << 16) | 52
     ASSERT_EQ(s.interfaces.size(), 2u);   // interfaceCount
     ASSERT_EQ(s.fields.size(), 2u);       // fieldCount
     ASSERT_EQ(s.methods.size(), 3u);      // methodCount

@@ -1,11 +1,11 @@
 // mjbase jasm 服务单测。
 //
-// 移植自 mbase/unittest/jasm/jasm_service_test.cpp：15 用例逐一对应、断言强度
+// 15 用例逐一对应、断言强度
 // 不变；命名空间随 mjbase（mjbase::jasm）、gtest 套件名加 Mj 前缀。底座差异：
 // - 层次图改手工登记 ClassSummary（mjbase::hierarchy 不收容器输入；mbase 用
 //   容器装配 4 个辅助类再建图，二者产出的类图等价）；
 // - StackMapTable 断言改经 jbc::core::readClass 的 StackMapTableAttr 读取
-//   （原 jbytecode tree FrameNode）；
+//   （手拼 classfile 的 FrameNode）；
 // - ResourceJasmService 无 GlobalAnalysisManager：mbase
 //   SuccessfulReplacementClearsGlobalAnalysisCache 的「替换后无陈旧分析态」
 //   契约改断言为「同一容器连续替换仍成功 + 反汇编可见新字节」（见

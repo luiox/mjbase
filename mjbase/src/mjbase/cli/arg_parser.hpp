@@ -16,7 +16,7 @@
 //   auto in = r->getString("--input");
 //
 // 设计约束：不依赖 RTTI/异常；纯标准库 + libca 类型（遵循 AGENTS.md）。
-// 移植自 mbase/cli/arg_parser（语义照旧；框架文案仍走 mbase.cli.* 单源 key，
+// 框架文案走 mbase.cli.* 单源 key，
 // .lang 表随 mjbase target 原样嵌入，见 cli/i18n_tables.hpp）。
 
 #include <cstdio>

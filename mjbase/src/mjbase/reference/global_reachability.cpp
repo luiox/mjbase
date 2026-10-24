@@ -43,7 +43,7 @@ CallGraphAnalysis::Result CallGraphAnalysis::run(mjbase::model::ResourceContaine
     auto built = builder.build();
     if (built.is_err()) {
         // fail-fast 建图失败：退化为空图（直接事实由 ReferenceIndex 承载，
-        // 可达性闭包少边不小看）。诊断面随 call_graph 批的 GAM 包装迁移补齐。
+        // 可达性闭包少边不小看）。诊断面随 call_graph 批的 GAM 包装补齐。
         return CallGraph{};
     }
     return std::move(built).unwrap();

@@ -28,7 +28,7 @@ namespace mjbase::pass {
 ///   - 目标指令不是异常 handler 入口（handler 入口插桩会改写 handler 帧
 ///     语义的验证面，保守跳过）。
 ///
-/// maxStack 防御性抬升到 ≥1（垃圾块占栈 1；旧栈同类 pass 同样就地抬
+/// maxStack 防御性抬升到 ≥1（垃圾块占栈 1；同类 pass 同样就地抬
 /// maxStack）。注入 resolver 的管线上，垃圾块的新分支目标由 A1 链再生
 /// SMT 覆盖（Strict 帧 → buildStackMapTable → applyComputedMaxes）；未接
 /// resolver 时新目标无帧，产出类会被 V50+ verifier 拒收——本 pass 为

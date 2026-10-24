@@ -20,7 +20,7 @@ struct JarError
     enum class Kind : ca::u8 {
         FileNotFound,   ///< 输入文件不存在
         OpenFailed,     ///< 文件打开失败（读/写共用）
-        ReadFailed,     ///< 读取失败（mbase 未区分此失败，直迁后更细一档）
+        ReadFailed,     ///< 读取失败（更细一档）
         WriteFailed,    ///< 写出失败：磁盘满/断连等 IO 错误
     };
 

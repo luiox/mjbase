@@ -18,7 +18,7 @@ using ca::core::Result;
 
 /// @brief 管线入口失败记录：哪一阶段、哪个单元、什么细节。
 ///
-/// 管线内部（PassManager / adaptor）的失败策略是异常语义（编排语义照旧）；
+/// 管线内部（PassManager / adaptor）的失败策略是异常语义；
 /// 本入口是模块边界，统一收敛为 Result 值语义。Result 的错误通道要求可拷贝，
 /// 故诊断文本用 std::string（输出/异常文本外部边界）；detail 为失败异常的
 /// what() 或 libjbc 错误码文本，target 为失败单元（类 URI / 方法目标；
@@ -62,7 +62,7 @@ Result<std::vector<ca::u8>, PipelineError>
 ///
 /// 在 ResourceContainer 上跑全局流水线（含 GlobalToClassPassAdaptor 驱动的跨类编排）。
 /// 与 mbase runJarPipeline 的差异：不再在此注册 mbase 内置分析（那些分析属于
-/// 旧栈分析域，未随迁）；分析注册是 pass 自己的责任（registerAnalysis 幂等）。
+/// 分析域，未随迁）；分析注册是 pass 自己的责任（registerAnalysis 幂等）。
 /// 内置分析缺位不改变编排语义：AM 的惰性求值 + PreservedAnalyses 失效协议不变。
 ///
 /// @param container 资源容器（import 后传入，处理后由调用方 export）

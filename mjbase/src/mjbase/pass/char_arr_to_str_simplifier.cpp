@@ -52,7 +52,7 @@ bool matchConstruction(const jbc::ir::ClassSession& session, CodeDom& dom,
 
     ca::usize p = first + 2;
     for (ca::i32 j = 0; j < len; ++j) {
-        // 槽位越界 = 失配（对齐旧栈 p + 3 >= insns.size() 判定）。
+        // 槽位越界 = 失配。
         if (p + 3 >= ids.size()) return false;
         const Insn* dup   = dom.peek(ids[p]);
         const Insn* idx   = dom.peek(ids[p + 1]);
@@ -83,8 +83,8 @@ bool matchConstruction(const jbc::ir::ClassSession& session, CodeDom& dom,
     return true;
 }
 
-/// UTF-16 码元序列 → MUTF-8 字节（旧栈 Utf16String → UTF-8 → writer 编码
-/// 同构）。码元序列不可编码（不成代理等）时返回 false = 整组失配（旧栈
+/// UTF-16 码元序列 → MUTF-8 字节（Utf16String → UTF-8 → writer 编码
+/// 同构）。码元序列不可编码（不成代理等）时返回 false = 整组失配。
 /// catch 后整组保留语义）。
 bool utf16ToMutf8(const std::vector<ca::u16>& codeUnits, std::string& out)
 {
@@ -125,7 +125,7 @@ mjbase::spi::PreservedAnalyses CharArrToStrSimplifier::run(mjbase::spi::MethodSc
             continue;
         }
 
-        // 替换头插到首成员之前；首成员锚定的标签迁移到替换头（旧栈
+        // 替换头插到首成员之前；首成员锚定的标签迁移到替换头。
         // LabelNode 留原位指向新序列头的落点语义）。CP intern 先于插入
         // 失败即整组跳过（池无半截追加——intern 自身失败会抛，到不了这）。
         jbc::ir::Insn ldc;

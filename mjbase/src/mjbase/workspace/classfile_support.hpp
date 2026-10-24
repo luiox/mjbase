@@ -165,7 +165,7 @@ void collectAnnotations(jbc::core::ClassFile& cf, std::vector<jbc::core::AttrSlo
                         std::vector<AnnotationInfo>& out);
 
 /// @brief 收集 Code 属性嵌套的 LVT/LVTT 行（ASM 口径：LVTT 行 desc=签名文本，
-///        signature 恒空——与旧栈 visitLocalVariable 可观察行为一致）。
+///        signature 恒空——与 visitLocalVariable 可观察行为一致）。
 void collectLocalVariables(jbc::core::ClassFile& cf, jbc::core::CodeAttr& code,
                            std::vector<LocalVariableInfo>& out);
 
@@ -197,7 +197,7 @@ inline std::string objectClassFromFieldDescriptor(std::string_view descriptor)
 
 /// @brief LDC/数组类描述符 → 元素类内部名："Ljava/lang/String;" → "java/lang/String"，
 ///        "[[I" → "I" 的宿主类语义不成立时返回空；数组取最深元素的对象类。
-///        参照旧栈：数组描述符只对「元素为对象类型」给出内部名（如
+///        数组描述符只对「元素为对象类型」给出内部名（如
 ///        "[Ljava/lang/String;" → "java/lang/String"），基本类型数组返回空。
 std::string objectClassFromArrayDescriptor(std::string_view descriptor);
 

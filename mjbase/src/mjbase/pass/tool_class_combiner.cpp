@@ -35,11 +35,11 @@ constexpr ca::u16 kAccSuper      = 0x0020;
 constexpr ca::u16 kAccInterface  = 0x0200;
 constexpr ca::u16 kAccAnnotation = 0x2000;
 
-/// 旧栈分桶容量：宿主方法数合计上限（canMoveToolClassInto 语义照迁）。
+/// 分桶容量：宿主方法数合计上限。
 constexpr ca::usize kMaxHostMethodTotal = 100;
 
-/// 宿主命名（旧栈 newMergedToolClass 语义照迁）；幂等重入防护用短标记。
-constexpr const char* kMergedHostPrefix = "me/canrad/morpher/ToolClassMergedClass_";
+/// 宿主命名；幂等重入防护用短标记。
+constexpr const char* kMergedHostPrefix = "mjbase/ToolClassMergedClass_";
 constexpr const char* kMergedHostMarker = "ToolClassMergedClass_";
 
 bool isConstructorName(std::string_view name) noexcept { return name == "<init>"; }
@@ -69,7 +69,7 @@ struct PendingWrite
     std::vector<ca::u8>  bytes;
 };
 
-/// 旧栈 isEmptyOrSafeToolClinit 语义照迁：<clinit> 无体，或体内全部指令
+/// <clinit> 无体，或体内全部指令
 /// 都是 RETURN（libjbc 域无伪指令，标签不占指令位）。
 bool isEmptyOrSafeToolClinit(jbc::ir::ClassSession& session, ca::usize methodIdx)
 {
@@ -86,10 +86,10 @@ bool isEmptyOrSafeToolClinit(jbc::ir::ClassSession& session, ca::usize methodIdx
     return true;
 }
 
-/// 旧栈 isSimpleToolMethodBody 语义照迁 + libjbc NotModeled 域保守延伸：
+/// 简单供体方法体判定 + libjbc NotModeled 域保守延伸：
 /// 无任何方法调用（invoke 全家族，indy 含在内）、无 PUTSTATIC；ldc 宽常量
 /// 形态（Long/Float/Double/MethodType/MethodHandle/Dynamic，即 adoptMethod
-/// 的 fail-closed 清单）命中时同样落选——对应旧栈「不支持范围保持原资源」
+/// 的 fail-closed 清单）命中时同样落选——「不支持范围保持原资源」
 /// 按新搬移契约口径的延伸。
 bool isSimpleToolMethodBody(jbc::ir::ClassSession& session, ca::usize methodIdx)
 {
@@ -122,7 +122,7 @@ bool isSimpleToolMethodBody(jbc::ir::ClassSession& session, ca::usize methodIdx)
     return true;
 }
 
-/// 旧栈 isToolClassCandidate 语义照迁：Object 父类、名不含 `$`、无接口/
+/// 供体候选判定：Object 父类、名不含 `$`、无接口/
 /// 注解、只含 static 字段与方法及构造器、非空 `<clinit>` 必须安全、至少
 /// 一件可搬成员。升格失败按保守落选处理（原资源保持）。
 bool isToolClassCandidate(jbc::ir::ClassSession& session)
@@ -152,7 +152,7 @@ bool isToolClassCandidate(jbc::ir::ClassSession& session)
     return hasMovableMember;
 }
 
-/// 旧栈 canMoveToolClassInto 语义照迁：方法数合计上限、字段撞名、方法
+/// 可并入判定：方法数合计上限、字段撞名、方法
 /// 撞 name+desc 任一命中即不可并入。
 bool canMoveToolClassInto(const jbc::ir::ClassSession& host, const jbc::ir::ClassSession& src)
 {
@@ -184,7 +184,7 @@ ca::u32 findOrAddUtf8(jbc::core::ClassFile& cf, std::string_view s)
     return cf.cp.addUtf8(s);
 }
 
-/// 重建被搬移字段的 ConstantValue：旧栈整节点搬移保真该属性；adoptField
+/// 重建被搬移字段的 ConstantValue：整节点搬移保真该属性；adoptField
 /// 只搬元数据（libjbc §34.3(4) 字段属性表不随迁），常量值在此按源语义
 /// intern 进宿主 CP 后以新建属性槽重挂——static final 常量的行为面等价。
 void rebuildConstantValue(jbc::ir::ClassSession& src, const jbc::ir::FieldUnit& srcField,
@@ -239,7 +239,7 @@ void rebuildConstantValue(jbc::ir::ClassSession& src, const jbc::ir::FieldUnit& 
     }
 }
 
-/// 从零建宿主（旧栈 newMergedToolClass 语义照迁）：V1_8 public super +
+/// 从零建宿主：V1_8 public super +
 /// 调用 super 构造器的 public `<init>`，走 A5 从零会话 + addMethod 管线。
 MergedHost createMergedHost(ca::usize index)
 {
@@ -309,7 +309,7 @@ jbc::ir::MethodId adoptToolMethodIntoHost(MergedHost& host, LoadedClass& src,
     return moved.unwrap();
 }
 
-/// 搬移一件供体（旧栈 moveToolClassMembers 语义照迁）：全部字段 adoptField
+/// 搬移一件供体：全部字段 adoptField
 /// （ConstantValue 重建）；非构造器非 `<clinit>` 方法 adoptMethod 直调
 /// （规避层已回收，见 adoptToolMethodIntoHost）。
 /// 任何搬移失败整批抛出——准入面已把 NotModeled 形态挡在候选之外，这里
@@ -402,7 +402,7 @@ mjbase::spi::PreservedAnalyses ToolClassCombiner::run(mjbase::model::ResourceCon
     (void)am;
 
     // 阶段零：装载与准入（装载序来自容器迭代，跨平台漂移；候选处理序
-    // 在下方统一按内部名排序固定——解析失败按旧栈保守跳过）。
+    // 在下方统一按内部名排序固定——解析失败保守跳过）。
     std::vector<LoadedClass> loaded;
     for (auto& [uri, resource] : container.getResources()) {
         (void)uri;
@@ -511,7 +511,7 @@ mjbase::spi::PreservedAnalyses ToolClassCombiner::run(mjbase::model::ResourceCon
     }
 
     // 阶段四：提交。全部序列化成功后一次动容器：先删全部供体条目，再以
-    // 宿主名 URI 插入宿主（覆盖语义对齐旧栈 #962）。异常路径到此为止都
+    // 宿主名 URI 插入宿主（覆盖语义）。异常路径到此为止都
     // 未触碰容器——保守回滚由两阶段结构保证。
     auto& resources = container.getResources();
     for (const LoadedClass* donor : donors) {

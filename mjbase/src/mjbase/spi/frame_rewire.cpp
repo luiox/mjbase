@@ -135,7 +135,7 @@ bool prepareNestedAttrsForLayout(jbc::ir::ClassSession& session, const jbc::ir::
                     kept.push_back(row);
                     continue;
                 }
-                // 旧栈行号节点留原位语义：行起点重映射到下一个存活 pc；
+                // 行号节点留原位语义：行起点重映射到下一个存活 pc；
                 // 之后无存活指令则整行截去（该行号所辖代码不复存在）。
                 ca::u32 remapped = 0;
                 if (nextSurvivingPc(pcs, row.startPc, remapped)) {

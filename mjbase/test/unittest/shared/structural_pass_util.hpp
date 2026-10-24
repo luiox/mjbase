@@ -296,6 +296,55 @@ public:
         return idx;
     }
 
+    /// InterfaceMethodref(owner.name(desc)) 的 CP 索引（INVOKEINTERFACE 操作数）。
+    ca::u16 interfaceMethodRef(std::string_view owner, std::string_view n, std::string_view d)
+    {
+        std::string key(std::string("i:").append(owner).append("|").append(n).append("|")
+                            .append(d));
+        const auto  it = refs_.find(key);
+        if (it != refs_.end()) return it->second;
+        const ca::u16 ci = cls(owner);
+        const ca::u16 nt = nameType(n, d);
+        putU8(cp_, 0x0b);
+        putU16(cp_, ci);
+        putU16(cp_, nt);
+        const ca::u16 idx = next_++;
+        refs_.emplace(std::move(key), idx);
+        return idx;
+    }
+
+    /// MethodHandle(reference_kind, member ref) 的 CP 索引（tag 15，单槽）。
+    /// ref 由调用方先经 methodRef/interfaceMethodRef/fieldRef 物化。
+    ca::u16 methodHandle(ca::u8 referenceKind, ca::u16 refIdx)
+    {
+        const std::string key =
+            "mh:" + std::to_string(referenceKind) + ":" + std::to_string(refIdx);
+        const auto it = handles_.find(key);
+        if (it != handles_.end()) return it->second;
+        putU8(cp_, 0x0f);
+        putU8(cp_, referenceKind);
+        putU16(cp_, refIdx);
+        const ca::u16 idx = next_++;
+        handles_.emplace(std::move(key), idx);
+        return idx;
+    }
+
+    /// InvokeDynamic(bootstrap_method_attr_index, nameType) 的 CP 索引（tag 18）。
+    ca::u16 invokeDynamic(ca::u16 bsmIndex, std::string_view n, std::string_view d)
+    {
+        std::string key("indy:" + std::to_string(bsmIndex) + "|" + std::string(n) + "|" +
+                        std::string(d));
+        const auto  it = indys_.find(key);
+        if (it != indys_.end()) return it->second;
+        const ca::u16 nt = nameType(n, d);
+        putU8(cp_, 0x18);
+        putU16(cp_, bsmIndex);
+        putU16(cp_, nt);
+        const ca::u16 idx = next_++;
+        indys_.emplace(std::move(key), idx);
+        return idx;
+    }
+
     /// Integer 常量的 CP 索引（LDC 操作数；单槽条目）。
     ca::u16 intConst(ca::i32 v)
     {
@@ -345,6 +394,8 @@ private:
     std::unordered_map<std::string, ca::u16> classes_;
     std::unordered_map<std::string, ca::u16> nameTypes_;
     std::unordered_map<std::string, ca::u16> refs_;
+    std::unordered_map<std::string, ca::u16> handles_;
+    std::unordered_map<std::string, ca::u16> indys_;
     std::unordered_map<std::string, ca::u16> ints_;
     std::unordered_map<std::string, ca::u16> longs_;
     std::unordered_map<std::string, ca::u16> strs_;

@@ -36,7 +36,7 @@ public class Main {
     public static void main(String[] args) {
         System.out.println(Util.label());
         System.out.println(Util.magic);
-        System.out.println(Util.greet("morpher"));
+        System.out.println(Util.greet("legacy"));
     }
 }
 
@@ -92,7 +92,7 @@ TEST(ClassRenamerJvm, RenamedClassesRunOnRealJvm)
     const std::string origOut = test::jdk::normalizeOutput(orig.out);
     EXPECT_NE(origOut.find("util-label"), std::string::npos);
     EXPECT_NE(origOut.find("42"), std::string::npos);
-    EXPECT_NE(origOut.find("hello morpher"), std::string::npos);
+    EXPECT_NE(origOut.find("hello legacy"), std::string::npos);
 
     // ── 3. ClassRenamer 全容器重命名 + 落盘到包路径对齐目录 ──
     mjbase::model::ResourceContainer container;

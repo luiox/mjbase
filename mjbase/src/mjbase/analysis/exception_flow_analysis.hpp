@@ -2,17 +2,15 @@
 /// @brief       跨类异常流模型：throw/call 站点扫描 + 处理器覆盖 + 未捕获
 ///              异常类型的过程间不动点。
 ///
-/// 旧栈对应物：mbase/analysis/exception_flow_analysis（ExceptionFlowModel）。
-/// 语义照旧、实现重写：类字节经 libjbc 会话升格后走 CodeDom 程序序扫描——
+/// 类字节经 libjbc 会话升格后走 CodeDom 程序序扫描——
 /// NEW 记录最近分配类型，ATHROW 产出（类型, 处理器列表）抛出站点，invoke
 /// 家族产出调用站点；处理器覆盖按异常表范围判定。未捕获类型沿调用边做
 /// Jacobi 不动点传播（轮数上限 = 方法数 + 1）；子类型判定先走内置
 /// Throwable 族表，再走项目内类层次（mjbase hierarchy，从会话骨架建图）。
 ///
-/// 与旧实现的边界差（见迁移报告）：
-/// - 方法身份/异常类型一律 KeyPool 驻留（MemberKey / string_view 视图），
-///   不再持有 std::string 拷贝；查询接口收 string_view。
-/// - 扫描序 = 容器迭代序（旧栈为 unordered_map 迭代序，边顺序本就未约定）。
+/// 方法身份/异常类型一律 KeyPool 驻留（MemberKey / string_view 视图），
+/// 不再持有 std::string 拷贝；查询接口收 string_view。
+/// 扫描序 = 容器迭代序。
 #pragma once
 
 #include <string_view>

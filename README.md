@@ -1,11 +1,10 @@
 # mjbase
 
 `mjbase` is a cross-class JVM bytecode analysis and transformation library built
-on [libjbc](https://github.com/luiox/libjbc). It is the successor line of the
-legacy `mbase` stack: keys (cross-class identity), class/method/field hierarchy,
-call graphs and reference indexing, instruction engineering (the `asm` domain),
-mapping and remapping, an AIR/SIR tree IR, and the pass pipeline that drives
-them.
+on [libjbc](https://github.com/luiox/libjbc): keys (cross-class identity),
+class/method/field hierarchy, call graphs and reference indexing, instruction
+engineering (the `asm` domain), mapping and remapping, an AIR/SIR tree IR, and
+the pass pipeline that drives them.
 
 The split with libjbc is deliberate: **libjbc owns one class / one method**
 (classfile DOM, CodeDom, CodeEditor, frame and dominator engines) while
@@ -44,13 +43,9 @@ the `test/` directory of the project root.
 mjbase/src/mjbase/     library sources, one directory per module
 mjbase/test/           unit tests (gtest)
 mjbase/test_resource/  static test inputs
-mjbase/doc_ai/         design notes and the migration module map
-mjbase/dev_plan.md     pending work only
+mjbase/doc_ai/         design notes
 test_helper/           test scaffolding (gtest integration, JDK fixtures)
 ```
-
-Module status and migration provenance live in
-[`mjbase/doc_ai/module-map.md`](mjbase/doc_ai/module-map.md).
 
 ## Conventions
 

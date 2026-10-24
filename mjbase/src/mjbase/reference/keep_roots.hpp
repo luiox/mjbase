@@ -1,9 +1,11 @@
 /// @file        keep_roots.hpp
-/// @brief       keep 配置 → GlobalReachabilityOptions 三槽（可达性根）的翻译面。
+/// @brief       根来源 → GlobalReachabilityOptions 三槽（可达性根）的翻译面。
 ///
 /// 审计 P0-1 的落地件：把「模式匹配（class 模式/成员模式/public-protected 档）」
 /// 翻译成可达性闭包的三类根，供任何消费 GlobalReachabilityOptions 的 pass
-/// 统一生效——不再要求每个删除 pass 自己理解 keep 规则。
+/// 统一生效——不再要求每个删除 pass 自己理解 keep 规则。RTA 批追加入口
+/// `applyRtaInstantiatedRoots`：RTA 精度档的已实例化声明类作为保守类根走同一
+/// 三槽（见下「RTA 保守根」）。
 ///
 /// ## 定位：纯增量
 ///
@@ -59,6 +61,7 @@
 
 #include "libca/core/datatype.hpp"
 
+#include "mjbase/asm/classpath/resolved_call_graph.hpp"
 #include "mjbase/reference/global_reachability.hpp"
 #include "mjbase/reference/keep_rule.hpp"
 #include "mjbase/reference/reference_index.hpp"
@@ -87,5 +90,28 @@ struct KeepRootSpec
 /// @param options 目标选项；既有根保留，本面产物追加
 void applyKeepRoots(const KeepRootSpec& spec, const ReferenceIndex& index,
                     GlobalReachabilityOptions& options);
+
+/// @brief RTA 已实例化声明类 → 保守类根（追加进 rootClasses）。
+///
+/// RTA 精度档（`ResolvedCallGraph::buildRta`，分析档 opt-in）的已实例化集合是
+/// 「入口可达 + new 命中」的保守根来源，**不是删除依据**：反射实例化、native、
+/// classpath 外实例化（反序列化）按欠近似处理——宁多入根，不漏。本面把集合
+/// 中容器内**声明**的类名追加进 rootClasses；外部类型（JDK/库）不在容器里
+/// 无从保留，留在 `instantiatedClasses()` 供调用图报告对照。
+///
+/// 与删除器的分工建议（本面不实现删除器改动）：RTA 根进三槽后由既有可达性
+/// 闭包消费——实例化类之下的闭包照常展开，闭包外的类才进删除集；RTA 收窄
+/// 只体现在边表面（`resolvedEdgesExclusive`），类级保留面由本根兜底。
+///
+/// 纯增量：只追加，不去重（集合语义由可达性 build 吸收）。生命周期：写入的
+/// 视图指向 RTA 图自有池（buildRta 时驻留），调用方须保证 @p rtaGraph 存活到
+/// `GlobalReachability::build` 之后（同 ReferenceIndex 池契约）。
+///
+/// @param rtaGraph RTA 构建产物（须经 buildRta 构建；CHA 图集合为空即无产物）
+/// @param index    声明事实来源（声明类判定）
+/// @param options  目标选项；既有根保留，本面产物追加
+void applyRtaInstantiatedRoots(const mjbase::asm_classpath::ResolvedCallGraph& rtaGraph,
+                               const ReferenceIndex& index,
+                               GlobalReachabilityOptions& options);
 
 }   // namespace mjbase::reference

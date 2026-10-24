@@ -55,7 +55,7 @@ MatchStep Steps::loadDouble()
 {
     return MatchStep::anyIf([](const jbc::ir::Insn& in) {
         using jbc::core::Op;
-        // double 只能经 ldc2_w 装载，旧实现同样未计入；族内只剩 dload/dconst。
+        // double 只能经 ldc2_w 装载，同样未计入；族内只剩 dload/dconst。
         return in.op == Op::DLOAD || opInRange(in.op, Op::DLOAD_0, Op::DLOAD_3) ||
                in.op == Op::DCONST_0 || in.op == Op::DCONST_1;
     });

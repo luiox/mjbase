@@ -23,7 +23,7 @@ struct ReferenceIndexAnalysis
 
     Result run(mjbase::model::ResourceContainer& container, GlobalAnalysisManager& gam)
     {
-        (void)gam;   // 旧栈经 gam.arena() 挂树文本；mjbase 索引经自有 KeyPool 驻留
+        (void)gam;   // mjbase 索引经自有 KeyPool 驻留
         ReferenceIndex index;
         index.build(container);
         return index;
