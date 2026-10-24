@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mjbase/model/container_stack.hpp"
 #include "mjbase/workspace/class_mutation_service.hpp"
 #include "mjbase/workspace/workspace_types.hpp"
 
@@ -46,8 +47,21 @@ public:
     /// @return 返回当前 Workspace 内稳定的 support ID 和内容 fingerprint；重复路径或内容被拒绝。
     virtual WorkspaceResult<SupportingResourceInfo> addSupportingJar(const std::string& path) = 0;
 
+    /// @brief 带角色注册 supporting 容器：library/runtime 挂载只产生一条
+    ///        容器记录——注册进同一在册表（路径/内容唯一约束跨角色生效），记录
+    ///        的 role 标签区分角色，不再另行追加第二套注册面。
+    /// @param role library/runtime（primary 由 project_open 绑定，不接受）。
+    /// @return 返回稳定 support ID（detach 的唯一句柄）与内容 fingerprint。
+    virtual WorkspaceResult<SupportingResourceInfo> addSupportingContainer(
+        const std::string& path, model::ContainerRole role)
+    {
+        (void)role;
+        return addSupportingJar(path);
+    }
+
     /// @brief 按 support ID 移除只读 supporting JAR，并失效依赖 classpath 的分析缓存。
     /// @return 返回被移除的 supporting resource 描述；ID 不存在时返回 NotFound。
+    /// @note 一次移除即清理该容器的全部角色注册（在册表一容器一记录）。
     virtual WorkspaceResult<SupportingResourceInfo> removeSupportingJar(const std::string& id) = 0;
 
     /// @brief 工作区是否已加载主 class 或 JAR。

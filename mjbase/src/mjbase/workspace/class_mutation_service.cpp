@@ -124,6 +124,77 @@ WorkspaceErrorInfo validateAccess(ca::i32 access, AnnotationTarget target,
     return WorkspaceErrorInfo{};
 }
 
+// ── 访问位增量编辑（change_access）─────────────────────────────────
+
+/// @brief "deprecated" 名单项的归属：Deprecated 属性（非 access flag）。
+constexpr const char* kDeprecatedFlagName = "deprecated";
+
+/// @brief Deprecated 属性增删（0x20000 是类属性不是 access flag；映射到
+///        属性编辑，禁止静默丢弃）。零长度属性即 JVMS 的 Deprecated 形态。
+void setDeprecatedAttribute(jbc::core::ClassFile& cf, bool present)
+{
+    jbc::core::AttrSlot* existing = support::findAttr(cf, cf.attrs, "Deprecated");
+    if (present && existing == nullptr) {
+        cf.attrs.push_back(jbc::core::AttrSlot::makeNew(
+            support::internUtf8(cf, "Deprecated"),
+            std::make_unique<RawAttr>(std::vector<ca::u8>{})));
+    }
+    else if (!present && existing != nullptr) {
+        for (auto it = cf.attrs.begin(); it != cf.attrs.end(); ++it) {
+            if (cf.cp.utf8Equals(it->nameCp, "Deprecated")) {
+                cf.attrs.erase(it);
+                return;
+            }
+        }
+    }
+}
+
+/// @brief flag 名单 → 位掩码（change_access 增量语义的解析面）。
+///
+/// 未知名报错并列出 class 目标合法 flag 全集；"deprecated" 单列（Deprecated
+/// 属性，非 access flag——错误提示一并注明）。
+WorkspaceErrorInfo parseClassAccessFlagList(const std::vector<std::string>& names,
+                                            const std::string&              group,
+                                            ca::u32&                        mask,
+                                            bool&                           deprecated)
+{
+    static const std::pair<const char*, ca::u32> kClassFlags[] = {
+        {"public", kAccPublic},     {"final", kAccFinal},
+        {"super", kAccSuper},       {"interface", kAccInterface},
+        {"abstract", kAccAbstract}, {"synthetic", kAccSynthetic},
+        {"annotation", kAccAnnotation}, {"enum", kAccEnum},
+        {"module", kAccModule},     {"record", kAccRecord},
+        {"sealed", kAccSealed},
+    };
+    mask       = 0;
+    deprecated = false;
+    for (const std::string& name : names) {
+        if (name == kDeprecatedFlagName) {
+            deprecated = true;
+            continue;
+        }
+        bool known = false;
+        for (const auto& entry : kClassFlags) {
+            if (name == entry.first) {
+                mask |= entry.second;
+                known = true;
+                break;
+            }
+        }
+        if (known) continue;
+        std::string legal;
+        for (const auto& entry : kClassFlags) {
+            if (!legal.empty()) legal += ", ";
+            legal += entry.first;
+        }
+        return error(WorkspaceError::InvalidArgument, "change class access",
+                     "unknown access flag '" + group + ": " + name +
+                         "' (legal flags: " + legal + "; '" + kDeprecatedFlagName +
+                         "' is a class attribute, not an access flag)");
+    }
+    return WorkspaceErrorInfo{};
+}
+
 // ── 常量物化 ─────────────────────────────────────────────────────────────
 //
 // libjbc 常量池只追加面覆盖 Utf8/String/Class/Integer/Long/Float/Double 与
@@ -778,13 +849,18 @@ jbc::core::AttrSlot* ensureAnnotationSlot(jbc::core::ClassFile&       cf,
 }   // namespace
 
 jasm::Result<jasm::JvmJasmClass> ClassMutationService::applyJasm(
-    const std::string& uri, ca::str::Utf16StringRef sourceName, ca::str::Utf16StringRef source)
+    const std::string& uri, ca::str::Utf16StringRef sourceName,
+    ca::str::Utf16StringRef source, jasm::ValidationMode validationMode)
 {
+    // 重建管线的校验门跟随请求档位：off 时 assemble 后跳过 validate。
+    jasm::JvmJasmContext context;
+    context.validationMode = validationMode;
     jasm::ResourceJasmService service(*container_);
-    return service.assemble(uri, sourceName, source);
+    return service.assemble(uri, sourceName, source, context);
 }
 
-ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation)
+ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
+                                                 jasm::ValidationMode validationMode)
 {
     const auto failure = [](WorkspaceErrorInfo status) {
         ClassMutationOutcome result;
@@ -813,7 +889,59 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation)
         case ClassMutationKind::SetClassAccess:
         {
             status = validateAccess(mutation.access, AnnotationTarget::Class, "set class access");
-            if (status.is_ok()) cf.access = static_cast<ca::u16>(mutation.access & 0xFFFF);
+            if (status.is_ok()) {
+                // 旧字段旧语义（版本兼容契约：旧工程重放按整体替换解释）；
+                // 0x20000 的 deprecated 位不再静默丢弃——映射为 Deprecated 属性。
+                cf.access = static_cast<ca::u16>(mutation.access & 0xFFFF);
+                if ((mutation.access & kAccDeprecated) != 0) setDeprecatedAttribute(cf, true);
+            }
+            break;
+        }
+        case ClassMutationKind::ChangeClassAccess:
+        {
+            // 增量语义：set 置位、clear 清位、未提及位一律保留。
+            ca::u32 setMask          = 0;
+            ca::u32 clearMask        = 0;
+            bool    setDeprecated    = false;
+            bool    clearDeprecated  = false;
+            status =
+                parseClassAccessFlagList(mutation.setFlags, "set", setMask, setDeprecated);
+            if (status.is_err()) break;
+            status =
+                parseClassAccessFlagList(mutation.clearFlags, "clear", clearMask, clearDeprecated);
+            if (status.is_err()) break;
+            ca::u32 conflict = setMask & clearMask;
+            if (conflict != 0) {
+                std::string names;
+                for (const auto& entry : {std::pair<const char*, ca::u32>{"public", kAccPublic},
+                                          {"final", kAccFinal},
+                                          {"super", kAccSuper},
+                                          {"interface", kAccInterface},
+                                          {"abstract", kAccAbstract},
+                                          {"synthetic", kAccSynthetic},
+                                          {"annotation", kAccAnnotation},
+                                          {"enum", kAccEnum},
+                                          {"module", kAccModule},
+                                          {"record", kAccRecord},
+                                          {"sealed", kAccSealed}}) {
+                    if ((conflict & entry.second) != 0) {
+                        if (!names.empty()) names += ", ";
+                        names += entry.first;
+                    }
+                }
+                status = error(WorkspaceError::InvalidArgument, "change class access",
+                               "flag cannot be both set and cleared: " + names);
+                break;
+            }
+            const ca::u32 merged =
+                (static_cast<ca::u32>(cf.access) & ~clearMask) | setMask;
+            // 结果位校验与整体替换同规则（可见性互斥 / final+abstract 等）。
+            status = validateAccess(static_cast<ca::i32>(merged), AnnotationTarget::Class,
+                                    "change class access");
+            if (status.is_err()) break;
+            cf.access = static_cast<ca::u16>(merged);
+            if (setDeprecated) setDeprecatedAttribute(cf, true);
+            if (clearDeprecated) setDeprecatedAttribute(cf, false);
             break;
         }
         case ClassMutationKind::SetFieldAccess:
@@ -1389,15 +1517,18 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation)
         }
         if (status.is_err()) return failure(std::move(status));
 
-        // 写回：jbc 序列化 → Jasm 验证（旧栈候选门）→ spi 两阶段提交。
+        // 写回：jbc 序列化 → Jasm 验证（写回后整类门，档位随请求：off
+        // 直通，与 jasm 重建路径同语义）→ spi 两阶段提交。
         auto written = jbc::core::writeClass(cf);
         if (written.is_err())
             return failure(error(WorkspaceError::Internal, "mutate class",
                                  "class serialization failed"));
         std::vector<ca::u8> bytes = std::move(written).unwrap();
 
+        jasm::JvmJasmContext gateContext;
+        gateContext.validationMode = validationMode;
         jasm::JvmJasmService validator;
-        auto                 validated = validator.validate(bytes);
+        auto                 validated = validator.validate(bytes, gateContext);
         if (!validated.isOk()) {
             ClassMutationOutcome result;
             result.status = error(WorkspaceError::InvalidArgument, "mutate class",
