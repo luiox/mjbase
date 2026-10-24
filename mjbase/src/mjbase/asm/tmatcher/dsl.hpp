@@ -1,11 +1,11 @@
 /// @file        dsl.hpp
 /// @brief       DSL 运算符层：- (seq) / | (alt) / >> (规则产出)。
 ///
-/// 对齐旧实现 dsl.hpp 的运算子集；未迁移的部分（见模块报告）：
-///   - CaptureVar<T>/load()：依赖旧栈 InsnUtil 的常量解释；新 DSL 的
+/// 运算子集；有意不迁的部分：
+///   - CaptureVar<T>/load()：依赖 InsnUtil 的常量解释；新 DSL 的
 ///     捕获是 InsnId，取值由产出器经 ReplaceContext::capturedInsn 完成；
 ///   - makeSeq/makeReplaceSeq 大括号糖：initializer_list 持 move-only
-///     句柄需 const_cast 挪动，属于旧实现的将就写法，不迁。
+///     句柄需 const_cast 挪动，属于将就写法，不迁。
 #pragma once
 
 #include <functional>
@@ -40,7 +40,7 @@ inline StepPtr operator|(StepPtr a, StepPtr b)
 
 /// @brief step >> fn → ReplaceRule：fn 接收命中视图，返回替换 Insn 序列。
 ///
-/// 规则名默认 "unnamed"（与旧实现对齐）；需要命名检索时用 ReplaceRule
+/// 规则名默认 "unnamed"；需要命名检索时用 ReplaceRule
 /// 构造函数显式给名。
 template<typename Fn>
 ReplaceRule operator>>(StepPtr step, Fn&& producer)
@@ -52,7 +52,7 @@ ReplaceRule operator>>(StepPtr step, Fn&& producer)
 
 /// @brief step >> fixed → ReplaceRule：命中窗口替换为固定指令序列。
 ///
-/// 等价旧实现 `step >> ReplaceSequence` 的静态场景；需要读捕获表的
+/// 等价 `step >> ReplaceSequence` 的静态场景；需要读捕获表的
 /// 动态产出用 lambda 重载。
 inline ReplaceRule operator>>(StepPtr step, std::vector<jbc::ir::Insn> fixed)
 {

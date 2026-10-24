@@ -2,7 +2,7 @@
 /// @brief       常量传播域测试：格代数、JVM 折叠语义、store→load 穿透、
 ///        分支合并、MethodSig 播种（含 long/double 双槽）与句柄查询面。
 ///
-/// 行为断言移植自旧栈 constant_interpreter_test（JVM 环绕/移位掩码/MIN÷-1
+/// 行为断言覆盖 JVM 环绕/移位掩码/MIN÷-1
 /// 特例、冲突合并丢常量）与 libjbc domain_test（穿透与播种布局）。
 ///
 /// long 折叠语义在域钩子层直接断言：DomainEngine v0.3.8 的 popValue 对 cat2
@@ -114,7 +114,7 @@ TEST(MjAsmAnalyzerTest, ConstMergeAlgebraFollowsJoinSemantics)
     ASSERT_TRUE(m1.isConst());
     EXPECT_EQ(m1.asI64(), 7);
 
-    // 不同常量 → Top（旧实现：冲突合并丢已知值）。
+    // 不同常量 → Top（冲突合并丢已知值）。
     const ConstLattice m2 = dom.merge(ConstLattice::ofInt(1), ConstLattice::ofInt(2));
     EXPECT_TRUE(m2.isTop());
 
@@ -621,7 +621,7 @@ TEST(MjAsmAnalyzerTest, ConstDeadCodeFrameIsUnreachable)
 TEST(MjAsmAnalyzerTest, ConstSeededArgumentFeedsIntegerArithmetic)
 {
     // 移植旧 addOne 用例族：iload_0; iconst_1; iadd; istore_1，入参种子 41
-    // → iadd 结果 42（旧栈对拍点：IRETURN 前栈顶）。旧栈按 short/char 归一
+    // → iadd 结果 42（IRETURN 前栈顶）。按 short/char 归一
     // （normalizeIntValue），新格层 int 宽度只有一类 Int 载荷，(S)/(C)/(I)
     // 三种描述符同一种子语义。
     for (const char* desc : {"(S)I", "(C)I", "(I)I"}) {

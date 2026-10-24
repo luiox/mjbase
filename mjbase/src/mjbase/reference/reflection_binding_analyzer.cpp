@@ -87,7 +87,7 @@ std::string_view primitiveTypeFieldName(std::string_view owner, std::string_view
     return {};
 }
 
-// ── sink 目录（数据驱动，旧栈逐项照迁）────────────────────────
+// ── sink 目录（数据驱动）───────────────────────────────────────
 
 std::vector<ReflectionSinkEntry> buildSinkCatalog()
 {
@@ -367,7 +367,7 @@ public:
     BindingValue top() override { return BindingValue::unknown(); }
 
     /// join：内容一致保留；SB 冲突保形态降内容；数组冲突逐位折损 + ambiguous；
-    /// 其余 Unknown（fail-closed，旧栈 merge 照迁）。
+    /// 其余 Unknown（fail-closed）。
     BindingValue merge(const BindingValue& value1, const BindingValue& value2) override
     {
         if (value1 == value2) {
@@ -451,7 +451,7 @@ public:
                 return value;
             }
             if (e.tag == CpTag::Class && env_.cp->isUtf8(e.a)) {
-                // 类常量转追踪名：数组取描述符原样，其余取内部名（旧栈
+                // 类常量转追踪名：数组取描述符原样，其余取内部名。
                 // classLiteralName 口径；CP Class 条目恒为 OBJECT/ARRAY 形态）。
                 const std::string_view n = env_.cp->utf8Of(e.a);
                 if (!n.empty()) {
@@ -707,7 +707,7 @@ struct MethodPipeline
     }
 };
 
-/// @brief StringConcatFactory indy 折叠（旧栈 foldConcat 照迁）。
+/// @brief StringConcatFactory indy 折叠。
 ///
 /// makeConcatWithConstants：recipe（\u0001 占位按序消费动态实参；\u0002 静态
 /// 常量占位 fail-closed）；makeConcat：全参顺序拼接。歧义实参经哨兵渲染不阻断
@@ -761,7 +761,7 @@ BindingValue foldConcat(bool withConstants, std::string_view recipe,
 }
 
 /// @brief indy 拼接产点（StringConcatFactory.makeConcat*）；非拼接 indy 返回
-/// unknown（与旧栈 basic fallback 一致，仍走 upsert 保持无方向性陈旧）。
+/// unknown（basic fallback，仍走 upsert 保持无方向性陈旧）。
 BindingValue concatProduction(MethodPipeline& p, const jbc::ir::Insn& in, jbc::ir::InsnId id,
                               jbc::ir::ClassSession& session)
 {
@@ -953,7 +953,7 @@ bool recomputePureProductions(MethodPipeline& p, jbc::ir::ClassSession& session)
     return changed;
 }
 
-/// @brief 变异 pass（值轮收敛后按程序序一次性施加；旧栈共享变异引用语义）。
+/// @brief 变异 pass（值轮收敛后按程序序一次性施加；共享变异引用语义）。
 ///
 /// 覆盖：NEW StringBuilder/StringBuffer（新对象登记）、SB append/insert/<init>
 /// （就地改内容 + 产出同一对象）、ANEWARRAY（新数组登记）、AASTORE（就地写元素）。
@@ -1271,7 +1271,7 @@ void ReflectionBindingAnalyzer::analyzeSession(jbc::ir::ClassSession& session)
         }
         if (!p.frames) continue;   // 该方法控制流不可分析：不产出绑定（fail-closed）
 
-        // ── sink 落解（旧栈 analyzeClass sink 段照迁，帧读取换 FrameQuery）──
+        // ── sink 落解（帧读取换 FrameQuery）──────────────────
         for (ca::usize pos = 0; pos < order.size(); ++pos) {
             const jbc::ir::InsnId id = order[pos];
             const jbc::ir::Insn*  in = code.dom.peek(id);
@@ -1584,7 +1584,7 @@ void ReflectionBindingAnalyzer::analyzeSession(jbc::ir::ClassSession& session)
     }
 }
 
-// ── 类级编排（mbase clear/summarize/bindingsOfClass/build/indexDeclarations 照迁；
+// ── 类级编排（clear/summarize/bindingsOfClass/build/indexDeclarations；
 //    文本一律 pool_ 驻留视图——键寿命与驻留池同在，内容寻址等值）──────────
 
 void ReflectionBindingAnalyzer::clear()

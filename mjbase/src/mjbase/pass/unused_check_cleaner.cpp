@@ -40,7 +40,7 @@ bool hasSuccessor(const jbc::ir::CodeDom& dom, jbc::ir::InsnId id)
 mjbase::spi::PreservedAnalyses UnusedCheckCleaner::run(mjbase::spi::MethodScope&       scope,
                                                        mjbase::spi::MethodAnalysisManager& mam)
 {
-    // 静态方法无 this 隐式非空前提，整方法不参与（对齐旧实现）。
+    // 静态方法无 this 隐式非空前提，整方法不参与。
     if ((scope.access & 0x0008) != 0) {   // ACC_STATIC
         return mjbase::spi::PreservedAnalyses::all();
     }
@@ -69,7 +69,7 @@ mjbase::spi::PreservedAnalyses UnusedCheckCleaner::run(mjbase::spi::MethodScope&
             ++i;
             continue;
         }
-        // 边界守卫：第 2/3 成员锚定标签 → 跳过（旧栈 LabelNode 阻断语义）。
+        // 边界守卫：第 2/3 成员锚定标签 → 跳过（LabelNode 阻断语义）。
         if (method_rewrite_util::labelsAnchorAt(dom, ids[i + 1])
             || method_rewrite_util::labelsAnchorAt(dom, ids[i + 2]))
         {

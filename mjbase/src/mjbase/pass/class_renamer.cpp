@@ -22,7 +22,7 @@ namespace mjbase::pass {
 namespace {
 
 /// 旧名到新名基段：最后一个 '/' 截断，取 `包前缀 + "Class"`；无 '/' 用 `"Class"`。
-/// 与旧栈 renamedClassBase 逐字节对齐（新名 = 基段 + 全局递增编号）。
+/// 与 renamedClassBase 逐字节对齐（新名 = 基段 + 全局递增编号）。
 std::string renamedClassBase(const std::string& oldName)
 {
     const auto slash = oldName.rfind('/');
@@ -38,7 +38,7 @@ struct LoadedClass
     std::shared_ptr<jbc::ir::ClassSession> session;
 };
 
-/// 装载单个 class 资源；空 bytes / 不可解析 / 无类名跳过（对齐旧栈准入）。
+/// 装载单个 class 资源；空 bytes / 不可解析 / 无类名跳过。
 bool loadClass(mjbase::model::ClassResource& resource, LoadedClass& out)
 {
     const auto& bytes = resource.get();
@@ -77,7 +77,7 @@ mjbase::spi::PreservedAnalyses ClassRenamer::run(mjbase::model::ResourceContaine
               [](const LoadedClass& lhs, const LoadedClass& rhs) { return lhs.name < rhs.name; });
 
     // 阶段一：命名计划。编号 N 全局递增不按类重置，集合查重取首个未占用名
-    //（旧栈单计数器语义：容器按旧名序得到 Class0/Class1/...）。
+    //（单计数器语义：容器按旧名序得到 Class0/Class1/...）。
     mjbase::asm_remapper::MemberRemapPlan plan;
     std::set<std::string>                 allocatedNames;
     int                                   id = 0;
@@ -122,7 +122,7 @@ mjbase::spi::PreservedAnalyses ClassRenamer::run(mjbase::model::ResourceContaine
 
     if (updated.empty()) return mjbase::spi::PreservedAnalyses::all();
 
-    // 阶段三：提交。先删全部旧条目，再插全部新条目（顺序对齐旧栈，避免
+    // 阶段三：提交。先删全部旧条目，再插全部新条目（避免
     // 「新名恰为另一类旧 URI」时的中间态冲突）。
     auto& resources = container.getResources();
     for (const UpdatedClass& item : updated) {

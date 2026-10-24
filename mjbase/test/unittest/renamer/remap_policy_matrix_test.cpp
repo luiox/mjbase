@@ -1,6 +1,5 @@
 /// @file        remap_policy_matrix_test.cpp
-/// @brief       renamer 应用面矩阵（mjbase 移植版，luiox/morpher#1025 决议
-///              "对 P0–P4 阶段表的微调"第 3 条对应物）。
+/// @brief       renamer 应用面矩阵。
 ///
 /// 范围：options 两态（plan-only 门）、零建议/全拒后的 zero-applied 成功口径、
 /// 非空计划的应用面真语义（经 asm/remapper 域就地应用，旧 fail-loud 占位随
@@ -297,8 +296,7 @@ TEST(MjRenamerPolicyMatrixTest, applyModeWithNonEmptyPlanCommitsBytecodeFace)
     // 应用面真语义：planOnly=false 且计划非空 → 经 asm/remapper 域就地应用
     // （旧「未接线 fail-loud」占位随接线废止，两态翻转的对照用例）。
     // 默认 RemapPolicy{} 只改字节码面：类字节 this_class/成员名换新，类资源
-    // URI 不随动——remapper 批双门口径（URI 随动需开 resources），与旧栈
-    // URI 单随 bytecode 门的行为差异为 remapper 批锁定的语义面差异。
+    // URI 不随动——remapper 批双门口径（URI 随动需开 resources）。
     Fixture        fixture;
     RenamerEngine  engine;
     RenamerOptions options;

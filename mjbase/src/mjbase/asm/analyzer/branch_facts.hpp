@@ -1,16 +1,13 @@
 /// @file        branch_facts.hpp
 /// @brief       分支预测事实：常量操作数可判定时的条件分支/switch 走向。
 ///
-/// 旧栈对应物：mbase/asm/analyzer 的 jump_predicting_analyzer（predictIf /
-/// predictIfTwo / predictLookupSwitch / predictTableSwitch 的常量判定路径）与
-/// reanalyzer 的 EvaluatorBranchPredictor（null 系判定）。迁移纪律是语义照旧、
-/// 实现重写：预测是 ConstResult 到达帧上的纯函数查询——读分支指令入口帧的
+/// 预测是 ConstResult 到达帧上的纯函数查询——读分支指令入口帧的
 /// 操作数栈顶常量，按 JVM 条件语义给走向；条件比较符与旧 MathHelper::condition
 /// 的两版逐一对应。
 ///
-/// 与旧实现的形态差（见迁移报告）：
-/// - 旧栈把预测织进分析引擎（预测器返回 nullopt 时引擎按双后继入队）；本件
-///   只答「走向事实」这个查询，不做控制流修剪——DomainEngine 无分支条件
+/// 形态说明：预测织进分析引擎的形态（预测器返回 nullopt 时引擎按双后继入队）不在本件；
+/// 本件
+/// 只答「走向事实」这个查询，不做控制流修剪——DomainEngine 无分支条件
 ///   钩子，修剪应用属引擎层能力，待裁决。
 /// - 一元条件的 double 路径不迁（旧 predictIf 把 double 常量截断为 int 再
 ///   判定）：本域不折浮点，无此载荷。

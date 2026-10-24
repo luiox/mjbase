@@ -2,8 +2,7 @@
 /// @brief       analysis 别名分析测试：值代数契约、摘要驻留键、全程序固定点、
 ///              反射闭包作用域、静态槽迟变更收敛与引用化摘要绑定。
 ///
-/// 旧栈对应物：mbase/unittest/analysis/alias_analysis_test.cpp（19 用例全量
-/// 移植；断言逐字等强）。夹具从 ASM ClassWriter 重写为手拼 classfile 字节
+/// 19 用例断言逐字等强。夹具从 ASM ClassWriter 重写为手拼 classfile 字节
 /// （class_bytes_builder.hpp）；MemberKey 键经 aliasMemberKey 构造（与实现
 /// 共用驻留池，内容寻址等值）。
 #include <gtest/gtest.h>
@@ -59,7 +58,7 @@ void addClass(ResourceContainer& container, std::string_view name, const Bytes& 
 }
 
 // ---------------------------------------------------------------------------
-// 主夹具：AliasFixture（旧栈 buildAliasFixture 的 46 方法字节化形态）
+// 主夹具：AliasFixture（buildAliasFixture 的 46 方法字节化形态）
 // ---------------------------------------------------------------------------
 
 std::vector<FieldSpec> aliasFixtureFields()
@@ -832,7 +831,7 @@ TEST(MjAnalysisAliasContractTest, FrameMergeIsSymmetricForMissingSlots)
 }
 
 // ---------------------------------------------------------------------------
-// 摘要驻留键契约（旧栈拼接串键 → aliasMemberKey 驻留键）
+// 摘要驻留键契约（拼接串键 → aliasMemberKey 驻留键）
 // ---------------------------------------------------------------------------
 
 TEST(MjAnalysisAliasContractTest, SummariesUseStableMethodKeys)
@@ -1252,7 +1251,7 @@ TEST(MjAnalysisAliasWorklistTest, StaticSlotLateChangePropagatesBeforeConvergenc
 
 TEST(MjAnalysisAliasWorklistTest, MemoizedBuildReproducesFullBuildSummaries)
 {
-    // 旧栈 memoized 路径的确定性契约（同一容器跑两次 build）：新栈 build 恒为
+    // 确定性契约（同一容器跑两次 build）：build 恒为
     // 全量固定点，落为两次独立实例的输出逐字段一致且轮数一致。
     ResourceContainer container;
     addClosureFixture(container);
