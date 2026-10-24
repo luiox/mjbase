@@ -1,6 +1,6 @@
-// 移植自 mbase/unittest/pass/pipeline_fault_isolation_test.cpp：容错档位契约
+// 容错档位契约
 // 断言原样保留（IR 单元按新契约重定型；PipelineBuilder 装配两例不迁——该
-// builder 属 mbase/pass/pass_registry 旧栈装配面，未随迁，见迁移报告）。
+// builder 装配面未随迁。
 //
 // 三条主场景（提案验收项）：
 //   a) perClassFaultIsolation：3 类 1 类抛异常 → 其余 2 类正常产出，失败类被记录，

@@ -1,7 +1,7 @@
 /// @file        pattern_matcher_test.cpp
 /// @brief       旧代 pattern matcher 语义测试：窗口匹配、捕获、原子替换、回滚。
 ///
-/// 用例意图移植自 mbase/unittest/asm/matcher/pattern_matcher_test.cpp，
+/// 用例意图
 /// 底座换为纯 jbc::ir::CodeDom 构造。
 #include <gtest/gtest.h>
 
@@ -275,7 +275,7 @@ TEST(MjAsmMatcherTest, ApplyUsesLastWindowAndReachesFixpoint)
     PatternMatcher matcher;
     matcher.addRule(std::move(rule));
 
-    // 第一次 apply 替换最后一个窗口（旧栈从后往前扫描语义）。
+    // 第一次 apply 替换最后一个窗口（从后往前扫描语义）。
     auto applied = matcher.apply(dom);
     ASSERT_TRUE(applied.is_ok());
     EXPECT_TRUE(applied.unwrap());
@@ -410,7 +410,7 @@ TEST(MjAsmMatcherTest, BranchTargetInsideWindowBlocksMatch)
     ASSERT_EQ(r1.size(), 1u);
     EXPECT_FALSE(r1[0].valid());
 
-    // 目标恰为窗口首条：豁免（等价旧栈 label 在窗口首位不挡匹配）。
+    // 目标恰为窗口首条：豁免（label 在窗口首位不挡匹配）。
     PatternMatcher atHead;
     atHead.addRule(MatchRule({MatchStep::op(Op::IADD)}));
     const auto r2 = atHead.match(dom);
@@ -455,7 +455,7 @@ TEST(MjAsmMatcherTest, DeletionUnderExternalBranchRetargetsToFallthrough)
 {
     // 手工字节：iconst_1(0x04) pop return goto -3（goto 回跳到首条指令）。
     // importFrom 产生的控制流标签是 ControlFlow 角色：窗口整删时外部
-    // 引用重定向到顺序后继（旧栈 label 停在窗口原位置的等价语义）。
+    // 引用重定向到顺序后继（label 停在窗口原位置的等价语义）。
     const std::vector<ca::u8> bytes = {0x04, 0x57, 0xb1, 0xa7, 0xff, 0xfd};
     auto imported = CodeDom::importFrom(jbc::core::ByteView(bytes));
     ASSERT_TRUE(imported.is_ok());

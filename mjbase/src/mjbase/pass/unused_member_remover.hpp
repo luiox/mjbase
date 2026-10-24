@@ -20,13 +20,13 @@ namespace mjbase::pass {
 /// - `UnusedFieldRemover` / `GlobalUnusedMethodRemover`：消费
 ///   ResolvedGlobalReachabilityAnalysis，删除可达类内不可达的 private 字段/方法。
 ///
-/// 共享策略（与旧栈逐条对齐）：根策略 = 资源 keep 名单（module 描述符、Manifest
+/// 共享策略：根策略 = 资源 keep 名单（module 描述符、Manifest
 /// 的 Main/Premain/Agent/Launcher-Agent/JavaFX 入口、META-INF/services 文件名与
 /// 内容）+ Java `public static main(String[])` + 类初始化器保留；方法体展开用
 /// ResolvedCallGraph，删除前保留虚调用和接口调用的覆写目标。可达类闭包为空
 /// （library jar、无根）时整 pass 原样保留输入。构造器、`<clinit>`、非 private
 /// 成员、keep metadata（Signature/注解族）成员均保留。分析未注册时抛
-/// `logic_error`（配置错误，稳定失败，对齐旧栈）。
+/// `logic_error`（配置错误，稳定失败）。
 ///
 /// ## keep 规则面（审计 P0-1/P0-2）
 ///

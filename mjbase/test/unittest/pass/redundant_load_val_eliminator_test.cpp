@@ -75,7 +75,7 @@ TEST(RedundantLoadValEliminatorTest, fixpointSweepsNestedPairs)
     EXPECT_EQ(ops[0], Op::RETURN);
 }
 
-// ── POP2 吸收 LDC2_W 装载的 long（旧栈 tree 折叠后的可观测行为）──
+// ── POP2 吸收 LDC2_W 装载的 long（tree 折叠后的可观测行为）──
 TEST(RedundantLoadValEliminatorTest, ldc2wLongFoldedByPop2)
 {
     FixtureBuilder b("t/R");
@@ -93,7 +93,7 @@ TEST(RedundantLoadValEliminatorTest, ldc2wLongFoldedByPop2)
     EXPECT_EQ(ops[0], Op::RETURN);
 }
 
-// ── POP2 吸收 DCONST_0（旧栈 getDoubleValue 的 DCONST 臂）──
+// ── POP2 吸收 DCONST_0（getDoubleValue 的 DCONST 臂）──
 TEST(RedundantLoadValEliminatorTest, dconstPairFoldedByPop2)
 {
     // DCONST_0; POP2; RETURN → RETURN。

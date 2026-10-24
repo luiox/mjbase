@@ -14,24 +14,22 @@ namespace mjbase::spi {
 /// @brief 公共父类求解适配件：挂接 mjbase::hierarchy::ClassHierarchy 的
 ///        JVM 子类型骨架，产出 getCommonSuperClass 语义。
 ///
-/// 语义参考 mbase CommonSuperClassProvider（骑 jbytecode ICommonSuperClassProvider
-/// 的实现），按层次图底座重写：
-///   - 求解面从「superName 映射表 + 手工链遍历」改为 ClassHierarchy 的
-///     commonAncestor（super 链最近公共祖先，super-chain-only，与旧实现的
-///     「root-first 链首段比较」同构；接口维度从不参与，两边一致）；
-///   - 不可判定的回退语义逐条保留：
+///   - 求解面为 ClassHierarchy 的
+///     commonAncestor（super 链最近公共祖先，super-chain-only；接口维度
+///     从不参与）；
+///   - 不可判定的回退语义：
 ///       1) 任一类型未在图中登记 → 回退 fallback；
 ///       2) 两链无交（含悬挂键截断——super 名已驻留但未登记摘要）→ 回退
-///          fallback。旧实现的「缺链即补 Object 项」在此等价退化为本条；
-///       3) 继承链成环：旧实现环截断后回退；本适配件的输入图在 addClass
+///          fallback；
+///       3) 继承链成环：输入图在 addClass
 ///          时即拒绝环（Err(Cycle)，不静默建图），求解面看到的前置条件是
 ///          无环图——环防护由建图承接，resolver 不再自检；
 ///       4) fallback 缺省 "java/lang/Object"，可经构造参数/setFallback 改；
-///          触发回退时返回 fallback 文本本身（旧实现语义：无论该名是否在
+///          触发回退时返回 fallback 文本本身（无论该名是否在
 ///          图中登记）。
 ///   - 查询结果缓存：归一化 (t1,t2)/(t2,t1) 等价对，一次求解后续命中
 ///     （COMPUTE_FRAMES 式逐类查询下，相同类型对被反复查询，缓存避免重复
-///     链遍历；旧 issue #575 的调用量膨胀防线语义保留）。
+///     链遍历）。
 ///
 /// @par 字符串与寿命
 /// 查询键 intern 进 resolver 自有的 queryPool_（内容去重，池存活期内视图
@@ -40,7 +38,7 @@ namespace mjbase::spi {
 /// 需跨期持有则深拷贝或 intern 进自己的池。
 ///
 /// @par 数据供给
-/// 旧实现的 scan/addJar（扫 JDK 归档建 superName 表）不迁：数据获取是调用方
+/// 数据获取是调用方
 /// 的事——对扫描集合的会话逐个 fillSummary + ClassHierarchy::addClass 即得
 /// 等价输入。resolver 只消费已建好的图。
 class CommonSuperClassResolver

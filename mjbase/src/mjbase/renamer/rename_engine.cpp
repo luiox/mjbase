@@ -85,7 +85,7 @@ std::string trimTrailingSlash(std::string path)
 }
 
 /// owner 内的既有成员占用表（撞名检测用，值 = (name, desc)；字段槽忽略 desc）。
-/// 方法 desc 以 plan 类映射预映像（mapped-desc 空间，luiox/morpher#1037）：类改名
+/// 方法 desc 以 plan 类映射预映像（mapped-desc 空间）：类改名
 /// 会同步改写方法描述符中的类类型，最终类文件状态在 mapped-desc 空间，方法槽查撞
 /// 必须与之同空间。调用时机：类映射已全部入 plan 之后。
 /// 层级与池经入参注入（自由函数不占 RenameContext 的友元通道）。
@@ -848,7 +848,7 @@ RenamerRunResult RenamerEngine::run(mjbase::model::ResourceContainer&   containe
 
         // 字段继承别名（plan-only，不入 record/导出）：javac 可能以子类为 owner
         // 发出继承字段的 field 指令（getfield B.f，f 实际声明于超类 A），而
-        // 应用面只按精确 (owner,name,desc) 查规则。沿旧栈 rename_core 同款口径
+        // 应用面只按精确 (owner,name,desc) 查规则。rename_core 同款口径
         // 补齐：子类 B 沿 super 链解析出的声明 owner 恰为本字段 owner 时，逐子类
         // 补 (B, oldName, desc) → 新名别名规则。SRG/mapping 记录仍只含声明处一条。
         const ClassKey ownerKey = context->hierarchy_.findClass(change.owner);
@@ -897,7 +897,7 @@ RenamerRunResult RenamerEngine::run(mjbase::model::ResourceContainer&   containe
 
     // 方法继承别名（plan-only，不入 record/导出）：闭世界子类继承了改名方法但
     // 未自行声明时，其继承引用（invokevirtual B.m，m 实际声明于超类 A）在应用面
-    // 的精确规则查找下会漏改。沿旧栈 rename_core 同款口径补齐：
+    // 的精确规则查找下会漏改。rename_core 同款口径补齐：
     //   1) C 未声明 (oldName, desc)（声明者由闭包规则覆盖）；
     //   2) C 的继承闭包封闭（不延伸到容器外类）；
     //   3) C 是组内任一成员 owner 的子类型；
@@ -990,7 +990,7 @@ RenamerRunResult RenamerEngine::run(mjbase::model::ResourceContainer&   containe
                                                                         options.policy);
             const bool committed = applied.is_ok() && std::move(applied).unwrap();
             if (!committed) {
-                // 旧栈同口径：非空计划应用后零变化（逐类失败被 remapper 面按类
+                // 同口径：非空计划应用后零变化（逐类失败被 remapper 面按类
                 // 跳过后的聚合信号）= ApplyFailed，全量不落盘口径。
                 ++result.stats.rejected;
                 result.record.addRejected(

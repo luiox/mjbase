@@ -1,5 +1,5 @@
-/// 移植自 mbase/unittest/pass/opt/recover_pass_test.cpp 的 ClassMemberSorterTest
-/// 段（206 行起），并按任务补齐旧栈缺失的独立直接用例：排序键矩阵、条件 PA、
+/// ClassMemberSorterTest
+/// 段（206 行起），并补齐独立直接用例：排序键矩阵、条件 PA、
 /// 重排后 lower/backingIndex 一致性。载体按新契约重定型：ClassNode 骨架 →
 /// ClassSession（backing + unit 同步重排）。
 #include <gtest/gtest.h>
@@ -39,7 +39,7 @@ std::string_view fieldName(const jbc::ir::ClassSession& session, ca::usize idx)
 
 }   // namespace
 
-// 旧栈用例移植：字段按 desc→name 排序（b:I, a:I → a, b），产物可写出重读。
+// 用例：字段按 desc→name 排序（b:I, a:I → a, b），产物可写出重读。
 TEST(MjPassClassMemberSorterTest, SortsFieldsByDescThenNameRoundtrip)
 {
     FixtureBuilder builder("T");
@@ -131,7 +131,7 @@ TEST(MjPassClassMemberSorterTest, FieldDescIsPrimarySortKey)
     EXPECT_EQ(fieldName(*session, 2), "c");
 }
 
-// 补齐直接用例：已序输入 → 不发生排序，PA all()（条件 PA 语义，与旧实现的
+// 补齐直接用例：已序输入 → 不发生排序，PA all()（条件 PA 语义，与的
 // 无条件 none() 偏离已在头注声明）。
 TEST(MjPassClassMemberSorterTest, ReturnsAllWhenAlreadySorted)
 {

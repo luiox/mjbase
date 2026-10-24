@@ -79,7 +79,7 @@ std::string readReflectionClassArgumentDescriptor(const jbc::ir::Insn&          
     return {};
 }
 
-/// "(Lx;[J)" 形态拼装：长度非负、下标全覆盖且不重复（旧栈 buildReflectionArgumentDescriptor）。
+/// "(Lx;[J)" 形态拼装：长度非负、下标全覆盖且不重复。
 std::string buildReflectionArgumentDescriptor(
     ca::i32 arraySize, std::vector<std::pair<ca::i32, std::string>> entries)
 {
@@ -143,7 +143,7 @@ bool regionHasIncomingBranches(const jbc::ir::CodeUnit& code, ca::usize firstPos
 
 namespace {
 
-/// ALOAD 中转的局部 Class[] 形态解析（旧栈 localReflectionArgumentDescriptor）。
+/// ALOAD 中转的局部 Class[] 形态解析。
 std::string localReflectionArgumentDescriptor(const jbc::ir::CodeUnit&       code,
                                               const jbc::core::ConstantPool& cp,
                                               ca::usize                      aloadPos)
@@ -167,7 +167,7 @@ std::string localReflectionArgumentDescriptor(const jbc::ir::CodeUnit&       cod
                                  in->op == Op::ISTORE || in->op == Op::LSTORE ||
                                  in->op == Op::FSTORE || in->op == Op::DSTORE ||
                                  in->op == Op::ASTORE;
-        if (!loadFamily && !storeFamily) continue;   // 非 var 指令跳过（旧栈同口径）
+        if (!loadFamily && !storeFamily) continue;   // 非 var 指令跳过
         if (in->a != arrayLocal) continue;
         if (in->op == Op::ASTORE) {
             arrayStorePos = cursor;
@@ -224,7 +224,7 @@ std::string localReflectionArgumentDescriptor(const jbc::ir::CodeUnit&       cod
     return buildReflectionArgumentDescriptor(arraySize, std::move(entries));
 }
 
-// ── 别名格互转（旧栈 reflectionAlias / reflectionValueFromAlias 照迁）──
+// ── 别名格互转 ────────────────────────────────────────────────
 
 AliasValue reflectionAlias(const ReflectionValue& value)
 {
@@ -264,7 +264,7 @@ ReflectionValue reflectionValueFromAlias(const AliasValue& alias)
     return value;
 }
 
-/// "field:owner.name:desc" 身份 → 字段槽查询（旧栈 resolveFieldAlias 照迁）。
+/// "field:owner.name:desc" 身份 → 字段槽查询。
 const AliasValue* resolveFieldAlias(const AliasAnalysis& aliases, const AliasValue& value)
 {
     constexpr std::string_view prefix = "field:";
@@ -389,7 +389,7 @@ public:
     {
         (void)localIdx;
         (void)shape;
-        return ReflectionValue{};   // 旧栈 newValue(type) → unknown
+        return ReflectionValue{};   // 未知 shape → unknown
     }
 
     ReflectionValue newException(const jbc::ir::CodeUnit::Exc&) override
@@ -405,7 +405,7 @@ private:
     ReflectionDomainEnv env_;
 };
 
-/// invoke 产点迁移函数（旧栈 naryOperation 语义照迁；别名传播 + 查找族产点）。
+/// invoke 产点迁移函数（别名传播 + 查找族产点）。
 ReflectionValue transferInvoke(const ReflectionDomainEnv&                               env,
                                const mjbase::asm_analyzer::FrameQuery<ReflectionValue>& frames,
                                const jbc::ir::Insn& in, jbc::ir::InsnId id, ca::usize pos,
@@ -419,7 +419,7 @@ ReflectionValue transferInvoke(const ReflectionDomainEnv&                       
         return result;   // 栈深不足（可达帧由引擎保证栈形，此为防御性短路）
     }
 
-    // values 布局：[receiver?] + 显式实参（旧栈一致）。
+    // values 布局：[receiver?] + 显式实参。
     std::vector<ReflectionValue> values;
     values.reserve(required);
     if (!isStatic) {
@@ -431,7 +431,7 @@ ReflectionValue transferInvoke(const ReflectionDomainEnv&                       
         values.push_back(arg != nullptr ? *arg : ReflectionValue{});
     }
 
-    // alias 返回传播：param:/this:/field:/class:/string: 身份（旧栈同序）。
+    // alias 返回传播：param:/this:/field:/class:/string: 身份。
     if (env.aliases != nullptr) {
         const auto* summary = env.aliases->summaryOf(ref.owner, ref.name, ref.desc);
         if (summary != nullptr) {
@@ -722,7 +722,7 @@ ReflectionSnapshot snapshotReflectionFacts(const ReflectionQueryContext& ctx)
         jbc::analysis::DomainEngine<ReflectionValue> engine(*ctx.cp, dom);
         jbc::analysis::DomainResult<ReflectionValue> result = engine.analyze(code, sig);
         if (!result.summary.ok || result.summary.hasSubroutine) {
-            return ReflectionSnapshot{};   // fail-open：引擎拒斥（旧栈空快照同口径）
+            return ReflectionSnapshot{};   // fail-open：引擎拒斥 → 空快照
         }
         mjbase::asm_analyzer::FrameQuery<ReflectionValue> frames(code, std::move(result));
 
@@ -755,7 +755,7 @@ ReflectionSnapshot snapshotReflectionFacts(const ReflectionQueryContext& ctx)
                 if (!resolveMemberRef(*ctx.cp, in->cp, ref)) continue;
                 const auto argTypes  = paramTypes(ref.desc);
                 const auto receiver = frames.stackFromTop(id, static_cast<ca::u32>(argTypes.size()));
-                if (receiver == nullptr) continue;   // 栈深不足：旧栈 receiverIndex<0 同口径
+                if (receiver == nullptr) continue;   // 栈深不足：跳过该调用点
                 ReflectionValue value = *receiver;
                 if (ctx.aliases != nullptr) {
                     const auto* alias = ctx.aliases->reflectionReceiverOf(

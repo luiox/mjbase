@@ -7,7 +7,7 @@ namespace mjbase::mapping {
 
 /// @brief shadow-alias sidecar 文件 schema 当前版本。
 ///
-/// v1 契约（luiox/morpher#1072 shadow name）：
+/// v1 契约（shadow name）：
 /// ```
 /// {
 ///   "version": 1,
@@ -19,7 +19,7 @@ namespace mjbase::mapping {
 /// }
 /// ```
 ///
-/// v2 契约（luiox/morpher#1156 shadow 引用 token，**加法式 bump**）：在 v1 基础上
+/// v2 契约（shadow 引用 token，**加法式 bump**）：在 v1 基础上
 /// 每条 alias 增加可选 `"token"` 列（8 个小写 hex 字符，uint32 %08x 语义；
 /// token 为空的条目写出时省略该列）。兼容分支：
 /// - 读取侧接受 version 1（无 token 列，条目 token 留空）与 version 2；
