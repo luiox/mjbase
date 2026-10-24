@@ -178,6 +178,27 @@ std::filesystem::path writeClassFixture(const std::string& fileName,
     return path;
 }
 
+/// Multi-Release 族夹具：base 与 versions/17 变体内名相同（workspace/Subject，
+/// 字节内容一致），另带一个独立类保证容器非平凡。
+std::filesystem::path writeMultiReleaseFamilyFixture()
+{
+    model::ResourceContainer container;
+    const std::vector<ca::u8> base = assemble("workspace/Subject", "1");
+    container.addResource("workspace/Subject.class",
+                          std::make_unique<model::ClassResource>("workspace/Subject.class",
+                                                                 base));
+    container.addResource("META-INF/versions/17/workspace/Subject.class",
+                          std::make_unique<model::ClassResource>(
+                              "META-INF/versions/17/workspace/Subject.class", base));
+    container.addResource("workspace/Caller.class",
+                          std::make_unique<model::ClassResource>(
+                              "workspace/Caller.class",
+                              assembleSource("workspace/Caller", callerSource())));
+    const auto path = test::getTempOutPath("mjbase_workspace_mr_family_input.jar");
+    model::ResourceHelper::exportToJar(container, path.string());
+    return path;
+}
+
 std::filesystem::path writeMalformedClassFixture()
 {
     model::ResourceContainer container;
@@ -1688,6 +1709,41 @@ TEST(MjWorkspaceSummaryTest, RejectsGarbage)
     auto decoded = decodeClassSummary("parity/Garbage.class", resource);
     ASSERT_TRUE(decoded.is_err());
     EXPECT_EQ(WorkspaceError::DataLoss, decoded.unwrap_err().code);
+}
+
+
+
+// ── Multi-Release 族：内名选择器确定序 + 单条 URI 替换语义 ─────────────────
+//
+// 内名命中 base + versions/<N> 变体并存的族时，选择器按确定序取 base（不依赖
+// 容器迭代序）；replaceClassBytes 是单条 URI 语义——替换只落选定条目，族内
+// 其它条目字节不动。
+
+TEST(MjWorkspaceCoreTest, ResolvesAndReplacesBaseEntryOfMultiReleaseFamily)
+{
+    WorkspaceBase workspace;
+    ASSERT_TRUE(workspace.openJar(writeMultiReleaseFamilyFixture().string()).is_ok());
+
+    // 内名命中族：确定序选 base 条目。
+    auto resolved = workspace.readClassBytes("workspace/Subject");
+    ASSERT_TRUE(resolved.is_ok());
+    EXPECT_EQ(std::move(resolved).unwrap().resourceUri, std::string("workspace/Subject.class"));
+
+    // 内名选择器替换：只落 base 条目，versions/17 变体字节不动。
+    const auto replacement = assemble("workspace/Subject", "42");
+    auto       applied     = workspace.replaceClassBytes("workspace/Subject", replacement,
+                                                         expected(0));
+    ASSERT_TRUE(applied.status.is_ok());
+    EXPECT_TRUE(applied.committed);
+
+    auto baseAfter = workspace.readClassBytes("workspace/Subject.class");
+    ASSERT_TRUE(baseAfter.is_ok());
+    EXPECT_EQ(std::move(baseAfter).unwrap().bytes, replacement);
+
+    const auto original = assemble("workspace/Subject", "1");
+    auto  variantAfter  = workspace.readClassBytes("META-INF/versions/17/workspace/Subject.class");
+    ASSERT_TRUE(variantAfter.is_ok());
+    EXPECT_EQ(std::move(variantAfter).unwrap().bytes, original);
 }
 
 }   // namespace mjbase::workspace

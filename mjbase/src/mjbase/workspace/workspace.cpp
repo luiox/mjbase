@@ -34,6 +34,7 @@
 #include "mjbase/jasm/resource_jasm_service.hpp"
 #include "mjbase/keys.hpp"
 #include "mjbase/mapping/identifier_util.hpp"
+#include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_helper.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/spi/class_file_sanitize.hpp"
@@ -707,26 +708,8 @@ bool hasClassExtension(const std::string& uri)
     return true;
 }
 
-std::string internalNameFromClassUri(const std::string& uri)
-{
-    constexpr char kMultiReleasePrefix[] = "META-INF/versions/";
-    std::string    path                  = uri;
-    if (path.rfind(kMultiReleasePrefix, 0) == 0) {
-        const auto versionEnd = path.find('/', sizeof(kMultiReleasePrefix) - 1);
-        if (versionEnd == std::string::npos || versionEnd + 1 >= path.size()) return {};
-        const auto version = path.substr(sizeof(kMultiReleasePrefix) - 1,
-                                         versionEnd - (sizeof(kMultiReleasePrefix) - 1));
-        if (version.empty() ||
-            !std::all_of(version.begin(), version.end(), [](unsigned char character) {
-                return std::isdigit(character) != 0;
-            }))
-            return {};
-        path = path.substr(versionEnd + 1);
-    }
-    if (!hasClassExtension(path)) return {};
-    path.resize(path.size() - (sizeof(".class") - 1));
-    return path;
-}
+// 内名推导（模型层族视图原语，Multi-Release 版本化 URI 剥离口径见
+// model/resource_container.hpp）：本文件不再持有副本。
 
 /// @brief class 字节 → 内部名（骨架解析；失败为空）。
 std::string internalNameOfBytes(const std::vector<ca::u8>& bytes)
@@ -1623,13 +1606,27 @@ WorkspaceResult<std::string> WorkspaceBase::resolveClassUri(
     if (ca::core::tag_cast::isa<model::ClassResource>(container.getResource(uriOrInternalName)))
         return ca::core::Ok(uriOrInternalName);
     try {
+        // 内名 selector 命中 Multi-Release 族（base 与 versions/<N> 变体并存，
+        // 内名相同）时按确定序选定：base 形条目优先于版本化条目（JEP 238 口径
+        // 版本 ≥ 9），同层级取 URI 字节序最小。不得依赖容器迭代序——那会让
+        // 同一容器在不同进程/标准库里解析到不同族员。
         std::string match;
+        ca::i64     matchVersion = -1;
         container.visitResources([&](std::string_view uri, const model::IResource& resource) {
             const auto* classResource =
                 ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
-            if (classResource == nullptr || !match.empty()) return;
-            if (internalNameOfBytes(classResource->get()) == uriOrInternalName)
-                match = std::string(uri);
+            if (classResource == nullptr) return;
+            if (internalNameOfBytes(classResource->get()) != uriOrInternalName) return;
+            const ca::i64 version = model::multiReleaseVersionOfClassUri(uri);
+            const bool    candidateVersioned = version >= 9;
+            const bool    currentVersioned   = matchVersion >= 9;
+            const bool    better = match.empty() ||
+                                   (!candidateVersioned && currentVersioned) ||
+                                   (candidateVersioned == currentVersioned &&
+                                    std::string_view(uri) < std::string_view(match));
+            if (!better) return;
+            match        = std::string(uri);
+            matchVersion = version;
         });
         if (match.empty())
             return ca::core::Err(
@@ -2909,7 +2906,7 @@ MutationResult WorkspaceBase::replaceClassBytes(const std::string&         uriOr
     auto resolved = resolveClassUri(*working_, uriOrInternalName);
     if (resolved.is_err()) return stateFailure(std::move(resolved).unwrap_err());
     const auto uri                  = std::move(resolved).unwrap();
-    const auto expectedInternalName = internalNameFromClassUri(uri);
+    const auto expectedInternalName = mjbase::model::internalNameFromClassUri(uri);
     if (expectedInternalName.empty())
         return stateFailure(error(WorkspaceError::InvalidArgument, "replace class bytes",
                                   "target URI is not a canonical class or multi-release class "

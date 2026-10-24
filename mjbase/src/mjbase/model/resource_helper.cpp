@@ -5,8 +5,10 @@
 #include <string>
 #include <utility>
 
+#include "libca/core/tag_cast.hpp"
 #include "libca/str/utf8_string.hpp"
 
+#include "resource_container.hpp"
 #include "resource_io.hpp"
 
 namespace mjbase::model {
@@ -75,6 +77,10 @@ ModelResult<void> ResourceHelper::exportToJar(ResourceContainer& container,
                                               std::string_view   filePath,
                                               std::unique_ptr<mjbase::jar::IJarWriter> writer)
 {
+    // Multi-Release 守护：版本化 class 条目在场时确保主属性在场（幂等，无
+    // 版本化条目时零改动）。缺属性时 JVM 9+ 忽略整棵 versions 树，导出面是
+    // 保证产出 jar 可用的最后收口点。
+    ensureMultiReleaseManifest(container);
     if (!writer)
         writer = std::make_unique<mjbase::jar::JarWriter>(
             ca::str::Utf8StringRef::from_string_view(filePath));
@@ -89,6 +95,55 @@ ModelResult<void> ResourceHelper::exportToClassFile(ResourceContainer& container
 {
     SimpleClassFileExporter exporter(resourcePath, filePath);
     return container.exportResource(&exporter);
+}
+
+// ── Multi-Release 主属性守护 ────────────────────────────────────────────────
+
+bool ResourceHelper::ensureMultiReleaseManifest(ResourceContainer& container)
+{
+    static constexpr const char* kMultiReleaseKey   = "Multi-Release";
+    static constexpr const char* kMultiReleaseValue = "true";
+
+    bool                       hasVersionedClass = false;
+    const ManifestResource*    manifestResource  = nullptr;
+    container.visitResources([&](std::string_view uri, const IResource& resource) {
+        if (resource.getType() == ResourceType::Class &&
+            multiReleaseVersionOfClassUri(uri) >= 9) {
+            hasVersionedClass = true;
+        }
+        if (manifestResource == nullptr) {
+            manifestResource =
+                ca::core::tag_cast::dyn_cast<const ManifestResource>(&resource);
+        }
+    });
+    if (!hasVersionedClass) return false;
+
+    if (manifestResource == nullptr) {
+        // 无 Manifest 资源：新增最小 Manifest（Manifest-Version + Multi-Release），
+        // 落在 jar 规范键上。
+        mjbase::jar::Manifest manifest;
+        manifest.setMainAttribute(ca::str::Utf8StringRef::from_cstr("Manifest-Version"),
+                                  ca::str::Utf8StringRef::from_cstr("1.0"));
+        manifest.setMainAttribute(ca::str::Utf8StringRef::from_cstr(kMultiReleaseKey),
+                                  ca::str::Utf8StringRef::from_cstr(kMultiReleaseValue));
+        container.replaceResource(
+            ca::str::Utf8StringRef::from_cstr(mjbase::jar::JarUtil::kManifestFileName),
+            std::make_unique<ManifestResource>(std::move(manifest)));
+        return true;
+    }
+
+    // 既有 Manifest：属性已是 "true" 则零改动；否则原位覆写（既有键不改变行
+    // 位置）或追加尾部（新键）——行序字节级保序由 Manifest::setMainAttribute
+    // 与 toBytes 的插入序序列化保证。
+    mjbase::jar::Manifest updated = manifestResource->get();
+    const auto            key     = ca::str::Utf8StringRef::from_cstr(kMultiReleaseKey);
+    if (updated.getMainAttribute(key).to_std_string() == kMultiReleaseValue) return false;
+    updated.setMainAttribute(key, ca::str::Utf8StringRef::from_cstr(kMultiReleaseValue));
+    // replaceResource 先把键视图驻留进容器 arena、再替换条目，借用 location
+    // 视图跨不过旧资源死亡点也安全。
+    container.replaceResource(manifestResource->getLocation(),
+                              std::make_unique<ManifestResource>(std::move(updated)));
+    return true;
 }
 
 }   // namespace mjbase::model

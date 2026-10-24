@@ -1342,3 +1342,61 @@ TEST(MjReferenceTest, failsOpenOnJsrKeepsLookupAndDropsExecution)
         }
     }
 }
+
+// ── Multi-Release 同内名重复声明（族成员并存）────────────────────────────
+//
+// base 与 versions/<N> 变体共用同一类内部名时，扫描面会遇到同内名的两份声明。
+// 契约（reference_index.cpp 类头/成员声明键控）：按声明键 first-seen-wins，
+// 重复键恰好结算一次——不重复入索引、不因第二份覆盖或叠加而漂移；变体独有
+// 成员照常入索引。容器迭代序决定「谁先到」，属非确定面，断言只锁序不变量
+// （计数与去重），不锁取哪一份。
+
+TEST(MjReferenceTest, settlesDuplicateInternalNameDeclarationsExactlyOnce)
+{
+    ResourceContainer container;
+
+    // base app/Api：live()V 一份声明。
+    {
+        ClassBytesBuilder b("app/Api");
+        std::vector<MethodSpec> ms;
+        ms.push_back(m("live", "()V", 0, 0, [](CodeEmit& e) { e.op(Op::RETURN); }));
+        container.addResource("app/Api.class",
+                              std::make_unique<ClassResource>("app/Api.class", b.assemble(ms)));
+    }
+    // versions/17 变体 app/Api：live()V（重复键）+ dead()V（变体独有键）。
+    {
+        ClassBytesBuilder b("app/Api");
+        std::vector<MethodSpec> ms;
+        ms.push_back(m("live", "()V", 0, 0, [](CodeEmit& e) { e.op(Op::RETURN); }));
+        ms.push_back(m("dead", "()V", 0, 0, [](CodeEmit& e) { e.op(Op::RETURN); }));
+        container.addResource("META-INF/versions/17/app/Api.class",
+                              std::make_unique<ClassResource>(
+                                  "META-INF/versions/17/app/Api.class", b.assemble(ms)));
+    }
+
+    ReferenceIndex index;
+    index.build(container);
+
+    // 类头声明：同内名两份只结算一条（classDeclarations() 恰含一条 app/Api）。
+    const ClassDeclaration* api = index.declaredClass("app/Api");
+    ASSERT_NE(api, nullptr);
+    ca::usize apiDeclCount = 0;
+    for (const ClassDeclaration& decl : index.classDeclarations()) {
+        if (decl.name == "app/Api") ++apiDeclCount;
+    }
+    EXPECT_EQ(apiDeclCount, 1u);
+
+    // 成员声明：重复键 live 恰好一条；变体独有键 dead 恰好一条。
+    const std::vector<MethodDeclaration>& declared = index.declaredMethodsIn("app/Api");
+    ca::usize liveCount = 0;
+    ca::usize deadCount = 0;
+    for (const MethodDeclaration& method : declared) {
+        if (method.method.name == "live") ++liveCount;
+        if (method.method.name == "dead") ++deadCount;
+    }
+    EXPECT_EQ(liveCount, 1u);
+    EXPECT_EQ(deadCount, 1u);
+    EXPECT_EQ(declared.size(), 2u);
+    EXPECT_NE(index.declaredMethod("app/Api", "live", "()V"), nullptr);
+    EXPECT_NE(index.declaredMethod("app/Api", "dead", "()V"), nullptr);
+}
