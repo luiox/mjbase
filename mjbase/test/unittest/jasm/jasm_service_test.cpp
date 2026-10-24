@@ -337,6 +337,36 @@ TEST(MjResourceJasmServiceTest, SuccessfulReplacementKeepsHierarchyStateFresh)
     EXPECT_EQ("example/Subject", fresh.value->internalName.to_std_string());
 }
 
+// 重写既有类保持原 class 版本：Jasm 文本无版本指令，context 是唯一版本
+// 通道；缺省 61 会把 v52 类静默抬到 v61、抬高混合 jar 的最低 JVM 要求。
+TEST(MjResourceJasmServiceTest, RewritePreservesOriginalClassVersion)
+{
+    JvmJasmService assembler;
+    JvmJasmContext v52;
+    v52.classMajorVersion = 52;
+    auto           sourceName = utf16("Subject.jasm");
+    auto           source     = utf16(classSource("example/Subject", "      bipush 1\n      ireturn\n"));
+    auto           built      = assembler.assemble(sourceName.ref(), source.ref(), v52);
+    ASSERT_TRUE(built.isOk());
+
+    model::ResourceContainer container;
+    container.addResource("example/Subject.class",
+                          std::make_unique<model::ClassResource>("example/Subject.class",
+                                                                 built.value->bytes));
+
+    ResourceJasmService service(container);
+    auto rewritten = utf16(classSource("example/Subject", "      bipush 2\n      ireturn\n"));
+    auto result    = service.assemble("example/Subject.class", sourceName.ref(), rewritten.ref());
+    ASSERT_TRUE(result.isOk())
+        << result.diagnostics.front().message.to_utf8_string().to_std_string();
+
+    auto read = jbc::core::readClass(jbc::core::ByteView(result.value->bytes));
+    ASSERT_TRUE(read.is_ok());
+    auto parsed = std::move(read).unwrap();
+    EXPECT_EQ(52, parsed.file->major);
+    EXPECT_EQ(0, parsed.file->minor);
+}
+
 TEST(MjResourceJasmServiceTest, DisassemblesClassResourceByUri)
 {
     auto                container = containerWithSubject();
