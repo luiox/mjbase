@@ -1,7 +1,7 @@
 /// @file        insn_planner.hpp
 /// @brief       规则驱动器：在规则上滑窗匹配，产出替换计划。
 ///
-/// 对齐旧实现的 InsnReplacer（含 InsnMatchReplacer 的组合层职责），
+/// 对齐 InsnReplacer（含 InsnMatchReplacer 的组合层职责），
 /// 但**不执行编辑**（任务约定：DSL 只产出计划）：
 ///   - plansFor：匹配 → 有产出器的命中变成 ReplacePlan；无产出器的
 ///     命中仅跳过窗口（对齐旧 noHandler 行为）。扫描纪律与旧 replace

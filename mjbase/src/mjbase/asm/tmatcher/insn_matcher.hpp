@@ -2,7 +2,7 @@
 /// @brief       匹配引擎：单游标裁决 findWinner + 纯匹配器 InsnMatcher。
 ///
 /// findWinner 是 InsnMatcher 与替换规则骨架（insn_planner）共享的调度
-/// 逻辑（对齐旧实现的 findLongestMatch），模板化以同时接受
+/// 逻辑（findLongestMatch），模板化以同时接受
 /// vector<MatchSequence> 与 vector<ReplaceRule>——两者都须提供
 /// name()/step()。胜出条目的容器下标经 outIndex 透出（供 planner 取回
 /// 规则本体；名字可重复，不能按名字找回）。
@@ -37,7 +37,7 @@ enum class MatchPreference : ca::u8 {
 
 /// @brief 在一组序列中找出从 start 出发的一次命中。
 ///
-/// Longest：最长命中优先，同长按注册顺序（旧实现语义）；
+/// Longest：最长命中优先，同长按注册顺序；
 /// First：第一个有命中的序列的第一个候选（懒惰量词在此生效）。
 /// 零长命中（纯守卫类序列）被忽略——命中窗口必须至少覆盖一条指令。
 /// tracerEnabled 时 *outTrace 接收胜出序列的匹配轨迹；

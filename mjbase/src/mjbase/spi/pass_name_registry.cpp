@@ -11,6 +11,8 @@
 #include "mjbase/pass/const_char_array_string_folder.hpp"
 #include "mjbase/pass/enum_cast_check_remover.hpp"
 #include "mjbase/pass/constant_folder.hpp"
+#include "mjbase/pass/expression_simplifier.hpp"
+#include "mjbase/pass/fix_pattern_simplifier.hpp"
 #include "mjbase/pass/illegal_class_file_cleaner.hpp"
 #include "mjbase/pass/junk_code_inserter.hpp"
 #include "mjbase/pass/meta_info_remover.hpp"
@@ -20,6 +22,7 @@
 #include "mjbase/pass/stack_operation.hpp"
 #include "mjbase/pass/strength_reducer.hpp"
 #include "mjbase/pass/tool_class_combiner.hpp"
+#include "mjbase/pass/type_cast_simplifier.hpp"
 #include "mjbase/pass/unused_check_cleaner.hpp"
 #include "mjbase/pass/unused_member_remover.hpp"
 
@@ -184,7 +187,7 @@ Result<std::unique_ptr<CfClassPass>, RegistryError>
 //
 // 依赖方向注记：本文件在 spi 域，默认表的种子却是 pass 域的具体 pass——spi 头
 // 文件面保持不依赖 pass（pass 依赖 spi 的正向），只在 .cpp 反向包含做种子注册。
-// 名字用真实类名，对齐 mbase 旧栈 registerBuiltinPasses 的命名纪律。
+// 名字用真实类名，registerBuiltinPasses 的命名纪律。
 
 namespace {
 
@@ -257,6 +260,28 @@ PassNameRegistry makeDefaultRegistry()
         "EnumCastCheckRemover",
         [] { return std::make_unique<mjbase::pass::EnumCastCheckRemover>(); },
         "Remove provably redundant enum values() INVOKEVIRTUAL/CHECKCAST adjacent pairs."));
+    // opt pass 扩段（C 方法级指令变换组）：固定模式简化——位运算族 + 死代码族 +
+    // 整数比较常量偏移折叠 + 同 slot store/load 中转消除。标签：scope:method /
+    // action:simplify / stability:opt-in（默认链不收，CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "FixPatternSimplifier",
+        [] { return std::make_unique<mjbase::pass::FixPatternSimplifier>(); },
+        "Rewrite registered fixed obfuscator bytecode patterns (bitwise idioms, "
+        "compare folding, store/load bounce)."));
+    // opt pass 扩段（C 方法级指令变换组）：代数表达式 peephole 化简，恒等元 +
+    // 交换/结合 + mul-by--1/shift 等旧规则集（丢弃一条代数不成立的 legacy 规则）。
+    // 标签：scope:method / action:simplify / stability:opt-in。
+    seed(reg.registerMethodPass(
+        "ExpressionSimplifier",
+        [] { return std::make_unique<mjbase::pass::ExpressionSimplifier>(); },
+        "Fold algebraic expression windows (identity, swap/assoc, negation, bitwise idioms)."));
+    // opt pass 扩段（C 方法级指令变换组）：原始类型 cast 常量折叠 + 已知 helper
+    // （Float/Double 位图、Integer/Long 解析）折叠。标签：scope:method /
+    // action:fold / stability:opt-in。
+    seed(reg.registerMethodPass(
+        "TypeCastSimplifier",
+        [] { return std::make_unique<mjbase::pass::TypeCastSimplifier>(); },
+        "Fold primitive cast chains and known JDK constant helpers."));
     // 批 A（容器级直写组首件）：全容器确定性类重命名。
     seed(reg.registerGlobalPass(
         "ClassRenamer", [] { return std::make_unique<mjbase::pass::ClassRenamer>(); },

@@ -14,7 +14,7 @@ rule("mjbase.i18n_src_sync")
     after_build(function (target)
         import("core.project.config")
         local name = "i18n_mjbase_translations.generated.hpp"
-        local gens = os.files(path.join(config.buildir(), "**", name))
+        local gens = os.files(path.join(config.builddir(), "**", name))
         if not gens or #gens == 0 then
             raise("mjbase.i18n_src_sync: 构建树内未找到 " .. name)
         end
@@ -114,7 +114,6 @@ target("mjbase")
     -- .lang 的规则在上方始终保留）。
     add_files("src/mjbase/renamer/**.cpp")
     add_files("src/mjbase/jasm/**.cpp")
-    add_files("src/mjbase/log/**.cpp")
     add_files("src/mjbase/workspace/**.cpp")
     add_files("src/mjbase/cli/*.cpp")
     -- cli 的 ArgParser 文案单源表（i18n_setup 静态注册，public include 供下游覆盖）。
@@ -187,7 +186,7 @@ target("mjbase_unittest")
     add_files("test/unittest/log/*_test.cpp")
     add_files("test/unittest/workspace/*_test.cpp")
     add_files("test/unittest/cli/*_test.cpp")
-    -- 第 5 批（morpher 仓内副本孤儿测试救回）：keys/i18n/util 伞头与叶子件，
+    -- 第 5 批（孤儿测试救回）：keys/i18n/util 伞头与叶子件，
     -- 与 src 的 keys.hpp/i18n.hpp/util 一一对应（B3-A 波次测试面，副本删除前收容）。
     add_files("test/unittest/keys/*_test.cpp")
     add_files("test/unittest/i18n/*_test.cpp")

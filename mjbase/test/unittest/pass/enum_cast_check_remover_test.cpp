@@ -23,7 +23,7 @@ constexpr ca::u16 kAccSuper  = 0x0020;
 constexpr ca::u16 kAccEnum   = 0x4000;
 
 /// 枚举类骨架：super = java/lang/Enum + ACC_PUBLIC|ACC_SUPER|ACC_ENUM。
-/// 类名取裸名 `T`（旧栈 fixture 原样：desc 字面口径 `[LT;` 依赖它）。
+/// 类名取裸名 `T`（fixture 原样：desc 字面口径 `[LT;` 依赖它）。
 FixtureBuilder makeEnumCastClass()
 {
     FixtureBuilder b("T");
@@ -31,7 +31,7 @@ FixtureBuilder makeEnumCastClass()
     return b;
 }
 
-/// INVOKEVIRTUAL; CHECKCAST; POP; RETURN——旧栈 fixture 的成对形状
+/// INVOKEVIRTUAL; CHECKCAST; POP; RETURN——fixture 的成对形状
 /// （调用描述符 == 枚举数组类型 `[LT;` 的字面口径；owner/cast 目标不被检查）。
 Bytes pairBody(ca::u16 cloneCp, ca::u16 castCls)
 {
@@ -56,7 +56,7 @@ Bytes noCastBody(ca::u16 cloneCp)
 }
 
 /// GOTO→cast; INVOKEVIRTUAL; CHECKCAST; POP; RETURN——GOTO 目标落在 cast
-/// 站点（GOTO 3 字节，pc0 发出 offset+3 → 目标 pc6 = cast）：旧栈中标签
+/// 站点（GOTO 3 字节，pc0 发出 offset+3 → 目标 pc6 = cast）：中标签
 /// 节点隔断调用→cast 物理相邻的同构形状，保持原样面。
 Bytes anchorBlockedBody(ca::u16 cloneCp, ca::u16 castCls)
 {
@@ -73,7 +73,7 @@ Bytes anchorBlockedBody(ca::u16 cloneCp, ca::u16 castCls)
 
 }   // namespace
 
-// ─── 非枚举类不处理（旧栈 roundtripNonEnum 口径）──────────────────────────
+// ─── 非枚举类不处理（roundtripNonEnum 口径）──────────────────────────
 TEST(EnumCastCheckRemoverTest, roundtripNonEnum)
 {
     FixtureBuilder b("t/T");   // 缺省 public super，无 ACC_ENUM
@@ -85,7 +85,7 @@ TEST(EnumCastCheckRemoverTest, roundtripNonEnum)
     EXPECT_EQ(r.out, in);
 }
 
-// ─── 调用后物理相邻不是 CHECKCAST：保持原样（旧栈口径）───────────────────
+// ─── 调用后物理相邻不是 CHECKCAST：保持原样（口径）───────────────────
 TEST(EnumCastCheckRemoverTest, keepsEnumInvokeWithoutAdjacentCast)
 {
     FixtureBuilder b  = makeEnumCastClass();
@@ -98,7 +98,7 @@ TEST(EnumCastCheckRemoverTest, keepsEnumInvokeWithoutAdjacentCast)
     EXPECT_EQ(r.out, in);
 }
 
-// ─── 成对删除：仅移 INVOKEVIRTUAL + 紧邻 CHECKCAST（旧栈口径）────────────
+// ─── 成对删除：仅移 INVOKEVIRTUAL + 紧邻 CHECKCAST（口径）────────────
 TEST(EnumCastCheckRemoverTest, removesOnlyAdjacentEnumCastPair)
 {
     FixtureBuilder b   = makeEnumCastClass();
@@ -130,7 +130,7 @@ TEST(EnumCastCheckRemoverTest, keepsPairInNonFirstMethod)
     EXPECT_EQ(r.out, in);
 }
 
-// ─── cast 站点被锚定面（移植审计钉）：同构于旧栈标签隔断，保持原样 ────────
+// ─── cast 站点被锚定面（移植审计钉）：同构于标签隔断，保持原样 ────────
 TEST(EnumCastCheckRemoverTest, anchorAtCastBlocksPair)
 {
     FixtureBuilder b   = makeEnumCastClass();

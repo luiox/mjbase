@@ -1,18 +1,17 @@
-/// 移植自 mbase/unittest/pass/opt/structure_pass_test.cpp 的
 /// EmptyClassRemoverTest / UnusedClassRemoverTest / UnusedFieldRemoverTest /
 /// GlobalUnusedMethodRemoverTest / GlobalUnusedPassContractTest 段（批 A：
-/// 未使用成员清理家族，容器级四件）。夹具从 jbytecode ClassWriter 重写为
+/// 未使用成员清理家族，容器级四件）。夹具经
 /// shared/structural_pass_util.hpp 的 FixtureBuilder；注解 / 签名 / Module /
 /// ModuleMainClass 等属性面经 libjbc DOM 补槽（AttrSlot::makeNew + RawAttr /
 /// AnnotationsAttr）后写回——属性字节受控且不依赖本地语料。
 ///
-/// 与旧栈的形态差（均已在注释逐用例声明）：
+/// 与形态差（均已在注释逐用例声明）：
 ///   - 间接引用保持（MethodHandle / invokedynamic / Class.forName 字符串）的
 ///     扫描面属 reference 模块自身用例钉死的范围（reference/global_reachability_
 ///     test.cpp 结构元数据用例 + reference_index_test），本文件只移植类注解 /
 ///     字段签名两个 DOM 可构造面，间接调用面不在此重复建桩。
 ///   - LVT/LVTT keep 判定（方法局部变量注解）在 libjbc 同属
-///     Runtime*TypeAnnotations 属性（在场即 keep），与旧栈「局部注解行过滤」
+///     Runtime*TypeAnnotations 属性（在场即 keep），「局部注解行过滤」
 ///     等价，由注解 keep 用例覆盖属性族判定路径。
 #include <gtest/gtest.h>
 
@@ -49,14 +48,14 @@ constexpr ca::u16 kAccStatic       = 0x0008;
 
 // ── 夹具构造 ─────────────────────────────────────────────────────────────
 
-/// 旧栈 buildStructureEmptyClass 移植：public 空类。
+/// buildStructureEmptyClass：public 空类。
 Bytes buildEmptyClassBytes(const char* name)
 {
     FixtureBuilder builder(name);
     return builder.assemble();
 }
 
-/// 旧栈 buildStructureUsedClass 移植：Used.keep()V public static。
+/// buildStructureUsedClass：Used.keep()V public static。
 Bytes buildKeepClass()
 {
     FixtureBuilder builder("Used");
@@ -71,7 +70,7 @@ Bytes buildKeepClass()
     return builder.assemble();
 }
 
-/// 旧栈 buildStructureAppClass 移植：App.main 调 Used.keep。
+/// buildStructureAppClass：App.main 调 Used.keep。
 Bytes buildAppCallingUsed()
 {
     FixtureBuilder builder("App");
@@ -88,7 +87,7 @@ Bytes buildAppCallingUsed()
     return builder.assemble();
 }
 
-/// 旧栈 buildUnusedClassRemoverFixture 移植：withMain ? App(main→Used.keep)
+/// buildUnusedClassRemoverFixture：withMain ? App(main→Used.keep)
 /// : Library（空类）+ Used + Dead + note.txt。
 void addUnusedClassFixture(mjbase::model::ResourceContainer& container, bool withMain)
 {
@@ -105,7 +104,7 @@ void addUnusedClassFixture(mjbase::model::ResourceContainer& container, bool wit
                               "note.txt", std::vector<ca::u8>{1, 2, 3}));
 }
 
-/// 旧栈 buildMemberCleanupClass 移植：App 上 private live/dead 字段与方法 +
+/// buildMemberCleanupClass：App 上 private live/dead 字段与方法 +
 /// public api 面 + main 使用 live 侧（dead 全部不可达）。
 Bytes buildMemberCleanupClass()
 {
@@ -154,7 +153,7 @@ Bytes buildMemberCleanupClass()
     return builder.assemble();
 }
 
-/// 旧栈 buildVirtualCleanupMethodClass 移植：owner 继承 super，public 实例
+/// buildVirtualCleanupMethodClass：owner 继承 super，public 实例
 /// run()V。
 Bytes buildRunnerClass(const char* owner, const char* superName)
 {
@@ -171,7 +170,7 @@ Bytes buildRunnerClass(const char* owner, const char* superName)
     return builder.assemble();
 }
 
-/// 旧栈 buildVirtualCleanupAppClass 移植：main 经 INVOKEVIRTUAL Base.run
+/// buildVirtualCleanupAppClass：main 经 INVOKEVIRTUAL Base.run
 /// （ACONST_NULL receiver）。
 Bytes buildVirtualApp()
 {
@@ -480,7 +479,7 @@ Bytes buildConstructorReachClass()
 
 // ── 运行面辅助 ───────────────────────────────────────────────────────────
 
-/// 旧栈 registerReachabilityAnalyses 对齐：mjbase 侧六分析全注册（层次事实由
+/// registerReachabilityAnalyses 对齐：六分析全注册（层次事实由
 /// HierarchyBundleAnalysis 承载）。
 void registerReachabilityAnalyses(mjbase::spi::GlobalAnalysisManager& gam)
 {
@@ -530,7 +529,7 @@ Bytes classBytesOf(mjbase::model::ResourceContainer& container, const char* uri)
 
 // ── EmptyClassRemover ────────────────────────────────────────────────────────
 
-// 旧栈用例移植：只删结构空类（无字段无方法），非类资源与其他类原样。
+// 用例：只删结构空类（无字段无方法），非类资源与其他类原样。
 TEST(MjPassEmptyClassRemoverTest, RemovesOnlyStructurallyEmptyClasses)
 {
     mjbase::model::ResourceContainer container;
@@ -556,7 +555,7 @@ TEST(MjPassEmptyClassRemoverTest, RemovesOnlyStructurallyEmptyClasses)
 
 // ── 契约面：未注册分析稳定失败 ──────────────────────────────────────────────
 
-// 旧栈用例移植：未注册分析 = 调用方契约错误 → std::logic_error，容器无改写。
+// 用例：未注册分析 = 调用方契约错误 → std::logic_error，容器无改写。
 TEST(MjPassUnusedMemberContractTest, UnregisteredAnalysisPropagatesWithoutResourceRewrite)
 {
     const auto verify = [](auto& pass) {
@@ -580,7 +579,7 @@ TEST(MjPassUnusedMemberContractTest, UnregisteredAnalysisPropagatesWithoutResour
 
 // ── UnusedClassRemover ───────────────────────────────────────────────────────
 
-// 旧栈用例移植：main 闭包外的类删除，幸存类与非类资源原样。
+// 用例：main 闭包外的类删除，幸存类与非类资源原样。
 TEST(MjPassUnusedClassRemoverTest, RemovesClassesOutsideMainReachabilityClosure)
 {
     ca::str::Utf8StringArena         arena;
@@ -599,7 +598,7 @@ TEST(MjPassUnusedClassRemoverTest, RemovesClassesOutsideMainReachabilityClosure)
     EXPECT_FALSE(container.hasResource("Dead.class"));
 }
 
-// 旧栈用例移植：无默认根（library jar）保持不变。
+// 用例：无默认根（library jar）保持不变。
 TEST(MjPassUnusedClassRemoverTest, KeepsLibraryJarWhenNoDefaultRootsExist)
 {
     ca::str::Utf8StringArena         arena;
@@ -618,7 +617,7 @@ TEST(MjPassUnusedClassRemoverTest, KeepsLibraryJarWhenNoDefaultRootsExist)
     EXPECT_TRUE(container.hasResource("note.txt"));
 }
 
-// 旧栈用例移植：resolved 可达性保持虚覆盖目标（Child.run 覆盖 Base.run）。
+// 用例：resolved 可达性保持虚覆盖目标（Child.run 覆盖 Base.run）。
 TEST(MjPassUnusedClassRemoverTest, KeepsOverrideTargetsFromResolvedReachability)
 {
     ca::str::Utf8StringArena         arena;
@@ -642,7 +641,7 @@ TEST(MjPassUnusedClassRemoverTest, KeepsOverrideTargetsFromResolvedReachability)
     EXPECT_FALSE(container.hasResource("VirtualDead.class"));
 }
 
-// 旧栈用例移植：services 文件名/内容行与 Manifest 入口键都是保留根。
+// 用例：services 文件名/内容行与 Manifest 入口键都是保留根。
 TEST(MjPassUnusedClassRemoverTest, KeepsServiceAndManifestEntrypoints)
 {
     ca::str::Utf8StringArena         arena;
@@ -676,7 +675,7 @@ TEST(MjPassUnusedClassRemoverTest, KeepsServiceAndManifestEntrypoints)
     EXPECT_TRUE(container.hasResource("META-INF/MANIFEST.MF"));
 }
 
-// 旧栈用例移植：module 描述符类是保留根，其 uses/provides/mainClass 结构引用
+// 用例：module 描述符类是保留根，其 uses/provides/mainClass 结构引用
 // 随可达性扩散（Service/Impl/Main 保，Dead 删）。
 TEST(MjPassUnusedClassRemoverTest, KeepsModuleDescriptorEntrypoints)
 {
@@ -699,7 +698,7 @@ TEST(MjPassUnusedClassRemoverTest, KeepsModuleDescriptorEntrypoints)
     EXPECT_FALSE(container.hasResource("example/Dead.class"));
 }
 
-// 旧栈用例移植：坏类资源整 pass 放弃（fail-closed），不做部分删除。
+// 用例：坏类资源整 pass 放弃（fail-closed），不做部分删除。
 TEST(MjPassUnusedClassRemoverTest, MalformedClassFailsClosedWithoutPartialDeletion)
 {
     ca::str::Utf8StringArena         arena;
@@ -758,7 +757,7 @@ TEST(MjPassUnusedClassRemoverTest, KeepsMetadataReferencedClasses)
 
 // ── UnusedFieldRemover ───────────────────────────────────────────────────────
 
-// 旧栈用例移植：只删不可达 private 字段。
+// 用例：只删不可达 private 字段。
 TEST(MjPassUnusedFieldRemoverTest, RemovesOnlyUnreachablePrivateFields)
 {
     ca::str::Utf8StringArena         arena;
@@ -823,7 +822,7 @@ TEST(MjPassUnusedFieldRemoverTest, SkipsNonClassResourcesWithoutUntaggedCast)
     verify(methodPass, /*expectFieldRemoval*/ false);
 }
 
-// 旧栈用例移植：坏类资源整 pass 放弃，已加载类字节不被部分改写。
+// 用例：坏类资源整 pass 放弃，已加载类字节不被部分改写。
 TEST(MjPassUnusedFieldRemoverTest, MalformedClassFailsClosedWithoutPartialRewrite)
 {
     ca::str::Utf8StringArena         arena;
@@ -875,7 +874,7 @@ TEST(MjPassUnusedFieldRemoverTest, KeepsAnnotatedPrivateField)
 
 // ── GlobalUnusedMethodRemover ────────────────────────────────────────────────
 
-// 旧栈用例移植：只删不可达 private 方法（<init>/<clinit> 豁免面由 JVM 门兜底）。
+// 用例：只删不可达 private 方法（<init>/<clinit> 豁免面由 JVM 门兜底）。
 TEST(MjPassGlobalUnusedMethodRemoverTest, RemovesOnlyUnreachablePrivateMethods)
 {
     ca::str::Utf8StringArena         arena;
@@ -895,7 +894,7 @@ TEST(MjPassGlobalUnusedMethodRemoverTest, RemovesOnlyUnreachablePrivateMethods)
     EXPECT_FALSE(hasMethod(reloaded, "deadPrivateMethod", "()V"));
 }
 
-// 旧栈用例移植：坏类资源整 pass 放弃，已加载类字节不被部分改写。
+// 用例：坏类资源整 pass 放弃，已加载类字节不被部分改写。
 TEST(MjPassGlobalUnusedMethodRemoverTest, MalformedClassFailsClosedWithoutPartialRewrite)
 {
     ca::str::Utf8StringArena         arena;
@@ -964,7 +963,7 @@ TEST(MjPassGlobalUnusedMethodRemoverTest, KeepsAnnotatedPrivateMethod)
 
 // ── 缓存失效契约 ─────────────────────────────────────────────────────────────
 
-// 旧栈用例移植：pass 报告 none() 后 GlobalPassManager 失效全局分析缓存。
+// 用例：pass 报告 none() 后 GlobalPassManager 失效全局分析缓存。
 TEST(MjPassUnusedMemberInvalidationTest, ChangedResultInvalidatesGlobalAnalyses)
 {
     const auto verify = [](auto& pass, mjbase::model::ResourceContainer& container) {
@@ -1528,4 +1527,133 @@ TEST(MjPassNonPublicTierTest, MemberRuleProtectsNonPublicDeadMembers)
         EXPECT_TRUE(hasField(reloaded, "deadPackageField", "I"));
         EXPECT_FALSE(hasField(reloaded, "deadProtectedField", "I"));
     }
+}
+
+// ── Multi-Release 族删除契约 ────────────────────────────────────────────────
+//
+// 删除面按声明内名决策（可达性/引用索引全以内名键控），同名 base + versions/N
+// 变体「天然同进退」在实现上是巧合——本组用例把巧合固化为显式契约：
+//   - 类级：族成员要么同时删除、要么同时保留，绝不出现只删一份的半删态；
+//   - 成员级：族内每份各按（同名等价的）可达集独立结算，结果一致。
+
+/// app/Api 族成员：public static live()V + private static dead()V +
+/// private static deadField I（字段面删除载体）。
+Bytes buildApiFamilyMember()
+{
+    FixtureBuilder builder("app/Api");
+    builder.addField({"deadField", "I", kAccPrivate | kAccStatic});
+    FixtureMethod  live;
+    live.name      = "live";
+    live.desc      = "()V";
+    live.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
+    live.maxStack  = 0;
+    live.maxLocals = 0;
+    live.code      = bareReturn();
+    builder.addMethod(live);
+    FixtureMethod dead;
+    dead.name      = "dead";
+    dead.desc      = "()V";
+    dead.access    = static_cast<ca::u16>(kAccPrivate | kAccStatic);
+    dead.maxStack  = 0;
+    dead.maxLocals = 0;
+    dead.code      = bareReturn();
+    builder.addMethod(dead);
+    return builder.assemble();
+}
+
+/// app/Main：main 调 app/Api.live()V（可选引用面：withRef=false 时不引用 Api）。
+Bytes buildApiFamilyMain(bool withRef)
+{
+    FixtureBuilder builder("app/Main");
+    FixtureMethod  main;
+    main.name      = "main";
+    main.desc      = "([Ljava/lang/String;)V";
+    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
+    main.maxStack  = 0;
+    main.maxLocals = 1;
+    if (withRef) {
+        main.code = invokeStatic(builder.methodRef("app/Api", "live", "()V"));
+        main.code.push_back(0xB1);
+    }
+    else {
+        main.code = {0xB1};
+    }
+    builder.addMethod(main);
+    return builder.assemble();
+}
+
+TEST(MjPassUnusedClassRemoverTest, RemovesMultiReleaseFamilyTogether)
+{
+    ca::str::Utf8StringArena         arena;
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "app/Main.class", buildApiFamilyMain(/*withRef*/ false));
+    addClassResource(container, "app/Api.class", buildEmptyClassBytes("app/Api"));
+    addClassResource(container, "META-INF/versions/17/app/Api.class",
+                     buildEmptyClassBytes("app/Api"));
+    mjbase::spi::GlobalAnalysisManager gam(arena);
+    registerReachabilityAnalyses(gam);
+
+    mjbase::pass::UnusedClassRemover pass;
+    const auto                       pa = pass.run(container, gam);
+
+    // app/Api 不可达 → 族两份同时删除（「只删一份」的半删态不发生）。
+    EXPECT_FALSE(pa.areAllPreserved());
+    EXPECT_FALSE(container.hasResource("app/Api.class"));
+    EXPECT_FALSE(container.hasResource("META-INF/versions/17/app/Api.class"));
+    EXPECT_TRUE(container.hasResource("app/Main.class"));
+    EXPECT_EQ(container.size(), 1u);
+}
+
+TEST(MjPassUnusedClassRemoverTest, KeepsMultiReleaseFamilyTogether)
+{
+    ca::str::Utf8StringArena         arena;
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "app/Main.class", buildApiFamilyMain(/*withRef*/ true));
+    addClassResource(container, "app/Api.class", buildApiFamilyMember());
+    addClassResource(container, "META-INF/versions/17/app/Api.class",
+                     buildApiFamilyMember());
+    mjbase::spi::GlobalAnalysisManager gam(arena);
+    registerReachabilityAnalyses(gam);
+
+    mjbase::pass::UnusedClassRemover pass;
+    const auto                       pa = pass.run(container, gam);
+
+    // app/Api 可达 → 族两份同时保留。
+    EXPECT_TRUE(pa.areAllPreserved());
+    EXPECT_TRUE(container.hasResource("app/Api.class"));
+    EXPECT_TRUE(container.hasResource("META-INF/versions/17/app/Api.class"));
+    EXPECT_TRUE(container.hasResource("app/Main.class"));
+}
+
+TEST(MjPassUnusedMemberRemoverMultiReleaseTest, SettlesFamilyMembersConsistently)
+{
+    // 成员级删除对族内每份独立遍历、各按同名等价的可达集结算：两份的 dead()
+    // 同删、live() 同留，不因遍历序分叉。
+    const auto verify = [](auto& pass, auto&& check) {
+        ca::str::Utf8StringArena         arena;
+        mjbase::model::ResourceContainer container;
+        addClassResource(container, "app/Main.class", buildApiFamilyMain(/*withRef*/ true));
+        addClassResource(container, "app/Api.class", buildApiFamilyMember());
+        addClassResource(container, "META-INF/versions/17/app/Api.class",
+                         buildApiFamilyMember());
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachabilityAnalyses(gam);
+
+        EXPECT_FALSE(pass.run(container, gam).areAllPreserved());
+        for (const char* uri : {"app/Api.class", "META-INF/versions/17/app/Api.class"}) {
+            SCOPED_TRACE(uri);
+            check(reload(container, uri));
+        }
+        EXPECT_TRUE(container.hasResource("app/Main.class"));
+    };
+
+    mjbase::pass::GlobalUnusedMethodRemover methodPass;
+    mjbase::pass::UnusedFieldRemover        fieldPass;
+    verify(methodPass, [](const jbc::core::ClassFile& cf) {
+        EXPECT_TRUE(hasMethod(cf, "live", "()V"));
+        EXPECT_FALSE(hasMethod(cf, "dead", "()V"));
+    });   // 方法面：dead() 两份同删
+    verify(fieldPass, [](const jbc::core::ClassFile& cf) {
+        EXPECT_FALSE(hasField(cf, "deadField", "I"));
+    });   // 字段面：deadField 两份同删
 }

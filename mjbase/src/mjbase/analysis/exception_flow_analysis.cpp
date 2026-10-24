@@ -15,7 +15,7 @@ namespace {
 
 using jbc::core::Op;
 
-/// 旧栈 isBuiltinSubtype：JDK Throwable 族小表（项目内层次不可达时的兜底）。
+/// JDK Throwable 族小表（项目内层次不可达时的兜底）。
 bool isBuiltinSubtype(std::string_view type, std::string_view handler)
 {
     if (handler == "java/lang/Throwable") return true;
@@ -32,7 +32,7 @@ bool isBuiltinSubtype(std::string_view type, std::string_view handler)
     return false;
 }
 
-/// 旧栈 catches：内置表优先，未命中走项目内层次（invalid 键自然落空）。
+/// catches：内置表优先，未命中走项目内层次（invalid 键自然落空）。
 bool catches(const std::vector<std::string_view>& handlers, std::string_view type,
              std::string_view& handler, const mjbase::hierarchy::ClassHierarchy* hierarchy)
 {
@@ -63,7 +63,7 @@ struct ScannedMethod
 {
     struct ThrowSite
     {
-        std::string_view              type;   ///< 不可判定时为 "java/lang/Throwable"（旧栈同口径）
+        std::string_view              type;   ///< 不可判定时为 "java/lang/Throwable"
         std::vector<std::string_view> handlers;
     };
 
@@ -100,7 +100,7 @@ std::vector<std::string_view> handlersAt(const jbc::ir::CodeUnit& u,
             end = orderPos[endPos.unwrap().insn.slot] - 1;
         }
         if (instructionPos < begin || instructionPos >= end) continue;
-        // catchCp = 0 表示 any（旧栈空 type → catches 里的 Throwable 兜底）。
+        // catchCp = 0 表示 any（空 type → catches 里的 Throwable 兜底）。
         std::string_view type;
         if (block.catchCp != 0) type = resolveClassName(cp, block.catchCp);
         handlers.push_back(pool.str(pool.intern(type)));

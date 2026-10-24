@@ -1,5 +1,5 @@
 /// @file        weird_name_suggestion_test.cpp
-/// @brief       renamer P0 验收矩阵补遗（luiox/morpher#1025 决议 Q3）：怪名用例
+/// @brief       renamer P0 验收矩阵补遗：怪名用例
 ///              ——空格/控制字符/非 ASCII 的 UTF-8 原文口径，经建议文件（严格
 ///              v1 JSON）与 FileSuggestionProvider 到引擎全程不变形（mjbase
 ///              移植版）。

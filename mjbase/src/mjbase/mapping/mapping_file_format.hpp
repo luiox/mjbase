@@ -10,7 +10,7 @@ namespace mjbase::mapping {
 ///
 /// 原 mbase 通过 `mjbase::mapping::format::InvalidMappingException`
 /// （std::exception 子类，仅携带一条 message 文本）表达「映射文本无效」；
-/// 本模块按仓库 Result 值语义纪律改走错误通道，异常类不再迁移。分类：
+/// 本模块按仓库 Result 值语义纪律改走错误通道，异常类不再保留。分类：
 /// - InvalidText：映射文本无效被拒载（原异常的唯一语义，原异常 message 文本
 ///   语义并入此值；现实现各格式为宽松跳坏行口径，实际不产生该值，为严格
 ///   入口与下游格式预留）。
