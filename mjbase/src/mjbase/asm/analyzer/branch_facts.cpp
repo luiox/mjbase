@@ -8,7 +8,7 @@ namespace {
 
 using jbc::core::Op;
 
-/// 一元 int 条件（与旧栈 MathHelper::condition(int, opcode) 逐一对应）。
+/// 一元 int 条件（MathHelper::condition(int, opcode) 逐一对应）。
 bool conditionI(ca::i32 v, Op op) noexcept
 {
     switch (op) {
@@ -22,7 +22,7 @@ bool conditionI(ca::i32 v, Op op) noexcept
     }
 }
 
-/// 二元 int 条件（与旧栈 MathHelper::condition(int, int, opcode) 逐一对应）。
+/// 二元 int 条件（MathHelper::condition(int, int, opcode) 逐一对应）。
 bool conditionII(ca::i32 a, ca::i32 b, Op op) noexcept
 {
     switch (op) {

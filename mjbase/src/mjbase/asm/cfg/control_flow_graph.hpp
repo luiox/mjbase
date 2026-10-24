@@ -10,9 +10,9 @@
 ///     [start, end) 区间按块首位置对齐（切分保证边界都是块首），区间内
 ///     每个块获得一条指向 handler 的 Exception 边。
 ///
-/// 与旧实现的差异：CFG 不再接管/改写指令（旧 preProcess 会把 InsnList
+/// 差异：CFG 不再接管/改写指令（preProcess 会把 InsnList
 /// 摘链再交还），CodeDom 始终是唯一属主；jsr 除 taken 边外还补一条顺序
-/// FallThrough 边（子程序返回点），旧实现只有 fallthrough、丢失跳转目标。
+/// FallThrough 边（子程序返回点），只有 fallthrough、丢失跳转目标。
 #pragma once
 
 #include <unordered_map>

@@ -1,12 +1,54 @@
 #include "mjbase/pass/method_rewrite_util.hpp"
 
+#include <cmath>
 #include <cstring>
 
+#include "jbc/core/constant_pool.hpp"
 #include "jbc/core/opcode.hpp"
+#include "jbc/ir/code_editor.hpp"
 
 namespace mjbase::pass {
 
 namespace method_rewrite_util {
+
+namespace {
+
+ca::u32 internLong(jbc::ir::ClassSession& session, ca::i64 v)
+{
+    auto& cp = session.backing().cp;
+    for (ca::u32 i = 1; i < cp.size(); ++i) {
+        if (cp.valid(i) && cp.tagOf(i) == jbc::core::CpTag::Long && cp.at(i).lval == v) {
+            return i;
+        }
+    }
+    return cp.addLong(v);
+}
+
+ca::u32 internFloatBits(jbc::ir::ClassSession& session, ca::u32 bits)
+{
+    auto& cp = session.backing().cp;
+    for (ca::u32 i = 1; i < cp.size(); ++i) {
+        if (cp.valid(i) && cp.tagOf(i) == jbc::core::CpTag::Float
+            && static_cast<ca::u32>(cp.at(i).ival) == bits) {
+            return i;
+        }
+    }
+    return cp.addFloatBits(bits);
+}
+
+ca::u32 internDoubleBits(jbc::ir::ClassSession& session, ca::u64 bits)
+{
+    auto& cp = session.backing().cp;
+    for (ca::u32 i = 1; i < cp.size(); ++i) {
+        if (cp.valid(i) && cp.tagOf(i) == jbc::core::CpTag::Double
+            && static_cast<ca::u64>(cp.at(i).lval) == bits) {
+            return i;
+        }
+    }
+    return cp.addDoubleBits(bits);
+}
+
+}   // namespace
 
 bool intValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, ca::i32& out)
 {
@@ -33,8 +75,8 @@ bool intValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, c
 bool longValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, ca::i64& out)
 {
     using jbc::core::Op;
-    // 旧栈可观测行为：LCONST_0/1 + ldc 族装载 Long（旧读取器把 LDC2_W 折叠
-    // 为 tree LDC 节点，getLongValue 的 LDC 臂在 classfile 面即覆盖 LDC2_W）。
+    // 可观测行为：LCONST_0/1 + ldc 族装载 Long（LDC2_W 在 classfile 面
+    // 同样参与）。
     if (in.op == Op::LCONST_0 || in.op == Op::LCONST_1) {
         out = in.op == Op::LCONST_1 ? 1 : 0;
         return true;
@@ -49,11 +91,37 @@ bool longValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, 
     return false;
 }
 
+bool floatValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, float& out)
+{
+    using jbc::core::Op;
+    if (in.op == Op::FCONST_0) {
+        out = 0.0f;
+        return true;
+    }
+    if (in.op == Op::FCONST_1) {
+        out = 1.0f;
+        return true;
+    }
+    if (in.op == Op::FCONST_2) {
+        out = 2.0f;
+        return true;
+    }
+    if (in.op == Op::LDC || in.op == Op::LDC_W) {
+        jbc::ir::ClassSession::ConstSem c;
+        if (session.constOf(in, c) && c.kind == jbc::ir::ClassSession::ConstSem::Kind::Float) {
+            const ca::u32 bits = static_cast<ca::u32>(c.bits);
+            static_assert(sizeof(float) == sizeof(bits), "float ����λͼ��ͬ��");
+            std::memcpy(&out, &bits, sizeof(out));
+            return true;
+        }
+    }
+    return false;
+}
+
 bool doubleValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, double& out)
 {
     using jbc::core::Op;
-    // 旧栈 getDoubleValue：DCONST_0/1 + tree LDC 节点持 double（classfile 面
-    // = ldc 族装载 Double）。
+    // DCONST_0/1 + ldc 族装载 Double。
     if (in.op == Op::DCONST_0) {
         out = 0.0;
         return true;
@@ -71,6 +139,107 @@ bool doubleValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in
         }
     }
     return false;
+}
+
+jbc::ir::Insn materializeIntConst(jbc::ir::ClassSession& session, ca::i32 v)
+{
+    using jbc::core::Op;
+    using jbc::ir::CodeEditor;
+    using jbc::ir::Insn;
+
+    Insn in;
+    if (v >= -1 && v <= 5) {
+        in.op    = static_cast<Op>(static_cast<ca::u8>(Op::ICONST_M1) + (v + 1));
+        in.srcPc = jbc::ir::kNoPc;
+        return in;
+    }
+    if (v >= -128 && v <= 127) {
+        in       = CodeEditor::simple(Op::BIPUSH);
+        in.a     = v;
+        in.srcPc = jbc::ir::kNoPc;
+        return in;
+    }
+    if (v >= -32768 && v <= 32767) {
+        in       = CodeEditor::simple(Op::SIPUSH);
+        in.a     = v;
+        in.srcPc = jbc::ir::kNoPc;
+        return in;
+    }
+    in       = CodeEditor::loadConst(session.internInteger(v));
+    in.srcPc = jbc::ir::kNoPc;
+    return in;
+}
+
+jbc::ir::Insn materializeLongConst(jbc::ir::ClassSession& session, ca::i64 v)
+{
+    using jbc::core::Op;
+    using jbc::ir::CodeEditor;
+    using jbc::ir::Insn;
+
+    Insn in;
+    if (v == 0 || v == 1) {
+        in.op    = v == 0 ? Op::LCONST_0 : Op::LCONST_1;
+        in.srcPc = jbc::ir::kNoPc;
+        return in;
+    }
+    in       = CodeEditor::cpInsn(Op::LDC2_W, internLong(session, v));
+    in.srcPc = jbc::ir::kNoPc;
+    return in;
+}
+
+jbc::ir::Insn materializeFloatConst(jbc::ir::ClassSession& session, float v)
+{
+    using jbc::core::Op;
+    using jbc::ir::CodeEditor;
+    using jbc::ir::Insn;
+
+    Insn in;
+    if (v == 0.0f && !std::signbit(v)) {
+        in.op    = Op::FCONST_0;
+        in.srcPc = jbc::ir::kNoPc;
+        return in;
+    }
+    if (v == 1.0f) {
+        in.op    = Op::FCONST_1;
+        in.srcPc = jbc::ir::kNoPc;
+        return in;
+    }
+    if (v == 2.0f) {
+        in.op    = Op::FCONST_2;
+        in.srcPc = jbc::ir::kNoPc;
+        return in;
+    }
+    ca::u32 bits = 0;
+    static_assert(sizeof(bits) == sizeof(v), "float ����λͼ��ͬ��");
+    std::memcpy(&bits, &v, sizeof(bits));
+    in       = CodeEditor::loadConst(internFloatBits(session, bits));
+    in.srcPc = jbc::ir::kNoPc;
+    return in;
+}
+
+jbc::ir::Insn materializeDoubleConst(jbc::ir::ClassSession& session, double v)
+{
+    using jbc::core::Op;
+    using jbc::ir::CodeEditor;
+    using jbc::ir::Insn;
+
+    Insn in;
+    if (v == 0.0 && !std::signbit(v)) {
+        in.op    = Op::DCONST_0;
+        in.srcPc = jbc::ir::kNoPc;
+        return in;
+    }
+    if (v == 1.0) {
+        in.op    = Op::DCONST_1;
+        in.srcPc = jbc::ir::kNoPc;
+        return in;
+    }
+    ca::u64 bits = 0;
+    static_assert(sizeof(bits) == sizeof(v), "double ����λͼ��ͬ��");
+    std::memcpy(&bits, &v, sizeof(bits));
+    in       = CodeEditor::cpInsn(Op::LDC2_W, internDoubleBits(session, bits));
+    in.srcPc = jbc::ir::kNoPc;
+    return in;
 }
 
 bool stringValueOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in,

@@ -1,24 +1,21 @@
 /// @file        null_domain.hpp
 /// @brief       可空性域（nullness 子集）：NullValue 格 + NullDomain + 查询入口。
 ///
-/// 旧栈对应物：mbase/asm/analyzer 的 nullability_interpreter /
-/// nullability_analyzer。旧实现是 SimpleVerifier 形态的完整类型格机：值携带
-/// Type 全类型 + nullness 态、经 typeCache_ 管指针寿命、analyzer 对
-/// IFNULL/IFNONNULL 做分支细化。本域只迁 nullness 事实层：
+/// 本域是 SimpleVerifier 形态的完整类型格机的 nullness 事实子集：
 ///
-/// - 格照旧实现的 Nullability 四态（NOT_NULL/NULL_/NULLABLE/UNKNOWN），合并
-///   代数照 NullabilityUtil::merge 的 join 语义（NotNull+Null→Nullable，
+/// - 格为 Nullability 四态（NOT_NULL/NULL_/NULLABLE/UNKNOWN），合并
+///   代数为 NullabilityUtil::merge 的 join 语义（NotNull+Null→Nullable，
 ///   Nullable 对事实吸收）。一处显式重排：旧格把 UNKNOWN 当 join 单位元
 ///   （乐观合并，依赖分支细化兜底），引擎约定 top 必须是吸收元——本格把
 ///   Unknown 升为顶（未知产点与任何事实合并为未知），数据流层面可靠。
-/// - 产点事实照旧 newOperation：ACONST_NULL → Null；LDC 字符串 → NotNull；
-///   其余（含 NEW——旧实现同样不给事实）→ Unknown。
+/// - 产点事实：ACONST_NULL → Null；LDC 字符串 → NotNull；
+///   其余（含 NEW——不给事实）→ Unknown。
 ///
-/// 与旧实现的范围差（放弃理由见迁移报告）：类类型载荷与类层级合并
-/// （isAssignableFrom/getSuperClass）不迁——libjbc 分析层是形状级，类层级
-/// 属 mjbase hierarchy 模块；IFNULL/IFNONNULL 分支细化不迁——
+/// 范围说明：类类型载荷与类层级合并
+/// （isAssignableFrom/getSuperClass）不在本域——libjbc 分析层是形状级，类层级
+/// 属 mjbase hierarchy 模块；IFNULL/IFNONNULL 分支细化不在本域——
 /// DomainEngine 无分支条件钩子；aaload 数组元素 nullness（getElementValue）
-/// 属堆建模，同不迁。
+/// 属堆建模，同不在本域。
 #pragma once
 
 #include "libca/core/datatype.hpp"

@@ -1,10 +1,9 @@
 /// @file        reference_index_cache_test.cpp
-/// @brief       ReferenceIndex 持久化 cache（.ridx）读写移植用例（旧栈 5 用例
+/// @brief       ReferenceIndex 持久化 cache（.ridx）读写用例（5 用例
 ///              逐字等强 + 字节级逐段对拍）。
 ///
-/// 旧栈对应物：mbase/unittest/reference/reference_index_cache_test.cpp。夹具
-/// 从 jbytecode ClassWriter 重写为手拼 classfile 字节（class_bytes_builder.hpp）；
-/// 写出路径改走 test-helper 的 test/ 输出区。RoundTrip 用例在旧栈等强断言之
+/// 夹具为手拼 classfile 字节（class_bytes_builder.hpp）；
+/// 写出路径走 test-helper 的 test/ 输出区。RoundTrip 用例等强断言之
 /// 上追加字节级对拍基线：
 ///
 /// - raw 头布局断言（magic/version/88 字节 pack(1) 头/6 段计数）；

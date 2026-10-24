@@ -10,7 +10,7 @@
 // 本头提供 ensureI18nBoot():首次调用时用 mjbase 自带表兜底注册,保证描述/
 // 错误消息始终可解析(默认 zh_CN)。key 空间与 mbase 保持一致(mbase.* 全部
 // key,文案自 mbase 单源表 cli/translations 原样带入)——tr() 按字面 key 查
-// 表,迁移期 key 前缀不改。已 init 的宿主不受影响——init 后注册的表格仍按
+// 表,key 前缀不改。已 init 的宿主不受影响——init 后注册的表格仍按
 // “后注册者胜”覆盖 mjbase 默认文案。
 
 #include "i18n_mjbase_translations.generated.hpp"

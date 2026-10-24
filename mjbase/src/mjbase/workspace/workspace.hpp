@@ -23,7 +23,7 @@ namespace workspace {
 /// @file workspace.hpp
 /// @brief WorkspaceBase：可回滚的、单线程持有的 class/JAR 分析与编辑工作区（基础实现）。
 ///
-/// 移植自 mbase/workspace/workspace（语义照旧），底座按 libjbc 重定型：
+/// 底座按 libjbc 定型：
 /// - class 解码/检索/搜索走 jbc::core::readClass 骨架 + jbc::ir 会话（按需 promote）；
 /// - 候选验证接 mjbase::spi 协作面：spi::sanitizeClassFile 引用语义预检（闸门语义
 ///   在候选入口前置）+ mjbase::jasm 验证；
@@ -226,6 +226,12 @@ public:
                                       const MutationRequest& request = {}) override;
 
     /// @brief 原子替换一个 class 的原始字节；dry-run 时只返回完整验证和 diff。
+    ///
+    /// 选择器语义（URI 或内名）：内名命中 Multi-Release 族时按 resolveClassUri
+    /// 的确定序选定唯一条目。**单条 URI 语义**：替换只作用于选定条目，同族
+    /// 其它条目（versions/&lt;N&gt; 变体）字节不动、不传播——族员字节本就随
+    /// release 各自独立，逐条 URI 调用即完整族语义；本层不提供族批量替换面。
+    /// 候选字节内名必须与目标 URI 推导内名一致（版本化目标按 JEP 238 ≥ 9 口径）。
     MutationResult replaceClassBytes(const std::string& uriOrInternalName,
                                      const std::vector<ca::u8>& bytes,
                                      const MutationRequest& request = {}) override;
@@ -322,6 +328,12 @@ private:
     ///        主容器 URI 优先，同 URI 的支撑资源跳过）。
     std::unique_ptr<model::ResourceContainer> analysisScanContainer() const;
     WorkspaceResult<AnalysisGraph>            analysisGraph() const;
+    /// @brief 内名/URI 选择器 → 唯一 class 资源 URI（Multi-Release 族确定序）。
+    ///
+    /// 选择器为既有 class URI 时原样返回；否则按 class 字节内名匹配。同内名
+    /// 族（base 与 META-INF/versions/&lt;N&gt; 变体并存）按确定序选定唯一条目：
+    /// base 形条目优先于版本化条目（JEP 238 口径版本 ≥ 9），同层级取 URI 字节
+    /// 序最小——不依赖容器迭代序。
     WorkspaceResult<std::string>       resolveClassUri(const model::ResourceContainer& container,
                                                        const std::string& uriOrInternalName) const;
     WorkspaceErrorInfo validateCandidate(const model::ResourceContainer& candidate,
@@ -359,9 +371,9 @@ private:
 
 /// @brief 递归扫描 JDK 目录下的 .jar/.zip/.jmod，把层次摘要灌入 @p hierarchy。
 ///
-/// 旧栈 CommonSuperClassProvider::scan 的对应物（pipeline jdkPath 语义）：
+/// CommonSuperClassProvider::scan 的对应物（pipeline jdkPath 语义）：
 /// 单归档导入失败 fail-open 跳过；单类 fail-open（环检查拒绝等）；jimage
-/// 模块镜像不扫描（与旧栈同口径）。配合 spi::CommonSuperClassResolver +
+/// 模块镜像不扫描。配合 spi::CommonSuperClassResolver +
 /// StrictTypeResolverAdapter 注入 PassPipelineOptions::typeResolver 使用；
 /// 调用方保证 pool/hierarchy 存活覆盖管线 build+run 全程。
 void scanJdkHierarchy(const std::string& jdkPath, mjbase::hierarchy::ClassHierarchy& hierarchy,

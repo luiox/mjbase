@@ -1,4 +1,4 @@
-// 移植自 mbase/unittest/pass/pass_manager_test.cpp（入口级用例）：单类/容器两级
+// 入口级用例：单类/容器两级
 // 编排入口按新契约重定型（runAsmPipeline→runClassPipeline，runJarPipeline→
 // runContainerPipeline；writerFlags/typeResolver 参数随 libjbc 写回面移除）。
 #include <gtest/gtest.h>

@@ -1,10 +1,10 @@
 /// @file        shadow_alias.hpp
 /// @brief       shadow name 表：真名 → 显示名映射，仅服务显示层，永不写回字节码。
 ///
-/// 旧栈对应物：mbase/renamer/shadow_alias（#1072 机械占位名 + #1156 引用
-/// token）。语义照旧、底座重定型：
+/// 机械占位名 + 引用
+/// token）。
 ///
-/// - 成员键走跨类身份契约：旧栈 "owner\x1fname\x1fdesc" 拼接串键换
+/// - 成员键走跨类身份契约："owner\x1fname\x1fdesc" 拼接串键换
 ///   mjbase::analysis::aliasMemberKey 建的 MemberKey（进程级内容寻址驻留，
 ///   等值即内容等值）；类键用表私有 KeyPool 驻留 id。不发明跨模块字符串键。
 /// - 字符串面按 mjbase 约定改 std::string_view 借用视图（表私有 KeyPool

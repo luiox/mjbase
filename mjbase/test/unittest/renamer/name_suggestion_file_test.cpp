@@ -1,11 +1,10 @@
 /// @file        name_suggestion_file_test.cpp
-/// @brief       AI 建议文件 schema + FileSuggestionProvider 单测（mjbase 移植
-///              版，luiox/morpher#1032 对应物）。
+/// @brief       AI 建议文件 schema + FileSuggestionProvider 单测。
 ///
 /// schema 错误整文件拒载（零应用）、版本不识别拒载、往返恒等、provider 原样
 /// 产出，以及 provider→引擎端到端的 rationale/evidence 流水留痕。
 ///
-/// mjbase 面：schema/错误分类/行号定位语义照旧；字符串断言改驻留视图口径。
+/// mjbase 面：schema/错误分类/行号定位语义；字符串断言改驻留视图口径。
 #include <gtest/gtest.h>
 
 #include <fstream>

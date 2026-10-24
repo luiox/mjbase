@@ -1,8 +1,8 @@
 /// @file        pipeline_builder.hpp
 /// @brief       管线装配层（pass-contract §9）：fluent 组装嵌套 PassManager。
 ///
-/// 语义参考 mbase/pass/pass_registry 的 PipelineBuilder，按 mjbase 四 scope
-/// 模型重定型。装配序（mbase 纪律照迁）：
+/// 按 mjbase 四 scope
+/// 模型定型。装配序：
 /// @code
 ///   GlobalPM [
 ///     ClassFileSanitizeGate            (输入净化门，恒为 head)

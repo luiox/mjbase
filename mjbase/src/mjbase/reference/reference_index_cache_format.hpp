@@ -26,7 +26,7 @@ inline constexpr ca::u32 kVersion = 0x00010000u;
 ///
 /// 写入端用 `static_cast<ca::u8>`，读取端先读 u8 再校验是否落在合法区间，
 /// 越界的枚举字节视为损坏文件并拒绝加载。枚举字节值即 MethodReferenceKind/
-/// FieldReferenceKind/TypeReferenceKind 的声明序（迁移时逐值保留，见
+/// FieldReferenceKind/TypeReferenceKind 的声明序（见
 /// reference_index.hpp 枚举注释）。
 inline constexpr ca::u8 kMethodKindMax = 4u;   // ReflectionExecution
 inline constexpr ca::u8 kFieldKindMax  = 3u;   // ReflectionAccess

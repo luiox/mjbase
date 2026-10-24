@@ -77,7 +77,7 @@ package hb.jvm.combine;
 
 public class ResidualProbe {
     public static void main(String[] args) throws Exception {
-        Class<?> host = Class.forName("me.canrad.morpher.ToolClassMergedClass_0");
+        Class<?> host = Class.forName("mjbase.ToolClassMergedClass_0");
         System.out.println("limitOwner=" + host.getField("LIMIT").getDeclaringClass().getName());
         System.out.println("tagOwner=" + host.getField("TAG").getDeclaringClass().getName());
         System.out.println("limit=" + host.getField("LIMIT").get(null));
@@ -200,7 +200,7 @@ TEST(ToolClassCombinerJvm, MergedToolClassesRunOnRealJvm)
 
     EXPECT_FALSE(container.hasResource("hb/jvm/combine/UtilMath.class"));
     EXPECT_FALSE(container.hasResource("hb/jvm/combine/UtilText.class"));
-    const std::string hostUri = "me/canrad/morpher/ToolClassMergedClass_0.class";
+    const std::string hostUri = "mjbase/ToolClassMergedClass_0.class";
     ASSERT_TRUE(container.hasResource(hostUri));
     const auto* mainRes = ca::core::tag_cast::cast<mjbase::model::ClassResource*>(
         container.getResource("hb/jvm/combine/Main.class"));
@@ -217,7 +217,7 @@ TEST(ToolClassCombinerJvm, MergedToolClassesRunOnRealJvm)
     // ── 5. 硬验收：合并产物隔离落盘真 java 执行（宿主过 verifier、行为等价）
     //      + 反射核对字段 owner 与常量值随迁（probe 类随产物目录运行）──
     writeClassFile(outDir / "hb/jvm/combine/Main.class", mainRes->get());
-    writeClassFile(outDir / "me/canrad/morpher/ToolClassMergedClass_0.class", hostRes->get());
+    writeClassFile(outDir / "mjbase/ToolClassMergedClass_0.class", hostRes->get());
     writeClassFile(outDir / "hb/jvm/combine/ResidualProbe.class",
                    readClassBytes(binDir / "hb/jvm/combine/ResidualProbe.class"));
     const auto merged = test::jdk::runJavaMain(tc, outDir, "hb.jvm.combine.Main");
@@ -226,10 +226,10 @@ TEST(ToolClassCombinerJvm, MergedToolClassesRunOnRealJvm)
 
     const auto probe = test::jdk::runJavaMain(tc, outDir, "hb.jvm.combine.ResidualProbe");
     ASSERT_EQ(probe.exitCode, 0) << probe.out;
-    EXPECT_NE(probe.out.find("limitOwner=me.canrad.morpher.ToolClassMergedClass_0"),
+    EXPECT_NE(probe.out.find("limitOwner=mjbase.ToolClassMergedClass_0"),
               std::string::npos)
         << probe.out;
-    EXPECT_NE(probe.out.find("tagOwner=me.canrad.morpher.ToolClassMergedClass_0"),
+    EXPECT_NE(probe.out.find("tagOwner=mjbase.ToolClassMergedClass_0"),
               std::string::npos)
         << probe.out;
     EXPECT_NE(probe.out.find("limit=99"), std::string::npos) << probe.out;
