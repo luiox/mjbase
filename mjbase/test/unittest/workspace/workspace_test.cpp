@@ -95,7 +95,18 @@ std::vector<ca::u8> assemble(const std::string& name, const std::string& value)
     auto                 sourceName = utf16(name + ".jasm");
     auto                 source     = utf16(classSource(name, value));
     auto                 result     = service.assemble(sourceName.ref(), source.ref());
-    if (!result.isOk()) throw std::runtime_error("workspace fixture did not assemble");
+    if (!result.isOk())
+    {
+        //夹具汇编失败把诊断消息带进异常，报错自描述（行号+原文）。
+        std::string detail;
+        for (const auto& diagnostic : result.diagnostics) {
+            if (!detail.empty()) detail += "; ";
+            if (diagnostic.location && diagnostic.location->line > 0)
+                detail += "L" + std::to_string(diagnostic.location->line) + ": ";
+            detail += diagnostic.message.to_utf8_string().to_std_string();
+        }
+        throw std::runtime_error("workspace fixture did not assemble: " + detail);
+    }
     return result.value->bytes;
 }
 
@@ -105,7 +116,17 @@ std::vector<ca::u8> assembleSource(const std::string& name, const std::string& s
     auto                 sourceName = utf16(name + ".jasm");
     auto                 source     = utf16(sourceText);
     auto                 result     = service.assemble(sourceName.ref(), source.ref());
-    if (!result.isOk()) throw std::runtime_error("workspace fixture did not assemble");
+    if (!result.isOk())
+    {
+        std::string detail;
+        for (const auto& diagnostic : result.diagnostics) {
+            if (!detail.empty()) detail += "; ";
+            if (diagnostic.location && diagnostic.location->line > 0)
+                detail += "L" + std::to_string(diagnostic.location->line) + ": ";
+            detail += diagnostic.message.to_utf8_string().to_std_string();
+        }
+        throw std::runtime_error("workspace fixture did not assemble: " + detail);
+    }
     return result.value->bytes;
 }
 
@@ -863,6 +884,111 @@ TEST(MjWorkspaceCoreTest, SearchesClassesMembersConstantsAndInstructions)
     auto invalidNumber = workspace.searchNumbers("not-a-number");
     ASSERT_TRUE(invalidNumber.is_err());
     EXPECT_EQ(WorkspaceError::InvalidArgument, invalidNumber.unwrap_err().code);
+}
+
+TEST(MjWorkspaceCoreTest, ClassifiesInstructionNodesAndDedupsStringBackedUtf8)
+{
+    //评估反馈三连回归：①CP 形态指令 node_type 按语义归类（旧布局命名把
+    //getstatic/invoke*/checkcast 全标 ldc）；②字段引用操作数 owner.name:desc
+    //冒号分界（方法描述符 '(' 自带分界，保持扁平）；③ldc 字面量的背书 utf8
+    //不再以裸 utf8 行与 constant_pool_string 重复成行。
+    model::ResourceContainer container;
+    container.addResource(
+        "workspace/Render.class",
+        std::make_unique<model::ClassResource>(
+            "workspace/Render.class",
+            assembleSource("workspace/Render",
+                           ".super java/lang/Object\n"
+                           ".class public super workspace/Render {\n"
+                           "  .method public static render ()V {\n"
+                           "    code: {\n"
+                           "      getstatic java/lang/System.out Ljava/io/PrintStream;\n"
+                           "      ldc \"demo-payload\"\n"
+                           "      invokevirtual java/io/PrintStream.println (Ljava/lang/String;)V\n"
+                           "      ldc \"str\"\n"
+                           "      checkcast java/lang/String\n"
+                           "      pop\n"
+                           "      goto A\n"
+                           "    A:\n"
+                           "      return\n"
+                           "    }\n"
+                           "  }\n"
+                           "  .method public static pick ([Ljava/lang/String;I)Ljava/lang/String; {\n"
+                           "    parameters: { p0, p1 },\n"
+                           "    code: {\n"
+                           "      aload p0\n"
+                           "      iload p1\n"
+                           "      aaload\n"
+                           "      areturn\n"
+                           "    }\n"
+                           "  }\n"
+                           "  .method public static zero ()I {\n"
+                           "    code: {\n"
+                           "      iconst_0\n"
+                           "      ireturn\n"
+                           "    }\n"
+                           "  }\n"
+                           "}\n")));
+    const auto path = test::getTempOutPath("mjbase_workspace_instruction_nodes.jar");
+    model::ResourceHelper::exportToJar(container, path.string());
+
+    WorkspaceBase workspace;
+    ASSERT_TRUE(workspace.openJar(path.string()).is_ok());
+
+    const auto valueOf = [&workspace](const char* query) {
+        auto found = workspace.searchInstructions(query);
+        if (!found.is_ok()) return std::string{};
+        auto hits = std::move(found).unwrap();
+        if (hits.size() != 1) return std::string{};
+        return hits.front().value;
+    };
+    EXPECT_EQ("getstatic field 178 java/lang/System.out:Ljava/io/PrintStream;",
+              valueOf("getstatic"));
+    EXPECT_EQ("invokevirtual invoke 182 java/io/PrintStream.println(Ljava/lang/String;)V",
+              valueOf("invokevirtual"));
+    EXPECT_EQ("checkcast cp_ref 192 java/lang/String", valueOf("checkcast"));
+    EXPECT_EQ("goto jump 167", valueOf("goto"));
+    //aload/astore 裸名是数组族，带槽位短格式是局部变量：剥后缀判定不得
+    //让 aload_N 误入数组表。
+    EXPECT_EQ("aload_0 var 42", valueOf("aload_0"));
+    EXPECT_EQ("iload_1 var 27", valueOf("iload_1"));
+    EXPECT_EQ("aaload array 50", valueOf("aaload"));
+    EXPECT_EQ("iconst_0 const 3", valueOf("iconst_0"));
+
+    auto ldcHits = workspace.searchInstructions("demo-payload");
+    ASSERT_TRUE(ldcHits.is_ok());
+    auto ldcValues = std::move(ldcHits).unwrap();
+    ASSERT_EQ(1U, ldcValues.size());
+    EXPECT_EQ("ldc ldc 18 demo-payload", ldcValues.front().value);
+
+    auto bytecode = workspace.methodBytecode("workspace/Render", "render", "()V");
+    ASSERT_TRUE(bytecode.is_ok());
+    const auto bcValue = std::move(bytecode).unwrap();
+    ASSERT_EQ(8, static_cast<int>(bcValue.instructions.size()));
+    EXPECT_EQ("field", bcValue.instructions[0].nodeType);
+    EXPECT_EQ("ldc", bcValue.instructions[1].nodeType);
+    EXPECT_EQ("invoke", bcValue.instructions[2].nodeType);
+    EXPECT_EQ("cp_ref", bcValue.instructions[4].nodeType);
+    EXPECT_EQ("insn", bcValue.instructions[5].nodeType);
+    EXPECT_EQ("jump", bcValue.instructions[6].nodeType);
+    EXPECT_EQ("insn", bcValue.instructions[7].nodeType);
+
+    //去重面：字面量只剩 constant_pool_string 一行；非 String 背书的 utf8
+    //（类引用名）照旧以 constant_pool_utf8 呈现。
+    auto literals = workspace.searchStrings("demo-payload");
+    ASSERT_TRUE(literals.is_ok());
+    auto literalHits = std::move(literals).unwrap();
+    ASSERT_EQ(1U, literalHits.size());
+    EXPECT_EQ("constant_pool_string", literalHits.front().kind);
+
+    auto classRefs = workspace.searchStrings("java/lang/System");
+    ASSERT_TRUE(classRefs.is_ok());
+    bool sawUtf8ClassRef = false;
+    for (const auto& hit : std::move(classRefs).unwrap()) {
+        if (hit.kind == "constant_pool_utf8" && hit.value == "java/lang/System")
+            sawUtf8ClassRef = true;
+    }
+    EXPECT_TRUE(sawUtf8ClassRef);
 }
 
 // ── 候选 JAR 提交协议（test 8，等价改写：候选经 applyClassBytes 构造）────

@@ -470,29 +470,73 @@ void sortAndDeduplicateSearchHits(std::vector<SearchHit>& hits)
         hits.end());
 }
 
-// ── 指令渲染（libjbc 形状分派；nodeType 按操作数布局命名）────────────────
+// ── 指令渲染（libjbc 形状分派；node_type 按指令语义命名）────────────────
 
-/// @brief libjbc 无 ASM 节点类型 → 按操作数布局命名；标签/行号不是指令。
+/// @brief libjbc 无 ASM 节点类型 → 按指令语义命名（invoke/field/ldc/cp_ref/
+///        jump/var/const/array/iinc/switch 族）；标签/行号不是指令，操作数
+///        与跳转以 jasm 全文为权威。旧「按操作数布局」命名把全部 CP 形态
+///        （getstatic/invoke*/checkcast/new…）标成 ldc，搜索结果的类型标签
+///        失去判别力，改为助记符归类。
 std::string instructionNodeType(jbc::core::Op op)
 {
+    const char* mnemonic = jbc::core::mnemonicOf(op);
+    const std::string name = mnemonic != nullptr ? mnemonic : "";
+
+    const auto isAnyOf = [&name](std::initializer_list<std::string_view> candidates) {
+        return std::any_of(candidates.begin(), candidates.end(), [&](std::string_view item) {
+            return name == item;
+        });
+    };
+    if (name == "invokedynamic") return "invokedynamic";
+    if (name.rfind("invoke", 0) == 0) return "invoke";
+    if (isAnyOf({"getfield", "getstatic", "putfield", "putstatic"})) return "field";
+    if (isAnyOf({"ldc", "ldc_w", "ldc2_w"})) return "ldc";
+    if (isAnyOf({"new", "anewarray", "checkcast", "instanceof"})) return "cp_ref";
+    if (name == "multianewarray") return "multianewarray";
+    if (name == "iinc") return "iinc";
+    //数组元素加载/存储（两字符类型前缀 iaload/aastore 等）：先于局部变量
+    //load/store 判定——裸名 aload/astore 属数组族；带槽位的 aload_N/astore_N
+    //全名不命中数组表，剥后缀后走局部变量分支。
+    static constexpr std::array<std::string_view, 16> kArrayOps = {
+        "iaload", "laload", "faload", "daload", "aaload", "baload", "caload", "saload",
+        "iastore", "lastore", "fastore", "dastore", "aastore", "bastore", "castore",
+        "sastore"};
+    for (const auto& arrayOp : kArrayOps) {
+        if (name == arrayOp) return "array";
+    }
+    //局部变量加载/存储族：类型前缀（i/l/f/d/a）+ load/store；带槽位的短格式
+    //（aload_0 等）先剥掉数字后缀再匹配。
+    auto baseName = name;
+    const auto underscore = name.rfind('_');
+    if (underscore != std::string::npos &&
+        std::all_of(name.begin() + static_cast<std::ptrdiff_t>(underscore) + 1, name.end(),
+                    [](unsigned char c) { return std::isdigit(c) != 0; }))
+        baseName = name.substr(0, underscore);
+    if (baseName.size() == 5 && baseName.compare(1, 4, "load") == 0 &&
+        std::string("ilfda").find(baseName[0]) != std::string::npos)
+        return "var";
+    if (baseName.size() == 6 && baseName.compare(1, 5, "store") == 0 &&
+        std::string("ilfda").find(baseName[0]) != std::string::npos)
+        return "var";
+    if (name == "ret") return "var";
+    if (name.rfind("iconst", 0) == 0 || name.rfind("lconst", 0) == 0 ||
+        name.rfind("fconst", 0) == 0 || name.rfind("dconst", 0) == 0 ||
+        isAnyOf({"aconst_null", "bipush", "sipush"}))
+        return "const";
     switch (jbc::core::shapeOf(op)) {
+    case jbc::core::Shape::Branch2:
+    case jbc::core::Shape::Branch4: return "jump";
+    case jbc::core::Shape::TableSwitch: return "tableswitch";
+    case jbc::core::Shape::LookupSwitch: return "lookupswitch";
     case jbc::core::Shape::None: return "insn";
     case jbc::core::Shape::Imm1:
     case jbc::core::Shape::Imm2:
     case jbc::core::Shape::Atype1: return "int";
     case jbc::core::Shape::Local1: return "var";
     case jbc::core::Shape::Iinc1: return "iinc";
-    case jbc::core::Shape::CP1:
-    case jbc::core::Shape::CP2: return "ldc";
-    case jbc::core::Shape::CP2Count: return "method";
-    case jbc::core::Shape::CP2Zero2: return "invokedynamic";
-    case jbc::core::Shape::CP2Dims: return "multianewarray";
-    case jbc::core::Shape::Branch2:
-    case jbc::core::Shape::Branch4: return "jump";
-    case jbc::core::Shape::TableSwitch: return "tableswitch";
-    case jbc::core::Shape::LookupSwitch: return "lookupswitch";
+    default: break;
     }
-    return "unknown";
+    return "insn";
 }
 
 /// @brief 成员引用 CP 索引 → "owner.name:desc"（operandComment 渲染口径）。
@@ -2131,12 +2175,24 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchStrings(
         const jbc::core::ClassFile& cf   = held->backing();
         const auto                  owner = std::string{cf.thisName()};
         if (!matchesSearchScope(owner, options)) return;
+        //String 背书 utf8 去重：被 CONSTANT_String 引用的 utf8 条目由
+        //constant_pool_string 行承载（string_literal 分面），不再以裸 utf8 行
+        //重复出现并冒充类引用（评估反馈实证：字面量背书被标成 utf8_classref，
+        //string_kind 过滤失去意义）。
+        std::set<ca::u32> stringBackedUtf8;
+        for (ca::u32 index = 1; index < cf.cp.size(); ++index) {
+            if (!cf.cp.valid(index)) continue;
+            const auto& candidate = cf.cp.at(index);
+            if (candidate.tag == jbc::core::CpTag::String && cf.cp.valid(candidate.a))
+                stringBackedUtf8.insert(candidate.a);
+        }
         for (ca::u32 index = 1; index < cf.cp.size(); ++index) {
             if (!cf.cp.valid(index)) continue;
             const auto& entry = cf.cp.at(index);
             std::string value;
             std::string kind;
             if (entry.tag == jbc::core::CpTag::Utf8) {
+                if (stringBackedUtf8.count(index) > 0) continue;
                 value = utf8Text(cf, index);
                 kind  = "constant_pool_utf8";
             }
@@ -2354,9 +2410,19 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchInstructions(
                         else
                         {
                             // CP2 形态含 invoke*virtual/static/special 与字段/类访问
-                            // 指令——成员引用文本采用无冒号扁平口径。
-                            const auto reference = memberRefFlatText(cf, insn.cp);
-                            if (!reference.empty()) output << ' ' << reference;
+                            // 指令。方法引用描述符以 '(' 开头自带分界，保持无冒号
+                            // 扁平口径（搜索文本契约）；字段引用的名字与描述符
+                            // 连排不可读（评估反馈实证：outLjava/...），冒号分界。
+                            if (entry.tag == jbc::core::CpTag::Fieldref)
+                            {
+                                const auto reference = memberRefColonText(cf, insn.cp);
+                                if (!reference.empty()) output << ' ' << reference;
+                            }
+                            else
+                            {
+                                const auto reference = memberRefFlatText(cf, insn.cp);
+                                if (!reference.empty()) output << ' ' << reference;
+                            }
                         }
                     }
                     break;
