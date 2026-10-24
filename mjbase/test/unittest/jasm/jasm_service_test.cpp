@@ -504,4 +504,51 @@ TEST(MjResourceJasmServiceTest, EditsOnlySelectedMultiReleaseClassEntry)
                   ->get());
 }
 
+
+// 增补平面类名：cp 内是 modified UTF-8（ED A0 80 ED BC BB），jasm 物化面
+// 必须重组为规范形 UTF-8（F0 90 8C BB），严格解码拒绝合法类名即 issue #6
+// 症状 1。受控字节夹具直拼 this_class 条目（builder 无法表达非规范字节）。
+TEST(MjResourceJasmServiceTest, DisassemblesSupplementaryPlaneInternalName)
+{
+    const std::string mutf8Name = "\xCE\xA9\xED\xA0\x80\xED\xBC\xBB";   // CE A9 + ED A0 80 ED BC BB
+    // 手拼最小 class：cp #1 Utf8 <mutf8Name>，#2 Class #1，#3 Utf8 Object，
+    // #4 Class #3；v52 无方法。
+    std::vector<ca::u8> bytes;
+    auto putU2 = [&bytes](ca::u32 v) {
+        bytes.push_back(static_cast<ca::u8>(v >> 8));
+        bytes.push_back(static_cast<ca::u8>(v));
+    };
+    auto utf8Entry = [&bytes, &putU2](std::string_view text) {
+        bytes.push_back(0x01);
+        putU2(static_cast<ca::u32>(text.size()));
+        bytes.insert(bytes.end(), text.begin(), text.end());
+    };
+    bytes.insert(bytes.end(), {0xCA, 0xFE, 0xBA, 0xBE});
+    putU2(0);
+    putU2(52);
+    putU2(5);
+    utf8Entry(mutf8Name);
+    bytes.push_back(0x07);
+    putU2(1);
+    utf8Entry("java/lang/Object");
+    bytes.push_back(0x07);
+    putU2(3);
+    putU2(0x0021);
+    putU2(2);
+    putU2(4);
+    putU2(0);
+    putU2(0);
+    putU2(0);
+    putU2(0);   // 类级 attributes_count
+
+    JvmJasmService service;
+    auto           result = service.disassemble(bytes);
+    ASSERT_TRUE(result.isOk()) << (result.diagnostics.empty()
+                                       ? std::string("no diagnostics")
+                                       : result.diagnostics.front().message.to_utf8_string()
+                                             .to_std_string());
+    const std::string internalName = result.value->internalName.to_std_string();
+        EXPECT_EQ(std::string("\xCE\xA9\xF0\x90\x8C\xBB"), internalName);
+}
+
 }   // namespace mjbase::jasm

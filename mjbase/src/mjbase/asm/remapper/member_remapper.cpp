@@ -1,5 +1,6 @@
 #include "mjbase/asm/remapper/member_remapper.hpp"
 
+#include <cstdio>
 #include <string>
 #include <utility>
 #include <vector>
@@ -9,6 +10,7 @@
 #include "jbc/core/opcode.hpp"
 
 #include "mjbase/analysis/alias_analysis.hpp"
+#include "mjbase/jasm/classfile_utf8.hpp"
 #include "mjbase/reference/reflection_interpreter.hpp"
 
 namespace mjbase::asm_remapper {
@@ -44,6 +46,24 @@ using Op = jbc::core::Op;
 
 constexpr ca::u16 kAccStatic = 0x0008;
 
+// ── cp 字符串边界 ───────────────────────────────────────────────────────────
+//
+// 计划键值、容器 URI 与文本资源都是标准 UTF-8 规范形；常量池 Utf8 条目是
+// modified UTF-8。读侧（plan 查表入参）一律经 cpToUtf8 解码，写侧（cp
+// 驻留）经 utf8ToCp 编码——编码对 modified UTF-8 形态输入幂等，混入旧
+// 形态字节不会二次变形。增补平面类名（混淆器常用）在两种形态字节不同，
+// 不做边界转换时计划查表必然 miss。
+
+std::string cpToUtf8(std::string_view value)
+{
+    return mjbase::jasm::classFileUtf8ToString(value);
+}
+
+std::string utf8ToCp(std::string_view value)
+{
+    return mjbase::jasm::utf8StringToClassFile(value);
+}
+
 // ── 常量池基础助手 ──────────────────────────────────────────────────────────
 
 /// @brief CP Class 条目 → 内部名；非 Class/越界返回空。
@@ -56,25 +76,33 @@ std::string_view classNameOfCp(const ClassFile& cf, ca::u32 classCp) noexcept
 /// @brief 扫描式 Utf8 驻留：命中既有条目返回原索引，miss 才追加。
 ///
 /// CP 只追加不去重；等值替换语义（描述符/签名/成员名改写）必须扫描式，
-/// 盲加会让等值文本分裂成多个条目。
+/// 盲加会让等值文本分裂成多个条目。入参是标准 UTF-8 规范形，内部编码为
+/// modified UTF-8 再比对/落池（编码幂等，传入 cp 原始视图亦安全）。
 ca::u32 findOrAddUtf8(ClassFile& cf, std::string_view text)
 {
-    const ConstantPool& cp = cf.cp;
+    const std::string encoded = utf8ToCp(text);
+    const ConstantPool& cp    = cf.cp;
     for (ca::u32 i = 1; i < cp.size(); ++i) {
-        if (cp.isUtf8(i) && cp.utf8Equals(i, text)) return i;
+        if (cp.isUtf8(i) && cp.utf8Equals(i, encoded)) return i;
     }
-    return cf.cp.addUtf8(text);
+    return cf.cp.addUtf8(encoded);
+}
+
+/// @brief 类名 cp 驻留：规范形入参编码后走 session.internClass。
+ca::u32 internClassName(ClassSession& session, std::string_view utf8Name)
+{
+    return session.internClass(utf8ToCp(utf8Name));
 }
 
 /// @brief 成员引用三段语义（Fieldref/Methodref/InterfaceMethodref 一跳解析）。
 struct RefSem
 {
-    std::string_view owner;
-    std::string_view name;
-    std::string_view desc;
+    std::string owner;
+    std::string name;
+    std::string desc;
 };
 
-/// @brief 解析成员引用条目；结构不符返回 false。
+/// @brief 解析成员引用条目；结构不符返回 false。三段一律解码为规范形。
 bool resolveRefCp(const ClassFile& cf, ca::u32 refIdx, RefSem& out)
 {
     const ConstantPool& cp = cf.cp;
@@ -87,10 +115,10 @@ bool resolveRefCp(const ClassFile& cf, ca::u32 refIdx, RefSem& out)
     if (!cp.valid(ref.b)) return false;
     const auto& nat = cp.at(ref.b);
     if (nat.tag != CpTag::NameAndType || !cp.isUtf8(nat.a) || !cp.isUtf8(nat.b)) return false;
-    out.owner = classNameOfCp(cf, ref.a);
+    out.owner = cpToUtf8(classNameOfCp(cf, ref.a));
     if (out.owner.empty()) return false;
-    out.name = cp.utf8Of(nat.a);
-    out.desc = cp.utf8Of(nat.b);
+    out.name = cpToUtf8(cp.utf8Of(nat.a));
+    out.desc = cpToUtf8(cp.utf8Of(nat.b));
     return true;
 }
 
@@ -317,8 +345,8 @@ struct RemapCtx
         if (!cp.valid(entry.b)) return false;
         const auto& nat = cp.at(entry.b);
         if (nat.tag != CpTag::NameAndType || !cp.isUtf8(nat.a) || !cp.isUtf8(nat.b)) return false;
-        const std::string_view name    = cp.utf8Of(nat.a);
-        const std::string_view oldDesc = cp.utf8Of(nat.b);
+        const std::string name    = cpToUtf8(cp.utf8Of(nat.a));
+        const std::string oldDesc = cpToUtf8(cp.utf8Of(nat.b));
         const std::string_view newDesc = plan.mapFieldDescriptor(oldDesc);
         // BSM 索引在改写前拷出：后续链路会向常量池追加条目，entries_ 扩容使
         // entry/nat 引用失效，悬空读取会拿到垃圾序号。
@@ -354,20 +382,20 @@ struct RemapCtx
             const ConstantPool::Entry& entry = cf.cp.at(arg);
             switch (entry.tag) {
             case CpTag::Class: {
-                const std::string_view oldName = cf.cp.utf8Of(entry.a);
+                const std::string oldName = cpToUtf8(cf.cp.utf8Of(entry.a));
                 if (oldName.empty()) break;
                 const std::string_view mapped = oldName.front() == '['
                                                     ? plan.mapFieldDescriptor(oldName)
                                                     : plan.mapInternalName(oldName);
                 if (mapped != oldName) {
-                    arg         = session.internClass(mapped);
+                    arg         = internClassName(session, mapped);
                     argsChanged = true;
                 }
                 break;
             }
             case CpTag::MethodType: {
-                const std::string_view oldDesc = cf.cp.utf8Of(entry.a);
-                const std::string_view mapped  = plan.mapMethodDescriptor(oldDesc);
+                const std::string oldDesc     = cpToUtf8(cf.cp.utf8Of(entry.a));
+                const std::string_view mapped = plan.mapMethodDescriptor(oldDesc);
                 if (mapped != oldDesc) {
                     // 先 intern 再绑定条目引用：findOrAddUtf8 可能追加条目使引用失效。
                     const ca::u32 descIdx = findOrAddUtf8(cf, mapped);
@@ -391,11 +419,15 @@ private:
     ca::u32 internRef(CpTag tag, std::string_view owner, std::string_view name,
                       std::string_view desc) const
     {
+        // 三段均为规范形入参；session intern 直写 cp，编码在此收口。
+        const std::string cpOwner = utf8ToCp(owner);
+        const std::string cpName  = utf8ToCp(name);
+        const std::string cpDesc  = utf8ToCp(desc);
         switch (tag) {
-        case CpTag::Fieldref: return session.internFieldRef(owner, name, desc);
+        case CpTag::Fieldref: return session.internFieldRef(cpOwner, cpName, cpDesc);
         case CpTag::InterfaceMethodref:
-            return session.internInterfaceMethodRef(owner, name, desc);
-        default: return session.internMethodRef(owner, name, desc);
+            return session.internInterfaceMethodRef(cpOwner, cpName, cpDesc);
+        default: return session.internMethodRef(cpOwner, cpName, cpDesc);
         }
     }
 };
@@ -409,8 +441,8 @@ bool remapElemValue(const RemapCtx& ctx, AnnotationsAttr::ElemValue& value)
     bool changed = false;
     switch (value.tag) {
     case 'e': {
-        const std::string_view oldText = ctx.cf.cp.utf8Of(value.typeNameCp);
-        const std::string_view mapped  = ctx.plan.mapFieldDescriptor(oldText);
+        const std::string oldText     = cpToUtf8(ctx.cf.cp.utf8Of(value.typeNameCp));
+        const std::string_view mapped = ctx.plan.mapFieldDescriptor(oldText);
         if (mapped != oldText) {
             value.typeNameCp = findOrAddUtf8(ctx.cf, mapped);
             changed          = true;
@@ -419,8 +451,8 @@ bool remapElemValue(const RemapCtx& ctx, AnnotationsAttr::ElemValue& value)
     }
     case 'c': {
         // 'c' 载荷是返回描述符形态的 Utf8（JVMS 4.7.16.1）。
-        const std::string_view oldText = ctx.cf.cp.utf8Of(value.cp);
-        const std::string_view mapped  = ctx.plan.mapFieldDescriptor(oldText);
+        const std::string oldText     = cpToUtf8(ctx.cf.cp.utf8Of(value.cp));
+        const std::string_view mapped = ctx.plan.mapFieldDescriptor(oldText);
         if (mapped != oldText) {
             value.cp = findOrAddUtf8(ctx.cf, mapped);
             changed  = true;
@@ -443,8 +475,8 @@ bool remapAnnotation(const RemapCtx& ctx, AnnotationsAttr::Annotation& annotatio
 {
     bool changed = false;
     if (ctx.cf.cp.isUtf8(annotation.typeCp)) {
-        const std::string_view oldText = ctx.cf.cp.utf8Of(annotation.typeCp);
-        const std::string_view mapped  = ctx.plan.mapFieldDescriptor(oldText);
+        const std::string oldText     = cpToUtf8(ctx.cf.cp.utf8Of(annotation.typeCp));
+        const std::string_view mapped = ctx.plan.mapFieldDescriptor(oldText);
         if (mapped != oldText) {
             annotation.typeCp = findOrAddUtf8(ctx.cf, mapped);
             changed           = true;
@@ -485,8 +517,8 @@ bool remapSignatureAttr(const RemapCtx& ctx, std::vector<AttrSlot>& attrs)
     if (slot == nullptr) return false;
     auto* attr = decodedAttrOf<jbc::core::SignatureAttr>(ctx.cf, *slot);
     if (attr == nullptr) return false;
-    const std::string_view text   = ctx.cf.cp.utf8Of(attr->signatureCp);
-    const std::string_view mapped = ctx.plan.mapSignature(text);
+    const std::string text         = cpToUtf8(ctx.cf.cp.utf8Of(attr->signatureCp));
+    const std::string_view mapped  = ctx.plan.mapSignature(text);
     if (mapped == text) return false;
     attr->signatureCp = findOrAddUtf8(ctx.cf, mapped);
     (void)slot->mutate();
@@ -506,10 +538,10 @@ bool remapExceptionsAttr(const RemapCtx& ctx, MemberInfo& method)
     auto& exc  = static_cast<ExceptionsAttr&>(*body);
     bool  changed = false;
     for (ca::u32& classCp : exc.exceptionCps) {
-        const std::string_view name   = classNameOfCp(ctx.cf, classCp);
+        const std::string name        = cpToUtf8(classNameOfCp(ctx.cf, classCp));
         const std::string_view mapped = ctx.plan.mapInternalName(name);
         if (mapped != name) {
-            classCp = ctx.session.internClass(mapped);
+            classCp = static_cast<ca::u16>(internClassName(ctx.session, mapped));
             changed = true;
         }
     }
@@ -534,17 +566,17 @@ bool remapEnclosingMethodAttr(const RemapCtx& ctx)
     auto body = std::move(d).unwrap();
     auto& em  = static_cast<EnclosingMethodAttr&>(*body);
 
-    const std::string_view oldClassName = classNameOfCp(ctx.cf, em.classCp);
-    const std::string_view newClassName = ctx.plan.mapInternalName(oldClassName);
+    const std::string oldClassName = cpToUtf8(classNameOfCp(ctx.cf, em.classCp));
+    const std::string newClassName{ctx.plan.mapInternalName(oldClassName)};
 
-    std::string_view oldName;
-    std::string_view oldDesc;
-    bool             hasMethod = false;
+    std::string oldName;
+    std::string oldDesc;
+    bool        hasMethod = false;
     if (em.methodNatCp != 0 && ctx.cf.cp.valid(em.methodNatCp)) {
         const auto& nat = ctx.cf.cp.at(em.methodNatCp);
         if (nat.tag == CpTag::NameAndType && ctx.cf.cp.isUtf8(nat.a) && ctx.cf.cp.isUtf8(nat.b)) {
-            oldName   = ctx.cf.cp.utf8Of(nat.a);
-            oldDesc   = ctx.cf.cp.utf8Of(nat.b);
+            oldName   = cpToUtf8(ctx.cf.cp.utf8Of(nat.a));
+            oldDesc   = cpToUtf8(ctx.cf.cp.utf8Of(nat.b));
             hasMethod = true;
         }
     }
@@ -562,7 +594,7 @@ bool remapEnclosingMethodAttr(const RemapCtx& ctx)
     }
     if (newClassName == oldClassName && newName == oldName && newDesc == oldDesc) return false;
 
-    em.classCp = ctx.session.internClass(newClassName);
+    em.classCp = static_cast<ca::u16>(internClassName(ctx.session, newClassName));
     if (hasMethod) {
         em.methodNatCp = ctx.cf.cp.addNameAndType(findOrAddUtf8(ctx.cf, newName),
                                                   findOrAddUtf8(ctx.cf, newDesc));
@@ -583,10 +615,10 @@ bool remapModuleMainClassAttr(const RemapCtx& ctx)
     if (d.is_err()) return false;
     auto body = std::move(d).unwrap();
     auto& mc  = static_cast<ModuleMainClassAttr&>(*body);
-    const std::string_view name   = classNameOfCp(ctx.cf, mc.mainClassCp);
-    const std::string_view mapped = ctx.plan.mapInternalName(name);
+    const std::string name         = cpToUtf8(classNameOfCp(ctx.cf, mc.mainClassCp));
+    const std::string_view mapped  = ctx.plan.mapInternalName(name);
     if (mapped == name) return false;
-    mc.mainClassCp = ctx.session.internClass(mapped);
+    mc.mainClassCp = static_cast<ca::u16>(internClassName(ctx.session, mapped));
     *slot = AttrSlot::makeNew(slot->nameCp, std::move(body));
     return true;
 }
@@ -602,10 +634,10 @@ bool remapNestHostAttr(const RemapCtx& ctx)
     if (d.is_err()) return false;
     auto body = std::move(d).unwrap();
     auto& nh  = static_cast<NestHostAttr&>(*body);
-    const std::string_view name   = classNameOfCp(ctx.cf, nh.hostClassCp);
-    const std::string_view mapped = ctx.plan.mapInternalName(name);
+    const std::string name         = cpToUtf8(classNameOfCp(ctx.cf, nh.hostClassCp));
+    const std::string_view mapped  = ctx.plan.mapInternalName(name);
     if (mapped == name) return false;
-    nh.hostClassCp = ctx.session.internClass(mapped);
+    nh.hostClassCp = static_cast<ca::u16>(internClassName(ctx.session, mapped));
     *slot = AttrSlot::makeNew(slot->nameCp, std::move(body));
     return true;
 }
@@ -626,10 +658,10 @@ bool remapTypedClassListAttr(const RemapCtx& ctx, std::string_view attrName,
     auto& typed   = static_cast<AttrT&>(*body);
     bool  changed = false;
     for (ca::u32& classCp : typed.*cpsMember) {
-        const std::string_view name   = classNameOfCp(ctx.cf, classCp);
+        const std::string name        = cpToUtf8(classNameOfCp(ctx.cf, classCp));
         const std::string_view mapped = ctx.plan.mapInternalName(name);
         if (mapped != name) {
-            classCp = ctx.session.internClass(mapped);
+            classCp = internClassName(ctx.session, mapped);
             changed = true;
         }
     }
@@ -676,18 +708,18 @@ bool remapInnerClassesAttr(const RemapCtx& ctx)
     auto& ic  = static_cast<InnerClassesAttr&>(*body);
     bool  changed = false;
     for (InnerClassesAttr::Row& row : ic.rows) {
-        const std::string_view innerName = classNameOfCp(ctx.cf, row.innerClassInfoCp);
-        const std::string_view mapped    = ctx.plan.mapInternalName(innerName);
+        const std::string innerName    = cpToUtf8(classNameOfCp(ctx.cf, row.innerClassInfoCp));
+        const std::string_view mapped  = ctx.plan.mapInternalName(innerName);
         if (mapped != innerName) {
-            row.innerClassInfoCp = ctx.session.internClass(mapped);
+            row.innerClassInfoCp = internClassName(ctx.session, mapped);
             changed = true;
         }
 
         if (row.outerClassInfoCp != 0) {
-            const std::string_view outerName = classNameOfCp(ctx.cf, row.outerClassInfoCp);
-            const std::string_view outerMap  = ctx.plan.mapInternalName(outerName);
+            const std::string outerName   = cpToUtf8(classNameOfCp(ctx.cf, row.outerClassInfoCp));
+            const std::string_view outerMap = ctx.plan.mapInternalName(outerName);
             if (outerMap != outerName) {
-                row.outerClassInfoCp = ctx.session.internClass(outerMap);
+                row.outerClassInfoCp = internClassName(ctx.session, outerMap);
                 changed = true;
             }
         }
@@ -696,7 +728,7 @@ bool remapInnerClassesAttr(const RemapCtx& ctx)
             const std::string_view oldSimple = innerSimpleName(innerName);
             const std::string_view newSimple = innerSimpleName(mapped);
             if (!oldSimple.empty() && !newSimple.empty() &&
-                ctx.cf.cp.utf8Equals(row.innerNameCp, oldSimple)) {
+                ctx.cf.cp.utf8Equals(row.innerNameCp, utf8ToCp(oldSimple))) {
                 row.innerNameCp = findOrAddUtf8(ctx.cf, newSimple);
                 changed = true;
             }
@@ -721,8 +753,8 @@ bool rewriteRawElemValue(const RemapCtx& ctx, ByteReader& r, std::vector<ca::u8>
     case 'e': {
         const ca::u32          typeName  = r.u16();
         const ca::u32          constName = r.u16();
-        const std::string_view text      = ctx.cf.cp.utf8Of(typeName);
-        const std::string_view mapped    = ctx.plan.mapFieldDescriptor(text);
+        const std::string text          = cpToUtf8(ctx.cf.cp.utf8Of(typeName));
+        const std::string_view mapped   = ctx.plan.mapFieldDescriptor(text);
         if (mapped != text) {
             putUtf8Index(out, ctx.cf, mapped);
             changed = true;
@@ -735,7 +767,7 @@ bool rewriteRawElemValue(const RemapCtx& ctx, ByteReader& r, std::vector<ca::u8>
     }
     case 'c': {
         const ca::u32          cpIdx  = r.u16();
-        const std::string_view text   = ctx.cf.cp.utf8Of(cpIdx);
+        const std::string text        = cpToUtf8(ctx.cf.cp.utf8Of(cpIdx));
         const std::string_view mapped = ctx.plan.mapFieldDescriptor(text);
         if (mapped != text) {
             putUtf8Index(out, ctx.cf, mapped);
@@ -769,7 +801,7 @@ bool rewriteRawAnnotation(const RemapCtx& ctx, ByteReader& r, std::vector<ca::u8
 {
     const ca::u32          typeCp = r.u16();
     const ca::u32          count  = r.u16();
-    const std::string_view text   = ctx.cf.cp.utf8Of(typeCp);
+    const std::string      text   = cpToUtf8(ctx.cf.cp.utf8Of(typeCp));
     const std::string_view mapped = ctx.plan.mapFieldDescriptor(text);
     bool                   changed = false;
     if (mapped != text) {
@@ -839,8 +871,8 @@ bool remapRecordAttr(const RemapCtx& ctx, std::string_view owner, bool signature
     auto& rec     = static_cast<RecordAttr&>(*body);
     bool  changed = false;
     for (RecordAttr::Component& component : rec.components) {
-        const std::string_view nameText = ctx.cf.cp.utf8Of(component.nameCp);
-        const std::string_view descText = ctx.cf.cp.utf8Of(component.descriptorCp);
+        const std::string nameText = cpToUtf8(ctx.cf.cp.utf8Of(component.nameCp));
+        const std::string descText = cpToUtf8(ctx.cf.cp.utf8Of(component.descriptorCp));
         const std::string_view mappedName =
             recordComponentMappedName(ctx, owner, nameText, descText);
         const std::string_view mappedDesc = ctx.plan.mapFieldDescriptor(descText);
@@ -878,10 +910,10 @@ bool remapModuleAttrs(const RemapCtx& ctx)
     auto& mod  = static_cast<ModuleAttr&>(*body);
     // 单个 CP Class 槽的类名重映射（命中才 intern），供 uses/provides 共用。
     const auto remapClassSlot = [&ctx](ca::u32& classCp) {
-        const std::string_view name   = classNameOfCp(ctx.cf, classCp);
+        const std::string name        = cpToUtf8(classNameOfCp(ctx.cf, classCp));
         const std::string_view mapped = ctx.plan.mapInternalName(name);
         if (mapped != name) {
-            classCp = ctx.session.internClass(mapped);
+            classCp = internClassName(ctx.session, mapped);
             return true;
         }
         return false;
@@ -908,23 +940,26 @@ bool remapFieldInsn(const RemapCtx& ctx, Insn& in)
 {
     ClassSession::MemberSem sem;
     if (!ctx.session.memberOf(in, sem)) return false;
+    const std::string owner = cpToUtf8(sem.owner);
+    const std::string name  = cpToUtf8(sem.name);
+    const std::string desc  = cpToUtf8(sem.desc);
     std::string_view newOwner;
     std::string_view newName;
     std::string_view newDesc;
-    if (const auto* rule = ctx.plan.findField(sem.owner, sem.name, sem.desc)) {
+    if (const auto* rule = ctx.plan.findField(owner, name, desc)) {
         newOwner = ctx.ruleOwner(rule->newKey.cls);
         newName  = ctx.ruleName(rule->newKey.name);
         // 描述符空规则（映射文件形态）：命中后描述符保持现状。
-        newDesc  = rule->newKey.desc != 0 ? ctx.ruleDesc(rule->newKey.desc) : sem.desc;
+        newDesc  = rule->newKey.desc != 0 ? ctx.ruleDesc(rule->newKey.desc) : desc;
     }
     else {
-        newOwner = ctx.plan.mapOwnerRef(sem.owner);
-        newName  = sem.name;
-        newDesc  = ctx.plan.mapFieldDescriptor(sem.desc);
+        newOwner = ctx.plan.mapOwnerRef(owner);
+        newName  = name;
+        newDesc  = ctx.plan.mapFieldDescriptor(desc);
     }
-    if (newOwner == sem.owner && newName == sem.name && newDesc == sem.desc) return false;
-    return ctx.session.setMember(in, ClassSession::MemberSem::Kind::Field, newOwner, newName,
-                                 newDesc);
+    if (newOwner == owner && newName == name && newDesc == desc) return false;
+    return ctx.session.setMember(in, ClassSession::MemberSem::Kind::Field, utf8ToCp(newOwner),
+                                 utf8ToCp(newName), utf8ToCp(newDesc));
 }
 
 /// @brief invoke 指令（非 indy）：精确规则优先，未命中 owner/描述符随映射面改写。
@@ -932,24 +967,28 @@ bool remapMethodInsn(const RemapCtx& ctx, Insn& in)
 {
     ClassSession::MemberSem sem;
     if (!ctx.session.memberOf(in, sem)) return false;
+    const std::string owner = cpToUtf8(sem.owner);
+    const std::string name  = cpToUtf8(sem.name);
+    const std::string desc  = cpToUtf8(sem.desc);
     std::string_view newOwner;
     std::string_view newName;
     std::string_view newDesc;
-    if (const auto* rule = ctx.plan.findMethod(sem.owner, sem.name, sem.desc)) {
+    if (const auto* rule = ctx.plan.findMethod(owner, name, desc)) {
         newOwner = ctx.ruleOwner(rule->newKey.cls);
         newName  = ctx.ruleName(rule->newKey.name);
         newDesc  = ctx.ruleDesc(rule->newKey.desc);
     }
     else {
-        newOwner = ctx.plan.mapOwnerRef(sem.owner);
-        newName  = sem.name;
-        newDesc  = ctx.plan.mapMethodDescriptor(sem.desc);
+        newOwner = ctx.plan.mapOwnerRef(owner);
+        newName  = name;
+        newDesc  = ctx.plan.mapMethodDescriptor(desc);
     }
-    if (newOwner == sem.owner && newName == sem.name && newDesc == sem.desc) return false;
+    if (newOwner == owner && newName == name && newDesc == desc) return false;
     const auto kind = in.op == Op::INVOKEINTERFACE
                           ? ClassSession::MemberSem::Kind::InterfaceMethod
                           : ClassSession::MemberSem::Kind::Method;
-    return ctx.session.setMember(in, kind, newOwner, newName, newDesc);
+    return ctx.session.setMember(in, kind, utf8ToCp(newOwner), utf8ToCp(newName),
+                                 utf8ToCp(newDesc));
 }
 
 /// @brief invokedynamic：描述符/合成方法名 + BSM 链。
@@ -961,10 +1000,10 @@ bool remapInvokedynamic(const RemapCtx& ctx, Insn& in)
     if (!cp.valid(entry.b)) return false;
     const auto& nat = cp.at(entry.b);
     if (nat.tag != CpTag::NameAndType || !cp.isUtf8(nat.a) || !cp.isUtf8(nat.b)) return false;
-    const std::string_view oldName = cp.utf8Of(nat.a);
-    const std::string_view oldDesc = cp.utf8Of(nat.b);
-    std::string_view       newName = oldName;
-    std::string_view       newDesc = ctx.plan.mapMethodDescriptor(oldDesc);
+    const std::string oldName = cpToUtf8(cp.utf8Of(nat.a));
+    const std::string oldDesc = cpToUtf8(cp.utf8Of(nat.b));
+    std::string_view  newName = oldName;
+    std::string_view  newDesc = ctx.plan.mapMethodDescriptor(oldDesc);
     // BSM 索引在改写前拷出：后续链路会向常量池追加条目，entries_ 扩容使
     // entry/nat 引用失效，悬空读取会拿到垃圾序号。
     const ca::u32 bsmIndex = entry.a;
@@ -985,12 +1024,13 @@ bool remapInvokedynamic(const RemapCtx& ctx, Insn& in)
             const ca::u32 samIdx = bsmEntry.args.front();
             if (cp.valid(samIdx) && cp.tagOf(samIdx) == CpTag::MethodType &&
                 cp.isUtf8(cp.at(samIdx).a)) {
-                const std::string_view samDesc = cp.utf8Of(cp.at(samIdx).a);
+                const std::string samDesc = cpToUtf8(cp.utf8Of(cp.at(samIdx).a));
                 const ca::usize        ret     = oldDesc.rfind(')');
                 if (ret != std::string_view::npos) {
-                    const std::string_view retDesc = oldDesc.substr(ret + 1);
+                    // substr 产物必须持有：string_view 绑临时 string 会悬空。
+                    const std::string retDesc = oldDesc.substr(ret + 1);
                     if (retDesc.size() >= 3 && retDesc.front() == 'L' && retDesc.back() == ';') {
-                        const std::string_view retOwner = retDesc.substr(1, retDesc.size() - 2);
+                        const std::string retOwner = retDesc.substr(1, retDesc.size() - 2);
                         if (const auto* rule = ctx.plan.findMethod(retOwner, oldName, samDesc)) {
                             newName = ctx.ruleName(rule->newKey.name);
                         }
@@ -1021,23 +1061,23 @@ bool remapInsn(const RemapCtx& ctx, Insn& in)
     if (in.op == Op::INVOKEDYNAMIC) return remapInvokedynamic(ctx, in);
     if (isInvokeFamily(in.op)) return remapMethodInsn(ctx, in);
     if (isTypeInstruction(in.op)) {
-        const std::string_view oldName = ctx.session.classOf(in);
+        const std::string oldName = cpToUtf8(ctx.session.classOf(in));
         if (oldName.empty()) return false;
         // 数组形态 owner（anewarray 数组类）按字段描述符口径整体重映射。
         const std::string_view mapped = oldName.front() == '['
                                             ? ctx.plan.mapFieldDescriptor(oldName)
                                             : ctx.plan.mapInternalName(oldName);
         if (mapped == oldName) return false;
-        return ctx.session.setClass(in, mapped);
+        return ctx.session.setClass(in, utf8ToCp(mapped));
     }
     if (in.op == Op::MULTIANEWARRAY) {
         if (!cp.valid(in.cp) || cp.tagOf(in.cp) != CpTag::Class || !cp.isUtf8(cp.at(in.cp).a)) {
             return false;
         }
-        const std::string_view oldDesc = cp.utf8Of(cp.at(in.cp).a);
+        const std::string oldDesc      = cpToUtf8(cp.utf8Of(cp.at(in.cp).a));
         const std::string_view mapped  = ctx.plan.mapFieldDescriptor(oldDesc);
         if (mapped == oldDesc) return false;
-        in.cp = ctx.session.internClass(mapped);
+        in.cp = internClassName(ctx.session, mapped);
         return true;
     }
     if (isLdcFamily(in.op)) {
@@ -1045,11 +1085,12 @@ bool remapInsn(const RemapCtx& ctx, Insn& in)
         if (!ctx.session.constOf(in, c)) return false;
         switch (c.kind) {
         case ClassSession::ConstSem::Kind::Class: {
-            const std::string_view mapped = !c.str.empty() && c.str.front() == '['
-                                                ? ctx.plan.mapFieldDescriptor(c.str)
-                                                : ctx.plan.mapInternalName(c.str);
-            if (mapped == c.str) return false;
-            in.cp = ctx.session.internClass(mapped);
+            const std::string oldName     = cpToUtf8(c.str);
+            const std::string_view mapped = !oldName.empty() && oldName.front() == '['
+                                                ? ctx.plan.mapFieldDescriptor(oldName)
+                                                : ctx.plan.mapInternalName(oldName);
+            if (mapped == oldName) return false;
+            in.cp = internClassName(ctx.session, mapped);
             upgradeLdcWidth(in);
             return true;
         }
@@ -1153,7 +1194,7 @@ bool setLdcString(ClassSession& session, CodeUnit& code, InsnId id, std::string_
 {
     auto got = code.dom.get(id);
     if (got.is_err()) return false;
-    return session.setString(*got.unwrap(), text);
+    return session.setString(*got.unwrap(), utf8ToCp(text));
 }
 
 /// @brief 反射字符串改写：线性状态机轨道 + alias 数据流轨道。
@@ -1192,12 +1233,12 @@ bool remapReflectionNames(const RemapCtx& ctx, CodeUnit& code, std::string_view 
             if (ctx.session.constOf(*in, c)) {
                 if (c.kind == ClassSession::ConstSem::Kind::String) {
                     hasLastString = true;
-                    lastString.assign(c.str);
+                    lastString.assign(cpToUtf8(c.str));
                     lastStringId = order[pos];
                 }
                 else if (c.kind == ClassSession::ConstSem::Kind::Class) {
-                    const std::string_view tracking =
-                        reference::classLiteralTrackingName(c.str);
+                    const std::string decoded          = cpToUtf8(c.str);
+                    const std::string_view tracking    = reference::classLiteralTrackingName(decoded);
                     if (!tracking.empty() && (!hasOwner || !hasLastString)) {
                         reflectionOwner.assign(tracking);
                         hasOwner      = true;
@@ -1296,18 +1337,19 @@ bool remapReflectionNames(const RemapCtx& ctx, CodeUnit& code, std::string_view 
                 c.kind != ClassSession::ConstSem::Kind::String) {
                 continue;
             }
+            const std::string text = cpToUtf8(c.str);
             std::string_view mapped;
             if (methodLookup) {
-                if (const auto* rule = ctx.plan.findMethodByName(receiver.owner, c.str)) {
+                if (const auto* rule = ctx.plan.findMethodByName(receiver.owner, text)) {
                     mapped = ctx.plan.pool().str(rule->newKey.name);
                 }
             }
             else {
-                if (const auto* rule = ctx.plan.findFieldByName(receiver.owner, c.str)) {
+                if (const auto* rule = ctx.plan.findFieldByName(receiver.owner, text)) {
                     mapped = ctx.plan.pool().str(rule->newKey.name);
                 }
             }
-            if (!mapped.empty() && mapped != c.str) {
+            if (!mapped.empty() && mapped != text) {
                 if (setLdcString(ctx.session, code, order[cursor], mapped)) changed = true;
             }
             break;
@@ -1339,16 +1381,16 @@ bool remapCodeMetadata(const RemapCtx& ctx, MemberInfo& method)
             const bool isLvtt = ctx.cf.cp.utf8Equals(nested.nameCp, "LocalVariableTypeTable");
             bool rowsChanged = false;
             for (const auto& row : lvt->rows) {
-                const std::string_view text   = ctx.cf.cp.utf8Of(row.descCp);
-                const std::string_view mapped = isLvtt ? ctx.plan.mapSignature(text)
-                                                       : ctx.plan.mapFieldDescriptor(text);
+                const std::string text         = cpToUtf8(ctx.cf.cp.utf8Of(row.descCp));
+                const std::string_view mapped  = isLvtt ? ctx.plan.mapSignature(text)
+                                                        : ctx.plan.mapFieldDescriptor(text);
                 if (mapped != text) rowsChanged = true;
             }
             if (rowsChanged) {
                 auto* mutableLvt = ca::core::tag_cast::cast<LocalVariableTableAttr>(nested.mutate());
                 if (mutableLvt == nullptr) continue;
                 for (auto& row : mutableLvt->rows) {
-                    const std::string_view text   = ctx.cf.cp.utf8Of(row.descCp);
+                    const std::string text        = cpToUtf8(ctx.cf.cp.utf8Of(row.descCp));
                     const std::string_view mapped = isLvtt ? ctx.plan.mapSignature(text)
                                                            : ctx.plan.mapFieldDescriptor(text);
                     if (mapped != text) row.descCp = findOrAddUtf8(ctx.cf, mapped);
@@ -1364,7 +1406,7 @@ bool remapCodeMetadata(const RemapCtx& ctx, MemberInfo& method)
                 for (const auto* group : {&frame.locals, &frame.stack}) {
                     for (const auto& vtype : *group) {
                         if (vtype.tag != 7) continue;   // Object 校验类型
-                        const std::string_view name = classNameOfCp(ctx.cf, vtype.cp);
+                        const std::string name = cpToUtf8(classNameOfCp(ctx.cf, vtype.cp));
                         if (name.empty()) continue;
                         const std::string_view mapped = name.front() == '['
                                                             ? ctx.plan.mapFieldDescriptor(name)
@@ -1380,13 +1422,13 @@ bool remapCodeMetadata(const RemapCtx& ctx, MemberInfo& method)
                     for (auto* group : {&frame.locals, &frame.stack}) {
                         for (auto& vtype : *group) {
                             if (vtype.tag != 7) continue;
-                            const std::string_view name = classNameOfCp(ctx.cf, vtype.cp);
+                            const std::string name = cpToUtf8(classNameOfCp(ctx.cf, vtype.cp));
                             if (name.empty()) continue;
                             const std::string_view mapped = name.front() == '['
                                                                 ? ctx.plan.mapFieldDescriptor(name)
                                                                 : ctx.plan.mapInternalName(name);
                             if (mapped != name) {
-                                vtype.cp = ctx.session.internClass(mapped);
+                                vtype.cp = internClassName(ctx.session, mapped);
                             }
                         }
                     }
@@ -1431,10 +1473,10 @@ Result<bool, RemapError> remapMethodBody(const RemapCtx& ctx, ca::usize methodId
         }
         for (auto& exc : unit->exc) {
             if (exc.catchCp == 0) continue;
-            const std::string_view name   = classNameOfCp(ctx.cf, exc.catchCp);
+            const std::string name        = cpToUtf8(classNameOfCp(ctx.cf, exc.catchCp));
             const std::string_view mapped = ctx.plan.mapInternalName(name);
             if (mapped != name) {
-                exc.catchCp = ctx.session.internClass(mapped);
+                exc.catchCp = internClassName(ctx.session, mapped);
                 changed     = true;
             }
         }
@@ -1450,10 +1492,13 @@ Result<bool, RemapError> remapMethodBody(const RemapCtx& ctx, ca::usize methodId
 void syncMethodSymbols(ClassSession& session, ca::usize methodIdx, std::string_view name,
                        std::string_view desc)
 {
+    // 符号池字节会被 lower 原样写回 cp：入参是规范形，编码后入池。
+    const std::string cpName = utf8ToCp(name);
+    const std::string cpDesc = utf8ToCp(desc);
     for (auto& mu : session.unit().methods) {
         if (mu.backingIndex == methodIdx) {
-            mu.name = session.unit().symbols().intern(name);
-            mu.desc = session.unit().symbols().intern(desc);
+            mu.name = session.unit().symbols().intern(cpName);
+            mu.desc = session.unit().symbols().intern(cpDesc);
             return;
         }
     }
@@ -1468,6 +1513,8 @@ const char* to_string(RemapError error) noexcept
     switch (error) {
     case RemapError::PromoteFailed: return "promote-failed";
     case RemapError::LowerFailed: return "lower-failed";
+    case RemapError::WriteFailed: return "write-failed";
+    case RemapError::UnreadableClass: return "unreadable-class";
     }
     return "?";
 }
@@ -1512,14 +1559,14 @@ Result<bool, RemapError> applyMemberRemapPlan(jbc::ir::ClassSession&      sessio
     const RemapCtx ctx{cf, session, plan, nullptr, nullptr};
 
     bool changed = false;
-    const std::string oldOwner{cf.thisName()};
+    const std::string oldOwner = cpToUtf8(cf.thisName());
 
     if (policy.bytecode) {
         const auto remapHeaderRef = [&](ca::u16& slot) {
-            const std::string_view name   = classNameOfCp(cf, slot);
+            const std::string name        = cpToUtf8(classNameOfCp(cf, slot));
             const std::string_view mapped = plan.mapInternalName(name);
             if (mapped != name) {
-                slot    = static_cast<ca::u16>(session.internClass(mapped));
+                slot    = static_cast<ca::u16>(internClassName(session, mapped));
                 changed = true;
             }
         };
@@ -1541,8 +1588,8 @@ Result<bool, RemapError> applyMemberRemapPlan(jbc::ir::ClassSession&      sessio
     }
 
     for (auto& field : cf.fields) {
-        const std::string_view oldName = cf.nameOf(field);
-        const std::string_view oldDesc = cf.descOf(field);
+        const std::string oldName = cpToUtf8(cf.nameOf(field));
+        const std::string oldDesc = cpToUtf8(cf.descOf(field));
         if (policy.bytecode) {
             if (const auto* rule = plan.findField(oldOwner, oldName, oldDesc)) {
                 const std::string_view newName = plan.pool().str(rule->newKey.name);
@@ -1572,9 +1619,9 @@ Result<bool, RemapError> applyMemberRemapPlan(jbc::ir::ClassSession&      sessio
     }
 
     for (ca::usize methodIdx = 0; methodIdx < cf.methods.size(); ++methodIdx) {
-        MemberInfo&            method = cf.methods[methodIdx];
-        const std::string_view oldName = cf.nameOf(method);
-        const std::string_view oldDesc = cf.descOf(method);
+        MemberInfo&  method = cf.methods[methodIdx];
+        const std::string oldName = cpToUtf8(cf.nameOf(method));
+        const std::string oldDesc = cpToUtf8(cf.descOf(method));
         if (policy.bytecode) {
             std::string_view newName = oldName;
             std::string_view newDesc = oldDesc;

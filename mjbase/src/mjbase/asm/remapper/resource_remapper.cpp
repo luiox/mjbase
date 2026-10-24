@@ -11,6 +11,7 @@
 
 #include "mjbase/analysis/alias_analysis.hpp"
 #include "mjbase/jar/manifest.hpp"
+#include "mjbase/jasm/classfile_utf8.hpp"
 #include "mjbase/model/resource_model.hpp"
 
 namespace mjbase::asm_remapper {
@@ -27,6 +28,12 @@ using mjbase::model::UnknownResource;
 std::string classResourceUri(const std::string& internalName)
 {
     return internalName + ".class";
+}
+
+/// @brief cp modified UTF-8 → 规范形 UTF-8（计划/URI 比对入参）。
+std::string cpToUtf8(std::string_view value)
+{
+    return mjbase::jasm::classFileUtf8ToString(value);
 }
 
 constexpr std::string_view kServicePrefix = "META-INF/services/";
@@ -382,6 +389,16 @@ void renameClassResources(model::ResourceContainer&                             
     }
 }
 
+/// @brief 类资源 URI → 内部名（classResourceUri 的逆）；非 .class 形返回空。
+std::string internalNameOfClassUri(std::string_view uri)
+{
+    constexpr std::string_view kSuffix = ".class";
+    if (uri.size() < kSuffix.size() || uri.substr(uri.size() - kSuffix.size()) != kSuffix) {
+        return {};
+    }
+    return std::string(uri.substr(0, uri.size() - kSuffix.size()));
+}
+
 }   // namespace
 
 Result<bool, RemapError> applyResourceRemapPlan(model::ResourceContainer& container,
@@ -389,8 +406,6 @@ Result<bool, RemapError> applyResourceRemapPlan(model::ResourceContainer& contai
                                                 const RemapPolicy&          policy)
 {
     if (plan.empty()) return Ok(false);
-
-    bool changed = false;
 
     // 反射别名闭包只在反射字符串面开启时构建（消费面只有
     // 反射轨道，此处惰性化是纯性能口径，结果语义不变）。
@@ -401,6 +416,15 @@ Result<bool, RemapError> applyResourceRemapPlan(model::ResourceContainer& contai
         aliasesPtr = &aliases;
     }
 
+    // ── 阶段一：全部类先在 session 内重映射并产出新字节，任何失败即 Err——
+    // 容器零改动。fail-open 的逐类 continue 会产出「部分类已改写 + 资源面
+    // 已改写」的混合态 jar（MANIFEST 指新名而类不在），数据损坏级，拒绝。
+    struct PendingRemap
+    {
+        ClassResource*      resource;
+        std::vector<ca::u8> bytes;
+    };
+    std::vector<PendingRemap>                        pending;
     std::vector<std::pair<std::string, std::string>> resourceRenames;
 
     for (auto& [uri, resource] : container.getResources()) {
@@ -412,17 +436,26 @@ Result<bool, RemapError> applyResourceRemapPlan(model::ResourceContainer& contai
 
         auto sessionResult = jbc::ir::makeSessionFromBytes(
             ByteView(bytes.data(), bytes.size()));
-        if (sessionResult.is_err()) continue;   // 畸形类跳过（catch(...) 口径）
+        if (sessionResult.is_err()) {
+            // 不可解析类：内名读不出。URI 名在计划内时资源面会改写而字节面
+            // 改不动——混合态风险，fail-closed；计划外的畸形类与本次改名
+            // 无关，保持原样跳过。
+            const std::string       uriName = internalNameOfClassUri(uri);
+            const std::string_view  mapped  = uriName.empty()
+                                                ? std::string_view{}
+                                                : plan.mapInternalName(uriName);
+            if (!uriName.empty() && mapped != uriName) return Err(RemapError::UnreadableClass);
+            continue;
+        }
         auto session = std::move(sessionResult).unwrap();
 
-        const std::string oldName{session->backing().thisName()};
+        const std::string oldName = cpToUtf8(session->backing().thisName());
         auto applied = applyMemberRemapPlan(*session, plan, policy, aliasesPtr);
-        if (applied.is_err()) continue;   // 写回面真失败：该类保持原样（fail-open）
+        if (applied.is_err()) return Err(applied.unwrap_err());
         if (applied.unwrap()) {
             auto written = jbc::core::writeClass(session->backing());
-            if (written.is_err()) continue;
-            cls->set(std::move(written).unwrap());
-            changed = true;
+            if (written.is_err()) return Err(RemapError::WriteFailed);
+            pending.push_back({cls, std::move(written).unwrap()});
         }
 
         if (policy.bytecode && policy.resources &&
@@ -433,6 +466,12 @@ Result<bool, RemapError> applyResourceRemapPlan(model::ResourceContainer& contai
         }
     }
 
+    // ── 阶段二：全部成功，统一落账。
+    bool changed = false;
+    for (auto& entry : pending) {
+        entry.resource->set(std::move(entry.bytes));
+        changed = true;
+    }
     renameClassResources(container, resourceRenames, changed);
     if (policy.resources) {
         // META-INF/services 与 MANIFEST 主属性是 resources 面下的细分门
