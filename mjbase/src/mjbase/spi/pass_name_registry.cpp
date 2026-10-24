@@ -18,6 +18,7 @@
 #include "mjbase/pass/meta_info_remover.hpp"
 #include "mjbase/pass/nop_remover.hpp"
 #include "mjbase/pass/redundant_load_val_eliminator.hpp"
+#include "mjbase/pass/remove_method_calls.hpp"
 #include "mjbase/pass/stack_operation.hpp"
 #include "mjbase/pass/strength_reducer.hpp"
 #include "mjbase/pass/tool_class_combiner.hpp"
@@ -186,7 +187,7 @@ Result<std::unique_ptr<CfClassPass>, RegistryError>
 //
 // 依赖方向注记：本文件在 spi 域，默认表的种子却是 pass 域的具体 pass——spi 头
 // 文件面保持不依赖 pass（pass 依赖 spi 的正向），只在 .cpp 反向包含做种子注册。
-// 名字用真实类名，对齐 mbase 旧栈 registerBuiltinPasses 的命名纪律。
+// 名字用真实类名，registerBuiltinPasses 的命名纪律。
 
 namespace {
 
@@ -300,6 +301,13 @@ PassNameRegistry makeDefaultRegistry()
         "GlobalUnusedMethodRemover",
         [] { return std::make_unique<mjbase::pass::GlobalUnusedMethodRemover>(); },
         "Remove private methods that are never invoked."));
+    // opt pass 波次（调用点收尾件，删除族前置）：按名单点名删除成员调用点 +
+    // 无用结果白名单面。默认无配置 = 完全 no-op（opt-in）；配置为程序化注入
+    // （MethodCallRemovalConfig），CLI/配置解析供给面属 cli 批。标签：
+    // scope:global / action:eliminate / stability:opt-in。
+    seed(reg.registerGlobalPass(
+        "MethodCallRemover", [] { return std::make_unique<mjbase::pass::MethodCallRemover>(); },
+        "Remove call sites of spec-named members and discardable-result whitelist calls."));
     // 批 B（类级骨架组，meta 元数据清理家族 13 件）：catch-all debug/framework
     // 元数据清除 + 单面件（final / synthetic+bridge / kotlin metadata /
     // source 信息 / 签名 / 非法注解 / 非法签名 / 非法 type 注解 / 非法 source

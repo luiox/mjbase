@@ -1,7 +1,7 @@
 /// @file        match_step.hpp
 /// @brief       线性指令序列模式的单步约束：具体 Op / 通配 / 贪婪多步 / 组合子。
 ///
-/// 旧栈（mbase/asm/matcher/match_step.hpp）的步骤是虚接口 + 裸指针 +
+/// 步骤是虚接口 + 裸指针 +
 /// 进程级所有权登记表；本实现是值语义：一步是一棵可自由拷贝/移动的
 /// 组合子树，随 MatchRule 一起存活，无生命周期负担。谓词只读单条指令
 /// （@ref jbc::ir::Insn 值），不再接触节点指针与列表游标。
@@ -26,7 +26,7 @@ using InsnPredicate = std::function<bool(const jbc::ir::Insn&)>;
 /// 步骤种类（对齐旧 SimpleStep/AnyStep/AnyMultiStep/AndStep/OrStep/NotStep）：
 ///   - op / opIf ：具体 Op（可带操作数谓词），恒消耗 1 条；
 ///   - any / anyIf：通配（可带谓词），恒消耗 1 条；
-///   - anyMulti  ：贪婪吞掉序列内全部剩余指令，消耗数动态（旧栈跳过
+///   - anyMulti  ：贪婪吞掉序列内全部剩余指令，消耗数动态（跳过
 ///                 Label/Line/Frame 伪节点后吞到表尾；新栈 order 内全是
 ///                 真指令，等价于吞到末尾，窗口边界纪律由 MatchRule 统一执行）；
 ///   - allOf / anyOf / notOf：同一条指令上的逻辑组合，恒消耗 1 条。

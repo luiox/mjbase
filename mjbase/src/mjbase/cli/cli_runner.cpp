@@ -124,7 +124,7 @@ std::string createStagedOutput(const std::string& output)
         const auto suffix = std::to_string(timestamp) + "." +
                             std::to_string(sequence.fetch_add(1, std::memory_order_relaxed));
         const auto candidate =
-            parent / std::filesystem::u8path(base + ".morpher-stage." + suffix);
+            parent / std::filesystem::u8path(base + ".mjbase-stage." + suffix);
         if (FileUtil::create_file(candidate.generic_u8string()))
             return candidate.generic_u8string();
     }

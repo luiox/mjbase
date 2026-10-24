@@ -294,7 +294,7 @@ std::string ShadowAliasTable::renderMember(std::string_view owner, std::string_v
                    nameEsc + ")";
     }
 
-    // P0-2（luiox/morpher#1106）：尾随 ` (完整原始形式)` 属信息删除，必须逐字段
+    // P0-2：尾随 ` (完整原始形式)` 属信息删除，必须逐字段
     // 核对尾段与前段完全重合才可去。当前格式下 owner/name 在前段必然出现
     // （直接或 `shadow (raw)` 括号内；结构性后缀比较，不用子串搜索，防名字
     // 本身含 `(`/`)` 时误判），desc 恒以 `:` + descEsc 收尾 → 三字段全部重合，

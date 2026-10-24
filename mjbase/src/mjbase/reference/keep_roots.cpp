@@ -97,4 +97,18 @@ void applyKeepRoots(const KeepRootSpec& spec, const ReferenceIndex& index,
     }
 }
 
+void applyRtaInstantiatedRoots(const mjbase::asm_classpath::ResolvedCallGraph& rtaGraph,
+                               const ReferenceIndex& index,
+                               GlobalReachabilityOptions& options)
+{
+    // 入根的是 RTA 图自有池内的已实例化声明类名（视图随图存活，见头注契约）；
+    // 集合中的外部类型（JDK/库）无声明事实，无从保留，跳过——集合本身不去重
+    // （发现序唯一），可达性 build 的 markClass 为集合语义，重复无害。
+    for (const std::string_view name : rtaGraph.instantiatedClasses()) {
+        if (name.empty()) continue;
+        if (index.declaredClass(name) == nullptr) continue;
+        options.rootClasses.push_back(name);
+    }
+}
+
 }   // namespace mjbase::reference

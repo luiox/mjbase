@@ -1,10 +1,11 @@
-/// 移植自 mbase/unittest/pass/opt/recover_pass_test.cpp 的 ClassRenamerTest 段，
-/// 并补齐旧栈缺失的独立直接用例（空容器 / 不可解析资源 / 命名确定性）。
+/// ClassRenamerTest 段，
+/// 并补齐独立直接用例（空容器 / 不可解析资源 / 命名确定性）。
 /// 断言面：URI 重写（旧条目删除、新条目入容器）、描述符与调用点同步改写、
 /// 编号确定性（旧名序 → Class0/Class1/...）。
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -27,7 +28,7 @@ namespace {
 constexpr ca::u16 kAccPublic  = 0x0001;
 constexpr ca::u16 kAccStatic  = 0x0008;
 
-/// 旧栈 buildRenameTarget 的移植：pkg/Target，id(Lpkg/Target;)Lpkg/Target;
+/// buildRenameTarget：pkg/Target，id(Lpkg/Target;)Lpkg/Target;
 /// （ALOAD 0; ARETURN 形态，self 描述符含自身类型）。
 Bytes buildRenameTarget()
 {
@@ -43,7 +44,7 @@ Bytes buildRenameTarget()
     return builder.assemble();
 }
 
-/// 旧栈 buildRenameCaller 的移植：pkg/Caller，call(Lpkg/Target;)Lpkg/Target;
+/// buildRenameCaller：pkg/Caller，call(Lpkg/Target;)Lpkg/Target;
 /// 内 INVOKESTATIC pkg/Target.id:(Lpkg/Target;)Lpkg/Target;。
 Bytes buildRenameCaller()
 {
@@ -93,7 +94,7 @@ const jbc::core::MemberInfo* findMethod(const jbc::core::ClassFile& cf, const ch
 
 }   // namespace
 
-// 旧栈用例移植：类重命名 + 描述符与调用点同步改写 + URI 重写。
+// 用例：类重命名 + 描述符与调用点同步改写 + URI 重写。
 TEST(MjPassClassRenamerTest, RenamesClassesAndRewritesDescriptorsAndCallSites)
 {
     mjbase::model::ResourceContainer container;
@@ -191,4 +192,187 @@ TEST(MjPassClassRenamerTest, KeepsContainerUntouchedWhenNothingLoadable)
         container.getResource("Garbage.class"));
     ASSERT_NE(res, nullptr);
     EXPECT_EQ(res->get(), garbage);
+}
+
+// ── Multi-Release 族契约 ────────────────────────────────────────────────────
+//
+// 旧行为（已证实的破坏缺陷，本组用例钉死修复后契约）：装载序只按内名排序，
+// base 与 versions/N 变体内名相同并列；命名计划按内名键控，族内第二次发名
+// 覆盖第一次；写回一律 `新名.class`——族内两份写回同一 URI，旧 URI 双删后一
+// 次 replaceResource 胜出，多版本对坍缩成单条目、另一份静默丢失。
+
+/// app/Main：call(Lapp/Api;)V 内 INVOKESTATIC app/Api.touch()V（族引用改写面）。
+Bytes buildApiCaller()
+{
+    FixtureBuilder builder("app/Main");
+    const ca::u16  mref = builder.methodRef("app/Api", "touch", "()V");
+    FixtureMethod  call;
+    call.name      = "call";
+    call.desc      = "()V";
+    call.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
+    call.maxStack  = 0;
+    call.maxLocals = 0;
+    call.code      = invokeStatic(mref);
+    call.code.push_back(0xB1);
+    builder.addMethod(call);
+    return builder.assemble();
+}
+
+/// app/Api 族成员（base 与 versions/N 变体同内名同字节形态即可）。
+Bytes buildApiMember()
+{
+    FixtureBuilder builder("app/Api");
+    FixtureMethod  touch;
+    touch.name      = "touch";
+    touch.desc      = "()V";
+    touch.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
+    touch.maxStack  = 0;
+    touch.maxLocals = 0;
+    touch.code      = bareReturn();
+    builder.addMethod(touch);
+    return builder.assemble();
+}
+
+/// app/Util：改名目标（编号占位断言用）。
+Bytes buildUtilClass()
+{
+    FixtureBuilder builder("app/Util");
+    FixtureMethod  t;
+    t.name      = "t";
+    t.desc      = "()V";
+    t.maxLocals = 0;
+    t.code      = bareReturn();
+    builder.addMethod(t);
+    return builder.assemble();
+}
+
+TEST(MjPassClassRenamerTest, RenamesMultiReleaseFamilyWithoutCollapsing)
+{
+    // 排序键 (内名, URI)：app/Api 族（URI 序 versions/11 < versions/17 <
+    // app/Api.class，'M' < 'a'）→ 共享 app/Class0；app/Main → app/Class1；
+    // app/Util → app/Class2（族只消耗一个编号）。
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "app/Api.class", buildApiMember());
+    addClassResource(container, "META-INF/versions/17/app/Api.class", buildApiMember());
+    addClassResource(container, "META-INF/versions/11/app/Api.class", buildApiMember());
+    addClassResource(container, "app/Main.class", buildApiCaller());
+    addClassResource(container, "app/Util.class", buildUtilClass());
+
+    mjbase::pass::ClassRenamer         pass;
+    ca::str::Utf8StringArena           arena;
+    mjbase::spi::GlobalAnalysisManager gam(arena);
+    const auto                         pa = pass.run(container, gam);
+    EXPECT_FALSE(pa.areAllPreserved());
+
+    // 旧 URI 全部消失，5 条新 URI 各就各位（无坍缩、无静默丢失）。
+    EXPECT_FALSE(container.hasResource("app/Api.class"));
+    EXPECT_FALSE(container.hasResource("META-INF/versions/11/app/Api.class"));
+    EXPECT_FALSE(container.hasResource("META-INF/versions/17/app/Api.class"));
+    EXPECT_FALSE(container.hasResource("app/Main.class"));
+    EXPECT_FALSE(container.hasResource("app/Util.class"));
+    EXPECT_TRUE(container.hasResource("app/Class0.class"));
+    EXPECT_TRUE(container.hasResource("META-INF/versions/11/app/Class0.class"));
+    EXPECT_TRUE(container.hasResource("META-INF/versions/17/app/Class0.class"));
+    EXPECT_TRUE(container.hasResource("app/Class1.class"));
+    EXPECT_TRUE(container.hasResource("app/Class2.class"));
+    EXPECT_EQ(container.size(), 5u);
+
+    // 族成员 thisName 一致（新名共享），base 与变体只差条目路径。
+    // readClassResource 的 keeper 每次读取即失效，逐条读后立即断言。
+    EXPECT_EQ(readClassResource(container, "app/Class0.class").thisName(), "app/Class0");
+    EXPECT_EQ(readClassResource(container, "META-INF/versions/11/app/Class0.class").thisName(),
+              "app/Class0");
+    const jbc::core::ClassFile& variant = readClassResource(
+        container, "META-INF/versions/17/app/Class0.class");
+    EXPECT_EQ(variant.thisName(), "app/Class0");
+
+    // base 引用面：Main 的调用点 owner 同步指向新名。
+    const jbc::core::ClassFile& main = readClassResource(container, "app/Class1.class");
+    const auto* call = findMethod(main, "call");
+    ASSERT_NE(call, nullptr);
+    {
+        auto sessionResult = jbc::ir::makeSessionFromBytes(main.source());
+        ASSERT_TRUE(sessionResult.is_ok());
+        auto session = std::move(sessionResult).unwrap();
+        const auto promoted = jbc::ir::promoteMethod(*session, 0);
+        ASSERT_TRUE(promoted.is_ok());
+        bool checked = false;
+        for (const jbc::ir::InsnId insnId : promoted.unwrap()->dom.order()) {
+            const jbc::ir::Insn* in = promoted.unwrap()->dom.peek(insnId);
+            ASSERT_NE(in, nullptr);
+            jbc::ir::ClassSession::MemberSem sem;
+            if (!session->memberOf(*in, sem)) continue;
+            EXPECT_EQ(sem.owner, "app/Class0");
+            checked = true;
+        }
+        EXPECT_TRUE(checked);
+    }
+}
+
+TEST(MjPassClassRenamerTest, FamilyRenamingIsInsertionOrderIndependent)
+{
+    // 同一逻辑容器两种插入序 → 输出 URI 集与族新名完全一致（排序键 (内名,
+    // URI) 全序，编号不随容器迭代序漂移——旧行为在此非确定）。
+    const auto runOnce = [] {
+        mjbase::model::ResourceContainer container;
+        addClassResource(container, "META-INF/versions/11/app/Api.class", buildApiMember());
+        addClassResource(container, "app/Util.class", buildUtilClass());
+        addClassResource(container, "app/Api.class", buildApiMember());
+        addClassResource(container, "META-INF/versions/17/app/Api.class", buildApiMember());
+        mjbase::pass::ClassRenamer         pass;
+        ca::str::Utf8StringArena           arena;
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        pass.run(container, gam);
+        std::set<std::string> uris;
+        for (const auto& [uri, resource] : container.getResources()) {
+            (void)resource;
+            uris.emplace(uri);
+        }
+        return uris;
+    };
+    // 插入序 A（见上）与插入序 B（family base 最先）。
+    mjbase::model::ResourceContainer other;
+    addClassResource(other, "app/Api.class", buildApiMember());
+    addClassResource(other, "META-INF/versions/11/app/Api.class", buildApiMember());
+    addClassResource(other, "META-INF/versions/17/app/Api.class", buildApiMember());
+    addClassResource(other, "app/Util.class", buildUtilClass());
+    {
+        mjbase::pass::ClassRenamer         pass;
+        ca::str::Utf8StringArena           arena;
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        pass.run(other, gam);
+    }
+    std::set<std::string> otherUris;
+    for (const auto& [uri, resource] : other.getResources()) {
+        (void)resource;
+        otherUris.emplace(uri);
+    }
+    const std::set<std::string> expected = {
+        "META-INF/versions/11/app/Class0.class",
+        "META-INF/versions/17/app/Class0.class",
+        "app/Class0.class",
+        "app/Class1.class",
+    };
+    EXPECT_EQ(runOnce(), expected);
+    EXPECT_EQ(otherUris, expected);
+}
+
+TEST(MjPassClassRenamerTest, RenamesVariantOnlyFamilyKeepingVersionShape)
+{
+    // base 缺失而仅存版本化变体的族：照常改名并保持在 versions/<N> 前缀下，
+    // 不升格为 base（输出布局变更不属本 pass）。
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "META-INF/versions/17/app/Extra.class", buildUtilClass());
+
+    mjbase::pass::ClassRenamer         pass;
+    ca::str::Utf8StringArena           arena;
+    mjbase::spi::GlobalAnalysisManager gam(arena);
+    const auto                         pa = pass.run(container, gam);
+    EXPECT_FALSE(pa.areAllPreserved());
+
+    EXPECT_FALSE(container.hasResource("META-INF/versions/17/app/Extra.class"));
+    EXPECT_TRUE(container.hasResource("META-INF/versions/17/app/Class0.class"));
+    const jbc::core::ClassFile& cf = readClassResource(
+        container, "META-INF/versions/17/app/Class0.class");
+    EXPECT_EQ(cf.thisName(), "app/Class0");
 }

@@ -112,9 +112,10 @@
   （MetaInfoRemover 整槽摘除 debug 表与嵌套注解槽、IllegalTypeAnnotationRemover
   嵌套槽内过滤，父 Code 槽连带置脏）；tree 道 8 语料 golden 对拍（meta 语义
   矩阵口径，纯标志位触发类目允许与旧栈 golden 逐字节一致）+ JVM 真跑门
-  （行为一致 + 反射按剥离后口径钉死）收口。能力差距挂账（libjbc 未建模，
-  保守跳过）：record 组件注解面、SpecificAnnotationRemover 的参数注解槽内
-  过滤面。普查砍单：家族 method 级八件（LineNumberRemover /
+  （行为一致 + 反射按剥离后口径钉死）收口。能力差距挂账（见家族头注）
+  已收口：record 组件注解清空（typed RecordAttr 组件槽内过滤 + 父 Record
+  槽连带置脏）、SpecificAnnotationRemover 的参数注解槽内过滤（Raw 面
+  JVMS 4.7.20 布局条目摘除）。普查砍单：家族 method 级八件（LineNumberRemover /
   LocalVariableInfoRemover / ParametersInfoRemover / ExceptionInfoRemover /
   FrameInfoRemover / IllegalVarargsRemover / IllegalLocalVariableInfoRemover /
   LongIndyNameOptimizer）为 scope:method，归 C 方法级组；

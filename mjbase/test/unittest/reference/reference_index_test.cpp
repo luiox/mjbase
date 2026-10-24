@@ -1,10 +1,9 @@
 /// @file        reference_index_test.cpp
-/// @brief       ReferenceIndex 全量移植用例（旧栈 20 用例逐字等强）。
+/// @brief       ReferenceIndex 全量用例（20 用例逐字等强）。
 ///
-/// 旧栈对应物：mbase/unittest/reference/reference_index_test.cpp。夹具从
-/// jbytecode ClassWriter 重写为手拼 classfile 字节（class_bytes_builder.hpp）；
-/// 旧栈经 CallGraph::buildFromIndex 的图级二次断言（mbase CallGraph 消费索引
-/// 事实成边）按同一过滤规则改在索引事实上断言（indexHasMethodEdge，见函数注）。
+/// 夹具为手拼 classfile 字节（class_bytes_builder.hpp）；
+/// 经 CallGraph::buildFromIndex 的图级二次断言按同一过滤规则改在索引事实上
+/// 断言（indexHasMethodEdge，见函数注）。
 #include <gtest/gtest.h>
 
 #include <functional>
@@ -105,10 +104,10 @@ void addClassBytes(ResourceContainer& container, std::string_view name, const By
                           std::make_unique<ClassResource>(std::string(name) + ".class", bytes));
 }
 
-/// 旧栈 CallGraph::buildFromIndex 的成边规则（Direct/MethodHandle/Lambda/
+/// CallGraph::buildFromIndex 的成边规则（Direct/MethodHandle/Lambda/
 /// ReflectionExecution(非空 desc) 成边，Reflection 查找不成边）在索引事实上
-/// 的复现。mjbase CallGraph 自建会话、不消费索引（call_graph 批语义），旧栈
-/// 图级断言按同一过滤规则改写，断言强度不变。
+/// 的复现。CallGraph 自建会话、不消费索引，图级断言按同一过滤规则改写，
+/// 断言强度不变。
 bool indexHasMethodEdge(const ReferenceIndex& index, std::string_view sourceOwner,
                         std::string_view sourceName, std::string_view sourceDesc,
                         std::string_view targetOwner, std::string_view targetName,
@@ -955,8 +954,8 @@ TEST(MjReferenceTest, indexesReflectionStringsMethodHandlesAndLambdaTargets)
     EXPECT_TRUE(sawMethodHandle);
     EXPECT_TRUE(sawLambda);
 
-    // 旧栈此处断言 CallGraph.hasPath（buildFromIndex 消费 Lambda 事实成边）；
-    // 迁移后按同一成边规则在索引事实上断言（见 indexHasMethodEdge 函数注）。
+    // 此处断言 CallGraph.hasPath（buildFromIndex 消费 Lambda 事实成边）；
+    // 按同一成边规则在索引事实上断言（见 indexHasMethodEdge 函数注）。
     EXPECT_TRUE(
         indexHasMethodEdge(index, "IndirectUser", "use", "()V", "IndirectUser", "lambdaTarget",
                            "()V"));
@@ -993,7 +992,7 @@ TEST(MjReferenceTest, indexesConstantReflectionMemberLookups)
     EXPECT_TRUE(sawFieldLookup);
     EXPECT_TRUE(index.fieldReferencesTo("com/example/ReflectTarget", "secret", "").empty());
 
-    // 旧栈此处断言 CallGraph 节点存在 + 查找事实不成边；迁移后等强改写。
+    // 此处断言 CallGraph 节点存在 + 查找事实不成边；等强改写。
     EXPECT_NE(index.declaredMethod("com/example/ReflectTarget", "reflectTarget", "()V"),
               nullptr);
     EXPECT_FALSE(indexHasMethodEdge(index, "ReflectUser", "use", "()V",
@@ -1342,4 +1341,62 @@ TEST(MjReferenceTest, failsOpenOnJsrKeepsLookupAndDropsExecution)
             EXPECT_EQ(ref.site.sourceMethod, "plainReflect");
         }
     }
+}
+
+// ── Multi-Release 同内名重复声明（族成员并存）────────────────────────────
+//
+// base 与 versions/<N> 变体共用同一类内部名时，扫描面会遇到同内名的两份声明。
+// 契约（reference_index.cpp 类头/成员声明键控）：按声明键 first-seen-wins，
+// 重复键恰好结算一次——不重复入索引、不因第二份覆盖或叠加而漂移；变体独有
+// 成员照常入索引。容器迭代序决定「谁先到」，属非确定面，断言只锁序不变量
+// （计数与去重），不锁取哪一份。
+
+TEST(MjReferenceTest, settlesDuplicateInternalNameDeclarationsExactlyOnce)
+{
+    ResourceContainer container;
+
+    // base app/Api：live()V 一份声明。
+    {
+        ClassBytesBuilder b("app/Api");
+        std::vector<MethodSpec> ms;
+        ms.push_back(m("live", "()V", 0, 0, [](CodeEmit& e) { e.op(Op::RETURN); }));
+        container.addResource("app/Api.class",
+                              std::make_unique<ClassResource>("app/Api.class", b.assemble(ms)));
+    }
+    // versions/17 变体 app/Api：live()V（重复键）+ dead()V（变体独有键）。
+    {
+        ClassBytesBuilder b("app/Api");
+        std::vector<MethodSpec> ms;
+        ms.push_back(m("live", "()V", 0, 0, [](CodeEmit& e) { e.op(Op::RETURN); }));
+        ms.push_back(m("dead", "()V", 0, 0, [](CodeEmit& e) { e.op(Op::RETURN); }));
+        container.addResource("META-INF/versions/17/app/Api.class",
+                              std::make_unique<ClassResource>(
+                                  "META-INF/versions/17/app/Api.class", b.assemble(ms)));
+    }
+
+    ReferenceIndex index;
+    index.build(container);
+
+    // 类头声明：同内名两份只结算一条（classDeclarations() 恰含一条 app/Api）。
+    const ClassDeclaration* api = index.declaredClass("app/Api");
+    ASSERT_NE(api, nullptr);
+    ca::usize apiDeclCount = 0;
+    for (const ClassDeclaration& decl : index.classDeclarations()) {
+        if (decl.name == "app/Api") ++apiDeclCount;
+    }
+    EXPECT_EQ(apiDeclCount, 1u);
+
+    // 成员声明：重复键 live 恰好一条；变体独有键 dead 恰好一条。
+    const std::vector<MethodDeclaration>& declared = index.declaredMethodsIn("app/Api");
+    ca::usize liveCount = 0;
+    ca::usize deadCount = 0;
+    for (const MethodDeclaration& method : declared) {
+        if (method.method.name == "live") ++liveCount;
+        if (method.method.name == "dead") ++deadCount;
+    }
+    EXPECT_EQ(liveCount, 1u);
+    EXPECT_EQ(deadCount, 1u);
+    EXPECT_EQ(declared.size(), 2u);
+    EXPECT_NE(index.declaredMethod("app/Api", "live", "()V"), nullptr);
+    EXPECT_NE(index.declaredMethod("app/Api", "dead", "()V"), nullptr);
 }

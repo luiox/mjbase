@@ -135,7 +135,7 @@ TEST(ConstCharArrayStringFolderTest, obfuscatedConstantExpressionsFold)
 }
 
 // ── 同下标二次写：拍数==len 的形状约束下 pigeonhole 必致未覆盖下标 →
-//    整组保留（旧栈「last-wins」分支出不可达，注释只作防御性语义）。
+//    整组保留（「last-wins」分支出不可达，注释只作防御性语义）。
 //    另查乱序下标不破坏匹配：同 len 下前两拍乱序 + 第三拍覆盖完成员。 ──
 TEST(ConstCharArrayStringFolderTest, outOfOrderStoresKeptOrFolded)
 {
@@ -310,7 +310,7 @@ TEST(ConstCharArrayStringFolderTest, wrongConstructorKept)
     EXPECT_EQ(r.out, in);
 }
 
-// ── 窗内锚定标签（GOTO 跳进 arm1 头）：保守整组保留（旧栈手工形态偏离差集，
+// ── 窗内锚定标签（GOTO 跳进 arm1 头）：保守整组保留（手工形态偏离差集，
 //    golden 字节对拍刻意避开，由本用例钉死口径）──
 TEST(ConstCharArrayStringFolderTest, midWindowAnchorKept)
 {

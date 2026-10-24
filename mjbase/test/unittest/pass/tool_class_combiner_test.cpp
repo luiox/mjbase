@@ -1,5 +1,5 @@
 /// ToolClassCombiner（批 A 收口件）单元测试：准入/分桶/搬移/重映射语义面。
-/// golden 对拍（旧栈终态）与 JVM 真跑门另在 pass_golden_compare_test 与
+/// golden 对拍与 JVM 真跑门另在 pass_golden_compare_test 与
 /// tool_class_combiner_jvm_test；本文件钉实现面契约：候选不足 no-op、
 /// NotModeled 候选保守保留、宿主成员序确定性、ConstantValue 重建、
 /// 供体引用零残留与消费面重指向。
@@ -286,7 +286,7 @@ TEST(MjPassToolClassCombinerTest, MergesCandidatesAndRewritesOwners)
     EXPECT_FALSE(container.hasResource("hb/ut/Alpha.class"));
     EXPECT_FALSE(container.hasResource("hb/ut/Beta.class"));
     EXPECT_TRUE(container.hasResource("hb/ut/App.class"));
-    const std::string hostUri = "me/canrad/morpher/ToolClassMergedClass_0.class";
+    const std::string hostUri = "mjbase/ToolClassMergedClass_0.class";
     ASSERT_TRUE(container.hasResource(hostUri));
 
     // 消费面：call 体的 INVOKESTATIC/GETSTATIC owner 全部重指向宿主。
@@ -302,7 +302,7 @@ TEST(MjPassToolClassCombinerTest, MergesCandidatesAndRewritesOwners)
     ASSERT_TRUE(read.is_ok());
     jbc::core::ReadResult hostResult = std::move(read).unwrap();
     jbc::core::ClassFile& host       = *hostResult.file;
-    EXPECT_EQ(std::string(host.thisName()), "me/canrad/morpher/ToolClassMergedClass_0");
+    EXPECT_EQ(std::string(host.thisName()), "mjbase/ToolClassMergedClass_0");
     std::set<std::string> hostMembers;
     for (const jbc::core::MemberInfo& m : host.fields) {
         hostMembers.emplace("F:" + std::string(host.nameOf(m)));
@@ -335,7 +335,7 @@ TEST(MjPassToolClassCombinerTest, NotModeledWideConstCandidateKept)
         << "NotModeled 候选必须原样保留";
     EXPECT_FALSE(container.hasResource("hb/ut/Alpha.class"));
     EXPECT_FALSE(container.hasResource("hb/ut/Beta.class"));
-    const Bytes hostBytes = resourceBytes(container, "me/canrad/morpher/ToolClassMergedClass_0.class");
+    const Bytes hostBytes = resourceBytes(container, "mjbase/ToolClassMergedClass_0.class");
     ASSERT_FALSE(hostBytes.empty());
     expectNoDonorRefs(hostBytes, "hb/ut/Wide");
     auto read = jbc::core::readClass(jbc::core::ByteView(hostBytes));
@@ -362,7 +362,7 @@ TEST(MjPassToolClassCombinerTest, HostMemberOrderDeterministicPerDonor)
     (void)pass.run(container, gam);
 
     const Bytes hostBytes =
-        resourceBytes(container, "me/canrad/morpher/ToolClassMergedClass_0.class");
+        resourceBytes(container, "mjbase/ToolClassMergedClass_0.class");
     ASSERT_FALSE(hostBytes.empty());
     auto read = jbc::core::readClass(jbc::core::ByteView(hostBytes));
     ASSERT_TRUE(read.is_ok());
@@ -388,7 +388,7 @@ TEST(MjPassToolClassCombinerTest, HostMemberOrderDeterministicPerDonor)
     EXPECT_EQ(betaSeq, betaSequence);
 }
 
-// ConstantValue 重建：搬移字段在宿主侧保有常量值（旧栈整节点搬移的保真面）。
+// ConstantValue 重建：搬移字段在宿主侧保有常量值。
 TEST(MjPassToolClassCombinerTest, ConstantValueRebuiltOnAdoptedField)
 {
     mjbase::model::ResourceContainer container;
@@ -402,7 +402,7 @@ TEST(MjPassToolClassCombinerTest, ConstantValueRebuiltOnAdoptedField)
     (void)pass.run(container, gam);
 
     const Bytes hostBytes =
-        resourceBytes(container, "me/canrad/morpher/ToolClassMergedClass_0.class");
+        resourceBytes(container, "mjbase/ToolClassMergedClass_0.class");
     ASSERT_FALSE(hostBytes.empty());
     auto read = jbc::core::readClass(jbc::core::ByteView(hostBytes));
     ASSERT_TRUE(read.is_ok());

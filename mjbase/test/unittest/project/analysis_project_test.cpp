@@ -1,8 +1,8 @@
-// 分析工程文件（luiox/morpher#1092 P1）：空工程最小 schema + 实体全量
+// 分析工程文件：空工程最小 schema + 实体全量
 // roundtrip（文本/文件）+ schema 违约逐类拒载 + id 单调不复用 + 确定性
 // 稳定输出 + 与 sidecar JSON 互斥（kind 标记自描述）。
 //
-// 移植自 mbase/unittest/project/analysis_project_test.cpp：14 用例断言逐一
+// 14 用例断言逐一
 // 对应、语义不变；仅命名空间（mjbase::project）与 gtest 套件名随 mjbase
 // 约定调整。
 #include <gtest/gtest.h>

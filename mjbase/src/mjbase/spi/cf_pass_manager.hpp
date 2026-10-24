@@ -13,7 +13,7 @@ namespace mjbase::spi {
 
 /// 管理 CfClassPass 的有序集合。
 ///
-/// 编排语义照旧：顺序运行全部 pass；初始化/收尾由调用方显式编排
+/// 编排语义：顺序运行全部 pass；初始化/收尾由调用方显式编排
 /// （doInitialization / doFinalization 各自遍历全部 pass）。
 /// 与 PassManager（指令级）的差异：classfile 级无 AnalysisManager/失效协议——
 /// 载体是低层 DOM，未建模分析缓存；pass 间不交换分析结果。
