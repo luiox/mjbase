@@ -99,7 +99,7 @@ class ReflectCheck {
 }
 )JAVA";
 
-/// 清理后样本的期望反射面（与旧栈家族语义一致：全注解摘除、final 清位、
+/// 清理后样本的期望反射面（家族语义：全注解摘除、final 清位、
 /// Signature 摘除、bridge/synthetic 清位）。
 constexpr const char* kReflectExpected =
     "utilAnnos=0\n"

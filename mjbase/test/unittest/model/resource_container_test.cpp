@@ -1,5 +1,5 @@
 /// @file        resource_container_test.cpp
-/// @brief       资源容器测试（移植自 mbase/unittest/model/resource_container_test.cpp，9 用例）。
+/// @brief       资源容器测试（9 用例）。
 #include <gtest/gtest.h>
 
 #include <memory>

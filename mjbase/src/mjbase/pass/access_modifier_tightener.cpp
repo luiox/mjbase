@@ -46,7 +46,7 @@ struct LoadedClass
 };
 
 /// 普查键：owner+name+desc 以 '\n' 连接后驻留 arena（去重），视图长期有效。
-/// 与旧栈 memberUseKey 的连接符一致；一次性拼接经 arena intern，自有存储归池。
+/// memberUseKey 的连接符一致；一次性拼接经 arena intern，自有存储归池。
 std::string_view memberUseKey(ca::str::Utf8StringArena& arena, std::string_view owner,
                               std::string_view name, std::string_view desc)
 {
@@ -62,7 +62,7 @@ std::string_view memberUseKey(ca::str::Utf8StringArena& arena, std::string_view 
 
 /// @brief 装载并验证一个 class 资源；准入失败返回 false（资源保持原样）。
 ///
-/// 准入条件对齐旧栈 loadRecoverClasses：可解析、有类名；并加一条新底座
+/// 准入条件：可解析、有类名；并加一条新底座
 /// 必要的安全阀——全部有码方法必须能升格。普查证据不全时做收紧是不安全
 /// 方向（漏记异类引用会误收紧），故任一方法升格失败即整类退出。
 bool loadClass(mjbase::model::ClassResource& resource, LoadedClass& out)
@@ -90,7 +90,7 @@ bool loadClass(mjbase::model::ClassResource& resource, LoadedClass& out)
 
 /// @brief 阶段一普查：扫描 kind 对应的引用操作码，异类来源记 usedOuter。
 ///
-/// 普查面与旧实现逐条对齐：方法表只记 INVOKESTATIC，字段表只记
+/// 普查面：方法表只记 INVOKESTATIC，字段表只记
 /// GETSTATIC/PUTSTATIC；其余操作码（invokevirtual/special/interface、
 /// getfield/putfield）不参与记账。
 void censusClass(ca::str::Utf8StringArena&                              arena,
@@ -118,7 +118,7 @@ void censusClass(ca::str::Utf8StringArena&                              arena,
 
 /// @brief 阶段二收紧：普查命中且仅本类引用的 public static 成员降为 private。
 ///
-/// 收紧条件与旧实现逐条对齐：普查表有条目（至少被引用一次，含仅自类引用）
+/// 收紧条件：普查表有条目（至少被引用一次，含仅自类引用）
 /// 且 !usedOuter 且当前 static 且当前 public。从未被引用的成员不动。
 /// 改动同时落在会话骨架（unit().methods/fields，后续读者的一致视图）与
 /// backing（MemberInfo.access，writeClass 的序列化源）。
@@ -185,7 +185,7 @@ mjbase::spi::PreservedAnalyses AccessModifierTightener::run(mjbase::model::Resou
     }
     if (loaded.empty()) return mjbase::spi::PreservedAnalyses::all();
 
-    // 装载后按类内部名字节序排序（对齐旧栈 loadRecoverClasses 的确定性排序）。
+    // 装载后按类内部名字节序排序（确定性）。
     std::stable_sort(loaded.begin(), loaded.end(),
                      [](const LoadedClass& lhs, const LoadedClass& rhs) {
                          return lhs.name < rhs.name;

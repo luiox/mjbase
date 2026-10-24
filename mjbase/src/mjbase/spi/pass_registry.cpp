@@ -215,7 +215,7 @@ ca::usize registerBuiltinPipelines()
                          },
                          PassStability::OptIn);
 
-    // 返回实际注册的流水线数，避免硬编码常量随新增 pipeline 漂移（mbase 纪律照迁）。
+    // 返回实际注册的流水线数，避免硬编码常量随新增 pipeline 漂移。
     return reg.listPipelines().size();
 }
 

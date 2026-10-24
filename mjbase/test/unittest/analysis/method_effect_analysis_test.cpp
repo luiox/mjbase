@@ -2,9 +2,7 @@
 /// @brief       analysis 方法副作用模型测试：局部效应分类、callee 效应传播、
 ///              JDK 白名单与未知外部调用。
 ///
-/// 旧栈对应物：mbase/unittest/analysis/method_effect_analysis_test.cpp
-///（3 用例移植 + 1 个 GlobalAnalysisManager 集成用例不迁——缓存基建属旧栈
-/// pass 域批次，见迁移报告）。夹具字节化重写，断言逐字等强。
+/// 夹具字节化重写，断言逐字等强。
 #include <gtest/gtest.h>
 
 #include "jbc/core/opcode.hpp"
@@ -26,7 +24,7 @@ using mjbase::analysis::test_support::MethodSpec;
 
 namespace {
 
-/// 旧栈 buildEffectClass 的字节化形态：一个静态 int 字段 counter +
+/// buildEffectClass 的字节化形态：一个静态 int 字段 counter +
 /// 纯/读/写/常量返回体与各形态调用方。
 std::vector<FieldSpec> effectFixtureFields()
 {

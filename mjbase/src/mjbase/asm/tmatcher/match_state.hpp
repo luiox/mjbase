@@ -1,14 +1,14 @@
 /// @file        match_state.hpp
 /// @brief       匹配状态层：不可变捕获表 + 游标快照。
 ///
-/// 语义对齐 mbase/asm/tmatcher 的 match_state.hpp，底座换成 CodeDom：
+/// 底座换成 CodeDom：
 ///   - 捕获值从 `ca::core::Any` 收窄为 `jbc::ir::InsnId`——新 DSL 的绑定
 ///     语义是「捕获名 → 命中窗口入口处的指令句柄」，调用方经
 ///     `CodeDom::peek` 读取操作数，常量解释归 asm/insn / evaluator 模块。
 ///   - 捕获名用 `std::string_view` 借用视图（mjbase 约定）；通常是字面量，
 ///     调用方须保证规则存活期间名字底层数据有效。
 ///   - 不可变持久结构（shared_ptr 快照 + 绑定时复制），同名冲突拒绝、
-///     同值（同句柄）重复绑定幂等，与旧实现一致。
+///     同值（同句柄）重复绑定幂等。
 #pragma once
 
 #include <cstddef>
@@ -25,7 +25,7 @@ namespace mjbase::asm_tmatcher {
 
 /// @brief 不可变变量捕获表：捕获名 → InsnId。
 ///
-/// 绑定规则（语义照旧实现）：
+/// 绑定规则：
 ///   - 名字未绑定 → 新建快照持有绑定；
 ///   - 名字已绑定且句柄相同 → 返回原快照（幂等）；
 ///   - 名字已绑定且句柄不同 → nullopt（冲突拒绝）；

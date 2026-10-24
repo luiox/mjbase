@@ -1,13 +1,13 @@
 #pragma once
 
-// test_helper：morpher 测试基建门面。
+// test_helper：mjbase 测试基建门面。
 //
 // 通用的多项目测试布局机制（.project_root_file 扫描 / 资源定位 / 输出根约定）
-// 已下沉到 libca/test（#912/#913），本头文件保持 morpher 侧历史 API 形态
+// 已下沉到 libca/test（#912/#913），本头文件保持本仓历史 API 形态
 // （namespace test::、camelCase），内部委托 ca::test 实现——既有测试 main
 // 无需任何改动。
 //
-// morpher 私有件（不下沉）：
+// 本仓私有件（不下沉）：
 // - asm-test 特例定位（libjbytecode/asm-test 目录布局胶水）
 // - 构建产物路径（build/artifacts 布局属产品构建知识）
 // - jdk_fixture.hpp（架构在闭源 libjdk_finder 之上，另见该文件）

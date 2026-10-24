@@ -2,9 +2,9 @@
 /// @brief       nullness 域测试：四态合并代数、产点事实（aconst_null/ldc
 ///        字符串）、分支合并与 MethodSig 播种（含双槽）。
 ///
-/// 合并代数移植自旧栈 NullabilityUtil::merge（NotNull+Null→Nullable 族）；
-/// 产点事实移植自旧 NullabilityInterpreter::newOperation。旧分析的类型载荷
-/// 与 IFNULL/IFNONNULL 分支细化未迁（理由见域头注释与迁移报告）。
+/// 合并代数为 NullabilityUtil::merge（NotNull+Null→Nullable 族）；
+/// 产点事实为 NullabilityInterpreter::newOperation。类型载荷
+/// 与 IFNULL/IFNONNULL 分支细化未迁（理由见域头注释）。
 #include <gtest/gtest.h>
 
 #include <string_view>
@@ -154,7 +154,7 @@ TEST(MjAsmAnalyzerTest, NullAconstNullGivesNullFact)
 
 TEST(MjAsmAnalyzerTest, NullLdcStringGivesNotNullFact)
 {
-    // ldc "s"; ifnonnull L; L: return → 栈顶 = NotNull（旧实现唯一 NotNull 产点）。
+    // ldc "s"; ifnonnull L; L: return → 栈顶 = NotNull（唯一 NotNull 产点）。
     ConstantPool cp;
     const ca::u32 str = cp.addString(cp.addUtf8("s"));
     CodeDom dom;

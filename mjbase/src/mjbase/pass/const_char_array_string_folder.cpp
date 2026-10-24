@@ -26,7 +26,7 @@ using jbc::ir::InsnId;
 constexpr ca::i32 kAtypeChar = 5;
 
 /// 窗内指令的常量整型求值片段：消费若干条指令，把值压入 stack。
-/// 载入与运算面与旧栈 evalIntStack 逐条对齐（见 hpp 注释）。
+/// 载入与运算面见 hpp 注释。
 bool evalConstStep(const jbc::ir::ClassSession& session, const Insn& in, std::vector<ca::i32>& stack)
 {
     using jbc::ir::ClassSession;
@@ -108,7 +108,7 @@ bool evalConstStep(const jbc::ir::ClassSession& session, const Insn& in, std::ve
 }
 
 // 在快照 ids 的 [startPos, ...) 上求值常量整数栈，直到 op == terminator 的
-// 指令（终止指令本身不消费）。窗内任一成员锚定 incoming 标签即失配（旧栈
+// 指令（终止指令本身不消费）。窗内任一成员锚定 incoming 标签即失配。
 // LABEL/LINE/FRAME 节点失配面的新栈等价形态）；终遇不支持指令、栈下溢或
 // 越过结尾都判失配。成功时 termPos 指向终止指令位置。
 bool evalIntWindow(const jbc::ir::ClassSession& session, const CodeDom& dom,
@@ -119,7 +119,7 @@ bool evalIntWindow(const jbc::ir::ClassSession& session, const CodeDom& dom,
     for (ca::usize p = startPos; p < ids.size(); ++p) {
         const Insn* n = dom.peek(ids[p]);
         if (n == nullptr) return false;
-        // 锚定标签 = 控制流可从中间进入（旧栈窗内 LABEL/LINE/FRAME 失配面）。
+        // 锚定标签 = 控制流可从中间进入（LABEL/LINE/FRAME 失配面）。
         if (method_rewrite_util::labelsAnchorAt(dom, ids[p])) return false;
         if (n->op == terminator) {
             termPos = p;
@@ -130,9 +130,9 @@ bool evalIntWindow(const jbc::ir::ClassSession& session, const CodeDom& dom,
     return false;
 }
 
-/// UTF-16 码元序列 → MUTF-8 字节（与旧栈 Utf16String → UTF-8 → writer 编码
+/// UTF-16 码元序列 → MUTF-8 字节（Utf16String → UTF-8 → writer 编码
 /// 同构，接 CharArrToStrSimplifier 同款）。不可编码（不成代理等）返回 false
-/// = 整组失配（旧栈 catch 后整组保留语义）。
+/// = 整组失配（catch 后整组保留语义）。
 bool utf16ToMutf8(const std::vector<ca::u16>& codeUnits, std::string& out)
 {
     ca::str::Utf16String utf16(codeUnits.data(), codeUnits.size());
@@ -163,7 +163,7 @@ bool matchNewStringCharArray(const jbc::ir::ClassSession& session, const CodeDom
     if (i + 1 >= ids.size()) return false;
     const Insn* nDup = dom.peek(ids[i + 1]);
     if (nDup == nullptr || nDup->op != Op::DUP) return false;
-    // 首成员与次成员之间不允许标签（旧栈：NEW 与 DUP 之间出现任意节点即失配）。
+    // 首成员与次成员之间不允许标签（NEW 与 DUP 之间出现任意节点即失配）。
     if (method_rewrite_util::labelsAnchorAt(dom, ids[i + 1])) return false;
     members.push_back(ids[i]);
     members.push_back(ids[i + 1]);
@@ -245,7 +245,7 @@ mjbase::spi::PreservedAnalyses ConstCharArrayStringFolder::run(mjbase::spi::Meth
             continue;
         }
 
-        // 替换头插到首成员（NEW）之前；首成员锚定的标签迁移到新 ldc（旧栈
+        // 替换头插到首成员（NEW）之前；首成员锚定的标签迁移到新 ldc。
         // LabelNode 留原位、折叠结果顶替原序列头的落点语义）。池下标超 u1
         // 域升格 ldc_w（比照 ClassSession::setString 的宽度陷阱口径）——
         // 本 pass 产出的 String 常量视角上应等于池中真实形态。

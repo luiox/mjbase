@@ -1,7 +1,7 @@
 /// @file        pass_registry.hpp
 /// @brief       命名流水线注册中心 + 内置流水线注册（pass-contract §9 装配层）。
 ///
-/// 语义参考 mbase/pass/pass_registry：名字 → 可查询配置（工厂），解决「常用
+/// 名字 → 可查询配置（工厂），解决「常用
 /// pass 组合集中配置」的跨二进制复用。避开 Java SPIRegistry 的失败（
 /// registerDefaults 是 no-op、零调用）：注册通过显式 registerBuiltinPipelines()
 /// bootstrap，查询点在 workspace/CLI 入口。
@@ -9,7 +9,7 @@
 /// 与 mbase 的差异：内置流水线按 **mjbase 自有 pass 集** 组成（mbase 的
 /// FixPatternSimplifier/ConsStaticFieldReplacer 等属于 mbase IR 域，未在
 /// mjbase 落地，不虚构同名 pass）；同名 "default-optimize" 的组成以本注册表
-/// 为准，消费方经 availablePipelines/pipelineInfo 枚举，不假定与旧栈逐 pass
+/// 为准，消费方经 availablePipelines/pipelineInfo 枚举；
 /// 对齐。mjt-mcp 是第二个管线消费方（§9 触发条件），本文件即其消费面。
 ///
 /// @warning 非线程安全。注册和查询应在同一线程的初始化阶段完成。
@@ -26,7 +26,7 @@
 
 namespace mjbase::spi {
 
-/// pass/pipeline 的发布稳定性与默认链状态（mbase 契约照迁）。
+/// pass/pipeline 的发布稳定性与默认链状态。
 enum class PassStability : ca::u8
 {
     Default,      ///< 属于默认能力，可作为正式发布承诺。

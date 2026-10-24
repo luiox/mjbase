@@ -20,7 +20,7 @@
 #   对拍（逐方法 op 序列 + CP 引用语义面不变）。其余幸存类（拒绝矩阵）
 #   旧栈为 tree 不动点 == 新栈不动，逐字节对拍。
 #
-# 宿主类（me/canrad/morpher/ToolClassMergedClass_N）不占语料条目：两侧都
+# 宿主类（mjbase/ToolClassMergedClass_N）不占语料条目：两侧都
 # 是新合成类但 writer/属性面不同源——旧栈 tree writer 无 CP 前身且丢
 # StackMapTable；新栈从零会话（A5 writer 从零分支）+ copy-through + 分支体
 # SMT 再生（libjbc §34.3(4)(b) 消费者义务）。对拍落宿主语义面：成员集合

@@ -40,7 +40,7 @@ public:
     /// @brief Parse text with a registered format.
     ///
     /// 未注册的格式名返回 Err(UnknownFormat)（原 mbase 静默返回空产物，改走
-    /// 错误通道）；已注册格式的行级宽容语义照旧。
+    /// 错误通道）；已注册格式的行级宽容语义。
     ca::Result<IntermediateMapping, MappingError> parse(
         ca::str::Utf8StringRef name, ca::str::Utf8StringRef mappingText) const;
 
@@ -64,7 +64,7 @@ private:
     std::unordered_map<ca::str::Utf8StringRef, MappingFormatFactory> factories_;
 };
 
-/// @brief Register Recaf-parity and morpher-specific mapping formats.
+/// @brief Register Recaf-parity and mjbase-specific mapping formats.
 void registerStandardMappingFormats(MappingFormatRegistry& registry);
 
 }   // namespace mjbase::mapping

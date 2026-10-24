@@ -392,7 +392,7 @@ Result<bool, RemapError> applyResourceRemapPlan(model::ResourceContainer& contai
 
     bool changed = false;
 
-    // 反射别名闭包只在反射字符串面开启时构建（旧栈无条件构建；消费面只有
+    // 反射别名闭包只在反射字符串面开启时构建（消费面只有
     // 反射轨道，此处惰性化是纯性能口径，结果语义不变）。
     mjbase::analysis::AliasAnalysis aliases;
     const analysis::AliasAnalysis*  aliasesPtr = nullptr;
@@ -412,7 +412,7 @@ Result<bool, RemapError> applyResourceRemapPlan(model::ResourceContainer& contai
 
         auto sessionResult = jbc::ir::makeSessionFromBytes(
             ByteView(bytes.data(), bytes.size()));
-        if (sessionResult.is_err()) continue;   // 畸形类跳过（旧栈 catch(...) 口径）
+        if (sessionResult.is_err()) continue;   // 畸形类跳过（catch(...) 口径）
         auto session = std::move(sessionResult).unwrap();
 
         const std::string oldName{session->backing().thisName()};
@@ -436,7 +436,7 @@ Result<bool, RemapError> applyResourceRemapPlan(model::ResourceContainer& contai
     renameClassResources(container, resourceRenames, changed);
     if (policy.resources) {
         // META-INF/services 与 MANIFEST 主属性是 resources 面下的细分门
-        //（luiox/morpher#1032 Q6），默认开——与既有 resources=true 行为一致。
+        //（Q6），默认开——与既有 resources=true 行为一致。
         applyServiceResourceUpdates(
             container, collectServiceResourceUpdates(container, plan, policy.serviceLoader),
             changed);
