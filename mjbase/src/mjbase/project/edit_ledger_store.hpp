@@ -32,14 +32,16 @@ struct LedgerOverlayPayload
 };
 
 /// @brief 追加事务的输入面（digest 链由调用方从工作副本实际字节算出；引擎做
-///        链上可判部分的校验，见 append）。
+///        链上可判部分的校验，见 append）。字符串字段 owning：调用方常以临时
+///        量传入（如 rfc3339UtcNow() 的返回值），view 会在分号处悬垂，linux
+///        实证为栈复用后的 invalid UTF-8。
 struct LedgerAppendInput
 {
     std::vector<LedgerEntry>          entries;    ///< 按 uri 字典序
     std::vector<LedgerOverlayPayload> payloads;  ///< 覆盖 entries 引用的全部 ref
-    std::string_view                  label;      ///< 可空
-    std::string_view                  producedBy; ///< 非空
-    std::string_view                  createdAt;  ///< 非空
+    std::string                       label;      ///< 可空
+    std::string                       producedBy; ///< 非空
+    std::string                       createdAt;  ///< 非空
 };
 
 /// @brief flush 报告。
@@ -184,8 +186,9 @@ public:
     ca::Result<void, ProjectStoreError> moveHead(ca::u64 txn);
 
     /// @brief 设书签（savepoint 换底形态）；重名覆盖，txn = 当前头。
+    ///        createdAt 按引用收临时量（生命周期延展到调用结束）。
     ca::Result<void, ProjectStoreError> setBookmark(std::string_view    name,
-                                                    std::string_view    createdAt);
+                                                    const std::string&  createdAt);
 
     /// 书签查询（创建序；重名覆盖后保持原位）。
     std::vector<LedgerBookmark> bookmarks() const;
@@ -211,7 +214,7 @@ public:
     ///        台账 section → manifest 事务 upsert → 清理事务删除待释放（只删
     ///        非活动代）→ 释放内存 pending。未绑定 / 无 pending 且无待释放 =
     ///        no-op。崩溃任一点旧代完整（§3.2/§3.4）；重试同字节幂等。
-    ca::Result<LedgerFlushReport, ProjectStoreError> flush(std::string_view createdAt);
+    ca::Result<LedgerFlushReport, ProjectStoreError> flush(const std::string& createdAt);
 
     //-- 压缩 -----------------------------------------------------------------
 

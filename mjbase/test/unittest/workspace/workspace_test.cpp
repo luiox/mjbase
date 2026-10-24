@@ -967,7 +967,7 @@ TEST(MjWorkspaceCoreTest, AppliesValidatedJasmWithRevisionAndHistory)
     ASSERT_TRUE(workspace.createSavepoint("original").is_ok());
     auto applied = workspace.applyJasm("workspace/Subject.class", sourceName.ref(),
                                        replacement.ref(), expected(0));
-    ASSERT_TRUE(applied.status.is_ok()) << "[diag] " << applied.status.message;
+    ASSERT_TRUE(applied.status.is_ok());
     EXPECT_TRUE(applied.committed);
     EXPECT_EQ(1U, applied.revision);
     EXPECT_TRUE(workspace.isDirty());

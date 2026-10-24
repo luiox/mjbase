@@ -542,7 +542,7 @@ ca::Result<void, ProjectStoreError> EditLedgerStore::moveHead(ca::u64 txn)
 }
 
 ca::Result<void, ProjectStoreError> EditLedgerStore::setBookmark(std::string_view name,
-                                                                 std::string_view createdAt)
+                                                                 const std::string& createdAt)
 {
     if (name.empty()) {
         return ca::Err(makeError(ProjectStoreErrorKind::Schema, "bookmark name must be non-empty"));
@@ -606,7 +606,7 @@ ca::str::Utf8String EditLedgerStore::baselineSectionNameOf(ca::u32 generation) c
 }
 
 ca::Result<LedgerFlushReport, ProjectStoreError> EditLedgerStore::flush(
-    std::string_view createdAt)
+    const std::string& createdAt)
 {
     LedgerFlushReport report;
     if (!bound()) return ca::Ok(std::move(report));
