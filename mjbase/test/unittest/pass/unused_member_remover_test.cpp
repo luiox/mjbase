@@ -43,6 +43,7 @@ namespace {
 
 constexpr ca::u16 kAccPublic       = 0x0001;
 constexpr ca::u16 kAccPrivate      = 0x0002;
+constexpr ca::u16 kAccProtected    = 0x0004;
 constexpr ca::u16 kAccStatic       = 0x0008;
 
 // ── 夹具构造 ─────────────────────────────────────────────────────────────
@@ -310,6 +311,170 @@ Bytes buildModuleInfo()
     cf->attrs.push_back(jbc::core::AttrSlot::makeNew(
         cf->cp.addUtf8("ModuleMainClass"), std::make_unique<jbc::core::RawAttr>(mainClass)));
     return writeDom(*cf, "module-info");
+}
+
+// ── 非私有档位 / fail-closed / 悬垂防护夹具（本批新增，新栈策略面）──────────
+
+/// 档位夹具：private live/dead + package-private/protected/public 四档死成员 +
+/// main 使用 live 侧（dead 全部无引用；字段面 protected 为实例字段、无 clinit
+/// 写入面）。方法与字段共用，两 pass 各删各面。
+Bytes buildNonPublicCleanupClass()
+{
+    FixtureBuilder builder("App");
+    builder.addField({"livePrivate", "I", kAccPrivate | kAccStatic});
+    builder.addField({"deadPrivateField", "I", kAccPrivate | kAccStatic});
+    builder.addField({"deadPackageField", "I", kAccStatic});
+    builder.addField({"deadProtectedField", "I", kAccProtected});
+    builder.addField({"apiField", "I", kAccPublic | kAccStatic});
+
+    const auto simpleMethod = [&](const char* name, ca::u16 access) {
+        FixtureMethod m;
+        m.name      = name;
+        m.desc      = "()V";
+        m.access    = access;
+        m.maxStack  = 0;
+        m.maxLocals = 0;
+        m.code      = bareReturn();
+        builder.addMethod(m);
+    };
+    simpleMethod("livePrivateMethod", kAccPrivate | kAccStatic);
+    simpleMethod("deadPackageMethod", kAccStatic);
+    simpleMethod("deadProtectedMethod", static_cast<ca::u16>(kAccProtected | kAccStatic));
+    simpleMethod("apiMethod", kAccPublic | kAccStatic);
+    simpleMethod("deadPrivateMethod", kAccPrivate | kAccStatic);
+
+    FixtureMethod main;
+    main.name      = "main";
+    main.desc      = "([Ljava/lang/String;)V";
+    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
+    main.maxStack  = 1;
+    main.maxLocals = 1;
+    main.code      = getStaticPop(builder.fieldRef("App", "livePrivate", "I"));
+    appendBytes(main.code, invokeStatic(builder.methodRef("App", "livePrivateMethod", "()V")));
+    main.code.push_back(0xB1);
+    builder.addMethod(main);
+    return builder.assemble();
+}
+
+/// 服务入口 fail-closed 夹具：Main（平凡 main）+ example/SvcImpl（package-private
+/// 成员，无容器内调用点）+ services 文件指向 SvcImpl。资源 keep 类声明成员整体
+/// 入根 → 非私有档不得删（否则容器外 ServiceLoader 调用悬垂）。
+Bytes buildServiceEntrypointMain()
+{
+    FixtureBuilder builder("example/Main");
+    FixtureMethod main;
+    main.name      = "main";
+    main.desc      = "([Ljava/lang/String;)V";
+    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
+    main.maxStack  = 0;
+    main.maxLocals = 1;
+    main.code      = bareReturn();
+    builder.addMethod(main);
+    return builder.assemble();
+}
+
+Bytes buildServiceImpl()
+{
+    FixtureBuilder builder("example/SvcImpl");
+    builder.addField({"implState", "I", kAccStatic});
+    FixtureMethod serve;
+    serve.name      = "serve";
+    serve.desc      = "()V";
+    serve.access    = kAccStatic;
+    serve.maxStack  = 0;
+    serve.maxLocals = 0;
+    serve.code      = bareReturn();
+    builder.addMethod(serve);
+    return builder.assemble();
+}
+
+/// 悬垂防护夹具：private caller（可挂注解）引用 package-private 死成员。
+/// fieldFace=true 时引用 deadPackageField，否则调用 callee 方法。
+Bytes buildCallerCalleeClass(bool annotateCaller, bool fieldFace)
+{
+    FixtureBuilder builder("App");
+    if (fieldFace) builder.addField({"deadPackageField", "I", kAccStatic});
+
+    FixtureMethod caller;
+    caller.name      = "caller";
+    caller.desc      = "()V";
+    caller.access    = static_cast<ca::u16>(kAccPrivate | kAccStatic);
+    caller.maxStack  = 1;
+    caller.maxLocals = 0;
+    caller.code      = fieldFace
+                    ? getStaticPop(builder.fieldRef("App", "deadPackageField", "I"))
+                    : invokeStatic(builder.methodRef("App", "callee", "()V"));
+    caller.code.push_back(0xB1);
+    builder.addMethod(caller);
+
+    if (!fieldFace) {
+        FixtureMethod callee;
+        callee.name      = "callee";
+        callee.desc      = "()V";
+        callee.access    = kAccStatic;
+        callee.maxStack  = 0;
+        callee.maxLocals = 0;
+        callee.code      = bareReturn();
+        builder.addMethod(callee);
+    }
+
+    FixtureMethod main;
+    main.name      = "main";
+    main.desc      = "([Ljava/lang/String;)V";
+    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
+    main.maxStack  = 0;
+    main.maxLocals = 1;
+    main.code      = bareReturn();
+    builder.addMethod(main);
+
+    const Bytes bytes = builder.assemble();
+    return annotateCaller ? withAnnotation(bytes, "caller", true, "Lsample/Keep;") : bytes;
+}
+
+/// 构造器可达夹具：`<init>` 调 package-private deadFromCtor；main 调 package-private
+/// factory（App 类可达但不实例化——`<init>` 不经调用边入闭包，必须靠保留面根）。
+Bytes buildConstructorReachClass()
+{
+    FixtureBuilder builder("App");
+
+    FixtureMethod ctor;
+    ctor.name      = "<init>";
+    ctor.desc      = "()V";
+    ctor.access    = kAccPublic;
+    ctor.maxStack  = 0;
+    ctor.maxLocals = 1;
+    ctor.code      = invokeStatic(builder.methodRef("App", "deadFromCtor", "()V"));
+    ctor.code.push_back(0xB1);
+    builder.addMethod(ctor);
+
+    FixtureMethod factory;
+    factory.name      = "factory";
+    factory.desc      = "()V";
+    factory.access    = kAccStatic;
+    factory.maxStack  = 0;
+    factory.maxLocals = 0;
+    factory.code      = bareReturn();
+    builder.addMethod(factory);
+
+    FixtureMethod dead;
+    dead.name      = "deadFromCtor";
+    dead.desc      = "()V";
+    dead.access    = kAccStatic;
+    dead.maxStack  = 0;
+    dead.maxLocals = 0;
+    dead.code      = bareReturn();
+    builder.addMethod(dead);
+
+    FixtureMethod main;
+    main.name      = "main";
+    main.desc      = "([Ljava/lang/String;)V";
+    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
+    main.maxStack  = 0;
+    main.maxLocals = 1;
+    main.code      = invokeStatic(builder.methodRef("App", "factory", "()V"));
+    main.code.push_back(0xB1);
+    builder.addMethod(main);
+    return builder.assemble();
 }
 
 // ── 运行面辅助 ───────────────────────────────────────────────────────────
@@ -1059,6 +1224,309 @@ TEST(MjPassKeepRuleTest, NonMatchingRuleKeepsBaselineBehavior)
     EXPECT_FALSE(pass.run(container, gam).areAllPreserved());
     EXPECT_FALSE(hasMethod(reload(container, "App.class"), "deadPrivateMethod", "()V"));
     EXPECT_TRUE(hasMethod(reload(container, "App.class"), "livePrivateMethod", "()V"));
+}
+
+// ── 可见性档位（本批放开面：非私有死成员删除）────────────────────────────────
+//
+// 档位语义见 unused_member_remover.hpp 模块头注：NonPublic（默认）候选全部非
+// public 死成员、public 面 fail-closed 保守；PrivateOnly 是旧策略回归档；
+// All 是闭程序激进档。保留面根提升（keep metadata / keep 规则 / 资源 keep 类 /
+// 构造器）是删除安全不变量的前提，本节一并钉死。
+
+// 默认档：package-private/protected 死成员删除，public 面保留，private live 面
+// 保留。方法与字段两面各自验证。
+TEST(MjPassNonPublicTierTest, DefaultTierRemovesNonPublicDeadMembersAndKeepsPublicFace)
+{
+    const auto runMethodPass = [] {
+        ca::str::Utf8StringArena         arena;
+        mjbase::model::ResourceContainer container;
+        addClassResource(container, "App.class", buildNonPublicCleanupClass());
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachabilityAnalyses(gam);
+
+        mjbase::pass::GlobalUnusedMethodRemover pass;
+        EXPECT_FALSE(pass.run(container, gam).areAllPreserved());
+        const jbc::core::ClassFile& reloaded = reload(container, "App.class");
+        EXPECT_TRUE(hasMethod(reloaded, "main", "([Ljava/lang/String;)V"));
+        EXPECT_TRUE(hasMethod(reloaded, "livePrivateMethod", "()V"));
+        EXPECT_TRUE(hasMethod(reloaded, "apiMethod", "()V"));   // public 面 fail-closed
+        EXPECT_FALSE(hasMethod(reloaded, "deadPackageMethod", "()V"));
+        EXPECT_FALSE(hasMethod(reloaded, "deadProtectedMethod", "()V"));
+        EXPECT_FALSE(hasMethod(reloaded, "deadPrivateMethod", "()V"));
+    };
+    const auto runFieldPass = [] {
+        ca::str::Utf8StringArena         arena;
+        mjbase::model::ResourceContainer container;
+        addClassResource(container, "App.class", buildNonPublicCleanupClass());
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachabilityAnalyses(gam);
+
+        mjbase::pass::UnusedFieldRemover pass;
+        EXPECT_FALSE(pass.run(container, gam).areAllPreserved());
+        const jbc::core::ClassFile& reloaded = reload(container, "App.class");
+        EXPECT_TRUE(hasField(reloaded, "livePrivate", "I"));
+        EXPECT_TRUE(hasField(reloaded, "apiField", "I"));   // public 面 fail-closed
+        EXPECT_FALSE(hasField(reloaded, "deadPrivateField", "I"));
+        EXPECT_FALSE(hasField(reloaded, "deadPackageField", "I"));
+        EXPECT_FALSE(hasField(reloaded, "deadProtectedField", "I"));
+    };
+    runMethodPass();
+    runFieldPass();
+}
+
+// PrivateOnly 档：旧策略回归——非私有死成员保留，只删 private。
+TEST(MjPassNonPublicTierTest, PrivateOnlyTierKeepsLegacyBehavior)
+{
+    {   // 字段面。
+        ca::str::Utf8StringArena         arena;
+        mjbase::model::ResourceContainer container;
+        addClassResource(container, "App.class", buildNonPublicCleanupClass());
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachabilityAnalyses(gam);
+
+        mjbase::pass::UnusedFieldRemover pass{
+            nullptr, mjbase::pass::UnusedMemberAccessTier::PrivateOnly};
+        EXPECT_FALSE(pass.run(container, gam).areAllPreserved());
+        const jbc::core::ClassFile& reloaded = reload(container, "App.class");
+        EXPECT_TRUE(hasField(reloaded, "deadPackageField", "I"));
+        EXPECT_TRUE(hasField(reloaded, "deadProtectedField", "I"));
+        EXPECT_TRUE(hasField(reloaded, "apiField", "I"));
+        EXPECT_FALSE(hasField(reloaded, "deadPrivateField", "I"));
+        EXPECT_TRUE(hasField(reloaded, "livePrivate", "I"));
+    }
+    {   // 方法面。
+        ca::str::Utf8StringArena         arena;
+        mjbase::model::ResourceContainer container;
+        addClassResource(container, "App.class", buildNonPublicCleanupClass());
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachabilityAnalyses(gam);
+
+        mjbase::pass::GlobalUnusedMethodRemover pass{
+            nullptr, mjbase::pass::UnusedMemberAccessTier::PrivateOnly};
+        EXPECT_FALSE(pass.run(container, gam).areAllPreserved());
+        const jbc::core::ClassFile& reloaded = reload(container, "App.class");
+        EXPECT_TRUE(hasMethod(reloaded, "deadPackageMethod", "()V"));
+        EXPECT_TRUE(hasMethod(reloaded, "deadProtectedMethod", "()V"));
+        EXPECT_TRUE(hasMethod(reloaded, "apiMethod", "()V"));
+        EXPECT_FALSE(hasMethod(reloaded, "deadPrivateMethod", "()V"));
+        EXPECT_TRUE(hasMethod(reloaded, "livePrivateMethod", "()V"));
+    }
+}
+
+// All 档：public 死成员也候选（闭程序专用；库型容器语义上不该开此档）。
+TEST(MjPassNonPublicTierTest, AllTierAlsoRemovesPublicDeadMembers)
+{
+    ca::str::Utf8StringArena         arena;
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "App.class", buildNonPublicCleanupClass());
+    mjbase::spi::GlobalAnalysisManager gam(arena);
+    registerReachabilityAnalyses(gam);
+
+    mjbase::pass::GlobalUnusedMethodRemover methodPass{
+        nullptr, mjbase::pass::UnusedMemberAccessTier::All};
+    EXPECT_FALSE(methodPass.run(container, gam).areAllPreserved());
+    const jbc::core::ClassFile& reloaded = reload(container, "App.class");
+    EXPECT_TRUE(hasMethod(reloaded, "main", "([Ljava/lang/String;)V"));
+    EXPECT_TRUE(hasMethod(reloaded, "livePrivateMethod", "()V"));
+    EXPECT_FALSE(hasMethod(reloaded, "apiMethod", "()V"));
+    EXPECT_FALSE(hasMethod(reloaded, "deadPackageMethod", "()V"));
+    EXPECT_FALSE(hasMethod(reloaded, "deadProtectedMethod", "()V"));
+
+    ca::str::Utf8StringArena         arena2;
+    mjbase::model::ResourceContainer container2;
+    addClassResource(container2, "App.class", buildNonPublicCleanupClass());
+    mjbase::spi::GlobalAnalysisManager gam2(arena2);
+    registerReachabilityAnalyses(gam2);
+    mjbase::pass::UnusedFieldRemover fieldPass{nullptr, mjbase::pass::UnusedMemberAccessTier::All};
+    EXPECT_FALSE(fieldPass.run(container2, gam2).areAllPreserved());
+    const jbc::core::ClassFile& reloaded2 = reload(container2, "App.class");
+    EXPECT_TRUE(hasField(reloaded2, "livePrivate", "I"));
+    EXPECT_FALSE(hasField(reloaded2, "apiField", "I"));
+    EXPECT_FALSE(hasField(reloaded2, "deadPackageField", "I"));
+    EXPECT_FALSE(hasField(reloaded2, "deadProtectedField", "I"));
+}
+
+/// 服务入口容器装配（Main + SvcImpl + services 文件）。
+void addServiceEntrypointFixture(mjbase::model::ResourceContainer& container)
+{
+    addClassResource(container, "example/Main.class", buildServiceEntrypointMain());
+    addClassResource(container, "example/SvcImpl.class", buildServiceImpl());
+    const std::string serviceText = "example.SvcImpl\n";
+    container.addResource("META-INF/services/example.Svc",
+                          std::make_unique<mjbase::model::UnknownResource>(
+                              "META-INF/services/example.Svc",
+                              std::vector<ca::u8>(serviceText.begin(), serviceText.end())));
+}
+
+// fail-closed：services 指向的容器内实现类，其 package-private 成员无容器内调用
+// 点——资源 keep 类声明成员整体入根，非私有档不得删（否则容器外 ServiceLoader 调用悬垂）。
+TEST(MjPassNonPublicTierTest, ServiceEntrypointMembersSurviveDefaultTier)
+{
+    {   // 方法面：serve（package-private，无容器内调用点）保留 → 整 pass no-op。
+        ca::str::Utf8StringArena         arena;
+        mjbase::model::ResourceContainer container;
+        addServiceEntrypointFixture(container);
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachabilityAnalyses(gam);
+        mjbase::pass::GlobalUnusedMethodRemover pass;
+        EXPECT_TRUE(pass.run(container, gam).areAllPreserved());
+        EXPECT_TRUE(hasMethod(reload(container, "example/SvcImpl.class"), "serve", "()V"));
+    }
+    {   // 字段面：implState（package-private，无容器内访问点）保留 → 整 pass no-op。
+        ca::str::Utf8StringArena         arena;
+        mjbase::model::ResourceContainer container;
+        addServiceEntrypointFixture(container);
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachabilityAnalyses(gam);
+        mjbase::pass::UnusedFieldRemover pass;
+        EXPECT_TRUE(pass.run(container, gam).areAllPreserved());
+        EXPECT_TRUE(hasField(reload(container, "example/SvcImpl.class"), "implState", "I"));
+    }
+}
+
+// 悬垂防护（soundness）：保留但不可达的注解 caller 引用 package-private 死成员
+// 时，callee/callee 字段必须随 caller 的保留面根入闭包——不得删出悬垂引用。
+TEST(MjPassNonPublicTierTest, RetainedUnreachableCallerKeepsCalleeFromDeletion)
+{
+    {   // 方法面 + 注解 caller：callee 保留（整 pass no-op）。
+        ca::str::Utf8StringArena         arena;
+        mjbase::model::ResourceContainer container;
+        addClassResource(container, "App.class", buildCallerCalleeClass(/*annotate*/ true,
+                                                                        /*fieldFace*/ false));
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachabilityAnalyses(gam);
+        mjbase::pass::GlobalUnusedMethodRemover pass;
+        EXPECT_TRUE(pass.run(container, gam).areAllPreserved());
+        EXPECT_TRUE(hasMethod(reload(container, "App.class"), "callee", "()V"));
+        EXPECT_TRUE(hasMethod(reload(container, "App.class"), "caller", "()V"));
+    }
+    {   // 方法面 + 无注解 caller：caller 与 callee 都死，一起删（无悬垂残留）。
+        ca::str::Utf8StringArena         arena;
+        mjbase::model::ResourceContainer container;
+        addClassResource(container, "App.class", buildCallerCalleeClass(/*annotate*/ false,
+                                                                        /*fieldFace*/ false));
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachabilityAnalyses(gam);
+        mjbase::pass::GlobalUnusedMethodRemover pass;
+        EXPECT_FALSE(pass.run(container, gam).areAllPreserved());
+        const jbc::core::ClassFile& reloaded = reload(container, "App.class");
+        EXPECT_FALSE(hasMethod(reloaded, "caller", "()V"));
+        EXPECT_FALSE(hasMethod(reloaded, "callee", "()V"));
+    }
+    {   // 字段面 + 注解 caller：caller 保留 → 其字段访问出边必须保住字段。
+        ca::str::Utf8StringArena         arena;
+        mjbase::model::ResourceContainer container;
+        addClassResource(container, "App.class", buildCallerCalleeClass(/*annotate*/ true,
+                                                                        /*fieldFace*/ true));
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachabilityAnalyses(gam);
+        mjbase::pass::UnusedFieldRemover pass;
+        EXPECT_TRUE(pass.run(container, gam).areAllPreserved());
+        EXPECT_TRUE(hasField(reload(container, "App.class"), "deadPackageField", "I"));
+    }
+}
+
+// 悬垂防护（soundness）：构造器从不候选删除且无条件入根——类可达但不实例化时，
+// `<init>` 引用的死成员不得删（否则保留的 `<init>` 悬垂）。
+TEST(MjPassNonPublicTierTest, ConstructorReachKeepsCalleeFromDeletion)
+{
+    ca::str::Utf8StringArena         arena;
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "App.class", buildConstructorReachClass());
+    mjbase::spi::GlobalAnalysisManager gam(arena);
+    registerReachabilityAnalyses(gam);
+
+    mjbase::pass::GlobalUnusedMethodRemover pass;
+    EXPECT_TRUE(pass.run(container, gam).areAllPreserved());
+    const jbc::core::ClassFile& reloaded = reload(container, "App.class");
+    EXPECT_TRUE(hasMethod(reloaded, "<init>", "()V"));
+    EXPECT_TRUE(hasMethod(reloaded, "factory", "()V"));
+    EXPECT_TRUE(hasMethod(reloaded, "deadFromCtor", "()V"));
+}
+
+// 幂等固定点：第二遍运行严格 no-op（all() 且字节不变）。
+TEST(MjPassNonPublicTierTest, SecondRunIsStrictNoOp)
+{
+    const auto verify = [](auto& pass) {
+        ca::str::Utf8StringArena         arena;
+        mjbase::model::ResourceContainer container;
+        addClassResource(container, "App.class", buildNonPublicCleanupClass());
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachabilityAnalyses(gam);
+
+        EXPECT_FALSE(pass.run(container, gam).areAllPreserved());
+        const Bytes afterFirst = classBytesOf(container, "App.class");
+
+        mjbase::spi::GlobalAnalysisManager gam2(arena);
+        registerReachabilityAnalyses(gam2);
+        EXPECT_TRUE(pass.run(container, gam2).areAllPreserved());
+        EXPECT_EQ(classBytesOf(container, "App.class"), afterFirst);
+    };
+    mjbase::pass::UnusedFieldRemover        fieldPass;
+    mjbase::pass::GlobalUnusedMethodRemover methodPass;
+    verify(fieldPass);
+    verify(methodPass);
+}
+
+// 删除后引用索引一致：重建索引后已删成员零入边，保留成员入边原样
+//（「删除后 invoke 指令面无需清扫」的观测面）。
+TEST(MjPassNonPublicTierTest, RebuiltIndexHasNoIncomingEdgesToDeletedMembers)
+{
+    ca::str::Utf8StringArena         arena;
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "App.class", buildNonPublicCleanupClass());
+    mjbase::spi::GlobalAnalysisManager gam(arena);
+    registerReachabilityAnalyses(gam);
+
+    mjbase::pass::GlobalUnusedMethodRemover pass;
+    EXPECT_FALSE(pass.run(container, gam).areAllPreserved());
+
+    // 新管理器全量重扫删除后的容器（pass 返回 none() 使旧缓存失效的等价观测）。
+    mjbase::spi::GlobalAnalysisManager gam2(arena);
+    gam2.registerAnalysis<mjbase::reference::ReferenceIndexAnalysis>();
+    auto& index = gam2.getResult<mjbase::reference::ReferenceIndexAnalysis>(container);
+
+    EXPECT_TRUE(index.methodReferencesTo("App", "deadPackageMethod", "()V").empty());
+    EXPECT_TRUE(index.methodReferencesTo("App", "deadProtectedMethod", "()V").empty());
+    EXPECT_TRUE(index.methodReferencesTo("App", "deadPrivateMethod", "()V").empty());
+    // 保留成员的入边原样：main → livePrivateMethod。
+    EXPECT_EQ(index.methodReferencesTo("App", "livePrivateMethod", "()V").size(), 1u);
+    // 声明面同步：已删成员不再有声明事实。
+    EXPECT_EQ(index.declaredMethod("App", "deadPackageMethod", "()V"), nullptr);
+    EXPECT_NE(index.declaredMethod("App", "livePrivateMethod", "()V"), nullptr);
+}
+
+// keep 规则（只加不减）在默认档下保住非私有死成员。
+TEST(MjPassNonPublicTierTest, MemberRuleProtectsNonPublicDeadMembers)
+{
+    {   // 方法：protected 死方法被成员规则点名 → 保留；其余死方法照删。
+        ca::str::Utf8StringArena         arena;
+        mjbase::model::ResourceContainer container;
+        addClassResource(container, "App.class", buildNonPublicCleanupClass());
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachabilityAnalyses(gam);
+
+        mjbase::pass::GlobalUnusedMethodRemover pass(
+            parseKeepRules("member App#deadProtectedMethod()V\n"));
+        EXPECT_FALSE(pass.run(container, gam).areAllPreserved());
+        const jbc::core::ClassFile& reloaded = reload(container, "App.class");
+        EXPECT_TRUE(hasMethod(reloaded, "deadProtectedMethod", "()V"));
+        EXPECT_FALSE(hasMethod(reloaded, "deadPackageMethod", "()V"));
+        EXPECT_TRUE(hasMethod(reloaded, "apiMethod", "()V"));
+    }
+    {   // 字段：package-private 死字段被成员规则点名（任意描述符形态）→ 保留。
+        ca::str::Utf8StringArena         arena;
+        mjbase::model::ResourceContainer container;
+        addClassResource(container, "App.class", buildNonPublicCleanupClass());
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachabilityAnalyses(gam);
+
+        mjbase::pass::UnusedFieldRemover pass(parseKeepRules("member App#deadPackageField\n"));
+        EXPECT_FALSE(pass.run(container, gam).areAllPreserved());
+        const jbc::core::ClassFile& reloaded = reload(container, "App.class");
+        EXPECT_TRUE(hasField(reloaded, "deadPackageField", "I"));
+        EXPECT_FALSE(hasField(reloaded, "deadProtectedField", "I"));
+    }
 }
 
 // ── Multi-Release 族删除契约 ────────────────────────────────────────────────

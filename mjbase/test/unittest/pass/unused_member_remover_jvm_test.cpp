@@ -7,9 +7,12 @@
 
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "jbc/core/class_file.hpp"
+#include "jbc/core/reader.hpp"
 #include "libca/core/tag_cast.hpp"
 
 #include "mjbase/asm/classpath/resolved_call_graph.hpp"
@@ -89,6 +92,25 @@ void registerReachability(mjbase::spi::GlobalAnalysisManager& gam)
     gam.registerAnalysis<mjbase::asm_classpath::ResolvedCallGraphAnalysis>();
     gam.registerAnalysis<mjbase::reference::GlobalReachabilityAnalysis>();
     gam.registerAnalysis<mjbase::reference::ResolvedGlobalReachabilityAnalysis>();
+}
+
+/// 类内是否存在指定名字的成员（方法/字段面）。
+bool hasMember(const jbc::core::ClassFile& cf, bool method, const char* name)
+{
+    const std::vector<jbc::core::MemberInfo>& members = method ? cf.methods : cf.fields;
+    for (const jbc::core::MemberInfo& m : members) {
+        if (cf.nameOf(m) == name) return true;
+    }
+    return false;
+}
+
+/// 解析 class 字节（失败返回空指针，调用方致命断言）。
+std::unique_ptr<jbc::core::ClassFile> parseDom(const Bytes& bytes)
+{
+    auto read = jbc::core::readClass(jbc::core::ByteView(bytes));
+    EXPECT_TRUE(read.is_ok()) << "libjbc readClass failed";
+    if (read.is_err()) return nullptr;
+    return std::move(read).unwrap().file;
 }
 
 }   // namespace
@@ -172,4 +194,135 @@ TEST(UnusedMemberRemoverJvm, CleanedClassesRunOnRealJvm)
     const auto cleaned = test::jdk::runJavaMain(tc, outDir, "hb.jvm.umclean.Main");
     EXPECT_EQ(cleaned.exitCode, 0) << "cleaned Main rejected/failed:\n" << cleaned.out;
     EXPECT_EQ(test::jdk::normalizeOutput(cleaned.out), origOut);
+}
+
+/// 非私有档位样本：Main 只用 Util.label()（public 面）；Util 携带 package-private
+/// 与 protected 死成员（字段全部无初始化器——<clinit>/<init> 不得携带写入面，
+/// 否则成员经保留面根可达；方法体只成簇互相引用，两面各删各面后无悬垂）。
+constexpr const char* kNonPrivateSrc = R"JAVA(
+package hb.jvm.umnpriv;
+
+public class Main {
+    public static void main(String[] args) {
+        System.out.println(Util.label());
+    }
+}
+
+class Util {
+    public static String label() {
+        return "npriv-label";
+    }
+    static int deadPackageField;
+    static String deadPackageMethod() {
+        return "never-" + deadPackageField;
+    }
+    protected int deadProtectedField;
+    protected void deadProtectedMethod() {
+    }
+}
+)JAVA";
+
+// 非私有档（默认 NonPublic）：package-private/protected 死成员删除，public 面
+// 保留；清理产物真 JVM 执行 stdout 与原样本一致。PrivateOnly 对照档：同一容器
+// 上非私有死成员保留（不产生任何改写）。
+TEST(UnusedMemberRemoverJvm, NonPrivateDeadMembersRemovedAndCleanedOutputRunsOnJvm)
+{
+    auto tc = test::jdk::probeJdk();
+    if (!tc.available) {
+        GTEST_SKIP() << "JDK 不可用: " << tc.reason;
+    }
+
+    const fs::path gate   = test::getTopProjectPath() / "test/jvm_gate";
+    const fs::path srcDir = gate / "src";
+    const fs::path binDir = gate / "bin_umnpriv";
+    const fs::path outDir = gate / "obf_umnpriv";
+
+    writeSource(srcDir / "hb/jvm/umnpriv/Main.java", kNonPrivateSrc);
+    std::string compileErr;
+    ASSERT_TRUE(test::jdk::compileJava(tc, srcDir / "hb/jvm/umnpriv/Main.java", binDir, &compileErr))
+        << compileErr;
+
+    const auto orig = test::jdk::runJavaMain(tc, binDir, "hb.jvm.umnpriv.Main");
+    ASSERT_EQ(orig.exitCode, 0) << orig.out;
+    const std::string origOut = test::jdk::normalizeOutput(orig.out);
+    EXPECT_NE(origOut.find("npriv-label"), std::string::npos);
+
+    const auto buildContainer = [&]() {
+        mjbase::model::ResourceContainer container;
+        for (const char* name : {"Main", "Util"}) {
+            const Bytes corpus =
+                readClassBytes(binDir / "hb/jvm/umnpriv" / (std::string(name) + ".class"));
+            container.addResource(std::string("hb/jvm/umnpriv/") + name + ".class",
+                                  std::make_unique<mjbase::model::ClassResource>(
+                                      std::string("hb/jvm/umnpriv/") + name + ".class", corpus));
+        }
+        return container;
+    };
+    const Bytes utilBefore = readClassBytes(binDir / "hb/jvm/umnpriv/Util.class");
+
+    {
+        // 默认档：两面各删 package-private/protected 死成员。
+        ca::str::Utf8StringArena           arena;
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachability(gam);
+        mjbase::model::ResourceContainer container = buildContainer();
+
+        mjbase::pass::UnusedFieldRemover        fieldPass;
+        mjbase::pass::GlobalUnusedMethodRemover methodPass;
+        ASSERT_FALSE(fieldPass.run(container, gam).areAllPreserved()) << "死字段未被删除";
+        ASSERT_FALSE(methodPass.run(container, gam).areAllPreserved()) << "死方法未被删除";
+
+        const auto* utilRes = ca::core::tag_cast::cast<mjbase::model::ClassResource*>(
+            container.getResource("hb/jvm/umnpriv/Util.class"));
+        const auto* mainRes = ca::core::tag_cast::cast<mjbase::model::ClassResource*>(
+            container.getResource("hb/jvm/umnpriv/Main.class"));
+        ASSERT_NE(utilRes, nullptr);
+        ASSERT_NE(mainRes, nullptr);
+        EXPECT_EQ(mainRes->get(), readClassBytes(binDir / "hb/jvm/umnpriv/Main.class"))
+            << "Main 不应有改写面";
+        {
+            const std::unique_ptr<jbc::core::ClassFile> utilOut = parseDom(utilRes->get());
+            ASSERT_NE(utilOut, nullptr);
+            EXPECT_FALSE(hasMember(*utilOut, true, "deadPackageMethod"));
+            EXPECT_FALSE(hasMember(*utilOut, true, "deadProtectedMethod"));
+            EXPECT_FALSE(hasMember(*utilOut, false, "deadPackageField"));
+            EXPECT_FALSE(hasMember(*utilOut, false, "deadProtectedField"));
+            EXPECT_TRUE(hasMember(*utilOut, true, "label"));
+        }
+
+        // 清理产物真 java 执行。
+        const fs::path dst = outDir / "hb/jvm/umnpriv";
+        fs::create_directories(dst);
+        for (const char* name : {"Main.class", "Util.class"}) {
+            const auto* res = ca::core::tag_cast::cast<mjbase::model::ClassResource*>(
+                container.getResource(std::string("hb/jvm/umnpriv/") + name));
+            ASSERT_NE(res, nullptr) << name;
+            std::ofstream fout(dst / name, std::ios::binary);
+            ASSERT_TRUE(fout.good()) << (dst / name).string();
+            fout.write(reinterpret_cast<const char*>(res->get().data()),
+                       static_cast<std::streamsize>(res->get().size()));
+        }
+        const auto cleaned = test::jdk::runJavaMain(tc, outDir, "hb.jvm.umnpriv.Main");
+        EXPECT_EQ(cleaned.exitCode, 0) << "cleaned Main rejected/failed:\n" << cleaned.out;
+        EXPECT_EQ(test::jdk::normalizeOutput(cleaned.out), origOut);
+    }
+    {
+        // PrivateOnly 对照档：非私有死成员保留，Util 无改写面。
+        ca::str::Utf8StringArena           arena;
+        mjbase::spi::GlobalAnalysisManager gam(arena);
+        registerReachability(gam);
+        mjbase::model::ResourceContainer container = buildContainer();
+
+        mjbase::pass::UnusedFieldRemover fieldPass{
+            nullptr, mjbase::pass::UnusedMemberAccessTier::PrivateOnly};
+        mjbase::pass::GlobalUnusedMethodRemover methodPass{
+            nullptr, mjbase::pass::UnusedMemberAccessTier::PrivateOnly};
+        EXPECT_TRUE(fieldPass.run(container, gam).areAllPreserved());
+        EXPECT_TRUE(methodPass.run(container, gam).areAllPreserved());
+
+        const auto* utilRes = ca::core::tag_cast::cast<mjbase::model::ClassResource*>(
+            container.getResource("hb/jvm/umnpriv/Util.class"));
+        ASSERT_NE(utilRes, nullptr);
+        EXPECT_EQ(utilRes->get(), utilBefore) << "PrivateOnly 档不应改写 Util";
+    }
 }
