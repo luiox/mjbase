@@ -154,6 +154,21 @@ struct SectionDep
     ca::str::Utf8String fingerprint;  ///< 生产时刻该 input 的登记指纹（非空）
 };
 
+/// @brief 台账引擎配置（store.json 顶层可选字段 ledger_config；设计文档
+///        analysis-project-schema-v2.md §5.3）。
+///
+/// 顶层只增不删纪律的加法演进：旧读者忽略该键，缺省 = 内置默认。结构内部
+/// 宽松（未知键忽略、写出丢弃）——引擎私有调参，不值得为旧键拒载整个清单。
+/// 值类型违约（bool 字段放字符串等）仍按 Schema 拒载。
+struct LedgerEngineConfig
+{
+    bool    autoCompact             = true;             ///< 自动压缩总开关
+    ca::u64 compactMaxTransactions  = 256;              ///< 活动事务行数阈值
+    ca::u64 compactMaxLedgerBytes   = 4 * 1024 * 1024;  ///< 台账行字节阈值
+    ca::u64 compactMaxDistance      = 512;              ///< 距上次压缩的事务距离阈值
+    ca::u64 minUndoDepth            = 64;               ///< 自动压缩承诺保留的 undo 深度
+};
+
 /// @brief store.json sections[] 条目（§4.2 v1）。
 ///
 /// 字段集**严格**：解析期未知字段即整文件拒载（引擎自产封闭记录，严格性
@@ -195,6 +210,8 @@ struct StoreManifest
                                                 ///< 为不携带（R52/CP-3）：解析期
                                                 ///< `"engine": ""` 视同未设置、写出期不
                                                 ///< 携带该键——空串 ≡ 缺省，两侧同义
+    std::optional<LedgerEngineConfig> ledgerConfig;  ///< 台账引擎配置（顶层加法演进；
+                                                ///< 未设置 = 内置默认）
     std::vector<StoreSectionEntry> sections;    ///< 解析期按原载顺序；写出按 name 字典序
     std::vector<ca::str::Utf8String> diagnostics;  ///< 解析期非致命发现（未知 format 收容等）
 };
@@ -266,14 +283,23 @@ ca::Result<StoreManifest, ProjectStoreError> readStoreManifestFile(
     const ca::str::Utf8StringRef& bundleDir);
 
 /// @brief 确定性写出 store.json 文本（§4.2：pretty、2 空格缩进，键序固定为
-///        version/kind/engine/sections；sections 按 name 字典序、条目键序按
-///        §4.2 表序、depends 按 path 字典序；同状态任意操作序逐字节一致）。
+///        version/kind/engine/ledger_config/sections；sections 按 name 字典序、
+///        条目键序按 §4.2 表序、depends 按 path 字典序；同状态任意操作序输出
+///        逐字节一致）。ledger_config 仅在已设置时携带。
 ///
 /// 写出前校验（Schema 错）：version 必须为当前版本、条目名合法且唯一、
 /// content_hash 形状、record_count 与 format 的相容规则同解析、produced_by/
 /// created_at/updated_at 非空。diagnostics 不写出。
 ca::Result<ca::str::Utf8String, ProjectStoreError> writeStoreManifestText(
     const StoreManifest& manifest);
+
+/// @brief 精确字节 SHA-256 → "sha256:" + 64 hex 小写（content_hash 统一口径；
+///        台账引擎的条目/容器 digest 与清单校验共用此形）。
+ca::str::Utf8String sectionContentHash(const ca::u8* data, ca::usize size);
+
+/// @brief RFC 3339 UTC 时间戳（created_at/updated_at 等人读上下文的统一产出；
+///        仅诊断用，语义不建在时间上）。
+std::string rfc3339UtcNow();
 
 //-- section 内容读写原语（C2：§5.1/§5.2/§8.1 的 section 层切片）--------------
 //
