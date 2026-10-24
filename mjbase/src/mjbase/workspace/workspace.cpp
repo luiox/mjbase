@@ -2764,10 +2764,26 @@ MutationResult WorkspaceBase::validateJasm(const std::string&      uri,
     }
 }
 
+// TEMP-DIAG(commit 步骤标记): linux CI 定位 UTF-8 异常抛点用，随后移除。
+static std::string diagHexOf(std::string_view text)
+{
+    static const char* kHex = "0123456789abcdef";
+    std::string        out;
+    out.reserve(text.size() * 4);
+    for (const char raw : text) {
+        const auto c = static_cast<unsigned char>(raw);
+        out += "\\x";
+        out += kHex[c >> 4];
+        out += kHex[c & 0x0F];
+    }
+    return out;
+}
+
 MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> candidate,
                                      std::vector<jasm::Diagnostic> diagnostics,
                                      const MutationRequest&        request)
 {
+    std::string diagStep = "entry";
     if (!accepts(request)) return revisionConflict();
     auto diffs = diffContainers(*working_, *candidate);
 
@@ -2796,7 +2812,9 @@ MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> c
         input.createdAt  = project::rfc3339UtcNow();
         const ca::u64 txnId = ledger_.nextTxnId();
         ca::u32       seq   = 0;
+        diagStep = "loop";
         for (const auto& uri : uris) {
+            diagStep = "uri=" + diagHexOf(uri);
             const model::IResource* beforeResource = working_->getResource(uri);
             const model::IResource* afterResource  = candidate->getResource(uri);
             std::vector<ca::u8>     beforeBytes;
@@ -2834,10 +2852,14 @@ MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> c
             }
             input.entries.push_back(std::move(entry));
         }
+        diagStep = "append";
         auto appended = ledger_.append(input);
+        diagStep = "append-done";
         if (appended.is_err()) return stateFailure(ledgerFailure("commit", std::move(appended).unwrap_err()));
 
+        diagStep = "names";
         result.affectedClasses    = changedClassNames(*candidate, result.byteDiffs);
+        diagStep                  = "impacts";
         result.affectedReferences = collectImpacts(*candidate, result.affectedClasses);
         redoHint_.clear();
         working_ = std::move(candidate);
@@ -2847,7 +2869,9 @@ MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> c
         return result;
     }
     catch (const std::exception& exception) {
-        return stateFailure(error(WorkspaceError::Internal, "commit", exception.what()));
+        return stateFailure(error(WorkspaceError::Internal, "commit",
+                                  "[step " + diagStep + "|label=" + diagHexOf(request.label) +
+                                      "] " + exception.what()));
     }
 }
 
