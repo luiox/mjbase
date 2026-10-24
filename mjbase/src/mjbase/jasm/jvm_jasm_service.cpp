@@ -4,6 +4,7 @@
 #include "jblw/version/java_version.hpp"
 #include "jbc/core/reader.hpp"
 #include "mjbase/hierarchy/class_hierarchy.hpp"
+#include "mjbase/jasm/relaxed_verifier.hpp"
 #include "mjbase/keys.hpp"
 
 #include <exception>
@@ -231,6 +232,20 @@ Result<JvmJasmClass> JvmJasmService::validate(const std::vector<ca::u8>& classBy
         if (name.is_err())
             return unreadableClassResult<JvmJasmClass>(DiagnosticStage::Validate,
                                                        name.unwrap_err());
+        // 三档校验门：Off = 直通零诊断；Relaxed = JVM 赋值兼容语义
+        // （mjbase relaxed verifier）；Strict = 原精确类型匹配路径。
+        if (context.validationMode == ValidationMode::Off) {
+            Result<JvmJasmClass> result;
+            result.value = JvmJasmClass{std::move(name).unwrap(), classBytes};
+            return result;
+        }
+        if (context.validationMode == ValidationMode::Relaxed) {
+            Result<JvmJasmClass> result;
+            result.diagnostics = analyzeRelaxed(classBytes, context.hierarchy);
+            if (result.hasErrors()) return result;
+            result.value = JvmJasmClass{std::move(name).unwrap(), classBytes};
+            return result;
+        }
         std::optional<HierarchyInheritanceChecker>   checker;
         const ::jhasm::analysis::InheritanceChecker* inheritance =
             &::jhasm::analysis::EmptyInheritanceChecker::instance();
