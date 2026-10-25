@@ -24,6 +24,7 @@
 #include "mjbase/pass/strength_reducer.hpp"
 #include "mjbase/pass/tool_class_combiner.hpp"
 #include "mjbase/pass/type_cast_simplifier.hpp"
+#include "mjbase/pass/static_field_default_inliner.hpp"
 #include "mjbase/pass/unused_check_cleaner.hpp"
 #include "mjbase/pass/unused_member_remover.hpp"
 
@@ -356,6 +357,14 @@ PassNameRegistry makeDefaultRegistry()
         "SpecificAnnotationRemover",
         [] { return std::make_unique<mjbase::pass::SpecificAnnotationRemover>(); },
         "Remove annotations matching the configured blacklist."));
+    // opt pass 扩段（类级首件，mbase 治理版移植）：<clinit> 单次写入的常量
+    // 内联进字段 ConstantValue + 删除等价初始化指令对；多次 PUTSTATIC 预扫描
+    // 计数保守跳过。标签：scope:class / action:propagate / stability:opt-in
+    // （默认链不收，CLI -p 显式挂点）。
+    seed(reg.registerClassPass(
+        "StaticFieldDefaultInliner",
+        [] { return std::make_unique<mjbase::pass::StaticFieldDefaultInliner>(); },
+        "Inline single constant <clinit> putstatic into the field's ConstantValue attribute."));
     // 批 A（容器级直写组收口件）：static 工具类保守合并 + 全量 owner 重映射。
     seed(reg.registerGlobalPass(
         "ToolClassCombiner", [] { return std::make_unique<mjbase::pass::ToolClassCombiner>(); },
