@@ -80,6 +80,7 @@
   容器外目标只认 JDK 八 box 类白名单。壳体保留，删除延后
   GlobalUnusedMethodRemover。自包含两阶段不消费注册分析；
   15 容器级单测，全量 1631 绿（3 既有跳过）。
+- [x] 异常跳板消解首件（反扁平化层助，ExceptionTrampolineInliner，新增件——异常流混淆三层形态（跳板/不透明算术/扁平化）的首层）：「aconst_null; athrow → 紧邻 catch-any handler → pop」强制跳转整组还原直落——摘表项 + eraseBatch 删三条（kRetargetToFallthrough，入口分支重定向 handler 体首指令）。栈等价门用帧引擎 BestEffort 证跳板入口到达帧栈深 0（athrow 清栈语义由直落替代后不可残留）；catch 非 any / 保护区非恰两条 / handler 非紧贴 / handler 头非 POP / 表项交叠或共享 handler / athrow 与 pop 为分支目标 / 批内指令锚定他源 Boundary 标签逐面拒收。摘表项后显式销毁三枚边界标签再批删（dom 层 Boundary 保护），批删被拒以 createLabel 重建标签原位回插（锚点不变语义等价）；事务式逐项独立。16 方法级单测（含链式跳板与 ldc/istore 状态更新 handler 形态），全量 1647 绿（3 既有跳过）。
 
 ## opt pass 余量批次裁决（W0 备料，mjt-deobf 消费面缺口对账）
 
