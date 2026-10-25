@@ -751,6 +751,241 @@ TEST(FixPatternSimplifierTest, emptyMethodStaysAllPreserved)
     EXPECT_EQ(fx.writeBack(), before);
 }
 
+// ── 不透明算术恒等式族（规则 12–14，spec 见 issue #44）──
+
+TEST(FixPatternSimplifierTest, halfAdderWindowFoldsToIadd)
+{
+    DomFixture fx("t/F", "m", "(I)I", 5, 1, [](Body& b) {
+        b.iload(0);
+        b.ldcInt(111111111);
+        b.iload(0);
+        b.ldcInt(111111111);
+        b.op(Op::IXOR);
+        b.op(Op::DUP_X2);
+        b.op(Op::POP);
+        b.op(Op::IAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::ISHL);
+        b.op(Op::IADD);
+        b.op(Op::IRETURN);
+    });
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 4u);
+    EXPECT_EQ(ops[0], Op::ILOAD);
+    EXPECT_TRUE(ops[1] == Op::LDC || ops[1] == Op::LDC_W);
+    EXPECT_EQ(ops[2], Op::IADD);
+    EXPECT_EQ(ops[3], Op::IRETURN);
+}
+
+TEST(FixPatternSimplifierTest, borrowSubWindowFoldsToIsub)
+{
+    DomFixture fx("t/F", "m", "(I)I", 6, 1, [](Body& b) {
+        b.iload(0);
+        b.ldcInt(-222222222);
+        b.op(Op::DUP2);
+        b.op(Op::IXOR);
+        b.op(Op::DUP_X2);
+        b.op(Op::POP);
+        b.op(Op::SWAP);
+        b.op(Op::ICONST_M1);
+        b.op(Op::IXOR);
+        b.op(Op::IAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::ISHL);
+        b.op(Op::ISUB);
+        b.op(Op::IRETURN);
+    });
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 4u);
+    EXPECT_EQ(ops[0], Op::ILOAD);
+    EXPECT_TRUE(ops[1] == Op::LDC || ops[1] == Op::LDC_W);
+    EXPECT_EQ(ops[2], Op::ISUB);
+    EXPECT_EQ(ops[3], Op::IRETURN);
+}
+
+TEST(FixPatternSimplifierTest, carryCancelWindowFoldsToIxor)
+{
+    DomFixture fx("t/F", "m", "(I)I", 5, 1, [](Body& b) {
+        b.iload(0);
+        b.ldcInt(333333333);
+        b.op(Op::DUP2);
+        b.op(Op::IADD);
+        b.op(Op::DUP_X2);
+        b.op(Op::POP);
+        b.op(Op::IAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::ISHL);
+        b.op(Op::ISUB);
+        b.op(Op::IRETURN);
+    });
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 4u);
+    EXPECT_EQ(ops[0], Op::ILOAD);
+    EXPECT_TRUE(ops[1] == Op::LDC || ops[1] == Op::LDC_W);
+    EXPECT_EQ(ops[2], Op::IXOR);
+    EXPECT_EQ(ops[3], Op::IRETURN);
+}
+
+// 链式分发器微缩：两段恒等式串联 + 恒等算子噪声（噪声归
+// ExpressionSimplifier，本件不动）。
+TEST(FixPatternSimplifierTest, chainedStagesFoldLeavingIdentityNoise)
+{
+    DomFixture fx("t/F", "m", "(I)I", 6, 1, [](Body& b) {
+        b.iload(0);
+        b.ldcInt(111111111);
+        b.iload(0);
+        b.ldcInt(111111111);
+        b.op(Op::IXOR);
+        b.op(Op::DUP_X2);
+        b.op(Op::POP);
+        b.op(Op::IAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::ISHL);
+        b.op(Op::IADD);
+        b.op(Op::ICONST_0);
+        b.op(Op::IOR);
+        b.ldcInt(-222222222);
+        b.op(Op::DUP2);
+        b.op(Op::IXOR);
+        b.op(Op::DUP_X2);
+        b.op(Op::POP);
+        b.op(Op::SWAP);
+        b.op(Op::ICONST_M1);
+        b.op(Op::IXOR);
+        b.op(Op::IAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::ISHL);
+        b.op(Op::ISUB);
+        b.op(Op::IRETURN);
+    });
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 8u);
+    EXPECT_EQ(ops[0], Op::ILOAD);
+    EXPECT_EQ(ops[2], Op::IADD);
+    EXPECT_EQ(ops[3], Op::ICONST_0);
+    EXPECT_EQ(ops[4], Op::IOR);
+    EXPECT_EQ(ops[6], Op::ISUB);
+    EXPECT_EQ(ops[7], Op::IRETURN);
+}
+
+TEST(FixPatternSimplifierTest, halfAdderRejectsDifferentSlots)
+{
+    DomFixture fx("t/F", "m", "(I)I", 5, 2, [](Body& b) {
+        b.iload(0);
+        b.ldcInt(111111111);
+        b.iload(1);
+        b.ldcInt(111111111);
+        b.op(Op::IXOR);
+        b.op(Op::DUP_X2);
+        b.op(Op::POP);
+        b.op(Op::IAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::ISHL);
+        b.op(Op::IADD);
+        b.op(Op::IRETURN);
+    });
+    const Bytes before = fx.writeBack();
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).areAllPreserved());
+    EXPECT_EQ(fx.writeBack(), before);
+}
+
+TEST(FixPatternSimplifierTest, halfAdderRejectsDifferentConstants)
+{
+    DomFixture fx("t/F", "m", "(I)I", 5, 1, [](Body& b) {
+        b.iload(0);
+        b.ldcInt(111111111);
+        b.iload(0);
+        b.ldcInt(-222222222);
+        b.op(Op::IXOR);
+        b.op(Op::DUP_X2);
+        b.op(Op::POP);
+        b.op(Op::IAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::ISHL);
+        b.op(Op::IADD);
+        b.op(Op::IRETURN);
+    });
+    const Bytes before = fx.writeBack();
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).areAllPreserved());
+    EXPECT_EQ(fx.writeBack(), before);
+}
+
+// 移位量不是 1：恒等式不成立（<<2 不是进位），窗口拒收。
+TEST(FixPatternSimplifierTest, borrowSubRejectsShiftAmountTwo)
+{
+    DomFixture fx("t/F", "m", "(I)I", 6, 1, [](Body& b) {
+        b.iload(0);
+        b.ldcInt(-222222222);
+        b.op(Op::DUP2);
+        b.op(Op::IXOR);
+        b.op(Op::DUP_X2);
+        b.op(Op::POP);
+        b.op(Op::SWAP);
+        b.op(Op::ICONST_M1);
+        b.op(Op::IXOR);
+        b.op(Op::IAND);
+        b.op(Op::ICONST_2);
+        b.op(Op::ISHL);
+        b.op(Op::ISUB);
+        b.op(Op::IRETURN);
+    });
+    const Bytes before = fx.writeBack();
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).areAllPreserved());
+    EXPECT_EQ(fx.writeBack(), before);
+}
+
+// 分支目标锚定窗口内部：边界守卫阻断替换。
+TEST(FixPatternSimplifierTest, branchIntoWindowInteriorBlocksFold)
+{
+    DomFixture fx("t/F", "m", "(I)I", 6, 1, [](Body& b) {
+        b.iload(0);
+        b.ldcInt(333333333);
+        b.op(Op::DUP2);
+        const jbc::ir::LabelId mid = b.label();
+        b.bindHere(mid);
+        b.op(Op::IADD);
+        b.op(Op::DUP_X2);
+        b.op(Op::POP);
+        b.op(Op::IAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::ISHL);
+        b.op(Op::ISUB);
+        b.op(Op::IRETURN);
+        b.branch(Op::GOTO, mid);
+    });
+    const Bytes before = fx.writeBack();
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).areAllPreserved());
+    EXPECT_EQ(fx.writeBack(), before);
+}
+
+TEST(FixPatternSimplifierTest, identityFamilyIdempotentOnSecondRun)
+{
+    DomFixture fx("t/F", "m", "(I)I", 6, 1, [](Body& b) {
+        b.iload(0);
+        b.ldcInt(-222222222);
+        b.op(Op::DUP2);
+        b.op(Op::IXOR);
+        b.op(Op::DUP_X2);
+        b.op(Op::POP);
+        b.op(Op::SWAP);
+        b.op(Op::ICONST_M1);
+        b.op(Op::IXOR);
+        b.op(Op::IAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::ISHL);
+        b.op(Op::ISUB);
+        b.op(Op::IRETURN);
+    });
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).changed());
+    const Bytes once = fx.writeBack();
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).areAllPreserved());
+    EXPECT_EQ(fx.writeBack(), once);
+}
+
 // ── 注册面 ──
 
 TEST(FixPatternSimplifierTest, registeredByName)

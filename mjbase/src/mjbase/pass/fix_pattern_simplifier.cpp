@@ -62,6 +62,47 @@ StepFn intConstStep()
     };
 }
 
+bool isIntLoadOp(Op op)
+{
+    return op == Op::ILOAD || (op >= Op::ILOAD_0 && op <= Op::ILOAD_3);
+}
+
+ca::u32 slotOfIntLoad(const Insn& in)
+{
+    if (in.op == Op::ILOAD) return static_cast<ca::u32>(in.a);
+    return static_cast<ca::u32>(in.op) - static_cast<ca::u32>(Op::ILOAD_0);
+}
+
+/// 规则 12 步进：int 局部装载（仅装载，不含常量形态）。
+StepFn intLocalLoadStep()
+{
+    return [](const ClassSession&, const Insn& in, const std::vector<const Insn*>&) {
+        return isIntLoadOp(in.op);
+    };
+}
+
+/// 规则 12 步进：与 matched[0] 同槽的 int 局部装载。
+StepFn sameSlotIntLoadStep()
+{
+    return [](const ClassSession&, const Insn& in, const std::vector<const Insn*>& matched) {
+        return !matched.empty() && isIntLoadOp(in.op)
+            && slotOfIntLoad(in) == slotOfIntLoad(*matched[0]);
+    };
+}
+
+/// 规则 12 步进：与 matched[against] 同值的 int 常量（跨 CP 条目同权）。
+StepFn sameValueIntConstStep(ca::usize against)
+{
+    return [against](const ClassSession& session, const Insn& in,
+                     const std::vector<const Insn*>& matched) {
+        if (matched.size() <= against) return false;
+        ca::i32 v = 0;
+        ca::i32 w = 0;
+        return method_rewrite_util::intValueOf(session, in, v)
+            && method_rewrite_util::intValueOf(session, *matched[against], w) && v == w;
+    };
+}
+
 StepFn ifTwoSlotStep()
 {
     return [](const ClassSession&, const Insn& in, const std::vector<const Insn*>&) {
@@ -124,6 +165,37 @@ BuildFn buildSequence(std::initializer_list<Op> ops)
 bool buildNothing(ClassSession&, const std::vector<const Insn*>&, std::vector<Insn>& out)
 {
     out.clear();
+    return true;
+}
+
+/// 规则 12：半加器窗口 → iload s; ldc K; iadd。
+bool buildHalfAdderFold(ClassSession&, const std::vector<const Insn*>& matched,
+                        std::vector<Insn>& out)
+{
+    out.clear();
+    out.push_back(*matched[0]);
+    out.push_back(*matched[1]);
+    out.push_back(synthetic(Op::IADD));
+    return true;
+}
+
+/// 规则 13：借位窗口 → ldc K; isub（净效应 x → x-K）。
+bool buildBorrowSubFold(ClassSession&, const std::vector<const Insn*>& matched,
+                        std::vector<Insn>& out)
+{
+    out.clear();
+    out.push_back(*matched[0]);
+    out.push_back(synthetic(Op::ISUB));
+    return true;
+}
+
+/// 规则 14：加法消进位窗口 → ldc K; ixor（净效应 x → x^K）。
+bool buildCarryCancelXorFold(ClassSession&, const std::vector<const Insn*>& matched,
+                             std::vector<Insn>& out)
+{
+    out.clear();
+    out.push_back(*matched[0]);
+    out.push_back(synthetic(Op::IXOR));
     return true;
 }
 
@@ -247,6 +319,31 @@ std::vector<WindowRule> makeRules()
         WindowRule{{loadIntStep(), opStep(Op::ISTORE), loadIntStep(),
                     sameSlotILoadAfterStoreStep(), ifTwoSlotStep()},
                    buildStoreLoadBounce},
+
+        // 12. iload s; ldc K; iload s; ldc K; ixor; dup_x2; pop; iand;
+        //     iconst_1; ishl; iadd -> iload s; ldc K; iadd
+        //     ((x^K)+((x&K)<<1) == x+K，半加器进位分解)
+        WindowRule{{intLocalLoadStep(), intConstStep(), sameSlotIntLoadStep(),
+                    sameValueIntConstStep(1), opStep(Op::IXOR), opStep(Op::DUP_X2),
+                    opStep(Op::POP), opStep(Op::IAND), opStep(Op::ICONST_1),
+                    opStep(Op::ISHL), opStep(Op::IADD)},
+                   buildHalfAdderFold},
+
+        // 13. ldc K; dup2; ixor; dup_x2; pop; swap; iconst_m1; ixor; iand;
+        //     iconst_1; ishl; isub -> ldc K; isub
+        //     ((x^K)-((K&~x)<<1) == x-K，借位形式)
+        WindowRule{{intConstStep(), opStep(Op::DUP2), opStep(Op::IXOR), opStep(Op::DUP_X2),
+                    opStep(Op::POP), opStep(Op::SWAP), opStep(Op::ICONST_M1),
+                    opStep(Op::IXOR), opStep(Op::IAND), opStep(Op::ICONST_1),
+                    opStep(Op::ISHL), opStep(Op::ISUB)},
+                   buildBorrowSubFold},
+
+        // 14. ldc K; dup2; iadd; dup_x2; pop; iand; iconst_1; ishl; isub
+        //     -> ldc K; ixor    ((x+K)-((x&K)<<1) == x^K)
+        WindowRule{{intConstStep(), opStep(Op::DUP2), opStep(Op::IADD), opStep(Op::DUP_X2),
+                    opStep(Op::POP), opStep(Op::IAND), opStep(Op::ICONST_1),
+                    opStep(Op::ISHL), opStep(Op::ISUB)},
+                   buildCarryCancelXorFold},
     };
 }
 

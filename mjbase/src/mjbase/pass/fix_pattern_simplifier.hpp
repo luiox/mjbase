@@ -41,6 +41,28 @@ namespace mjbase::pass {
 /// producer，istore 保留（slot 窗口外活跃性未知，保守不删）。仅通用 ISTORE/ILOAD
 /// 形态参与（旧栈 step 谓词逐字对齐）；短形态（istore_n/iload_n）不匹配。
 ///
+/// ## 不透明算术恒等式族（分发器折叠，spec 见 issue #44；增补规则 12–14）
+///
+/// 混淆分发器用三条位级恒等式把状态变量折叠成 switch 操作数，反编译产物
+/// 是一长串不可读的位运算链。x 为单局部槽、K 为 int 常量；恒等式在补码
+/// 回绕下位级成立（无 UB 面——JVM 整数语义回绕）：
+///
+/// 12. `iload s; ldc K; iload s; ldc K; ixor; dup_x2; pop; iand; iconst_1;
+///     ishl; iadd` → `iload s; ldc K; iadd`
+///     （半加器进位分解：(x^K) + ((x&K)<<1) == x+K；两次装载同槽、两个
+///     常量同值校验，短形态 iload_n 与泛型 ILOAD 同权）
+/// 13. `ldc K; dup2; ixor; dup_x2; pop; swap; iconst_m1; ixor; iand;
+///     iconst_1; ishl; isub` → `ldc K; isub`
+///     （借位形式：(x^K) - ((K&~x)<<1) == x-K）
+/// 14. `ldc K; dup2; iadd; dup_x2; pop; iand; iconst_1; ishl; isub` →
+///     `ldc K; ixor`（(x+K) - ((x&K)<<1) == x^K）
+///
+/// 栈操作噪声（dup_x2/pop/swap/dup2）在窗口内消化；规则 13/14 消费窗口
+/// 前序指令产出的栈顶值（典型是上一条恒等式的折叠产物——链式分发器经
+/// 不动点轮次单 pass 收敛）。`iconst_0; ior/iadd/isub` 恒等算子噪声不属
+/// 本表，归 ExpressionSimplifier 恒等元规则（管线序建议本件在前）。
+/// long 族（lxor/land/lshl）挂账后续切片。
+///
 /// ## 写回与边界纪律
 ///
 /// - 迭代至不动点；每轮每条规则至多一次替换（各自右界命中）——复刻旧栈
