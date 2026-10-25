@@ -172,6 +172,19 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
 - [ ] RedundantJumpRemover / GotoRearranger / ContinuousLabelMerger
   （449 行）：label 布局族——新载体无标签节点，逐件载体重论证（部分可能
   结构性吸收或改形为边界句柄重排），未论证前不迁。
+  → RedundantJumpRemover 已落地（首件，scope:method）：目标落在顺序后继
+    前置边界的跳转消解。载体重论证：旧栈「jump 后紧跟 LabelNode」在新载体
+    即 labelsAt(order[i+1]) 含跳转目标——边界句柄判定，无标签节点遍历。
+    GOTO/GOTO_W 整删（fallthrough 等价）；条件跳原位换 POP/POP;POP（分支
+    与汇合重合，条件值必被丢弃，弹宽对齐谓词元数：单值族 1、icmp/acmp
+    族 2，双值经 insertAfter 补第二条）。方法末指令无顺序后继天然不匹配
+    （旧栈的末尾标签形态在合法 classfile 不可构造——条件跳必须有后继、
+    goto→len 被 promote 拒收，End 绑定路径不设）。7 单测（GOTO 删除/单值
+    条件跳/双值 icmp/双值 acmp/空谓词/远目标不动/注册面），全量 1728 绿
+    （1725 过 + 3 既有跳过）。
+  → 余项挂账：GotoRearranger（单入边简单块搬移消跳转，需 CFG 面）、
+    ContinuousLabelMerger（同界标签别名合并，需引用重定向面含异常表
+    排除）逐件载体重论证。
 - [ ] UnreachableInsnRemover 家族（dead_code_remover.cpp 1594 行内非 NopRemover
   部分，切片迁移）：帧可达性证明删不可达指令。NopRemover 已由方法级四件批收口。
   → 首件已落地（结构级 UnreachableInsnRemover，scope:method）：帧引擎 BestEffort
