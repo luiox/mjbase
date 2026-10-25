@@ -273,6 +273,32 @@ bool isPop2FoldableConstant(const jbc::ir::ClassSession& session, const jbc::ir:
     return longValueOf(session, in, lv) || doubleValueOf(session, in, dv);
 }
 
+bool isPopFoldableLocalLoad(const jbc::ir::Insn& in)
+{
+    using jbc::core::Op;
+    switch (in.op) {
+    case Op::ILOAD:
+    case Op::FLOAD:
+    case Op::ALOAD: return true;
+    default:        break;
+    }
+    const auto inRange = [](Op op, Op first, Op last) { return op >= first && op <= last; };
+    return inRange(in.op, Op::ILOAD_0, Op::ILOAD_3) || inRange(in.op, Op::FLOAD_0, Op::FLOAD_3)
+           || inRange(in.op, Op::ALOAD_0, Op::ALOAD_3);
+}
+
+bool isPop2FoldableLocalLoad(const jbc::ir::Insn& in)
+{
+    using jbc::core::Op;
+    switch (in.op) {
+    case Op::LLOAD:
+    case Op::DLOAD: return true;
+    default:        break;
+    }
+    const auto inRange = [](Op op, Op first, Op last) { return op >= first && op <= last; };
+    return inRange(in.op, Op::LLOAD_0, Op::LLOAD_3) || inRange(in.op, Op::DLOAD_0, Op::DLOAD_3);
+}
+
 bool labelsAnchorAt(const jbc::ir::CodeDom& dom, jbc::ir::InsnId anchor)
 {
     return !dom.labelsAt(anchor).empty();

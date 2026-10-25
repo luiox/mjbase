@@ -157,9 +157,25 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     （int/long/短形态/iinc 读点/两槽保护/全保留/幂等/三件链端到端：状态槽 store
     降级 + 槽 2 被 A 块存活 iload 保护/注册面），全量 1688 绿（1685 过 + 3 既有
     跳过）。
-  → 余项挂账：DeadLocalStoreRemover/UselessPopCleaner/RedundantStoreEliminater/
+  → UselessPopCleaner 首切片已落地（相邻窗口载体，scope:method）：局部装载 +
+    紧随 POP/POP2 的相邻对消除（宽度匹配：cat1 配 POP、cat2 配 POP2）。载体
+    论证：旧栈帧溯源认弹值生产者（load 自身即生产者、非穿透），新栈现有两域
+    均不落此语义——OriginDomain 穿透 store→load、DefUseDomain 把 store 定义带
+    过 load；相邻窗口 + 不动点在栈纪律下覆盖同一可观测面（POP 弹栈顶，纯装载
+    与紧邻 pop 之间无「不碰栈顶」的指令，隔标签即被边界守卫拒收），配对删除
+    恒栈中性、不读槽内容。独立成件而非并入 RedundantLoadValEliminator 矩阵：
+    golden 对拍钉死后者与旧栈逐语义等价，hb_pop_pairs 语料含装载;pop 形态，
+    并矩阵即未声明语义偏离。11 单测（cat1/cat2 折叠、常量对/运算生产者/弹宽
+    失配不入矩阵、不动点交错形态、装载侧标签重定向、POP 侧标签守卫、注册
+    面），另有家族收敛端到端（pop_unused 测试内）：FR + UIR + PULV + 常量清理
+    + UPC + PULV + 常量清理 七趟把状态链残段清空（无状态槽访问、无 pop、无
+    常量残段；默认块随死分发块由 UIR 清理）。全量 1700 绿（1697 过 + 3 既有
+    跳过）。
+  → 余项挂账：DeadLocalStoreRemover/RedundantStoreEliminater/
     DeadSideEffectFreeCallRemover/RedundantInvokeRemover/UnusedResultCallEliminater
-    依赖帧溯源（生产者定位/槽位活跃性），随帧面批次逐件论证。
+    依赖帧溯源（生产者定位/槽位活跃性），随帧面批次逐件论证；UselessPopCleaner
+    帧载体形态（非相邻生产者、POP2 双 cat1 半删降 POP、DUP/DUP2 被 pop 吸收、
+    多来源汇合）同批挂账。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。

@@ -10,7 +10,9 @@
 
 #include "mjbase/pass/flattening_reverser.hpp"
 #include "mjbase/pass/pop_unused_local_variables.hpp"
+#include "mjbase/pass/redundant_load_val_eliminator.hpp"
 #include "mjbase/pass/unreachable_insn_remover.hpp"
+#include "mjbase/pass/useless_pop_cleaner.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
 
 #include "fix_pattern_fixture.hpp"
@@ -155,6 +157,54 @@ TEST(PopUnUsedLocalVariablesTest, downgradesStateStoresAfterDeflattening)
     EXPECT_EQ(std::count(ops.begin(), ops.end(), Op::ISTORE), 1);
     EXPECT_EQ(std::count(ops.begin(), ops.end(), Op::POP), 2);
     EXPECT_EQ(std::count(ops.begin(), ops.end(), Op::LOOKUPSWITCH), 0);
+    EXPECT_FALSE(fx.writeBack().empty());
+}
+
+// ── 端到端（家族收敛）：装载;pop 残段消除后状态槽彻底失去读取，
+//    store 降级与装载值消除交替两轮把状态链残段清空 ──
+TEST(PopUnUsedLocalVariablesTest, stateChainResidueFullyConvergesWithLoadValElimination)
+{
+    DomFixture fx("t/P", "m", "(I)I", 4, 4, [&](Body& b) {
+        LabelId dL = b.label();
+        LabelId aL = b.label();
+        LabelId bL = b.label();
+        LabelId xL = b.label();
+        b.ldcInt(111111111).istore(1).branch(Op::GOTO, dL);
+        b.iload(1);
+        b.bindHere(dL);
+        b.lookupSwitch(xL, {-222222222, 111111111}, {bL, aL});
+        b.ldcInt(-222222222);
+        b.bindHere(aL);
+        b.istore(2).iload(2).istore(1).branch(Op::GOTO, dL);
+        b.iconst_1();
+        b.bindHere(bL);
+        b.ireturn();
+        b.iconst_0();
+        b.bindHere(xL);
+        b.ireturn();
+    });
+    // 收敛链：装载值消除吃掉 iload(2);pop 后，槽 2 失去唯一读取点 → 第二轮
+    // store 降级把它变 pop → 常量;pop 相邻对再被常量装载面清理吃掉。终态
+    // 无状态槽访问、无 pop、无常量残段。
+    const auto pa = fx.run(mjbase::pass::FlatteningReverser{},
+                           mjbase::pass::UnreachableInsnRemover{},
+                           mjbase::pass::PopUnUsedLocalVariables{},
+                           mjbase::pass::RedundantLoadValEliminator{},
+                           mjbase::pass::UselessPopCleaner{},
+                           mjbase::pass::PopUnUsedLocalVariables{},
+                           mjbase::pass::RedundantLoadValEliminator{});
+    EXPECT_TRUE(pa.changed());
+    const std::vector<Op> ops = opsOf(fx);
+    EXPECT_EQ(std::count(ops.begin(), ops.end(), Op::LOOKUPSWITCH), 0);
+    EXPECT_EQ(std::count(ops.begin(), ops.end(), Op::ISTORE), 0);
+    EXPECT_EQ(std::count(ops.begin(), ops.end(), Op::ILOAD), 0);
+    EXPECT_EQ(std::count(ops.begin(), ops.end(), Op::POP), 0);
+    EXPECT_EQ(std::count(ops.begin(), ops.end(), Op::LDC), 0);
+    // 分发解析后默认块（xL）不可达，已随死分发块一并清理——终态仅存
+    // B 块返回路径。
+    EXPECT_EQ(std::count(ops.begin(), ops.end(), Op::ICONST_1), 1);
+    EXPECT_EQ(std::count(ops.begin(), ops.end(), Op::ICONST_0), 0);
+    EXPECT_EQ(std::count(ops.begin(), ops.end(), Op::IRETURN), 1);
     EXPECT_FALSE(fx.writeBack().empty());
 }
 
