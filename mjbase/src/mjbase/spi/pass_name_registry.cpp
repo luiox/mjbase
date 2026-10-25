@@ -12,6 +12,7 @@
 #include "mjbase/pass/enum_cast_check_remover.hpp"
 #include "mjbase/pass/constant_folder.hpp"
 #include "mjbase/pass/devirtualize_single_target.hpp"
+#include "mjbase/pass/exception_trampoline_inliner.hpp"
 #include "mjbase/pass/expression_simplifier.hpp"
 #include "mjbase/pass/fix_pattern_simplifier.hpp"
 #include "mjbase/pass/identity_wrapper_inliner.hpp"
@@ -286,6 +287,15 @@ PassNameRegistry makeDefaultRegistry()
         "TypeCastSimplifier",
         [] { return std::make_unique<mjbase::pass::TypeCastSimplifier>(); },
         "Fold primitive cast chains and known JDK constant helpers."));
+    // opt pass 波次（反扁平化层助首件）：异常流混淆器的
+    // 「aconst_null; athrow → 紧邻 catch-any handler → pop」异常跳板整组消解
+    // （删三条指令 + 摘表项，分支重定向 handler 体；帧引擎证
+    // 入口栈深为 0）。标签：scope:method / action:rewrite /
+    // stability:opt-in（默认链不收，CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "ExceptionTrampolineInliner",
+        [] { return std::make_unique<mjbase::pass::ExceptionTrampolineInliner>(); },
+        "Dissolve aconst_null/athrow catch-all trampolines into fallthrough."));
     // 批 A（容器级直写组首件）：全容器确定性类重命名。
     seed(reg.registerGlobalPass(
         "ClassRenamer", [] { return std::make_unique<mjbase::pass::ClassRenamer>(); },
