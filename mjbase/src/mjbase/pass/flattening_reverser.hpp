@@ -31,14 +31,10 @@
 ///
 /// - 状态变量 `s`（int 局部）：各功能块尾部写常量状态后 `goto D`；
 /// - 分发块 `D`（单汇合块）：`iload s`（或 `iload s; ldc C; iadd/isub/ixor`
-///   单步常量偏移——第二层不透明算术折叠后的退化形态）收尾于
-///   lookupswitch/tableswitch，按 `fold(s)` 派发到功能块入口；
+///   单步常量偏移形态）收尾于 lookupswitch/tableswitch，按 `fold(s)` 派发到
+///   功能块入口；
 /// - 功能块尾再写下一状态回到 D——CFG 成环，反编译器只能渲染成
 ///   `while(true) + switch` 状态机形态。
-///
-/// 本 pass 是三层反混淆链的第三层：第一层 ExceptionTrampolineInliner 消解
-/// 异常跳板，第二层 FixPatternSimplifier 规则 12–14 折叠不透明算术恒等式，
-/// 本层静态解析分发。
 ///
 /// ## 形态示例（JVMS 视角，合成值）
 ///
@@ -110,8 +106,8 @@ public:
                                           ca::usize w, ca::i32& k)>;
 
     /// 分发操作数折叠规格：`iload s` 之后至多 maxSteps 个
-    /// `intConst C; binop∈binops` 折叠步（iload 在前，只认单步折叠层的
-    /// 产出形态；反向 `ldc C; iload s; …` 不在默认面）。
+    /// `intConst C; binop∈binops` 折叠步（iload 在前；反向
+    /// `ldc C; iload s; …` 不在默认面）。
     struct DispatchSpec
     {
         ca::u8                     maxSteps = 1;

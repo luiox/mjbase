@@ -288,7 +288,7 @@ PassNameRegistry makeDefaultRegistry()
         "TypeCastSimplifier",
         [] { return std::make_unique<mjbase::pass::TypeCastSimplifier>(); },
         "Fold primitive cast chains and known JDK constant helpers."));
-    // opt pass 波次（反扁平化层助首件）：异常流混淆器的
+    // opt pass 波次（异常流混淆的跳板消解件）：异常流混淆器的
     // 「aconst_null; athrow → 紧邻 catch-any handler → pop」异常跳板整组消解
     // （删三条指令 + 摘表项，分支重定向 handler 体；帧引擎证
     // 入口栈深为 0）。标签：scope:method / action:rewrite /
@@ -297,7 +297,7 @@ PassNameRegistry makeDefaultRegistry()
         "ExceptionTrampolineInliner",
         [] { return std::make_unique<mjbase::pass::ExceptionTrampolineInliner>(); },
         "Dissolve aconst_null/athrow catch-all trampolines into fallthrough."));
-    // opt pass 波次（反扁平化层第三件）：控制流反扁平化——常量状态传播
+    // opt pass 波次（扁平化状态机静态解析件）：控制流反扁平化——常量状态传播
     // + switch 分发静态解析。通用引擎（唯一 switch 审计/状态槽读写审计/
     // 帧深等价门）+ 可注入形态表（变体扩展面，构造期可替换）。标签：
     // scope:method / action:rewrite / stability:opt-in（默认链不收，
@@ -407,7 +407,7 @@ PassNameRegistry makeDefaultRegistry()
         "DevirtualizeSingleTarget",
         [] { return std::make_unique<mjbase::pass::DevirtualizeSingleTarget>(); },
         "Rewrite virtual/interface call sites with one provable target into invokespecial."));
-    // opt pass 波次（恒等包装不动点内联，#37 前置件）：invokestatic 壳调用点
+    // opt pass 波次（恒等包装不动点内联）：invokestatic 壳调用点
     // 直达最终目标（路径压缩），壳体保留、删除延后 GlobalUnusedMethodRemover。
     // 标签：scope:global / action:rewrite / stability:opt-in（默认链不收）。
     seed(reg.registerGlobalPass(
