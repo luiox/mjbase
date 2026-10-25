@@ -99,24 +99,9 @@ struct FoldStep
     Op      op = Op::NOP;
 };
 
-/// 案表命中：lookup 按 keys 精确匹配，table 按 low + i 连续区间；未命中
-/// 一律走 default 目标（回落语义，default 是合法状态）。
-LabelId caseLabelFor(const jbc::ir::Insn& sw, ca::u32 value)
-{
-    const ca::i32 key = static_cast<ca::i32>(value);
-    if (sw.op == Op::LOOKUPSWITCH) {
-        for (ca::usize i = 0; i < sw.keys.size() && i < sw.targets.size(); ++i) {
-            if (sw.keys[i] == key) return sw.targets[i];
-        }
-        return sw.target;
-    }
-    // TABLESWITCH：targets[i] 对应 key = a + i。
-    const ca::i64 idx = static_cast<ca::i64>(key) - static_cast<ca::i64>(sw.a);
-    if (idx >= 0 && idx < static_cast<ca::i64>(sw.targets.size())) {
-        return sw.targets[static_cast<ca::usize>(idx)];
-    }
-    return sw.target;
-}
+// 案表命中解析（lookup 按 keys 精确匹配，table 按 low + i 连续区间；未命中
+// 一律走 default 目标——回落语义，default 是合法状态）提升至
+// method_rewrite_util::switchCaseLabelOf 共享。
 
 /// 默认前驱形态行 1：intConst K; istore s（直存）。
 bool directStorePred(const jbc::ir::ClassSession& session, const jbc::ir::CodeDom& dom,
@@ -267,7 +252,8 @@ mjbase::spi::PreservedAnalyses FlatteningReverser::run(mjbase::spi::MethodScope&
             else if (it->op == Op::IXOR) v ^= c;
             else return abandon();
         }
-        const LabelId caseLabel = caseLabelFor(*sw, v);
+        const LabelId caseLabel =
+            method_rewrite_util::switchCaseLabelOf(*sw, static_cast<ca::i32>(v));
         if (caseLabel == jbc::ir::kNoLabel) return abandon();
         preds.push_back({order[w + 1], caseLabel});
     }

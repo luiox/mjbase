@@ -67,6 +67,13 @@ bool isPopFoldableLocalLoad(const jbc::ir::Insn& in);
 ///        （LLOAD/DLOAD 及 _0.._3 紧凑形），与 POP2 的单 cat2 弹宽对齐。
 bool isPop2FoldableLocalLoad(const jbc::ir::Insn& in);
 
+/// @brief switch 分支选择解析：按 selector 值选出 switch 的目标标签。
+///
+/// LOOKUPSWITCH：keys 精确命中取 targets[i]，未命中取 default（target）；
+/// TABLESWITCH：targets[i] 对应 key = a + i（a 为 low），出界取 default。
+/// keys/targets 长度不齐的畸形 switch 按能对齐的部分解析。
+jbc::ir::LabelId switchCaseLabelOf(const jbc::ir::Insn& sw, ca::i32 key);
+
 /// @brief 标签边界守卫：anchor 前置边界是否有存活标签锚定。
 ///
 /// 旧栈 tree 模型里 LabelNode/LineNumberNode 是指令序列的一员，任何「相邻

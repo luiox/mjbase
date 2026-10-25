@@ -147,8 +147,18 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     Verifier 非法形态属防御怪癖，不保留。12 单测（三种窗 × 恒真/恒假、内部
     边界拒收、头标签放行重定向、三种类型失配拒绝、幂等、注册面），全量
     1712 绿（1709 过 + 3 既有跳过）。
-  → 余项挂账：ConstantSwitchFolder（常量 selector 的 switch 折叠）、
-    ConstantStateMachineEliminator（常量状态机消解）待迁。
+  → ConstantSwitchFolder 已落地（第二件，scope:method）：int 常量装载 +
+    LOOKUPSWITCH/TABLESWITCH 相邻窗折叠——按 selector 值解析命中分支
+    （switchCaseLabelOf 已从 flattening_reverser 私有提升至
+    method_rewrite_util 共享：lookup 精确匹配 / table low+i 区间，未命中走
+    default），常量头原位改 GOTO 复用命中目标标签，switch 删除。switch
+    前置边界锚标签拒收（selector 弹消费保护），头标签放行（头部改写后
+    仍在，标签原地有效）。悬空目标（resolveLabel 失败）与顺序末尾 switch
+    无承接者均拒收。折叠后未选中的 case 标签留为无引用标签，不物化字节。
+    9 单测（lookup 命中/未命中、table 命中/出界、switch 前锚拒收、头锚
+    放行、非常量 selector 不动、幂等、注册面），全量 1721 绿（1718 过 +
+    3 既有跳过）。
+  → 余项挂账：ConstantStateMachineEliminator（常量状态机消解）待迁。
 - [ ] RedundantJumpRemover / GotoRearranger / ContinuousLabelMerger
   （449 行）：label 布局族——新载体无标签节点，逐件载体重论证（部分可能
   结构性吸收或改形为边界句柄重排），未论证前不迁。
