@@ -67,6 +67,13 @@ bool isPopFoldableLocalLoad(const jbc::ir::Insn& in);
 ///        （LLOAD/DLOAD 及 _0.._3 紧凑形），与 POP2 的单 cat2 弹宽对齐。
 bool isPop2FoldableLocalLoad(const jbc::ir::Insn& in);
 
+/// @brief store 族槽位覆盖与弹宽（非 store 返回 false）。
+///
+/// base/width 给出覆盖槽位（LSTORE/DSTORE 占双槽）；width 同时是 store
+/// 的栈弹值宽度（1 → 降级 POP、2 → 降级 POP2），JVMS 定死每族弹槽数，
+/// 不依赖帧定宽。
+bool storeLocalSpan(const jbc::ir::Insn& in, ca::u32& base, ca::u32& width);
+
 /// @brief switch 分支选择解析：按 selector 值选出 switch 的目标标签。
 ///
 /// LOOKUPSWITCH：keys 精确命中取 targets[i]，未命中取 default（target）；

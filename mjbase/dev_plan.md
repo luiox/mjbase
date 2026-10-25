@@ -248,6 +248,22 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     （常量/ACONST_NULL/非相邻双 pop、POP2 long/double/双 cat1、半删顶侧
     参数底值/底侧 store 转发顶值、中继守卫、多定义汇合），全量 1737 绿
     （1734 过 + 3 既有跳过）。
+  → DeadLocalStoreRemover 已落地（帧溯源面主件，def-use 载体重推导）：
+    槽位有意义 ⟺ 某次读的到达定义沿 def→use 边闭包到达有意义汇点
+    （invoke/分支/switch/字段写/monitor/athrow/带值返回/数组存；store 与
+    iinc 作中间定义续走穿透槽位间转存，dup/swap 复制透明消费边直连原
+    定义）。处置为联合不动点：死槽 store 整删 ⟺ 弹值到达定义全部是纯
+    常量生产者且属整删集；常量属整删集 ⟺ 全部使用边指向整删 store
+    （降级 POP 的 store 仍在消费，生产者保留）；不满足则原位降级
+    POP/POP2（宽度按 store 族操作码，method_rewrite_util::storeLocalSpan
+    自 PULV 提升共享）。载体差异（均较旧栈保守或声明强化）：签名播种
+    入参（参数槽保护）；读点到达集合溢出/无定义边保守记有意义；截断
+    整件跳过；运算生产者不整删（def-use 里运算有定义边、旧栈 origin
+    透明不进链——旧栈同形态也只降级，可观测面一致）；装载对残段
+    [load;pop] 由管线窗口面下一轮收敛（7 单测之一钉死）。11 单测（直喂
+    常量整删、读点喂 pop 仍死、汇点保槽、参数槽、运算降级、共享常量
+    逐出（dup 透明边）、转存链穿透、cat2 族、分支汇合多定义整删、分析
+    失败跳过、注册面），全量 1748 绿（1745 过 + 3 既有跳过）。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。

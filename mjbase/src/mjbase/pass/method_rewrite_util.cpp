@@ -321,6 +321,43 @@ bool labelsAnchorAt(const jbc::ir::CodeDom& dom, jbc::ir::InsnId anchor)
     return !dom.labelsAt(anchor).empty();
 }
 
+bool storeLocalSpan(const jbc::ir::Insn& in, ca::u32& base, ca::u32& width)
+{
+    using jbc::core::Op;
+    const auto inRange = [](Op op, Op first, Op last) { return op >= first && op <= last; };
+    const auto compact  = [](Op op, Op first) {
+        return static_cast<ca::u32>(op) - static_cast<ca::u32>(first);
+    };
+    switch (in.op) {
+    case Op::ISTORE: case Op::FSTORE: case Op::ASTORE:
+        base = static_cast<ca::u32>(in.a);
+        width = 1;
+        return true;
+    case Op::LSTORE: case Op::DSTORE:
+        base = static_cast<ca::u32>(in.a);
+        width = 2;
+        return true;
+    default: break;
+    }
+    if (inRange(in.op, Op::ISTORE_0, Op::ISTORE_3) || inRange(in.op, Op::FSTORE_0, Op::FSTORE_3)
+        || inRange(in.op, Op::ASTORE_0, Op::ASTORE_3)) {
+        const Op first = in.op >= Op::ISTORE_0 && in.op <= Op::ISTORE_3 ? Op::ISTORE_0
+                       : in.op >= Op::FSTORE_0 && in.op <= Op::FSTORE_3 ? Op::FSTORE_0
+                                                                        : Op::ASTORE_0;
+        base   = compact(in.op, first);
+        width  = 1;
+        return true;
+    }
+    if (inRange(in.op, Op::LSTORE_0, Op::LSTORE_3) || inRange(in.op, Op::DSTORE_0, Op::DSTORE_3)) {
+        const Op first = in.op >= Op::LSTORE_0 && in.op <= Op::LSTORE_3 ? Op::LSTORE_0
+                                                                        : Op::DSTORE_0;
+        base   = compact(in.op, first);
+        width  = 2;
+        return true;
+    }
+    return false;
+}
+
 }   // namespace method_rewrite_util
 
 }   // namespace mjbase::pass
