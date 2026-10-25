@@ -22,6 +22,25 @@ namespace mjbase::pass {
 ///   同款虚调用并改目标，**接收者 = 原首实参**（栈形逐点不变）。JDK 拆箱
 ///   `Integer.intValue()I` 是其公共目标特例。
 ///
+/// ## 示例（改写前后）
+///
+/// 形态 A（静态直通）：
+///   壳体：  static int W.w(I)I { return T.m(x); }
+///           // iload_0; invokestatic T.m (I)I; ireturn
+///   站点：  invokestatic W.w (I)I
+///     ──改写──▶  invokestatic T.m (I)I            （仅 setMember 换目标，op 不变）
+/// 形态 B（虚转发，JDK 拆箱特例）：
+///   壳体：  static int W.w(Ljava/lang/Integer;)I { return x.intValue(); }
+///   站点：  invokestatic W.w (Ljava/lang/Integer;)I
+///     ──改写──▶  invokevirtual java/lang/Integer.intValue ()I
+///           （op 换虚调用族；接收者 = 原首实参，栈形逐点不变）
+/// 壳→壳链（A→A→B 等）一步压缩到最终目标；环整族不进壳表。
+///
+/// ## 与 #37 的关系
+///
+/// 本件是 #37（参数数组标量化三 pass）的前置：调用面先经本件压缩掉
+/// 恒等转发壳，参数数组标量化与调用点重写面对的才是可收敛的直调形态。
+///
 /// ## 等价性论证（改写为何安全）
 ///
 /// - **栈形不变**：调用点原 `invokestatic W.w(p0..pn)` 弹全部实参压返回值；
