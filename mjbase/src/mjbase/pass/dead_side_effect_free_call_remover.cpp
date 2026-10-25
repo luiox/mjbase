@@ -1,5 +1,6 @@
 #include "mjbase/pass/dead_side_effect_free_call_remover.hpp"
 
+#include <algorithm>
 #include <functional>
 #include <map>
 #include <set>
@@ -28,34 +29,90 @@ using mjbase::asm_analyzer::DefUseEdge;
 using mjbase::asm_analyzer::DefUseSlot;
 using mjbase::asm_analyzer::MethodDefUse;
 
-/// 白名单声明表（旧栈 issue #678 对齐）：零参、无可观测副作用、返回
-/// category-2 的 JDK 静态调用；扩展只增条目，不改判定逻辑。
+/// 白名单声明表（旧栈 issue #678 + UnusedResultCallEliminater 白名单合并）：
+/// 可安全弹弃的调用。零参精确条目 + Math/StrictMath 纯函数名家族条目；
+/// 扩展只增条目，不改判定逻辑。
 struct DiscardableCall
 {
+    jbc::core::Op    op;
     std::string_view owner;
     std::string_view name;
     std::string_view desc;
 };
 
-constexpr DiscardableCall kDiscardableCalls[] = {
-    {"java/lang/System", "nanoTime", "()J"},
-    {"java/lang/System", "currentTimeMillis", "()J"},
-    {"java/lang/Math", "random", "()D"},
+constexpr DiscardableCall kExactDiscardableCalls[] = {
+    {jbc::core::Op::INVOKESTATIC, "java/lang/System", "nanoTime", "()J"},
+    {jbc::core::Op::INVOKESTATIC, "java/lang/System", "currentTimeMillis", "()J"},
+    {jbc::core::Op::INVOKESTATIC, "java/lang/Math", "random", "()D"},
+    {jbc::core::Op::INVOKEVIRTUAL, "java/lang/String", "length", "()I"},
+    {jbc::core::Op::INVOKEVIRTUAL, "java/lang/String", "isEmpty", "()Z"},
 };
 
-bool isDiscardableCall(const ClassSession& session, const Insn& in)
+/// 家族条目：Math/StrictMath 纯函数名集（旧栈 isSafeMathName 对齐——
+/// 全参确定、无副作用、对任意输入值（含 NaN/Inf）不抛不写）。
+constexpr std::string_view kMathFamilyOwners[] = {"java/lang/Math", "java/lang/StrictMath"};
+constexpr std::string_view kSafeMathNames[] = {
+    "abs",  "max",       "min",      "sin",      "cos",           "tan",       "asin",
+    "acos", "atan",      "atan2",    "sqrt",     "cbrt",          "ceil",      "floor",
+    "rint", "round",     "exp",      "expm1",    "log",           "log10",     "log1p",
+    "pow",  "signum",    "copySign", "hypot",    "IEEEremainder", "toRadians", "toDegrees",
+    "ulp",  "nextAfter", "nextUp",   "nextDown", "scalb",
+};
+
+/// 描述符参数值个数（cat2 参数计一值；数组前缀归并到元素类型）；
+/// 畸形描述符返回 -1。
+ca::i32 paramValueCount(std::string_view desc)
 {
-    if (in.op != Op::INVOKESTATIC) return false;
+    ca::usize i = 0;
+    if (desc.empty() || desc[0] != '(') return -1;
+    ++i;
+    ca::i32 n = 0;
+    while (i < desc.size() && desc[i] != ')') {
+        while (i < desc.size() && desc[i] == '[') ++i;
+        if (i >= desc.size()) return -1;
+        if (desc[i] == 'L') {
+            ++i;
+            while (i < desc.size() && desc[i] != ';') ++i;
+        }
+        ++i;
+        ++n;
+    }
+    if (i >= desc.size() || desc[i] != ')') return -1;
+    return n;
+}
+
+/// 白名单命中时给出期望输入值个数（静态 = 参数值数，虚调用 = 接收者 +
+/// 参数值数）；未命中返回 -1。arity 同时是缺失边守卫：输入使用边数少于
+/// 期望即存在看不见的来源（未写局部装载等），不可删。
+ca::i32 discardableCallArity(const ClassSession& session, const Insn& in)
+{
+    if (in.op != Op::INVOKESTATIC && in.op != Op::INVOKEVIRTUAL) return -1;
     ClassSession::MemberSem m;
-    if (!session.memberOf(in, m)) return false;
+    if (!session.memberOf(in, m)) return -1;
     if (m.kind != ClassSession::MemberSem::Kind::Method
         && m.kind != ClassSession::MemberSem::Kind::InterfaceMethod) {
-        return false;
+        return -1;
     }
-    for (const DiscardableCall& c : kDiscardableCalls) {
-        if (m.owner == c.owner && m.name == c.name && m.desc == c.desc) return true;
+    bool matched = false;
+    for (const DiscardableCall& c : kExactDiscardableCalls) {
+        if (in.op == c.op && m.owner == c.owner && m.name == c.name && m.desc == c.desc) {
+            matched = true;
+            break;
+        }
     }
-    return false;
+    if (!matched && in.op == Op::INVOKESTATIC) {
+        const bool mathOwner = std::find(std::begin(kMathFamilyOwners),
+                                         std::end(kMathFamilyOwners),
+                                         m.owner)
+                               != std::end(kMathFamilyOwners);
+        matched = mathOwner
+                  && std::find(std::begin(kSafeMathNames), std::end(kSafeMathNames), m.name)
+                         != std::end(kSafeMathNames);
+    }
+    if (!matched) return -1;
+    const ca::i32 params = paramValueCount(m.desc);
+    if (params < 0) return -1;
+    return params + (in.op == Op::INVOKEVIRTUAL ? 1 : 0);
 }
 
 /// 链内纯计算生产者的期望弹值个数（arity）；-1 = 不入链。
@@ -113,24 +170,23 @@ std::map<DefId, bool> closeChain(const ClassSession& session, const CodeDom& dom
             const InsnId* iid = du.instructionOf(d);
             const Insn*   in  = iid != nullptr ? dom.peek(*iid) : nullptr;
             if (in != nullptr) {
-                if (isDiscardableCall(session, *in)) {
-                    inChain = true;   // 白名单叶子：零参无输入边
-                } else {
-                    const ca::i32 arity = chainOpArity(session, *in);
-                    if (arity >= 0 && iid != nullptr) {
-                        ca::usize edgeCount = 0;
-                        inChain = true;
-                        for (const DefUseEdge* e : du.usesAt(*iid)) {
-                            if (e->slot != DefUseSlot::Stack) continue;
-                            ++edgeCount;
-                            if (!visit(e->def)) {
-                                inChain = false;
-                                break;
-                            }
+                // 白名单调用与纯计算同构：期望输入值个数 + 全部输入定义
+                // 入链（白名单带参条目由此进链，零参条目退化为叶子）。
+                ca::i32 arity = discardableCallArity(session, *in);
+                if (arity < 0) arity = chainOpArity(session, *in);
+                if (arity >= 0 && iid != nullptr) {
+                    ca::usize edgeCount = 0;
+                    inChain = true;
+                    for (const DefUseEdge* e : du.usesAt(*iid)) {
+                        if (e->slot != DefUseSlot::Stack) continue;
+                        ++edgeCount;
+                        if (!visit(e->def)) {
+                            inChain = false;
+                            break;
                         }
-                        // 输入边少于期望 = 存在无定义来源（看不见即不可删）。
-                        if (edgeCount != static_cast<ca::usize>(arity)) inChain = false;
                     }
+                    // 输入边少于期望 = 存在无定义来源（看不见即不可删）。
+                    if (edgeCount != static_cast<ca::usize>(arity)) inChain = false;
                 }
             }
         }
@@ -238,7 +294,7 @@ mjbase::spi::PreservedAnalyses DeadSideEffectFreeCallRemover::run(mjbase::spi::M
             if (!kv.second) continue;
             const InsnId* iid = du.instructionOf(kv.first);
             const Insn*   in  = iid != nullptr ? dom.peek(*iid) : nullptr;
-            if (in != nullptr && isDiscardableCall(scope.session, *in)) {
+            if (in != nullptr && discardableCallArity(scope.session, *in) >= 0) {
                 hasCall = true;
                 break;
             }

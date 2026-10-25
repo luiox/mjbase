@@ -211,6 +211,109 @@ TEST(DeadSideEffectFreeCallRemoverTest, writeBackConsistentAfterRemoval)
     EXPECT_FALSE(out.empty());
 }
 
+// ── URCE 吸收面：常量字符串接收者 + String.length 弹弃整删 ──
+TEST(DeadSideEffectFreeCallRemoverTest, stringLengthOnConstRemoved)
+{
+    DomFixture fx("t/F", "m", "()V", 4, 1, [&](Body& b) {
+        const ca::u32 lenCp =
+            b.session().internMethodRef("java/lang/String", "length", "()I");
+        b.ldcString("abc");
+        b.invoke(Op::INVOKEVIRTUAL, lenCp);
+        b.pop();
+        b.vreturn();
+    });
+    const auto pa = fx.run(mjbase::pass::DeadSideEffectFreeCallRemover{});
+    EXPECT_TRUE(pa.changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 1u);
+    EXPECT_EQ(ops[0], Op::RETURN);
+}
+
+// ── URCE 吸收面：Math.max 两常量实参 + 弹弃整删 ──
+TEST(DeadSideEffectFreeCallRemoverTest, mathMaxConstArgsRemoved)
+{
+    DomFixture fx("t/F", "m", "()V", 4, 1, [&](Body& b) {
+        b.iconst_1();
+        b.iconst_2();
+        b.invokeStatic("java/lang/Math", "max", "(II)I");
+        b.pop();
+        b.vreturn();
+    });
+    const auto pa = fx.run(mjbase::pass::DeadSideEffectFreeCallRemover{});
+    EXPECT_TRUE(pa.changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 1u);
+    EXPECT_EQ(ops[0], Op::RETURN);
+}
+
+// ── URCE 吸收面：cat2 返回宽（Math.abs (J)J → POP2）──
+TEST(DeadSideEffectFreeCallRemoverTest, mathAbsLongPop2Removed)
+{
+    DomFixture fx("t/F", "m", "()V", 4, 3, [&](Body& b) {
+        b.ldcLong(111111111L);
+        b.invokeStatic("java/lang/Math", "abs", "(J)J");
+        b.pop2();
+        b.vreturn();
+    });
+    const auto pa = fx.run(mjbase::pass::DeadSideEffectFreeCallRemover{});
+    EXPECT_TRUE(pa.changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 1u);
+    EXPECT_EQ(ops[0], Op::RETURN);
+}
+
+// ── 带参白名单的实参是参数装载（不在链内）→ 不动 ──
+TEST(DeadSideEffectFreeCallRemoverTest, paramArgCallKept)
+{
+    DomFixture fx("t/F", "m", "(I)V", 4, 1, [&](Body& b) {
+        b.iload(0);
+        b.invokeStatic("java/lang/Math", "abs", "(I)I");
+        b.pop();
+        b.vreturn();
+    });
+    const auto pa = fx.run(mjbase::pass::DeadSideEffectFreeCallRemover{});
+    EXPECT_TRUE(pa.areAllPreserved());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 4u);
+    EXPECT_EQ(ops[1], Op::INVOKESTATIC);
+}
+
+// ── String.length 接收者是参数装载（不在链内）→ 不动 ──
+TEST(DeadSideEffectFreeCallRemoverTest, paramReceiverCallKept)
+{
+    DomFixture fx("t/F", "m", "(Ljava/lang/String;)V", 4, 1, [&](Body& b) {
+        const ca::u32 lenCp =
+            b.session().internMethodRef("java/lang/String", "length", "()I");
+        b.op(Op::ALOAD_0);
+        b.invoke(Op::INVOKEVIRTUAL, lenCp);
+        b.pop();
+        b.vreturn();
+    });
+    const auto pa = fx.run(mjbase::pass::DeadSideEffectFreeCallRemover{});
+    EXPECT_TRUE(pa.areAllPreserved());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 4u);
+    EXPECT_EQ(ops[1], Op::INVOKEVIRTUAL);
+}
+
+// ── 安全扩展声明：纯计算实参（常量经 IADD）同样入链整删 ──
+TEST(DeadSideEffectFreeCallRemoverTest, computedArgChainRemoved)
+{
+    DomFixture fx("t/F", "m", "()V", 4, 1, [&](Body& b) {
+        b.iconst_1();
+        b.iconst_2();
+        b.iadd();
+        b.invokeStatic("java/lang/Math", "abs", "(I)I");
+        b.pop();
+        b.vreturn();
+    });
+    const auto pa = fx.run(mjbase::pass::DeadSideEffectFreeCallRemover{});
+    EXPECT_TRUE(pa.changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 1u);
+    EXPECT_EQ(ops[0], Op::RETURN);
+}
+
 // ── 注册面 ──
 TEST(DeadSideEffectFreeCallRemoverTest, registeredByName)
 {
