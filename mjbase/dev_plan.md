@@ -148,10 +148,18 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     延伸到方法末尾形态）。8 单测（死岛/死块内互引/异常标签保守/种子 handler
     保留/无死代码/幂等/与 FlatteningReverser 端到端：死分发块 + 不可达 default
     块清空/注册面），全量 1679 绿（1676 过 + 3 既有跳过）。
-  → 余项挂账：局部存储清理家族（DeadLocalStoreRemover/PopUnUsedLocalVariables/
-    UselessPopCleaner/RedundantStoreEliminater/DeadSideEffectFreeCallRemover/
-    RedundantInvokeRemover/UnusedResultCallEliminater）依赖帧溯源（生产者定位/
-    槽位活跃性），随帧面批次逐件论证。
+  → 局部存储清理家族首件已落地（PopUnUsedLocalVariables，scope:method）：方法内
+    无任何读取的槽位，其 store 降级 pop/pop2。读点审计按指令全集做（不可达读点
+    同样计入，保守口径），覆盖 iinc/ret 与两槽装载高半槽；宽度由 store 族操作码
+    自身决定（JVMS 定死每族弹槽数）——载体差异：不需要旧栈 OriginalSource 帧
+    定宽前提。只改操作码字段不删指令、不删生产者（常量装载清理归
+    RedundantLoadValEliminator，局部装载清理归 UselessPopCleaner 切片）。9 单测
+    （int/long/短形态/iinc 读点/两槽保护/全保留/幂等/三件链端到端：状态槽 store
+    降级 + 槽 2 被 A 块存活 iload 保护/注册面），全量 1688 绿（1685 过 + 3 既有
+    跳过）。
+  → 余项挂账：DeadLocalStoreRemover/UselessPopCleaner/RedundantStoreEliminater/
+    DeadSideEffectFreeCallRemover/RedundantInvokeRemover/UnusedResultCallEliminater
+    依赖帧溯源（生产者定位/槽位活跃性），随帧面批次逐件论证。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。

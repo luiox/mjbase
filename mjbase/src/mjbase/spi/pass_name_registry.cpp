@@ -21,6 +21,7 @@
 #include "mjbase/pass/junk_code_inserter.hpp"
 #include "mjbase/pass/meta_info_remover.hpp"
 #include "mjbase/pass/nop_remover.hpp"
+#include "mjbase/pass/pop_unused_local_variables.hpp"
 #include "mjbase/pass/redundant_load_val_eliminator.hpp"
 #include "mjbase/pass/remove_method_calls.hpp"
 #include "mjbase/pass/stack_operation.hpp"
@@ -315,6 +316,15 @@ PassNameRegistry makeDefaultRegistry()
         "UnreachableInsnRemover",
         [] { return std::make_unique<mjbase::pass::UnreachableInsnRemover>(); },
         "Remove instructions proven unreachable by frame analysis (conservative on exception edges)."));
+    // opt pass 波次（局部存储清理家族首件）：方法内无任何读取的槽位，
+    // 其 store 降级 pop/pop2（宽度由 store 族操作码定死，不依赖帧溯源；
+    // 不删生产者）。读点审计含 iinc/ret 与两槽装载的高半槽。标签：
+    // scope:method / action:eliminate / stability:opt-in（默认链不收，
+    // CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "PopUnUsedLocalVariables",
+        [] { return std::make_unique<mjbase::pass::PopUnUsedLocalVariables>(); },
+        "Downgrade stores to never-read local slots into pop/pop2 (width from store opcode)."));
     // 批 A（容器级直写组首件）：全容器确定性类重命名。
     seed(reg.registerGlobalPass(
         "ClassRenamer", [] { return std::make_unique<mjbase::pass::ClassRenamer>(); },
