@@ -9,6 +9,7 @@
 #include "mjbase/pass/class_member_sorter.hpp"
 #include "mjbase/pass/class_renamer.hpp"
 #include "mjbase/pass/cons_jump_optimizer.hpp"
+#include "mjbase/pass/constant_switch_folder.hpp"
 #include "mjbase/pass/const_char_array_string_folder.hpp"
 #include "mjbase/pass/enum_cast_check_remover.hpp"
 #include "mjbase/pass/constant_folder.hpp"
@@ -347,6 +348,16 @@ PassNameRegistry makeDefaultRegistry()
         "ConsJumpOptimizer",
         [] { return std::make_unique<mjbase::pass::ConsJumpOptimizer>(); },
         "Fold constant-condition jumps: always-true to goto, always-false deleted."));
+    // opt pass 波次（常量跳转折叠件，ConsJump 三件套第二件）：int 常量
+    // selector + LOOKUPSWITCH/TABLESWITCH 相邻窗折叠——按 selector 值解析
+    // 命中分支（lookup 精确匹配 / table 区间匹配，未命中走 default），常量
+    // 头原位改 GOTO 复用命中目标标签，switch 删除。switch 前置边界锚标签
+    // 拒收（栈消费保护），头标签放行。标签：scope:method / action:rewrite /
+    // stability:opt-in（默认链不收，CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "ConstantSwitchFolder",
+        [] { return std::make_unique<mjbase::pass::ConstantSwitchFolder>(); },
+        "Fold constant-selector switches into a goto to the resolved case target."));
     // 批 A（容器级直写组首件）：全容器确定性类重命名。
     seed(reg.registerGlobalPass(
         "ClassRenamer", [] { return std::make_unique<mjbase::pass::ClassRenamer>(); },

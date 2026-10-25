@@ -299,6 +299,23 @@ bool isPop2FoldableLocalLoad(const jbc::ir::Insn& in)
     return inRange(in.op, Op::LLOAD_0, Op::LLOAD_3) || inRange(in.op, Op::DLOAD_0, Op::DLOAD_3);
 }
 
+jbc::ir::LabelId switchCaseLabelOf(const jbc::ir::Insn& sw, ca::i32 key)
+{
+    using jbc::core::Op;
+    if (sw.op == Op::LOOKUPSWITCH) {
+        for (ca::usize i = 0; i < sw.keys.size() && i < sw.targets.size(); ++i) {
+            if (sw.keys[i] == key) return sw.targets[i];
+        }
+        return sw.target;
+    }
+    // TABLESWITCH：targets[i] 对应 key = a + i（a 为 low）。
+    const ca::i64 idx = static_cast<ca::i64>(key) - static_cast<ca::i64>(sw.a);
+    if (idx >= 0 && idx < static_cast<ca::i64>(sw.targets.size())) {
+        return sw.targets[static_cast<ca::usize>(idx)];
+    }
+    return sw.target;
+}
+
 bool labelsAnchorAt(const jbc::ir::CodeDom& dom, jbc::ir::InsnId anchor)
 {
     return !dom.labelsAt(anchor).empty();
