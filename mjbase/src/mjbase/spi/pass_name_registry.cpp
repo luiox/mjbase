@@ -25,6 +25,7 @@
 #include "mjbase/pass/tool_class_combiner.hpp"
 #include "mjbase/pass/type_cast_simplifier.hpp"
 #include "mjbase/pass/static_field_default_inliner.hpp"
+#include "mjbase/pass/static_array_field_scalarizer.hpp"
 #include "mjbase/pass/unused_check_cleaner.hpp"
 #include "mjbase/pass/unused_member_remover.hpp"
 
@@ -365,6 +366,14 @@ PassNameRegistry makeDefaultRegistry()
         "StaticFieldDefaultInliner",
         [] { return std::make_unique<mjbase::pass::StaticFieldDefaultInliner>(); },
         "Inline single constant <clinit> putstatic into the field's ConstantValue attribute."));
+    // opt pass 扩段（#39 第一切片）：private static 原始类型数组字段拆成
+    // 按访问下标的标量字段——分配与下标计算指令消失，读窗口三条缩一条；
+    // 与 StaticFieldDefaultInliner 串联可消化 clinit 常量表。标签：
+    // scope:class / action:rewrite / stability:opt-in（默认链不收）。
+    seed(reg.registerClassPass(
+        "StaticArrayFieldScalarizer",
+        [] { return std::make_unique<mjbase::pass::StaticArrayFieldScalarizer>(); },
+        "Scalarize private static primitive-array fields with constant-index-only access."));
     // 批 A（容器级直写组收口件）：static 工具类保守合并 + 全量 owner 重映射。
     seed(reg.registerGlobalPass(
         "ToolClassCombiner", [] { return std::make_unique<mjbase::pass::ToolClassCombiner>(); },

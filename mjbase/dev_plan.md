@@ -56,6 +56,20 @@
   StringBuilder 链化简）待批。
 - [x] B 批 meta_info_remover 家族迁移（scope:class）：类级 13 件已收口 +
   两件挂账收口（record 组件注解清空 / 参数注解槽内过滤）。
+- [x] 字段数组标量化第一切片（#39，StaticArrayFieldScalarizer，新增件
+  ——mbase 无对应物）：private static 原始类型数组字段，分配点唯一
+  （iconst_LEN; newarray; putstatic）+ 全访问常量下标窗口（读
+  getstatic/iconst/xALOAD 三连、写 getstatic/iconst/单条常量/xASTORE
+  四连）且无整体引用时，拆成按访问下标的 `<old>_<i>` 标量字段——
+  分配与下标计算指令消失，读窗口三条缩一条。守卫：nest 属性整 pass
+  放弃（private 跨类不闭包）；无分配有访问放弃（null 数组 NPE 语义）；
+  多分配/裸重赋/越界下标/名冲突/标签锚定逐字段放弃。改写判定两阶段
+  （判定零改写、失败面全排除后才动 CodeDom），落盘序 lower 全部改动
+  方法成功才 addField/removeField（A3/A4 通道，class_structure_editor
+  同口径）。与 StaticFieldDefaultInliner 串联可消化 clinit 常量表
+  （拆成单写常量标量后接 CV 内联）。实例字段与引用数组挂账后续切片。
+  12 单测（roundtrip 语义断言：writeClass 重读后指令序列/字段面），
+  全量 1617 仅 2 例并行会话 constant_folder 本地红态（非本件面）。
 
 ## opt pass 余量批次裁决（W0 备料，mjt-deobf 消费面缺口对账）
 
