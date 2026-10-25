@@ -135,6 +135,20 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   → 已落地（#25，8b98945）。
 - [ ] ConsJumpOptimizer / ConstantSwitchFolder / ConstantStateMachineEliminator
   （628 行）：常量分支/switch/状态机折叠，依赖 asm/evaluator（已迁）。
+  → ConsJumpOptimizer 已落地（首件，scope:method）：常量装载 + 常量条件跳转
+    相邻窗口折叠——单槽 [int 常量; IFEQ..IFLE]、空窗 [ACONST_NULL;
+    IFNULL/IFNONNULL]、双槽 [int 常量; int 常量; IF_ICMPxx]。谓词恒真 → 窗口
+    头改 GOTO 复用原目标标签（dom.get 原位改写）；恒假 → 整窗删除。栈安全
+    守卫 = 窗口内部边界锚标签拒收（外部路径从中部进入时其栈值等待窗口内
+    消费），头标签放行（整窗重放净栈效应为零）——对齐旧栈
+    windowExternallyReferenced 的可观测面，收紧点：顺序末尾条件跳转无承接者
+    时保守跳过（旧栈树模型无此约束照删）；类型失配窗（int 常量配空谓词/
+    ACONST_NULL 配数值谓词/ACMP 配双 int 常量）显式拒绝——旧栈按谓词表折
+    Verifier 非法形态属防御怪癖，不保留。12 单测（三种窗 × 恒真/恒假、内部
+    边界拒收、头标签放行重定向、三种类型失配拒绝、幂等、注册面），全量
+    1712 绿（1709 过 + 3 既有跳过）。
+  → 余项挂账：ConstantSwitchFolder（常量 selector 的 switch 折叠）、
+    ConstantStateMachineEliminator（常量状态机消解）待迁。
 - [ ] RedundantJumpRemover / GotoRearranger / ContinuousLabelMerger
   （449 行）：label 布局族——新载体无标签节点，逐件载体重论证（部分可能
   结构性吸收或改形为边界句柄重排），未论证前不迁。
