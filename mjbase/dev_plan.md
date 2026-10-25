@@ -291,6 +291,19 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     尾部死写、读取保槽、跳出到区间后读取双 store 全保（旧栈孔洞）、
     iinc 边保护、cat2 宽度 POP2、参数槽、分析失败跳过、幂等、注册面），
     全量 1771 绿（1768 过 + 3 既有跳过）。
+  → UnusedResultCallEliminater 收口（结构吸收进 DeadSideEffectFreeCall
+    Remover，不另立件）：旧栈 URCE = 相邻窗 [常量实参..; 白名单调用; pop]
+    删除，白名单 = String.length/isEmpty（常量字符串接收者）+
+    Math/StrictMath 31 个纯函数名（全参常量）。DSFCR 引擎（白名单声明
+    表 + def-use 链闭包 + arity 边守卫 + 区间门）覆盖相邻窗为子集：
+    白名单扩展为三类条目（零参精确/带参精确 String 虚调用/Math 家族），
+    带参条目期望输入值数按描述符（虚调用含接收者），全部输入定义入链
+    且边数对齐——旧栈「全参常量」要求收敛为链成员资格（纯计算实参同
+    样入链，按纯性论证为文档化安全扩展；参数实参/接收者天然失配保留）。
+    Math.random 零参条目旧栈 URCE 因 producers.empty() 不收、DSFCR 首版
+    已收——两表并一后并集闭环。6 新单测（常量串 length 整删、Math.max
+    两常量整删、Math.abs(J) 配 POP2、参数实参/参数接收者保留、纯计算
+    实参扩展声明），全量 1777 绿（1774 过 + 3 既有跳过）。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。

@@ -12,13 +12,24 @@ namespace mjbase::pass {
 /// 喂给注定弹弃的运算链（典型 [INVOKESTATIC System.nanoTime; POP2] 直弃
 /// 形态，或中间隔若干纯计算）。
 ///
-/// 白名单（旧栈对齐的可扩展声明表）：零参、无可观测副作用、返回 cat2 的
-/// JDK 静态调用——System.nanoTime/currentTimeMillis ()J 与 Math.random ()D。
+/// 白名单（声明表，吸收旧栈 issue #678 与 UnusedResultCallEliminater
+/// 两张表；扩展只增条目）：可安全弹弃的调用——
+///   - 零参精确条目：System.nanoTime/currentTimeMillis ()J、
+///     Math.random ()D；
+///   - 带参条目：String.length()/isEmpty()（虚调用，接收者须为链内
+///     纯生产者——常量字符串形态删除安全）；
+///   - 家族条目：Math/StrictMath 纯函数名集（abs/max/min/三角/指数/
+///     对数/取整/位操作等 31 名），全参确定、无副作用、任意输入值
+///     （含 NaN/Inf）不抛不写。
 /// 白名单调用必须是链成员才触发删除（纯常量链归 UselessPopCleaner 帧面，
-/// 不在本件重复）。
+/// 不在本件重复）。带参白名单调用的全部输入定义必须入链且输入使用边数
+/// 与描述符参数值数对齐（虚调用含接收者；缺失边 = 看不见的来源，不可删）。
+/// 相比旧栈 UnusedResultCallEliminater 的「全参常量」要求，链成员资格
+/// 覆盖纯计算实参（如常量经一次 IADD）——按纯性论证为安全扩展，文档化
+/// 声明。
 ///
 /// 链成员（def-use 定义边闭包）：
-///   - 白名单调用（叶子，零参无输入边）；
+///   - 白名单调用（零参条目为叶子；带参条目按上述 arity 守卫）；
 ///   - 纯计算生产者：常量装载族（int/long/float/double/string + ACONST_
 ///     NULL）、算术（IADD..LXOR）、数值转换（I2L..I2S）、ARRAYLENGTH、
 ///     INSTANCEOF——且全部输入使用边 arity 对齐（缺失边 = 看不见的来源，
