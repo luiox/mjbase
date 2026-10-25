@@ -24,6 +24,7 @@
 #include "mjbase/pass/meta_info_remover.hpp"
 #include "mjbase/pass/nop_remover.hpp"
 #include "mjbase/pass/pop_unused_local_variables.hpp"
+#include "mjbase/pass/redundant_jump_remover.hpp"
 #include "mjbase/pass/redundant_load_val_eliminator.hpp"
 #include "mjbase/pass/remove_method_calls.hpp"
 #include "mjbase/pass/stack_operation.hpp"
@@ -358,6 +359,15 @@ PassNameRegistry makeDefaultRegistry()
         "ConstantSwitchFolder",
         [] { return std::make_unique<mjbase::pass::ConstantSwitchFolder>(); },
         "Fold constant-selector switches into a goto to the resolved case target."));
+    // opt pass 波次（标签布局族首件）：目标落在顺序后继前置边界的跳转
+    // 消解——GOTO 整条删除（fallthrough 等价），条件跳原位换 POP/POP;POP
+    // （分支与汇合重合，条件值被丢弃，弹宽对齐谓词元数）。方法末 GOTO
+    // 删除无承接者保守跳过，方法末条件跳替换照常。标签：scope:method /
+    // action:rewrite / stability:opt-in（默认链不收，CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "RedundantJumpRemover",
+        [] { return std::make_unique<mjbase::pass::RedundantJumpRemover>(); },
+        "Remove jumps whose target is the immediately following instruction."));
     // 批 A（容器级直写组首件）：全容器确定性类重命名。
     seed(reg.registerGlobalPass(
         "ClassRenamer", [] { return std::make_unique<mjbase::pass::ClassRenamer>(); },
