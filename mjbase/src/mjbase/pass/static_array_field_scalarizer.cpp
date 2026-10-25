@@ -33,10 +33,12 @@ ca::i32 atypeOf(std::string_view elemDesc)
     return -1;
 }
 
-/// 元素描述符 → 数组元素 load/store 操作码（Z/B 共用 baload/bastore）。
+/// 元素描述符 → 数组元素 load/store 操作码（Z/B 共用 baload/bastore；
+/// 引用型 [L..; 用 aaload/aastore）。
 jbc::core::Op arrayLoadOf(std::string_view elemDesc)
 {
     using jbc::core::Op;
+    if (elemDesc.front() == 'L') return Op::AALOAD;
     if (elemDesc == "J") return Op::LALOAD;
     if (elemDesc == "F") return Op::FALOAD;
     if (elemDesc == "D") return Op::DALOAD;
@@ -49,6 +51,7 @@ jbc::core::Op arrayLoadOf(std::string_view elemDesc)
 jbc::core::Op arrayStoreOf(std::string_view elemDesc)
 {
     using jbc::core::Op;
+    if (elemDesc.front() == 'L') return Op::AASTORE;
     if (elemDesc == "J") return Op::LASTORE;
     if (elemDesc == "F") return Op::FASTORE;
     if (elemDesc == "D") return Op::DASTORE;
@@ -58,16 +61,29 @@ jbc::core::Op arrayStoreOf(std::string_view elemDesc)
     return Op::IASTORE;
 }
 
-/// 字段描述符是否属于第一切片的原始类型数组面；是则给出去掉 [ 的元素描述符。
-bool primitiveArrayElemDesc(std::string_view desc, std::string_view& elem)
+/// 数组字段描述符 → 元素描述符：原始类型数组（[I 等，去 [ 即元素）与
+/// 一维对象数组（[Ljava/lang/String; → Ljava/lang/String;）。多维数组
+/// 与数组类型元素（[[ / [L..;[ 形态）不支持，返回 false。
+bool arrayElemDesc(std::string_view desc, std::string_view& elem)
 {
-    if (desc.size() != 2 || desc[0] != '[' || desc[1] == '[' || desc[1] == 'L') return false;
+    if (desc.size() < 2 || desc[0] != '[' || desc[1] == '[') return false;
+    if (desc[1] == 'L') {
+        if (desc.size() < 4 || desc.back() != ';') return false;
+        elem = desc.substr(1);
+        return true;
+    }
     switch (desc[1]) {
     case 'I': case 'J': case 'F': case 'D': case 'Z': case 'B': case 'C': case 'S':
         elem = desc.substr(1);
         return true;
     default: return false;
     }
+}
+
+/// 引用元素描述符（Ljava/lang/String; 形态）→ 类内部名（java/lang/String）。
+std::string_view refElemInternalName(std::string_view elemDesc)
+{
+    return elemDesc.substr(1, elemDesc.size() - 2);
 }
 
 /// int 常量装载识别（iconst 族/bipush/sipush/ldc(_w) Int），值经 out 带出。
@@ -94,21 +110,34 @@ bool intConstOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, c
     return false;
 }
 
-/// 常量装载类别判定：cat2（long/double：LCONST/DCONST/LDC2_W）与 cat1
-/// （int/float：iconst 族/bipush/sipush/fconst/ldc 族）。写窗口的值部分
-/// 第一切片只认单条常量装载（常量表场景，见 pass 头注）。
-bool constLoadMatches(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, bool wantCat2)
+/// 写窗口值部分的类别判定（第一切片只认单条常量装载，见 pass 头注）：
+/// cat2（long/double）、cat1（int/float）与引用（aconst_null / ldc
+/// String/Class——常量字符串表场景）。
+enum class ValueKind : ca::u8 { Cat1, Cat2, Ref };
+
+bool constLoadMatches(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, ValueKind want)
 {
     using jbc::core::Op;
     using Kind = jbc::ir::ClassSession::ConstSem::Kind;
-    if (wantCat2) {
+    switch (want) {
+    case ValueKind::Cat2:
         switch (in.op) {
         case Op::LCONST_0: case Op::LCONST_1:
         case Op::DCONST_0: case Op::DCONST_1: return true;
         default: break;
         }
-        jbc::ir::ClassSession::ConstSem c;
-        return session.constOf(in, c) && (c.kind == Kind::Long || c.kind == Kind::Double);
+        {
+            jbc::ir::ClassSession::ConstSem c;
+            return session.constOf(in, c) && (c.kind == Kind::Long || c.kind == Kind::Double);
+        }
+    case ValueKind::Ref:
+        if (in.op == Op::ACONST_NULL) return true;
+        {
+            jbc::ir::ClassSession::ConstSem c;
+            return session.constOf(in, c) && (c.kind == Kind::String || c.kind == Kind::Class);
+        }
+    case ValueKind::Cat1:
+        break;
     }
     if (in.op == Op::FCONST_0 || in.op == Op::FCONST_1 || in.op == Op::FCONST_2) return true;
     ca::i32 unused = 0;
@@ -182,7 +211,7 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
         plan.id        = f.id;
         plan.name      = unit.symbols().str(f.name);
         plan.arrayDesc = unit.symbols().str(f.desc);
-        if (!primitiveArrayElemDesc(plan.arrayDesc, plan.elemDesc)) continue;
+        if (!arrayElemDesc(plan.arrayDesc, plan.elemDesc)) continue;
         plans.push_back(std::move(plan));
     }
     if (plans.empty()) return mjbase::spi::PreservedAnalyses::all();
@@ -211,7 +240,11 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
         FieldPlan& plan = plans[p];
         const jbc::core::Op loadOp   = arrayLoadOf(plan.elemDesc);
         const jbc::core::Op storeOp  = arrayStoreOf(plan.elemDesc);
-        const bool          cat2Value = (plan.elemDesc == "J" || plan.elemDesc == "D");
+        const bool          refElem  = plan.elemDesc.front() == 'L';
+        const jbc::core::Op allocOp  = refElem ? jbc::core::Op::ANEWARRAY : jbc::core::Op::NEWARRAY;
+        const ValueKind     valueKind = refElem ? ValueKind::Ref
+                                   : ((plan.elemDesc == "J" || plan.elemDesc == "D") ? ValueKind::Cat2
+                                                                                    : ValueKind::Cat1);
         ca::usize           allocCount = 0;
 
         for (const MethodDom& md : doms) {
@@ -228,8 +261,18 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
                     const jbc::ir::Insn* na = md.ref->dom.peek(order[k - 1]);
                     const jbc::ir::Insn* ln = md.ref->dom.peek(order[k - 2]);
                     ca::i32 len = 0;
-                    if (na == nullptr || ln == nullptr || na->op != jbc::core::Op::NEWARRAY ||
-                        na->a != atypeOf(plan.elemDesc) || !intConstOf(session, *ln, len)) {
+                    bool allocOk = na != nullptr && ln != nullptr && na->op == allocOp &&
+                                   intConstOf(session, *ln, len);
+                    if (allocOk) {
+                        // 分配元素面校验：原始型对 atype 码，引用型对 anewarray
+                        // 的类操作数（元素描述符 → 类内部名）。
+                        if (refElem) {
+                            allocOk = session.classOf(*na) == refElemInternalName(plan.elemDesc);
+                        } else {
+                            allocOk = na->a == atypeOf(plan.elemDesc);
+                        }
+                    }
+                    if (!allocOk) {
                         dead[p] = true;   // 重赋整个数组或畸形分配
                         break;
                     }
@@ -258,7 +301,7 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
                         k += 2;           // 连同 const_i/xALOAD 跳过（下一兴趣点 k+3）
                         continue;
                     }
-                    if (third != nullptr && constLoadMatches(session, *third, cat2Value) &&
+                    if (third != nullptr && constLoadMatches(session, *third, valueKind) &&
                         fourth != nullptr && fourth->op == storeOp) {
                         plan.windows.push_back({Window::Kind::Store, md.idx, order[k], order[k + 1],
                                                 order[k + 2], order[k + 3]});

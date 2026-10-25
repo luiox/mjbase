@@ -13,6 +13,7 @@
 #include "jbc/core/reader.hpp"
 #include "jbc/core/writer.hpp"
 #include "jbc/ir/units.hpp"
+#include "libca/core/tag_cast.hpp"
 
 #include "mjbase/pass/static_array_field_scalarizer.hpp"
 #include "mjbase/spi/analysis_manager.hpp"
@@ -351,14 +352,60 @@ TEST(MjPassStaticArrayFieldScalarizerTest, SkipsNonPrivateField)
     expectUntouched(std::move(b));
 }
 
-TEST(MjPassStaticArrayFieldScalarizerTest, SkipsReferenceArrayDesc)
+TEST(MjPassStaticArrayFieldScalarizerTest, ScalarizesStringArrayKeepCheckcast)
 {
     FixtureBuilder b("T");
-    b.addField({"objs", "[Ljava/lang/Object;", 0x000A});          // 引用数组：第二切片
+    b.addField({"names", "[Ljava/lang/String;", 0x000A});
+    const ca::u16 strCls = b.cls("java/lang/String");
+    const ca::u16 s0     = b.strConst("alpha");
+    const ca::u16 s1     = b.strConst("beta");
+    Bytes clinit;
+    putU8(clinit, 0x05);                                          // iconst_2
+    putU8(clinit, 0xBD); putU16(clinit, strCls);                  // anewarray String
+    putU8(clinit, 0xB3); putU16(clinit, b.fieldRef("T", "names", "[Ljava/lang/String;"));
+    putU8(clinit, 0xB2); putU16(clinit, b.fieldRef("T", "names", "[Ljava/lang/String;"));
+    putU8(clinit, 0x03); putU8(clinit, 0x12); putU8(clinit, static_cast<ca::u8>(s0));
+    putU8(clinit, 0x53);                                          // aastore
+    putU8(clinit, 0xB2); putU16(clinit, b.fieldRef("T", "names", "[Ljava/lang/String;"));
+    putU8(clinit, 0x04); putU8(clinit, 0x12); putU8(clinit, static_cast<ca::u8>(s1));
+    putU8(clinit, 0x53);
+    putU8(clinit, 0xB1);
+    b.addMethod({"<clinit>", "()V", std::move(clinit), 0x0008, {}, 4, 0});
+    Bytes read;                                                   // 读 + checkcast（保留）
+    putU8(read, 0xB2); putU16(read, b.fieldRef("T", "names", "[Ljava/lang/String;"));
+    putU8(read, 0x03);
+    putU8(read, 0x32);                                            // aaload
+    putU8(read, 0xC0); putU16(read, strCls);                      // checkcast
+    putU8(read, 0xB0);                                            // areturn
+    b.addMethod({"read", "()Ljava/lang/String;", std::move(read), 0x0009, {}, 2, 0});
+    auto session = makeSession(std::move(b));
+    EXPECT_TRUE(runPass(*session).changed());
+
+    auto re = reRead(*session);
+    const jbc::core::ClassFile& cf = re->backing();
+    EXPECT_EQ(findField(cf, "names"), nullptr);
+    for (const char* n : {"names_0", "names_1"}) {
+        const jbc::core::MemberInfo* f = findField(cf, n);
+        ASSERT_NE(f, nullptr) << n;
+        EXPECT_EQ(cf.utf8(f->descCp), "Ljava/lang/String;");
+    }
+    using jbc::core::Op;
+    const auto readFacts = methodFacts(*re, "read");
+    ASSERT_EQ(readFacts.size(), 3u) << "checkcast 应保留在 getstatic 之后";
+    EXPECT_EQ(readFacts[0].op, Op::GETSTATIC);
+    EXPECT_EQ(readFacts[0].member, "names_0");
+    EXPECT_EQ(readFacts[1].op, Op::CHECKCAST);
+    EXPECT_EQ(readFacts[2].op, Op::ARETURN);
+}
+
+TEST(MjPassStaticArrayFieldScalarizerTest, SkipsMultiDimensionalArray)
+{
+    FixtureBuilder b("T");
+    b.addField({"grid", "[[I", 0x000A});                          // 多维：元素面不支持
     Bytes clinit;
     putU8(clinit, 0x04);
-    putU8(clinit, 0xBD); putU16(clinit, b.cls("java/lang/Object"));   // anewarray
-    putU8(clinit, 0xB3); putU16(clinit, b.fieldRef("T", "objs", "[Ljava/lang/Object;"));
+    putU8(clinit, 0xBD); putU16(clinit, b.cls("[I"));
+    putU8(clinit, 0xB3); putU16(clinit, b.fieldRef("T", "grid", "[[I"));
     putU8(clinit, 0xB1);
     b.addMethod({"<clinit>", "()V", std::move(clinit), 0x0008, {}, 1, 0});
     expectUntouched(std::move(b));
@@ -371,4 +418,184 @@ TEST(MjPassStaticArrayFieldScalarizerTest, RegistrySeedsClassScope)
     const auto found = mjbase::spi::defaultPassRegistry().find("StaticArrayFieldScalarizer");
     ASSERT_TRUE(found.is_ok());
     EXPECT_EQ(found.unwrap().scope, mjbase::spi::PassScope::Class);
+}
+
+// ── 容器级（ResourceContainer + GlobalToClassPassAdaptor，多类混合）──
+
+namespace {
+
+using mjbase::model::ClassResource;
+using mjbase::model::ResourceContainer;
+
+void addClassResource(ResourceContainer& container, const std::string& uri, const Bytes& bytes)
+{
+    container.addResource(uri, std::make_unique<ClassResource>(uri, bytes));
+}
+
+Bytes resourceBytes(ResourceContainer& container, const std::string& uri)
+{
+    const auto* resource = container.getResource(uri);
+    EXPECT_NE(resource, nullptr) << uri;
+    const auto* cls = ca::core::tag_cast::cast<const ClassResource*>(resource);
+    EXPECT_NE(cls, nullptr) << uri;
+    return cls != nullptr ? cls->get() : Bytes{};
+}
+
+/// ct/TableHost：两类数组字段混合（int 表 + String 表），clinit 分配与写，
+/// 两个读方法（含 checkcast 面）。扩段后两字段都应拆分。
+Bytes buildTableHost()
+{
+    FixtureBuilder b("ct/TableHost");
+    b.addField({"tbl", "[I", 0x000A});
+    b.addField({"names", "[Ljava/lang/String;", 0x000A});
+    const ca::u16 frTbl = b.fieldRef("ct/TableHost", "tbl", "[I");
+    const ca::u16 frNames = b.fieldRef("ct/TableHost", "names", "[Ljava/lang/String;");
+    const ca::u16 strCls = b.cls("java/lang/String");
+    const ca::u16 s0 = b.strConst("zero");
+    const ca::u16 s1 = b.strConst("one");
+    Bytes clinit;
+    putU8(clinit, 0x06);                                          // iconst_3
+    putU8(clinit, 0xBC); putU8(clinit, 0x0A);
+    putU8(clinit, 0xB3); putU16(clinit, frTbl);
+    putU8(clinit, 0xB2); putU16(clinit, frTbl);
+    putU8(clinit, 0x03); putU8(clinit, 0x10); putU8(clinit, 7);
+    putU8(clinit, 0x4F);
+    putU8(clinit, 0xB2); putU16(clinit, frTbl);
+    putU8(clinit, 0x04); putU8(clinit, 0x10); putU8(clinit, 8);
+    putU8(clinit, 0x4F);
+    putU8(clinit, 0xB2); putU16(clinit, frTbl);
+    putU8(clinit, 0x05); putU8(clinit, 0x10); putU8(clinit, 9);
+    putU8(clinit, 0x4F);
+    putU8(clinit, 0x05);                                          // iconst_2
+    putU8(clinit, 0xBD); putU16(clinit, strCls);
+    putU8(clinit, 0xB3); putU16(clinit, frNames);
+    putU8(clinit, 0xB2); putU16(clinit, frNames);
+    putU8(clinit, 0x03); putU8(clinit, 0x12); putU8(clinit, static_cast<ca::u8>(s0));
+    putU8(clinit, 0x53);
+    putU8(clinit, 0xB2); putU16(clinit, frNames);
+    putU8(clinit, 0x04); putU8(clinit, 0x12); putU8(clinit, static_cast<ca::u8>(s1));
+    putU8(clinit, 0x53);
+    putU8(clinit, 0xB1);
+    b.addMethod({"<clinit>", "()V", std::move(clinit), 0x0008, {}, 4, 0});
+    Bytes readInt;
+    putU8(readInt, 0xB2); putU16(readInt, frTbl);
+    putU8(readInt, 0x05);
+    putU8(readInt, 0x2E);
+    putU8(readInt, 0xAC);
+    b.addMethod({"third", "()I", std::move(readInt), 0x0009, {}, 2, 0});
+    Bytes readStr;                                                // 读 + checkcast（保留）
+    putU8(readStr, 0xB2); putU16(readStr, frNames);
+    putU8(readStr, 0x03);
+    putU8(readStr, 0x32);
+    putU8(readStr, 0xC0); putU16(readStr, strCls);
+    putU8(readStr, 0xB0);
+    b.addMethod({"firstName", "()Ljava/lang/String;", std::move(readStr), 0x0009, {}, 2, 0});
+    return b.assemble();
+}
+
+/// ct/PublicTable：public static 数组（非 private）——应整类不动。
+Bytes buildPublicTable()
+{
+    FixtureBuilder b("ct/PublicTable");
+    b.addField({"open", "[I", 0x0009});                           // public static
+    const ca::u16 fr = b.fieldRef("ct/PublicTable", "open", "[I");
+    Bytes clinit;
+    putU8(clinit, 0x04);
+    putU8(clinit, 0xBC); putU8(clinit, 0x0A);
+    putU8(clinit, 0xB3); putU16(clinit, fr);
+    putU8(clinit, 0xB2); putU16(clinit, fr);
+    putU8(clinit, 0x03); putU8(clinit, 0x10); putU8(clinit, 1);
+    putU8(clinit, 0x4F);
+    putU8(clinit, 0xB1);
+    b.addMethod({"<clinit>", "()V", std::move(clinit), 0x0008, {}, 3, 0});
+    return b.assemble();
+}
+
+/// ct/DynamicUser：private static 数组但下标来自参数（非常量）——应整类不动。
+Bytes buildDynamicUser()
+{
+    FixtureBuilder b("ct/DynamicUser");
+    b.addField({"vals", "[J", 0x000A});
+    const ca::u16 fr = b.fieldRef("ct/DynamicUser", "vals", "[J");
+    Bytes clinit;
+    putU8(clinit, 0x04);
+    putU8(clinit, 0xBC); putU8(clinit, 0x0B);
+    putU8(clinit, 0xB3); putU16(clinit, fr);
+    putU8(clinit, 0xB1);
+    b.addMethod({"<clinit>", "()V", std::move(clinit), 0x0008, {}, 2, 0});
+    Bytes pick;
+    putU8(pick, 0xB2); putU16(pick, fr);
+    putU8(pick, 0x1A);                                            // iload_0：非常量下标
+    putU8(pick, 0x2F);                                            // laload
+    putU8(pick, 0xAD);                                            // lreturn
+    b.addMethod({"pick", "(I)J", std::move(pick), 0x0009, {}, 2, 1});
+    return b.assemble();
+}
+
+/// ct/Plain：无候选字段——应整类不动。
+Bytes buildPlain()
+{
+    FixtureBuilder b("ct/Plain");
+    Bytes m;
+    putU8(m, 0x03);
+    putU8(m, 0xAC);
+    b.addMethod({"answer", "()I", std::move(m), 0x0009, {}, 1, 0});
+    return b.assemble();
+}
+
+}   // namespace
+
+// 容器级主链：TableHost 两字段拆分并提交回容器，其余三类字节恒等。
+TEST(MjPassStaticArrayFieldScalarizerContainerTest, ScalarizesTableHostAndLeavesOthers)
+{
+    ResourceContainer container;
+    const Bytes host    = buildTableHost();
+    const Bytes pub     = buildPublicTable();
+    const Bytes dynamic = buildDynamicUser();
+    const Bytes plain   = buildPlain();
+    addClassResource(container, "ct/TableHost.class", host);
+    addClassResource(container, "ct/PublicTable.class", pub);
+    addClassResource(container, "ct/DynamicUser.class", dynamic);
+    addClassResource(container, "ct/Plain.class", plain);
+
+    mjbase::spi::ClassPassManager cpm;
+    cpm.addPass(std::make_unique<mjbase::pass::StaticArrayFieldScalarizer>());
+    ca::str::Utf8StringArena            arena;
+    mjbase::spi::GlobalAnalysisManager  gam(arena);
+    mjbase::spi::GlobalToClassPassAdaptor adaptor(std::move(cpm));
+    adaptor.run(container, gam);
+
+    // 提交面：容器里的 TableHost 已是改写字节（commit 路径生效）。
+    const Bytes hostAfter = resourceBytes(container, "ct/TableHost.class");
+    EXPECT_NE(hostAfter, host);
+    auto re = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(hostAfter));
+    ASSERT_TRUE(re.is_ok());
+    const jbc::core::ClassFile& cf = re.unwrap()->backing();
+    EXPECT_EQ(findField(cf, "tbl"), nullptr);
+    EXPECT_EQ(findField(cf, "names"), nullptr);
+    for (const char* n : {"tbl_0", "tbl_1", "tbl_2"}) {
+        const jbc::core::MemberInfo* f = findField(cf, n);
+        ASSERT_NE(f, nullptr) << n;
+        EXPECT_EQ(cf.utf8(f->descCp), "I");
+        EXPECT_EQ(f->access, 0x000Au);
+    }
+    for (const char* n : {"names_0", "names_1"}) {
+        const jbc::core::MemberInfo* f = findField(cf, n);
+        ASSERT_NE(f, nullptr) << n;
+        EXPECT_EQ(cf.utf8(f->descCp), "Ljava/lang/String;");
+    }
+    using jbc::core::Op;
+    const auto third = methodFacts(*re.unwrap(), "third");
+    ASSERT_EQ(third.size(), 2u);
+    EXPECT_EQ(third[0].op, Op::GETSTATIC);
+    EXPECT_EQ(third[0].member, "tbl_2");
+    const auto firstName = methodFacts(*re.unwrap(), "firstName");
+    ASSERT_EQ(firstName.size(), 3u) << "checkcast 保留";
+    EXPECT_EQ(firstName[0].member, "names_0");
+    EXPECT_EQ(firstName[1].op, Op::CHECKCAST);
+
+    // 保守面：非 private / 非常量下标 / 无候选三类字节恒等。
+    EXPECT_EQ(resourceBytes(container, "ct/PublicTable.class"), pub);
+    EXPECT_EQ(resourceBytes(container, "ct/DynamicUser.class"), dynamic);
+    EXPECT_EQ(resourceBytes(container, "ct/Plain.class"), plain);
 }
