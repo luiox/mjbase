@@ -138,9 +138,20 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
 - [ ] RedundantJumpRemover / GotoRearranger / ContinuousLabelMerger
   （449 行）：label 布局族——新载体无标签节点，逐件载体重论证（部分可能
   结构性吸收或改形为边界句柄重排），未论证前不迁。
-- [ ] UnreachableInsnRemover（dead_code_remover.cpp 1594 行内非 NopRemover
-  部分）：帧可达性证明删不可达指令；mjbase cfg/evaluator 面齐，最大单件，
-  独立批。NopRemover 已由方法级四件批收口。
+- [ ] UnreachableInsnRemover 家族（dead_code_remover.cpp 1594 行内非 NopRemover
+  部分，切片迁移）：帧可达性证明删不可达指令。NopRemover 已由方法级四件批收口。
+  → 首件已落地（结构级 UnreachableInsnRemover，scope:method）：帧引擎 BestEffort
+    reachability 一次性判死；锚异常表标签的不可达指令保守保留（不重锚边界，
+    死保护区连同表项交异常面清理批次）；标签两阶段政策——无引用标签批删前
+    销毁（防 Boundary StillUsed 拒收），集内互引分支标签批删成功后销毁；批删走
+    kRejectIfUsed（守卫已排除批外引用，无需承接者重定向，顺带正确处理死块
+    延伸到方法末尾形态）。8 单测（死岛/死块内互引/异常标签保守/种子 handler
+    保留/无死代码/幂等/与 FlatteningReverser 端到端：死分发块 + 不可达 default
+    块清空/注册面），全量 1679 绿（1676 过 + 3 既有跳过）。
+  → 余项挂账：局部存储清理家族（DeadLocalStoreRemover/PopUnUsedLocalVariables/
+    UselessPopCleaner/RedundantStoreEliminater/DeadSideEffectFreeCallRemover/
+    RedundantInvokeRemover/UnusedResultCallEliminater）依赖帧溯源（生产者定位/
+    槽位活跃性），随帧面批次逐件论证。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。

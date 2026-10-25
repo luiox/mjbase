@@ -27,6 +27,7 @@
 #include "mjbase/pass/strength_reducer.hpp"
 #include "mjbase/pass/tool_class_combiner.hpp"
 #include "mjbase/pass/type_cast_simplifier.hpp"
+#include "mjbase/pass/unreachable_insn_remover.hpp"
 #include "mjbase/pass/static_field_default_inliner.hpp"
 #include "mjbase/pass/static_array_field_scalarizer.hpp"
 #include "mjbase/pass/unused_check_cleaner.hpp"
@@ -306,6 +307,14 @@ PassNameRegistry makeDefaultRegistry()
         "FlatteningReverser",
         [] { return std::make_unique<mjbase::pass::FlatteningReverser>(); },
         "Statically resolve flattened switch dispatch: constant state propagation, goto retarget."));
+    // opt pass 波次（结构级死代码清理首件）：帧可达性证明删除不可达普通
+    // 指令（混淆处理尾部死块/死分发块/分支解析残留）。锚异常表标签的
+    // 不可达指令保守保留（交异常面清理批次）。标签：scope:method /
+    // action:eliminate / stability:opt-in（默认链不收，CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "UnreachableInsnRemover",
+        [] { return std::make_unique<mjbase::pass::UnreachableInsnRemover>(); },
+        "Remove instructions proven unreachable by frame analysis (conservative on exception edges)."));
     // 批 A（容器级直写组首件）：全容器确定性类重命名。
     seed(reg.registerGlobalPass(
         "ClassRenamer", [] { return std::make_unique<mjbase::pass::ClassRenamer>(); },
