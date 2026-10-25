@@ -56,6 +56,17 @@ bool isPopFoldableConstant(const jbc::ir::ClassSession& session, const jbc::ir::
 ///        long / double 常量装载（category-2 两类都参与）。
 bool isPop2FoldableConstant(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in);
 
+/// @brief POP 可消除的局部装载判定：category-1 局部装载族
+///        （ILOAD/FLOAD/ALOAD 及 _0.._3 紧凑形；wide 前缀不改族属）。
+///
+/// 配对删除恒栈中性——装载恰推 1 槽、POP 恰弹 1 槽——不读局部槽内容、
+/// 不需要常量池。
+bool isPopFoldableLocalLoad(const jbc::ir::Insn& in);
+
+/// @brief POP2 可消除的局部装载判定：category-2 局部装载族
+///        （LLOAD/DLOAD 及 _0.._3 紧凑形），与 POP2 的单 cat2 弹宽对齐。
+bool isPop2FoldableLocalLoad(const jbc::ir::Insn& in);
+
 /// @brief 标签边界守卫：anchor 前置边界是否有存活标签锚定。
 ///
 /// 旧栈 tree 模型里 LabelNode/LineNumberNode 是指令序列的一员，任何「相邻

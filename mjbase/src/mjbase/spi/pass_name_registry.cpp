@@ -29,6 +29,7 @@
 #include "mjbase/pass/tool_class_combiner.hpp"
 #include "mjbase/pass/type_cast_simplifier.hpp"
 #include "mjbase/pass/unreachable_insn_remover.hpp"
+#include "mjbase/pass/useless_pop_cleaner.hpp"
 #include "mjbase/pass/static_field_default_inliner.hpp"
 #include "mjbase/pass/static_array_field_scalarizer.hpp"
 #include "mjbase/pass/unused_check_cleaner.hpp"
@@ -325,6 +326,16 @@ PassNameRegistry makeDefaultRegistry()
         "PopUnUsedLocalVariables",
         [] { return std::make_unique<mjbase::pass::PopUnUsedLocalVariables>(); },
         "Downgrade stores to never-read local slots into pop/pop2 (width from store opcode)."));
+    // opt pass 波次（局部存储清理家族第二件）：局部装载 + 紧随 POP/POP2
+    // 的相邻对消除（死装载丢弃形态——状态槽 store 降级成 pop 后暴露的
+    // 装载;pop 残段、装载填充噪声）。配对删除恒栈中性，不依赖局部槽内容。
+    // 帧载体形态（非相邻生产者、POP2 双 cat1 半删）挂账帧面批次。标签：
+    // scope:method / action:eliminate / stability:opt-in（默认链不收，
+    // CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "UselessPopCleaner",
+        [] { return std::make_unique<mjbase::pass::UselessPopCleaner>(); },
+        "Remove width-matched local-load + pop/pop2 adjacent dead-load pairs."));
     // 批 A（容器级直写组首件）：全容器确定性类重命名。
     seed(reg.registerGlobalPass(
         "ClassRenamer", [] { return std::make_unique<mjbase::pass::ClassRenamer>(); },
