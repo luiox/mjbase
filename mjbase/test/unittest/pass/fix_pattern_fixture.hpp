@@ -29,6 +29,7 @@
 #include "jbc/ir/units.hpp"
 #include "libca/core/result.hpp"
 
+#include "mjbase/asm/insn/insn_factory.hpp"
 #include "mjbase/keys.hpp"
 #include "mjbase/pass/method_rewrite_util.hpp"
 #include "mjbase/spi/frame_rewire.hpp"
@@ -50,11 +51,64 @@ public:
     }
 
     /// 追加一条无操作数指令（ICONST_*/DUP/SWAP/IADD/IRETURN 等）。
+    ///
+    /// 只收无操作数形态：工厂层校验拒绝一切带操作数形状（局部/分支/CP/
+    /// iinc/switch 族），误传时 ADD_FAILURE 提示改用 typed 助手——带操作数
+    /// 指令经此路径只会得到全零操作数（静默产错指令），必须走
+    /// iload/istore/branch/lookupSwitch/ldcInt 等助手给全参数。
     Body& op(jbc::core::Op op)
     {
-        last_ = editor_.append(jbc::ir::CodeEditor::simple(op)).unwrap();
+        auto made = mjbase::asm_insn::simpleInsn(op);
+        if (made.is_err()) {
+            ADD_FAILURE() << "op() 只收无操作数形态，带操作数的用 typed 助手: "
+                          << static_cast<int>(op);
+            return *this;
+        }
+        last_ = editor_.append(std::move(made).unwrap()).unwrap();
         return *this;
     }
+
+    // ---- 无操作数快捷（InsnBuilder 风格直写，等价 op(Op::X)）----
+
+    Body& nop() { return op(jbc::core::Op::NOP); }
+    Body& aconstNull() { return op(jbc::core::Op::ACONST_NULL); }
+    Body& iconst_m1() { return op(jbc::core::Op::ICONST_M1); }
+    Body& iconst_0() { return op(jbc::core::Op::ICONST_0); }
+    Body& iconst_1() { return op(jbc::core::Op::ICONST_1); }
+    Body& iconst_2() { return op(jbc::core::Op::ICONST_2); }
+    Body& iconst_3() { return op(jbc::core::Op::ICONST_3); }
+    Body& iconst_4() { return op(jbc::core::Op::ICONST_4); }
+    Body& iconst_5() { return op(jbc::core::Op::ICONST_5); }
+    Body& iadd() { return op(jbc::core::Op::IADD); }
+    Body& isub() { return op(jbc::core::Op::ISUB); }
+    Body& imul() { return op(jbc::core::Op::IMUL); }
+    Body& idiv() { return op(jbc::core::Op::IDIV); }
+    Body& irem() { return op(jbc::core::Op::IREM); }
+    Body& ineg() { return op(jbc::core::Op::INEG); }
+    Body& ishl() { return op(jbc::core::Op::ISHL); }
+    Body& ishr() { return op(jbc::core::Op::ISHR); }
+    Body& iushr() { return op(jbc::core::Op::IUSHR); }
+    Body& iand() { return op(jbc::core::Op::IAND); }
+    Body& ior() { return op(jbc::core::Op::IOR); }
+    Body& ixor() { return op(jbc::core::Op::IXOR); }
+    Body& l2i() { return op(jbc::core::Op::L2I); }
+    Body& i2l() { return op(jbc::core::Op::I2L); }
+    Body& pop() { return op(jbc::core::Op::POP); }
+    Body& pop2() { return op(jbc::core::Op::POP2); }
+    Body& dup() { return op(jbc::core::Op::DUP); }
+    Body& dup_x1() { return op(jbc::core::Op::DUP_X1); }
+    Body& dup_x2() { return op(jbc::core::Op::DUP_X2); }
+    Body& dup2() { return op(jbc::core::Op::DUP2); }
+    Body& swap() { return op(jbc::core::Op::SWAP); }
+    Body& ireturn() { return op(jbc::core::Op::IRETURN); }
+    Body& lreturn() { return op(jbc::core::Op::LRETURN); }
+    Body& freturn() { return op(jbc::core::Op::FRETURN); }
+    Body& dreturn() { return op(jbc::core::Op::DRETURN); }
+    Body& areturn() { return op(jbc::core::Op::ARETURN); }
+    Body& vreturn() { return op(jbc::core::Op::RETURN); }
+    Body& athrow() { return op(jbc::core::Op::ATHROW); }
+    Body& monitorenter() { return op(jbc::core::Op::MONITORENTER); }
+    Body& monitorexit() { return op(jbc::core::Op::MONITOREXIT); }
 
     /// 通用 ILOAD slot。
     Body& iload(ca::u32 slot)
@@ -67,6 +121,17 @@ public:
     Body& istore(ca::u32 slot)
     {
         last_ = editor_.append(jbc::ir::CodeEditor::local(jbc::core::Op::ISTORE, slot)).unwrap();
+        return *this;
+    }
+
+    /// IINC（a = slot，b = 增量）。
+    Body& iinc(ca::u32 slot, ca::i32 delta)
+    {
+        jbc::ir::Insn in;
+        in.op = jbc::core::Op::IINC;
+        in.a  = static_cast<ca::i32>(slot);
+        in.b  = delta;
+        last_ = editor_.append(in).unwrap();
         return *this;
     }
 
@@ -162,6 +227,31 @@ public:
     Body& branch(jbc::core::Op op, jbc::ir::LabelId target)
     {
         last_ = editor_.append(jbc::ir::CodeEditor::branch(op, target)).unwrap();
+        return *this;
+    }
+
+    /// lookupswitch（default 标签 + keys/targets 平行数组；经 asm_insn 工厂
+    /// 校验，keys 须严格递增）。
+    Body& lookupSwitch(jbc::ir::LabelId def, std::vector<ca::i32> keys,
+                       std::vector<jbc::ir::LabelId> targets)
+    {
+        last_ = editor_
+                    .append(mjbase::asm_insn::lookupSwitchInsn(def, std::move(keys),
+                                                               std::move(targets))
+                                .unwrap())
+                    .unwrap();
+        return *this;
+    }
+
+    /// tableswitch（targets[i] 对应 key = low + i，长度须等于 high-low+1）。
+    Body& tableSwitch(jbc::ir::LabelId def, ca::i32 low, ca::i32 high,
+                      std::vector<jbc::ir::LabelId> targets)
+    {
+        last_ = editor_
+                    .append(mjbase::asm_insn::tableSwitchInsn(def, low, high,
+                                                              std::move(targets))
+                                .unwrap())
+                    .unwrap();
         return *this;
     }
 
