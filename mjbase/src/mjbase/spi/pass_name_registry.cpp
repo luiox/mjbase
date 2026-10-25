@@ -338,7 +338,7 @@ PassNameRegistry makeDefaultRegistry()
     seed(reg.registerMethodPass(
         "UselessPopCleaner",
         [] { return std::make_unique<mjbase::pass::UselessPopCleaner>(); },
-        "Remove width-matched local-load + pop/pop2 adjacent dead-load pairs."));
+        "Remove dead pop chains: local-load+pop/pop2 adjacent pairs, and pop-discarded pure-const producers via def-use."));
     // opt pass 波次（常量跳转折叠件，ConsJump 三件套首件）：常量装载 +
     // 常量条件跳转的相邻窗口折叠——谓词恒真改 GOTO（复用原目标标签）、
     // 恒假整窗删除（单槽 int 谓词、ACONST_NULL 空谓词、双槽 IF_ICMPxx；
