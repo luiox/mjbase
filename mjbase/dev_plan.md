@@ -90,9 +90,19 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
 - [ ] UnreachableInsnRemover（dead_code_remover.cpp 1594 行内非 NopRemover
   部分）：帧可达性证明删不可达指令；mjbase cfg/evaluator 面齐，最大单件，
   独立批。NopRemover 已由方法级四件批收口。
-- [ ] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
+- [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。
+  → 已落地：载体定型——字段面 backing MemberInfo 新建 ConstantValue
+  RawAttr 槽（tool_class_combiner rebuildConstantValue 同口径），指令面
+  promoteMethod → CodeDom 逐对 erase（ErasePolicy::kRejectIfUsed +
+  labelsAnchorAt 前置分流）→ lowerMethod；落盘序 lower 成功才写字段面，
+  失败时会话弃置即无半内联态。语义对齐 mbase 治理版（多次 PUTSTATIC
+  预扫描计数非单次写整族跳过）；计数精确化：只数 owner==本类（旧栈按
+  name+desc 全数，他类同名字段连带挡刀），pass 头注声明差异。8 单测
+  （iconst/bipush/sipush/ldc × I/F/J/D、多次写字节恒等、既有 CV 不改写、
+  非 static 与他类 owner 跳过、非常量前驱跳过、无 clinit、注册面
+  scope:class）；全量 1605 绿。
 - [x] UnusedLabelRemover：**结构性吸收**（裁决 2026-10-18）——新栈 CodeDom
   无标签节点，标签是按引用物化的边界句柄；LNT/LVT 锚定指令位（AIR
   originalOffset 批三），旧栈「孤立 LabelNode」在新载体无可序列化形态，
