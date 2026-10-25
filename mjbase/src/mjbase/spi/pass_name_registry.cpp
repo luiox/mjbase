@@ -14,6 +14,7 @@
 #include "mjbase/pass/devirtualize_single_target.hpp"
 #include "mjbase/pass/expression_simplifier.hpp"
 #include "mjbase/pass/fix_pattern_simplifier.hpp"
+#include "mjbase/pass/identity_wrapper_inliner.hpp"
 #include "mjbase/pass/illegal_class_file_cleaner.hpp"
 #include "mjbase/pass/junk_code_inserter.hpp"
 #include "mjbase/pass/meta_info_remover.hpp"
@@ -386,6 +387,13 @@ PassNameRegistry makeDefaultRegistry()
         "DevirtualizeSingleTarget",
         [] { return std::make_unique<mjbase::pass::DevirtualizeSingleTarget>(); },
         "Rewrite virtual/interface call sites with one provable target into invokespecial."));
+    // opt pass 波次（恒等包装不动点内联，#37 前置件）：invokestatic 壳调用点
+    // 直达最终目标（路径压缩），壳体保留、删除延后 GlobalUnusedMethodRemover。
+    // 标签：scope:global / action:rewrite / stability:opt-in（默认链不收）。
+    seed(reg.registerGlobalPass(
+        "IdentityWrapperInliner",
+        [] { return std::make_unique<mjbase::pass::IdentityWrapperInliner>(); },
+        "Rewrite invokestatic call sites of pure forwarder shells to their final targets."));
     return reg;
 }
 
