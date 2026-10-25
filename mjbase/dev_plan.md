@@ -70,6 +70,16 @@
   （拆成单写常量标量后接 CV 内联）。实例字段与引用数组挂账后续切片。
   12 单测（roundtrip 语义断言：writeClass 重读后指令序列/字段面），
   全量 1617 仅 2 例并行会话 constant_folder 本地红态（非本件面）。
+- [x] 恒等包装不动点内联首件（#37 前置，IdentityWrapperInliner，新增件
+  ——mbase method_inliner 的 wrapper 特化上收）：识别纯转发壳（静态直通
+  / 虚转发两形态，JDK 装拆箱为公共目标特例）并把 invokestatic 调用点
+  一步改写到路径压缩后的最终目标；壳→壳链压缩、环与死链整族拒收。
+  调用点单指令改写（不克隆壳体），栈形逐点不变、形态 B 接收者
+  P0 <: T 由壳体自身验证保证；synchronized 壳与异常表非空拒收。
+  访问门 public/同类 private/同包包私有（protected 跨包子类不认），
+  容器外目标只认 JDK 八 box 类白名单。壳体保留，删除延后
+  GlobalUnusedMethodRemover。自包含两阶段不消费注册分析；
+  15 容器级单测，全量 1631 绿（3 既有跳过）。
 
 ## opt pass 余量批次裁决（W0 备料，mjt-deobf 消费面缺口对账）
 
