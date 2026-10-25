@@ -158,7 +158,17 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     9 单测（lookup 命中/未命中、table 命中/出界、switch 前锚拒收、头锚
     放行、非常量 selector 不动、幂等、注册面），全量 1721 绿（1718 过 +
     3 既有跳过）。
-  → 余项挂账：ConstantStateMachineEliminator（常量状态机消解）待迁。
+  → ConstantStateMachineEliminator 结构性吸收，不独立迁移：其可解析形态
+    面（头 [常量; istore s; goto D] + D: iload s; switch + 各 case 尾
+    [常量; istore s; goto D]/终态返回 + 状态链行走 + 外部跳转入岛拒收）
+    已被 FlatteningReverser 引擎覆盖——默认前驱形态表与分发折叠步规格正是
+    同族形状（PR #49 端到端即该标准形态）。两处载体差异论证：旧栈纯体
+    白名单（禁调用/字段/除法/数组/monitor，树模型无等价性判据的保守面）
+    对应新栈帧深等价门（更一般）；旧栈「直线化 + 状态尾随改写内删」对应
+    新栈 goto 重定向 + 局部存储清理家族收敛（UselessPopCleaner/PopUnUsed
+    /RedundantLoadVal 联合不动点已证，见 pop_unused 端到端）。旧栈遇任意
+    try-catch 全局弃置，新栈按标签粒度入边守卫，覆盖面只宽不窄。独立成件
+    与引擎重叠，违反件职责单一。ConsJump 三件套至此收口。
 - [ ] RedundantJumpRemover / GotoRearranger / ContinuousLabelMerger
   （449 行）：label 布局族——新载体无标签节点，逐件载体重论证（部分可能
   结构性吸收或改形为边界句柄重排），未论证前不迁。
