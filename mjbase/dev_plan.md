@@ -232,6 +232,22 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     依赖帧溯源（生产者定位/槽位活跃性），随帧面批次逐件论证；UselessPopCleaner
     帧载体形态（非相邻生产者、POP2 双 cat1 半删降 POP、DUP/DUP2 被 pop 吸收、
     多来源汇合）同批挂账。
+  → UselessPopCleaner 帧溯源面已落地（def_use 到达定义载体）：弹值的全部
+    到达定义均为纯常量生产者（int/long/float/double/string 常量装载 +
+    ACONST_NULL）且每个定义的全部使用边指向本 pop → 生产者组 + pop 整删；
+    POP2 顶值 cat2 整删、双 cat1 两侧整删/单侧半删原位降 POP（与旧栈
+    canRemoveForPop 逐形态对齐，含仅底值可删的降级）。载体论证：跨距离/
+    跨路径对窗口面不可见，def-use 合并到达定义天然覆盖（分支汇合多定义
+    同组处理）；帧面不需要窗口面标签守卫（边覆盖进入 pop 的全部路径），
+    删除仍走 fallthrough 重定向。安全门：DUP/DUP2 族/SWAP 任一在场禁用
+    帧面（复制类无使用边，删生产者留悬空中继破坏栈元数——挂账逐中继
+    细化）；分析失败/truncated 跳过；不播种入参（参数弹值无到达定义边，
+    保守不动）；局部装载不作帧面生产者（def-use 里定义归 store，隔距离
+    装载对删除需连 store 活跃性一起判，归 DeadLocalStoreRemover 合同，
+    不在本件重复）；LDC(class/MT/MH) 纯生产者挂账帧面余件。10 单测
+    （常量/ACONST_NULL/非相邻双 pop、POP2 long/double/双 cat1、半删顶侧
+    参数底值/底侧 store 转发顶值、中继守卫、多定义汇合），全量 1737 绿
+    （1734 过 + 3 既有跳过）。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。
