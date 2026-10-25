@@ -106,12 +106,12 @@ TEST(FlatteningReverserTest, lookupDispatcherResolvesStateCycle)
         b.bindHere(aL);
         b.istore(2).iload(2).istore(1).branch(Op::GOTO, dL);
         // B 块 / X 块收尾。
-        b.op(Op::ICONST_1);
+        b.iconst_1();
         b.bindHere(bL);
-        b.op(Op::IRETURN);
-        b.op(Op::ICONST_0);
+        b.ireturn();
+        b.iconst_0();
         b.bindHere(xL);
-        b.op(Op::IRETURN);
+        b.ireturn();
     });
     const auto before = opsOf(fx);
     const auto pa     = fx.run(mjbase::pass::FlatteningReverser{});
@@ -145,12 +145,12 @@ TEST(FlatteningReverserTest, tableDispatcherResolvesOffsetAndDefault)
         b.ldcInt(8);
         b.bindHere(aL);
         b.istore(1).branch(Op::GOTO, dL);
-        b.op(Op::ICONST_1);
+        b.iconst_1();
         b.bindHere(bL);
-        b.op(Op::IRETURN);
-        b.op(Op::ICONST_0);
+        b.ireturn();
+        b.iconst_0();
         b.bindHere(xL);
-        b.op(Op::IRETURN);
+        b.ireturn();
     });
     const auto pa = fx.run(mjbase::pass::FlatteningReverser{});
     EXPECT_TRUE(pa.changed());
@@ -178,12 +178,12 @@ TEST(FlatteningReverserTest, xorOffsetResolvesThroughKey)
         b.ldcInt(-222222222);
         b.bindHere(aL);
         b.istore(1).branch(Op::GOTO, dL);
-        b.op(Op::ICONST_1);
+        b.iconst_1();
         b.bindHere(bL);
-        b.op(Op::IRETURN);
-        b.op(Op::ICONST_0);
+        b.ireturn();
+        b.iconst_0();
         b.bindHere(xL);
-        b.op(Op::IRETURN);
+        b.ireturn();
     });
     const auto pa = fx.run(mjbase::pass::FlatteningReverser{});
     EXPECT_TRUE(pa.changed());
@@ -208,9 +208,9 @@ TEST(FlatteningReverserTest, rejectsSecondReadOfStateSlot)
         // 前导多读一次 s（pop 配平）：唯一触发面是第二读点门，写链本身
         // 仍是可解析的直存形态。
         b.iload(1).op(Op::POP).ldcInt(111111111).istore(1).branch(Op::GOTO, dL);
-        b.op(Op::ICONST_0);
+        b.iconst_0();
         b.bindHere(xL);
-        b.op(Op::IRETURN);
+        b.ireturn();
     });
     const auto before = opsOf(fx);
     const auto pa     = fx.run(mjbase::pass::FlatteningReverser{});
@@ -233,9 +233,9 @@ TEST(FlatteningReverserTest, rejectsOverlappingWrite)
         b.bindHere(aL);
         // 第一处写点后继是 iload（非 goto D）：交叠定值整族拒收。
         b.istore(1).iload(2).istore(2).istore(1).branch(Op::GOTO, dL);
-        b.op(Op::ICONST_0);
+        b.iconst_0();
         b.bindHere(xL);
-        b.op(Op::IRETURN);
+        b.ireturn();
     });
     const auto before = opsOf(fx);
     const auto pa     = fx.run(mjbase::pass::FlatteningReverser{});
@@ -256,15 +256,15 @@ TEST(FlatteningReverserTest, rejectsBranchIntoDispatcherInterior)
         b.bindHere(dL);
         b.ldcInt(7);
         b.bindHere(midL);   // 锚在 D 区间内部的 ldc 上
-        b.op(Op::IADD);
+        b.iadd();
         b.lookupSwitch(xL, {111111118}, {aL});
         b.ldcInt(111111111);
         b.bindHere(aL);
         // A 尾跟随一条死 goto 直指 D 内部锚点：唯一触发面是区间内锚定门。
         b.istore(1).branch(Op::GOTO, dL).branch(Op::GOTO, midL);
-        b.op(Op::ICONST_0);
+        b.iconst_0();
         b.bindHere(xL);
-        b.op(Op::IRETURN);
+        b.ireturn();
     });
     const auto before = opsOf(fx);
     const auto pa     = fx.run(mjbase::pass::FlatteningReverser{});
@@ -287,9 +287,9 @@ TEST(FlatteningReverserTest, rejectsFallthroughIntoDispatcherHead)
         // aL 块：空体回环 D 头（case 目标）。
         b.branch(Op::GOTO, dL);
         b.bindHere(aL);
-        b.op(Op::ICONST_0);
+        b.iconst_0();
         b.bindHere(xL);
-        b.op(Op::IRETURN);
+        b.ireturn();
     });
     const auto before = opsOf(fx);
     const auto pa     = fx.run(mjbase::pass::FlatteningReverser{});
@@ -313,9 +313,9 @@ TEST(FlatteningReverserTest, rejectsSecondSwitch)
         b.istore(1).branch(Op::GOTO, dL);
         // 尾随另一个局部上的无关 switch（A 尾 goto 后不可达）。
         b.iload(3).lookupSwitch(xL, {1}, {xL});
-        b.op(Op::ICONST_0);
+        b.iconst_0();
         b.bindHere(xL);
-        b.op(Op::IRETURN);
+        b.ireturn();
     });
     const auto before = opsOf(fx);
     const auto pa     = fx.run(mjbase::pass::FlatteningReverser{});
@@ -337,9 +337,9 @@ TEST(FlatteningReverserTest, rejectsIincOnStateSlot)
         b.iinc(1, 3);
         b.bindHere(aL);
         b.branch(Op::GOTO, dL);
-        b.op(Op::ICONST_0);
+        b.iconst_0();
         b.bindHere(xL);
-        b.op(Op::IRETURN);
+        b.ireturn();
     });
     const auto before = opsOf(fx);
     const auto pa     = fx.run(mjbase::pass::FlatteningReverser{});
@@ -362,12 +362,12 @@ TEST(FlatteningReverserTest, idempotentOnSecondRun)
         b.ldcInt(-222222222);
         b.bindHere(aL);
         b.istore(2).iload(2).istore(1).branch(Op::GOTO, dL);
-        b.op(Op::ICONST_1);
+        b.iconst_1();
         b.bindHere(bL);
-        b.op(Op::IRETURN);
-        b.op(Op::ICONST_0);
+        b.ireturn();
+        b.iconst_0();
         b.bindHere(xL);
-        b.op(Op::IRETURN);
+        b.ireturn();
     });
     const auto pa1 = fx.run(mjbase::pass::FlatteningReverser{});
     EXPECT_TRUE(pa1.changed());
@@ -392,12 +392,12 @@ TEST(FlatteningReverserTest, customPredFormRowExtendsFacility)
         b.iload(1);
         b.bindHere(dL);
         b.lookupSwitch(xL, {111111111}, {aL});
-        b.op(Op::ICONST_1);
+        b.iconst_1();
         b.bindHere(aL);
-        b.op(Op::IRETURN);
-        b.op(Op::ICONST_0);
+        b.ireturn();
+        b.iconst_0();
         b.bindHere(xL);
-        b.op(Op::IRETURN);
+        b.ireturn();
     });
     // 注入行替换默认表：默认直存/单级弹跳均不命中双级弹跳形态，若引擎
     // 写死形态则本用例必然失败。从写点向前：iload v → istore v → iload u
