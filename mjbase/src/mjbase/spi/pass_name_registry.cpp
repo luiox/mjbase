@@ -34,6 +34,7 @@
 #include "mjbase/pass/unreachable_insn_remover.hpp"
 #include "mjbase/pass/useless_pop_cleaner.hpp"
 #include "mjbase/pass/dead_local_store_remover.hpp"
+#include "mjbase/pass/dead_side_effect_free_call_remover.hpp"
 #include "mjbase/pass/static_field_default_inliner.hpp"
 #include "mjbase/pass/static_array_field_scalarizer.hpp"
 #include "mjbase/pass/unused_check_cleaner.hpp"
@@ -345,6 +346,11 @@ PassNameRegistry makeDefaultRegistry()
         "DeadLocalStoreRemover",
         [] { return std::make_unique<mjbase::pass::DeadLocalStoreRemover>(); },
         "Remove/downgrade stores to slots whose values never reach a meaningful sink."));
+    // opt pass 波次（帧溯源面批次）：白名单无副作用调用的纯链弹弃整删。
+    seed(reg.registerMethodPass(
+        "DeadSideEffectFreeCallRemover",
+        [] { return std::make_unique<mjbase::pass::DeadSideEffectFreeCallRemover>(); },
+        "Remove whitelisted side-effect-free calls whose results feed a pop-discarded pure chain."));
     // opt pass 波次（常量跳转折叠件，ConsJump 三件套首件）：常量装载 +
     // 常量条件跳转的相邻窗口折叠——谓词恒真改 GOTO（复用原目标标签）、
     // 恒假整窗删除（单槽 int 谓词、ACONST_NULL 空谓词、双槽 IF_ICMPxx；

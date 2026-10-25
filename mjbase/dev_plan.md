@@ -264,6 +264,20 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     常量整删、读点喂 pop 仍死、汇点保槽、参数槽、运算降级、共享常量
     逐出（dup 透明边）、转存链穿透、cat2 族、分支汇合多定义整删、分析
     失败跳过、注册面），全量 1748 绿（1745 过 + 3 既有跳过）。
+  → DeadSideEffectFreeCallRemover 已落地（帧溯源面批次，白名单声明表 +
+    def-use 链闭包载体重推导）：白名单 = 零参无副作用返回 cat2 的 JDK
+    静态调用（System.nanoTime/currentTimeMillis ()J、Math.random ()D，
+    扩展只增条目）；链成员 = 白名单调用叶子 + 纯计算生产者（常量装载/
+    算术/数值转换/arraylength/instanceof），输入边 arity 缺失守卫（看不
+    见的来源不可删）；触发条件 = 链含白名单调用且弹值定义全入链（纯常量
+    链归 UPC 帧面不重复）；共享消费者逐出不动点级联；区间门 = [链首,
+    pop] 只含链成员与 pop 且内部无存活标签（区间外分支不得中途进入；
+    布局 wrap 保守拒收）。安全门：方法含异常表整件跳过（handler 入口
+    值无定义边，精细化挂账）、分析失败/截断跳过、签名播种入参。13 单测
+    （直弃/random 白名单/隔 LADD 运算/L2I+IADD 长整尾链、纯常量链不动、
+    非白名单不动、dup2 转存外部消费逐出、区间内外来指令/内部标签、
+    异常表跳过、幂等、写回一致、注册面），全量 1761 绿（1758 过 + 3
+    既有跳过）。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。
