@@ -182,9 +182,18 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     goto→len 被 promote 拒收，End 绑定路径不设）。7 单测（GOTO 删除/单值
     条件跳/双值 icmp/双值 acmp/空谓词/远目标不动/注册面），全量 1728 绿
     （1725 过 + 3 既有跳过）。
-  → 余项挂账：GotoRearranger（单入边简单块搬移消跳转，需 CFG 面）、
-    ContinuousLabelMerger（同界标签别名合并，需引用重定向面含异常表
-    排除）逐件载体重论证。
+  → 余项载体重论证收口：
+    ContinuousLabelMerger 不迁——同界标签别名合并在旧栈是树模型开销优化
+    （减少 LabelNode、加速后续 pass），其 classfile 可观测面恒等（分支偏移
+    不变，仅目标别名重定向；LNT 引用替换在旧栈可改 LNT 属性，新载体 LNT
+    是 backing 不可见面）。新载体无标签节点、无引用计数成本，多个标签同
+    锚一界各随引用者物化同一 pc，合并不产生任何字节级改写。除非未来出现
+    以标签身份为键的分析面需要规范化，本件在新载体无落点。
+    GotoRearranger 挂账待载体原语——块搬移消跳转有真实可观测价值（减少
+    跳转次数、改写布局），但实现需要「带锚定标签的指令区间整体搬移」
+    原语：CodeDom 现有 swap 仅支持双指令交换，erase+重建会破坏标签锚定。
+    待 jbc 侧补 move-range 类原语后再论证迁移。标签布局族首件已落地，
+    族内分析至此收口。
 - [ ] UnreachableInsnRemover 家族（dead_code_remover.cpp 1594 行内非 NopRemover
   部分，切片迁移）：帧可达性证明删不可达指令。NopRemover 已由方法级四件批收口。
   → 首件已落地（结构级 UnreachableInsnRemover，scope:method）：帧引擎 BestEffort
