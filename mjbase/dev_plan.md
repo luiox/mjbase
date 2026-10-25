@@ -15,8 +15,11 @@
   ReferenceIndex 池内声明文本——悬垂 std::string 曾致 UnusedClassRemover
   的 keep 类根静默丢失）+ 四个删除器接入（Empty/UnusedClass/UnusedField/
   GlobalUnusedMethod）。
-- [ ] P0-3 可配置无用调用删除（RemoveMethodCallsHandler 等价物）：
+- [x] P0-3 可配置无用调用删除（RemoveMethodCallsHandler 等价物）：
   scope:global，CLI 白名单供调用点，删除后同步调用图边；研究已派。
+  → 已落地（#29，MethodCallRemover）：按名单点名删除成员调用点 + 无用
+  结果白名单面；默认无配置完全 no-op（opt-in），配置为程序化注入
+  （MethodCallRemovalConfig）；CLI/配置解析供给面属 cli 批挂账。
 - [x] P0-4 非私有成员删除 + 调用修复：UnusedFieldRemover / GlobalUnusedMethodRemover
   按 `UnusedMemberAccessTier` 三档放开（PrivateOnly 旧策略 / NonPublic 默认删
   package-private/protected、public 面 fail-closed 保守 / All 闭程序激进）；
@@ -25,8 +28,11 @@
   删成员」的悬垂引用；裁定「可达性判死 ⇒ 保留代码无引用 ⇒ 删除后 invoke 指令面
   无需清扫」（删除族与 MethodCallRemover 无正确性顺序约束），调用图边经
   PreservedAnalyses 失效链重建。
-- [ ] P0-5 实例化类保守根：RTA 式按 `new` 点位收窄可达类集合，喂
+- [x] P0-5 实例化类保守根：RTA 式按 `new` 点位收窄可达类集合，喂
   UnusedClassRemover 的 rootClasses；与现有 ResolvedCallGraph 的关系待定。
+  → 已落地（#26）：ResolvedCallGraph 增 RTA 收窄面（实例化点位收窄可达
+  类集合）+ keep_roots 根翻译接线（rootClasses 供给 UnusedClassRemover）；
+  resolved_call_graph_rta_test / keep_roots_rta_test + RTA JVM 真跑门收口。
 - [x] P0-6 多版本 JAR（Multi-Release）：META-INF/versions/N/ 条目版本分组，
   删除/重命名不得跨版本误伤。研究已派。
   → 已落地：容器层族视图（resource_container 的
@@ -43,8 +49,11 @@
 - [x] P1 强度削减与常量折叠已落地并注册种子：StrengthReducer（2^k 乘/除 →
   移位/移位-加法序列，序列峰值 maxStack 按宽度抬升 int +1 / long +2，
   maxStack ≥ 0xFFFD 预检不改写）、ConstantFolder（栈常量链 30 条指令，
-  除零与 int/long MIN÷-1 红线保守不折）；余下 P1（GVN/CSE、去虚拟化、
-  同步消除、StringBuilder 链化简）待批。
+  除零与 int/long MIN÷-1 红线保守不折）；去虚拟化已落地（#31，
+  DevirtualizeSingleTarget：CHA 证明唯一活目标时 invokevirtual/
+  invokeinterface 改写 invokespecial，JVMS 合法性依据与放弃清单见
+  pass 头注，stability:opt-in）；余下 P1（GVN/CSE、同步消除、
+  StringBuilder 链化简）待批。
 - [x] B 批 meta_info_remover 家族迁移（scope:class）：类级 13 件已收口 +
   两件挂账收口（record 组件注解清空 / 参数注解槽内过滤）。
 
@@ -61,11 +70,18 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   待批（extractor 段 + corpus + compare test）。
 - [ ] StackOperationExpander：OriginalSource 帧分析展开常量 producer 上的
   DUP 族，依赖帧面，随帧链接线批次。
-- [ ] **FixPatternSimplifier**（236 行）：位运算固定模式 / 六种 `IF_ICMP*`
+- [x] **FixPatternSimplifier**（236 行）：位运算固定模式 / 六种 `IF_ICMP*`
   安全折叠（非零偏移保留）/ 同 slot store/load 重写（clone producer）；
   matcher 底座已迁。样板批次选。
-- [ ] ExpressionSimplifier（409 行）：表达式形状折叠。
-- [ ] TypeCastSimplifier（328 行）：冗余 checkcast 消除，需类型分析面。
+  → 已落地（#25，8b98945，window_rule 载体）：位运算族 + 死代码族 +
+  整数比较常量偏移折叠 + 同 slot store/load 中转消除。
+- [x] ExpressionSimplifier（409 行）：表达式形状折叠。
+  → 已落地（#25，8b98945）：代数 peephole——恒等元 + 交换/结合 +
+  mul-by--1/shift 等旧规则集（丢弃一条代数不成立的 legacy 规则）。
+- [x] TypeCastSimplifier（328 行）：原始类型 cast 常量折叠 + 已知 JDK
+  helper（Float/Double 位图、Integer/Long 解析）折叠（mbase 原实现即
+  cast/helper 折叠面，非 checkcast 消除）。
+  → 已落地（#25，8b98945）。
 - [ ] ConsJumpOptimizer / ConstantSwitchFolder / ConstantStateMachineEliminator
   （628 行）：常量分支/switch/状态机折叠，依赖 asm/evaluator（已迁）。
 - [ ] RedundantJumpRemover / GotoRearranger / ContinuousLabelMerger
