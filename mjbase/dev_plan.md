@@ -303,7 +303,21 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     Math.random 零参条目旧栈 URCE 因 producers.empty() 不收、DSFCR 首版
     已收——两表并一后并集闭环。6 新单测（常量串 length 整删、Math.max
     两常量整删、Math.abs(J) 配 POP2、参数实参/参数接收者保留、纯计算
-    实参扩展声明），全量 1777 绿（1774 过 + 3 既有跳过）。
+    实参扩展声明），全量 1777 绿（1774 过 + 3     （1774 过 + 3 既有跳过）。
+  → RedundantInvokeRemover 已落地（帧溯源面批次收口，全局件「普查 +
+    委派」载体重推导）：普查 = 容器全类装载（任一不可解析整件放弃）→
+    定义集（全部类声明方法三元组）→ 逐方法 promote 扫「调用 + 紧随宽度
+    匹配弹弃」（返回 cat2 配 POP2/其余配 POP）且目标入定义集 →
+    MethodEffectModel isPure 提名（ReadOnly 不提名，与旧栈 isPure 档
+    对齐）；应用 = 提名成员装 MethodCallRemover includeCalls 委派点名
+    面（栈等价改写/实参补弹宽/句柄钉死/两阶段提交全复用，且覆盖死局部
+    消费面——旧栈仅 pop/pop2 面，超集安全）。与旧栈「调用换 ICONST_1
+    留实参残段」的差异：点名面单件摘净调用与消费面，实参生产者残段由
+    局部清理族后续收敛。只删调用点不删定义（悬垂方法归 unused-member
+    族收尾）。8 单测（纯弹弃删、只读/非纯/返回被消费/容器外目标保留、
+    跨类全应用、被调方不改写、注册面），全量 1785 绿（1782 过 + 3
+    既有跳过）。GotoRearranger 挂账的 jbc move-range 原语已开
+    libjbc#10 跟踪。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。
