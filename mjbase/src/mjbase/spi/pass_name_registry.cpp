@@ -15,6 +15,7 @@
 #include "mjbase/pass/exception_trampoline_inliner.hpp"
 #include "mjbase/pass/expression_simplifier.hpp"
 #include "mjbase/pass/fix_pattern_simplifier.hpp"
+#include "mjbase/pass/flattening_reverser.hpp"
 #include "mjbase/pass/identity_wrapper_inliner.hpp"
 #include "mjbase/pass/illegal_class_file_cleaner.hpp"
 #include "mjbase/pass/junk_code_inserter.hpp"
@@ -296,6 +297,15 @@ PassNameRegistry makeDefaultRegistry()
         "ExceptionTrampolineInliner",
         [] { return std::make_unique<mjbase::pass::ExceptionTrampolineInliner>(); },
         "Dissolve aconst_null/athrow catch-all trampolines into fallthrough."));
+    // opt pass 波次（反扁平化层第三件）：控制流反扁平化——常量状态传播
+    // + switch 分发静态解析。通用引擎（唯一 switch 审计/状态槽读写审计/
+    // 帧深等价门）+ 可注入形态表（变体扩展面，构造期可替换）。标签：
+    // scope:method / action:rewrite / stability:opt-in（默认链不收，
+    // CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "FlatteningReverser",
+        [] { return std::make_unique<mjbase::pass::FlatteningReverser>(); },
+        "Statically resolve flattened switch dispatch: constant state propagation, goto retarget."));
     // 批 A（容器级直写组首件）：全容器确定性类重命名。
     seed(reg.registerGlobalPass(
         "ClassRenamer", [] { return std::make_unique<mjbase::pass::ClassRenamer>(); },

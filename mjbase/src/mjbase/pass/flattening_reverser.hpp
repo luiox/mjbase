@@ -1,0 +1,138 @@
+/// @file        flattening_reverser.hpp
+/// @brief       控制流反扁平化设施：常量状态传播 + switch 分发静态解析。
+///
+/// ## 定位：通用引擎 + 形态表（变体不写死）
+///
+/// 扁平化混淆的变体很多（分发操作数的折叠形态、前驱块尾的状态写形态都
+/// 因混淆器而异），但反扁平化的**推理骨架**是共通的：
+///
+/// 1. 全方法 switch 唯一性审计（多 switch 读同一状态 = 多汇合点，无法
+///    单值传播）；
+/// 2. 分发操作数解析：switch 键值必须是「状态槽单次装载 + 常量折叠步」；
+/// 3. 状态槽读写全量审计：读点唯一（恰为分发块读点）、写点全部可解析；
+/// 4. 逐写点用**前驱形态表**解析常量状态 K，静态求值 `fold(K)` 命中
+///    switch 案表（未命中走 default——default 是合法状态语义，不盲删）；
+/// 5. 入边守卫（非前驱分支锚入分发块区间 / 物理直落进块头 / 案表自引用
+///    全部拒收）+ 帧引擎栈深等价门；
+/// 6. 事务性统一改写：前驱 goto 直接复用 switch 的 case 标签句柄，分发块
+///    失去全部入边变不可达（交死代码清理面），`while(true)+switch` 状态机
+///    形态消失。
+///
+/// 因此本 pass 分两层：上面 1/3/4(求值)/5/6 是**引擎**（与变体无关的通用
+/// 推理）；「哪些指令形态算状态装载/常量折叠步/状态写入」是**形态表**
+/// （构造期可注入的数据，默认表只是保守首版）。新变体 = 加表行或调规格，
+/// 不改引擎；若某混淆器家族的形态表膨胀到自成体系，形态表整体外移到
+/// 配方层，引擎留在本仓。已知挂账的变体类：相对状态更新（`s += D` 型，
+/// 需先解出各前驱处 s 的当前值，等价于对状态机本身做数据流求解）。
+///
+/// ## 适配的混淆形态（默认形态表覆盖面）
+///
+/// 扁平化混淆器把方法的真实功能块拆散成平级块，用状态机串联：
+///
+/// - 状态变量 `s`（int 局部）：各功能块尾部写常量状态后 `goto D`；
+/// - 分发块 `D`（单汇合块）：`iload s`（或 `iload s; ldc C; iadd/isub/ixor`
+///   单步常量偏移——第二层不透明算术折叠后的退化形态）收尾于
+///   lookupswitch/tableswitch，按 `fold(s)` 派发到功能块入口；
+/// - 功能块尾再写下一状态回到 D——CFG 成环，反编译器只能渲染成
+///   `while(true) + switch` 状态机形态。
+///
+/// 本 pass 是三层反混淆链的第三层：第一层 ExceptionTrampolineInliner 消解
+/// 异常跳板，第二层 FixPatternSimplifier 规则 12–14 折叠不透明算术恒等式，
+/// 本层静态解析分发。
+///
+/// ## 形态示例（JVMS 视角，合成值）
+///
+///     D:  iload s
+///         lookupswitch { 111111111: A, -222222222: B, default: X }
+///     A:  <真实块 A 体>
+///         ldc -222222222; istore t; iload t; istore s; goto D
+///     B:  <真实块 B 体>; iconst_1; ireturn
+///     X:  iconst_0; ireturn
+///     入口: ldc 111111111; istore s; goto D
+///
+/// 改写后（只动 goto 目标，指令集与状态链原样保留）：
+///
+///     入口: ldc 111111111; istore s; goto A
+///     A:   <真实块 A 体>
+///          ldc -222222222; istore t; iload t; istore s; goto B
+///
+/// `istore t; iload t` 中转弹跳与状态写序列是死存噪声，属 store→load
+/// 转发清理面（见 mjbase issue #45 残留噪声清单），本 pass 不动。
+///
+/// ## 栈等价门
+///
+/// 状态链净栈效应为 0，goto 点栈深 = 前驱块入口栈深；原路径经 switch 派发
+/// （switch 弹掉派发值）进入 case 目标，入口栈深同为该值。帧引擎逐前驱
+/// 比对 goto 点与 case 入口的到达栈深，不等即整方法放弃。
+///
+/// ## 放弃清单（全部整方法拒收，不做部分改写）
+///
+/// - switch 数量 != 1；分发操作数不被形态表解析；
+/// - 分发块位于方法首指令（入口边不可静态解析）；
+/// - 状态槽有第二读点、写点为空、写点后继不是 goto D（交叠定值）、
+///   状态槽被 iinc 触碰或作为两槽值（long/double）的高半槽；
+/// - 前驱常量链不被形态表解析（无法静态求值的前驱）；
+/// - 非前驱分支/switch 目标锚入分发块区间（含块头）；物理直落进块头；
+/// - switch 案表目标（含 default）落在分发块区间内（自引用）；
+/// - 帧计算失败或任一等价比对不成立。
+///
+/// ## 事务性与幂等
+///
+/// 改写阶段只做 goto 目标字段赋值（先全量取可变句柄后统一落笔，任一取柄
+/// 失败则零副作用返回）。改写后各前驱 goto 不再指向 D：二次运行时写点
+/// 审计因「goto 不指向 D」整族拒收，过程无增量副作用。
+///
+/// @par 标签
+/// - `scope:method`
+/// - `action:rewrite`
+/// - `stability:opt-in`（默认链不收，CLI -p 显式挂点）
+#pragma once
+
+#include <functional>
+#include <vector>
+
+#include "jbc/core/opcode.hpp"
+#include "jbc/ir/code_dom.hpp"
+#include "mjbase/spi/pass_pipeline.hpp"
+
+namespace mjbase::pass {
+
+/// 控制流反扁平化 pass：通用引擎 + 可注入形态表。
+class FlatteningReverser : public mjbase::spi::MethodPass
+{
+public:
+    /// 前驱块尾形态行：给定状态写点位置 w（order[w] 是对状态槽的 int 写入），
+    /// 从写点向前解析常量状态 K；命中返回 true 并写出 K。行内自行校验
+    /// 指令形态（直存 / 中转弹跳 / 其他变体），引擎不做行内假设。
+    using PredFormFn = std::function<bool(const jbc::ir::ClassSession& session,
+                                          const jbc::ir::CodeDom&       dom,
+                                          const std::vector<jbc::ir::InsnId>& order,
+                                          ca::usize w, ca::i32& k)>;
+
+    /// 分发操作数折叠规格：`iload s` 之后至多 maxSteps 个
+    /// `intConst C; binop∈binops` 折叠步（iload 在前，只认单步折叠层的
+    /// 产出形态；反向 `ldc C; iload s; …` 不在默认面）。
+    struct DispatchSpec
+    {
+        ca::u8                     maxSteps = 1;
+        std::vector<jbc::core::Op> binops{};
+    };
+
+    /// 默认前驱形态表：intConst 直存 + 单级中转弹跳（istore t; iload t）。
+    static std::vector<PredFormFn> defaultPredForms();
+
+    /// 默认分发规格：单步 {iadd, isub, ixor} 偏移（含零步裸 iload）。
+    static DispatchSpec defaultDispatchSpec();
+
+    explicit FlatteningReverser(std::vector<PredFormFn> predForms = defaultPredForms(),
+                                DispatchSpec            dispatch  = defaultDispatchSpec());
+
+    mjbase::spi::PreservedAnalyses run(mjbase::spi::MethodScope&          scope,
+                                       mjbase::spi::MethodAnalysisManager& mam) override;
+
+private:
+    std::vector<PredFormFn> predForms_;
+    DispatchSpec            dispatch_;
+};
+
+}   // namespace mjbase::pass

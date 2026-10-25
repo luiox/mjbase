@@ -29,6 +29,7 @@
 #include "jbc/ir/units.hpp"
 #include "libca/core/result.hpp"
 
+#include "mjbase/asm/insn/insn_factory.hpp"
 #include "mjbase/keys.hpp"
 #include "mjbase/pass/method_rewrite_util.hpp"
 #include "mjbase/spi/frame_rewire.hpp"
@@ -67,6 +68,17 @@ public:
     Body& istore(ca::u32 slot)
     {
         last_ = editor_.append(jbc::ir::CodeEditor::local(jbc::core::Op::ISTORE, slot)).unwrap();
+        return *this;
+    }
+
+    /// IINC（a = slot，b = 增量）。
+    Body& iinc(ca::u32 slot, ca::i32 delta)
+    {
+        jbc::ir::Insn in;
+        in.op = jbc::core::Op::IINC;
+        in.a  = static_cast<ca::i32>(slot);
+        in.b  = delta;
+        last_ = editor_.append(in).unwrap();
         return *this;
     }
 
@@ -162,6 +174,31 @@ public:
     Body& branch(jbc::core::Op op, jbc::ir::LabelId target)
     {
         last_ = editor_.append(jbc::ir::CodeEditor::branch(op, target)).unwrap();
+        return *this;
+    }
+
+    /// lookupswitch（default 标签 + keys/targets 平行数组；经 asm_insn 工厂
+    /// 校验，keys 须严格递增）。
+    Body& lookupSwitch(jbc::ir::LabelId def, std::vector<ca::i32> keys,
+                       std::vector<jbc::ir::LabelId> targets)
+    {
+        last_ = editor_
+                    .append(mjbase::asm_insn::lookupSwitchInsn(def, std::move(keys),
+                                                               std::move(targets))
+                                .unwrap())
+                    .unwrap();
+        return *this;
+    }
+
+    /// tableswitch（targets[i] 对应 key = low + i，长度须等于 high-low+1）。
+    Body& tableSwitch(jbc::ir::LabelId def, ca::i32 low, ca::i32 high,
+                      std::vector<jbc::ir::LabelId> targets)
+    {
+        last_ = editor_
+                    .append(mjbase::asm_insn::tableSwitchInsn(def, low, high,
+                                                              std::move(targets))
+                                .unwrap())
+                    .unwrap();
         return *this;
     }
 
