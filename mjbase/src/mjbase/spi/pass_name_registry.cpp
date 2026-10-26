@@ -37,6 +37,7 @@
 #include "mjbase/pass/dead_side_effect_free_call_remover.hpp"
 #include "mjbase/pass/redundant_store_eliminater.hpp"
 #include "mjbase/pass/redundant_invoke_remover.hpp"
+#include "mjbase/pass/argument_array_scalarizer.hpp"
 #include "mjbase/pass/static_field_default_inliner.hpp"
 #include "mjbase/pass/static_array_field_scalarizer.hpp"
 #include "mjbase/pass/unused_check_cleaner.hpp"
@@ -363,6 +364,11 @@ PassNameRegistry makeDefaultRegistry()
         "RedundantInvokeRemover",
         [] { return std::make_unique<mjbase::pass::RedundantInvokeRemover>(); },
         "Remove discard-called pure methods defined in the container via MethodCallRemover."));
+    // opt pass 波次（#37 切片 1）：参数装箱还原——Object[] 退化签名标量化。
+    seed(reg.registerGlobalPass(
+        "ArgumentArrayScalarizer",
+        [] { return std::make_unique<mjbase::pass::ArgumentArrayScalarizer>(); },
+        "Scalarize boxed Object[] parameters back to real parameter lists."));
     // opt pass 波次（常量跳转折叠件，ConsJump 三件套首件）：常量装载 +
     // 常量条件跳转的相邻窗口折叠——谓词恒真改 GOTO（复用原目标标签）、
     // 恒假整窗删除（单槽 int 谓词、ACONST_NULL 空谓词、双槽 IF_ICMPxx；
