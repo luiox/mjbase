@@ -58,12 +58,13 @@ bool isStackRelayOp(jbc::core::Op op)
     }
 }
 
-/// 帧面可删生产者：纯常量装载——int/long/float/double/string 常量与
-/// ACONST_NULL。覆盖面按旧栈帧载体（InsnUtil::isConstant 的纯装载子集）
-/// 收窄：局部装载不作帧面生产者（def-use 里装载是恒等搬运、定义归 store，
-/// 归 DeadLocalStoreRemover 协同，见头文件挂账）；DUP/DUP2 生产者由中继
-/// 守卫整体取代；LDC(class/MethodType/MethodHandle) 暂不认领（纯生产者，
-/// 收敛到帧面余件再开）。
+/// 帧面可删生产者：纯常量装载——int/long/float/double/string 常量、
+/// ACONST_NULL 与 ldc Class/MethodType/MethodHandle（元数据常量无求值
+/// 副作用；Dynamic/condy 不认领——bootstrap 链有求值副作用）。
+/// 覆盖面按旧栈帧载体（InsnUtil::isConstant 的纯装载子集）收窄：局部
+/// 装载不作帧面生产者（def-use 里装载是恒等搬运、定义归 store，归
+/// DeadLocalStoreRemover 协同，见头文件挂账）；DUP/DUP2 生产者由中继
+/// 守卫整体取代。
 bool isFrameRemovableConstProducer(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in)
 {
     ca::i32         iv = 0;
@@ -71,12 +72,20 @@ bool isFrameRemovableConstProducer(const jbc::ir::ClassSession& session, const j
     float           fv = 0.0F;
     double          dv = 0.0;
     std::string_view sv;
-    return in.op == jbc::core::Op::ACONST_NULL
-           || method_rewrite_util::intValueOf(session, in, iv)
-           || method_rewrite_util::longValueOf(session, in, lv)
-           || method_rewrite_util::floatValueOf(session, in, fv)
-           || method_rewrite_util::doubleValueOf(session, in, dv)
-           || method_rewrite_util::stringValueOf(session, in, sv);
+    if (in.op == jbc::core::Op::ACONST_NULL
+        || method_rewrite_util::intValueOf(session, in, iv)
+        || method_rewrite_util::longValueOf(session, in, lv)
+        || method_rewrite_util::floatValueOf(session, in, fv)
+        || method_rewrite_util::doubleValueOf(session, in, dv)
+        || method_rewrite_util::stringValueOf(session, in, sv)) {
+        return true;
+    }
+    jbc::ir::ClassSession::ConstSem cs;
+    if (session.constOf(in, cs)) {
+        using K = jbc::ir::ClassSession::ConstSem::Kind;
+        return cs.kind == K::Class || cs.kind == K::MethodType || cs.kind == K::MethodHandle;
+    }
+    return false;
 }
 
 /// 生产者是否 category-2（long/double 常量）。同一栈值槽在合法输入下

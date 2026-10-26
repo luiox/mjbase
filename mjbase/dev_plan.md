@@ -370,6 +370,11 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   不闭包 fail-closed）；新标量字段 access 随原字段静态性。4 单测
   （实例 roundtrip、非 <init> 分配弃、arraylength 弃、前驱非 aload
   邻接破坏弃），全量 1809 绿（1806 过 + 3 既有跳过）。
+- [x] UPC 帧面 LDC 元数据常量生产者（帧面余件收窄）：isFrameRemovable
+  ConstProducer 认领 ldc Class/MethodType/MethodHandle——元数据常量无
+  求值副作用，弹弃即纯删；Dynamic/condy 不认领（bootstrap 链有求值
+  副作用，fail-closed）。1 单测（ldc Class; pop 收敛），本地构建面被
+  并行会话 libjhasm 迁移占用，CI 门验证。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。
