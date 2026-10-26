@@ -323,6 +323,22 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     跨类全应用、被调方不改写、注册面），全量 1785 绿（1782 过 + 3
     既有跳过）。GotoRearranger 挂账的 jbc move-range 原语已开
     libjbc#10 跟踪。
+- [x] ArgumentArrayScalarizer 切片 1（#37 首件，scope:global）：装箱参数数组
+  标量化——static ([Ljava/lang/Object;)R 候选（句柄钉死/同类同签名唯一门）
+  被调方取参窗 [aload p; intConst i; aaload; checkcast Ti] 重建为直接局部
+  取参（槽平移 >p 加 n-1，junk 擦除），调用方装箱窗 [iconst n; anewarray
+  Object; (dup; arg; iconst_j; aastore)×n; invokestatic] 剥壳为顺序实参，
+  MemberRemapPlan 描述符同步（声明+全引用+句柄重写复用既有 remapper，
+  字节码先行两阶段提交）。安全门：下标 0..n-1 全覆盖、参数槽触碰审计、
+  逃逸审计（def_use 参数定值使用边须全落窗头 aload/窗内 aaload 两类
+  位点——aload 原样压栈使 aaload 处再记一条栈用边）、argMatchesTi 首切片
+  静态可判面（ACONST_NULL 任意引用 Ti/LDC 字符串常量限 String/Object/
+  ALOAD 槽类型不可见只认 Object，精化归切片 2）、删点不锚标签、CP owner
+  须等声明类、apply 失败候选整族标记死亡（残余位点静默跳过）。promote
+  重建语义下分析期 CodeUnitRef 进 plan 结构保活、apply 期句柄复用不再
+  升格。8 单测（全链还原/null 实参/重复取参同槽、类型失配/逃逸/下标缺口
+  /非窗位点弃收、注册面），全量 1797 绿（1794 过 + 3 既有跳过）。实例
+  形态与死数组清理归切片 3。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。
