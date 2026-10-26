@@ -165,6 +165,121 @@ Bytes buildCallerBoxed(FixtureBuilder& b)
 
 }   // namespace
 
+// ── 切片 2 件：被调方单取参窗（元素 0 checkcast Ti）──
+Bytes buildCalleeTi(const std::string& tiInternal)
+{
+    FixtureBuilder b("Svc");
+    const ca::u16 tiCls = b.cls(tiInternal);
+    // 元素 0：aload_0; iconst_0; aaload; checkcast Ti; astore_1
+    Bytes w0 = cat({0x2a, 0x03, 0x32, 0xc0}, cat(u16b(tiCls), {0x4c}));
+    b.addMethod(method("go", "([Ljava/lang/Object;)V", cat(w0, {0xb1})));
+    return b.assemble();
+}
+
+/// 单实参装箱窗调用方：[iconst_1; anewarray Object; dup; ARG; iconst_0;
+/// aastore; invokestatic go; RETURN]。
+Bytes buildCaller1(FixtureBuilder& b, const Bytes& arg)
+{
+    const ca::u16 objCls = b.cls("java/lang/Object");
+    const ca::u16 mref   = b.methodRef("Svc", "go", "([Ljava/lang/Object;)V");
+    Bytes code = cat({0x04, 0xbd}, u16b(objCls));
+    code = cat(code, cat({0x59}, arg));
+    code = cat(code, cat({0x03, 0x53}, cat({0xb8}, cat(u16b(mref), {0xb1}))));
+    return code;
+}
+
+// ── 切片 2 正面：ldc Class 常量按常量类对齐 ──
+TEST(ArgumentArrayScalarizerTest, classConstArgScalarized)
+{
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "Svc.class", buildCalleeTi("java/lang/Class"));
+    {
+        FixtureBuilder b("Caller");
+        const ca::u16 clsConst = b.cls("java/lang/Class");
+        b.addMethod(method("main", "()V", buildCaller1(b, cat({0x13}, u16b(clsConst)))));
+        addClassResource(container, "Caller.class", b.assemble());
+    }
+    EXPECT_TRUE(runPass(container).changed());
+    const auto* callee = classResource(container, "Svc.class");
+    ASSERT_NE(callee, nullptr);
+    EXPECT_EQ(methodDesc(callee->get(), "go"), "(Ljava/lang/Class;)V");
+    const std::vector<jbc::core::Op> cops = methodOps(classResource(container, "Caller.class")->get(), "main");
+    ASSERT_EQ(cops.size(), 3u);
+    EXPECT_EQ(cops[0], jbc::core::Op::LDC_W);
+}
+
+// ── 切片 2 拒绝：Class 常量与 Ti 失配 ──
+TEST(ArgumentArrayScalarizerTest, classConstMismatchRejected)
+{
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "Svc.class", buildCalleeTi("java/lang/String"));
+    {
+        FixtureBuilder b("Caller");
+        const ca::u16 clsConst = b.cls("java/lang/Object");
+        b.addMethod(method("main", "()V", buildCaller1(b, cat({0x13}, u16b(clsConst)))));
+        addClassResource(container, "Caller.class", b.assemble());
+    }
+    EXPECT_FALSE(runPass(container).changed());
+    const auto* callee = classResource(container, "Svc.class");
+    ASSERT_NE(callee, nullptr);
+    EXPECT_EQ(methodDesc(callee->get(), "go"), "([Ljava/lang/Object;)V");
+}
+
+// ── 切片 2 正面：调用方入参槽类型提升（static 入参直传）──
+TEST(ArgumentArrayScalarizerTest, callerParamPassthroughScalarized)
+{
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "Svc.class", buildCalleeTi("java/lang/String"));
+    {
+        FixtureBuilder b("Caller");
+        // static main(Ljava/lang/String;)V：aload_0 是自身入参（槽 0），
+        // 声明型对齐 Ti。
+        b.addMethod(method("main", "(Ljava/lang/String;)V",
+                           buildCaller1(b, cat({0x2a}, {}))));
+        addClassResource(container, "Caller.class", b.assemble());
+    }
+    EXPECT_TRUE(runPass(container).changed());
+    const auto* callee = classResource(container, "Svc.class");
+    ASSERT_NE(callee, nullptr);
+    EXPECT_EQ(methodDesc(callee->get(), "go"), "(Ljava/lang/String;)V");
+    const std::vector<jbc::core::Op> cops = methodOps(classResource(container, "Caller.class")->get(), "main");
+    ASSERT_EQ(cops.size(), 3u);
+    EXPECT_EQ(cops[0], jbc::core::Op::ALOAD_0);
+}
+
+// ── 切片 2 拒绝：槽被重存储，入参定值证据失效 ──
+TEST(ArgumentArrayScalarizerTest, callerParamRestoredRejected)
+{
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "Svc.class", buildCalleeTi("java/lang/String"));
+    {
+        FixtureBuilder b("Caller");
+        // 前置 aconst_null; astore_0 覆写入参槽 → aload_0 到达定值非入参。
+        Bytes code = cat({0x01, 0x4b}, buildCaller1(b, cat({0x2a}, {})));
+        b.addMethod(method("main", "(Ljava/lang/String;)V", std::move(code)));
+        addClassResource(container, "Caller.class", b.assemble());
+    }
+    EXPECT_FALSE(runPass(container).changed());
+}
+
+// ── 切片 2 正面：实例调用方 this 直传（槽 0 = 调用方类）──
+TEST(ArgumentArrayScalarizerTest, thisAliasPassthroughScalarized)
+{
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "Svc.class", buildCalleeTi("Caller"));
+    {
+        FixtureBuilder b("Caller");
+        FixtureMethod im = method("run", "()V", buildCaller1(b, cat({0x2a}, {})));
+        im.access = 0x0001;   // 去 static：槽 0 = this，声明型 = 调用方类
+        b.addMethod(std::move(im));
+        addClassResource(container, "Caller.class", b.assemble());
+    }
+    EXPECT_TRUE(runPass(container).changed());
+    const auto* callee = classResource(container, "Svc.class");
+    ASSERT_NE(callee, nullptr);
+    EXPECT_EQ(methodDesc(callee->get(), "go"), "(LCaller;)V");
+}
+
 // ── 正面：全链还原（被调方取参窗 + 描述符 + 调用方装箱窗）──
 TEST(ArgumentArrayScalarizerTest, fullRoundTripScalarized)
 {

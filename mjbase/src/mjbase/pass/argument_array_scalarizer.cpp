@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_set>
@@ -276,18 +277,99 @@ void analyzeCallee(CalleePlan& plan, jbc::ir::ClassSession& session, ca::usize m
     }
 }
 
-/// 单指令实参类型守卫（首切片静态可判面；精化归切片 2）。
+/// 调用方方法描述符 → 引用型入参槽表（实例方法槽 0 = this，声明型为
+/// 调用方类自身）；基本型只推槽号（J/D 宽 2），不产出类型证据。
+void collectCallerRefParams(std::string_view desc, bool isStatic,
+                            std::string_view thisClass,
+                            std::map<ca::u32, std::string>& out)
+{
+    const ca::usize endP = desc.find(')');
+    if (desc.empty() || desc[0] != '(' || endP == std::string_view::npos) return;
+    ca::u32 slot = 0;
+    if (!isStatic) {
+        out.emplace(0, std::string(thisClass));
+        slot = 1;
+    }
+    ca::usize k = 1;
+    while (k < endP) {
+        const ca::usize start = k;
+        ca::u32         width = 1;
+        const char      c     = desc[k];
+        if (c == 'L') {
+            while (k < endP && desc[k] != ';') ++k;
+            if (k >= endP) return;
+            ++k;
+            // 对象型去 L/; 壳出内部名（与 checkcast 类名同形）。
+            out.emplace(slot, std::string(desc.substr(start + 1, k - start - 2)));
+        } else if (c == '[') {
+            while (k < endP && desc[k] == '[') ++k;
+            if (k < endP && desc[k] == 'L') {
+                while (k < endP && desc[k] != ';') ++k;
+                if (k >= endP) return;
+            }
+            ++k;
+            out.emplace(slot, std::string(desc.substr(start, k - start)));
+        } else {
+            if (c == 'J' || c == 'D') width = 2;
+            ++k;
+        }
+        slot += width;
+    }
+}
+
+/// 调用方实参类型上下文（切片 2 对齐面）：入参声明槽型 + 惰性 def-use
+/// （仅 aload 实参需要到达定值证据时才构建，单方法至多一次）。
+struct CallerArgCtx
+{
+    bool                           isStatic = false;
+    std::string                    thisClass;
+    std::map<ca::u32, std::string> refTypeBySlot;   ///< 引用型入参槽 → 声明内部名
+    jbc::ir::CodeUnit*             cu       = nullptr;
+    std::string                    desc;
+    std::optional<mjbase::asm_analyzer::MethodDefUse> du;
+};
+
+/// 单指令实参类型守卫（切片 2 对齐面）：
+///   - aconst_null → 任意引用 Ti；
+///   - ldc String → Ti ∈ {String, Object}；ldc Class 常量 → Ti ∈ {常量类, Object}；
+///   - aload s → 槽类型提升：读点到达定值恰为调用方同槽入参定值（单定义、
+///     未截断——槽未被重存储/多前驱合流）时 Ti ∈ {声明型, Object}，否则
+///     仅 Object。多指令实参形态（装箱工厂等）挂账切片 3，与窗形扩展一并。
 bool argMatchesTi(const jbc::ir::ClassSession& session, const jbc::ir::Insn& arg,
-                  std::string_view tiName)
+                  jbc::ir::InsnId argId, std::string_view tiName, CallerArgCtx& actx)
 {
     if (arg.op == Op::ACONST_NULL) return true;   // null 匹配任意引用 Ti
-    std::string_view sv;
-    if (method_rewrite_util::stringValueOf(session, arg, sv)) {
-        return tiName == "java/lang/String" || tiName == "java/lang/Object";
+    jbc::ir::ClassSession::ConstSem cs;
+    if (session.constOf(arg, cs)) {
+        if (cs.kind == jbc::ir::ClassSession::ConstSem::Kind::String) {
+            return tiName == "java/lang/String" || tiName == "java/lang/Object";
+        }
+        if (cs.kind == jbc::ir::ClassSession::ConstSem::Kind::Class) {
+            return tiName == cs.str || tiName == "java/lang/Object";
+        }
+        return false;   // 数值 CP 常量入引用数组位未装箱，字节码不可验证
     }
     LocalAccess la;
     if (localAccessOf(arg, la) && la.generic == Op::ALOAD) {
-        return tiName == "java/lang/Object";   // 局部槽类型不可见：只认 Object
+        if (tiName == "java/lang/Object") return true;
+        if (!actx.du.has_value()) {
+            const jbc::analysis::MethodSig sig{actx.isStatic, actx.desc};
+            actx.du.emplace(mjbase::asm_analyzer::analyzeDefUse(session.backing().cp, *actx.cu, sig));
+        }
+        if (!actx.du->ok() || actx.du->truncated()) return false;
+        const mjbase::asm_analyzer::LocalAccess* read = nullptr;
+        for (const mjbase::asm_analyzer::LocalAccess* ra : actx.du->readsOfLocal(la.slot)) {
+            if (ra->insn.slot == argId.slot) {
+                read = ra;
+                break;
+            }
+        }
+        if (read == nullptr || read->defs.size() != 1 || read->defs.truncated()) return false;
+        const mjbase::asm_analyzer::DefId d = read->defs.at(0);
+        if (d.kind != mjbase::asm_analyzer::DefId::Kind::Parameter || d.id != la.slot) return false;
+        const auto hit = actx.refTypeBySlot.find(la.slot);
+        if (hit == actx.refTypeBySlot.end()) return false;
+        return tiName == hit->second;
     }
     return false;
 }
@@ -371,6 +453,14 @@ mjbase::spi::PreservedAnalyses ArgumentArrayScalarizer::run(
             const ca::usize           n     = order.size();
             std::vector<InsnId>       methodErases;
             std::set<ca::usize>       methodPlans;
+            // 切片 2：调用方实参类型上下文（入参声明槽型，惰性 def-use）。
+            CallerArgCtx actx;
+            actx.isStatic  = (unit.methods[idx].access & mjbase::hierarchy::kAccStatic) != 0;
+            actx.thisClass = lc.name;
+            actx.cu        = &cu;
+            const jbc::ir::SymbolPool& symC = unit.symbols();
+            actx.desc      = std::string(std::string_view(symC.str(unit.methods[idx].desc)));
+            collectCallerRefParams(actx.desc, actx.isStatic, lc.name, actx.refTypeBySlot);
             for (ca::usize t = 0; t < n; ++t) {
                 const jbc::ir::Insn* inv = cu.dom.peek(order[t]);
                 if (inv == nullptr || inv->op != Op::INVOKESTATIC) continue;
@@ -415,7 +505,7 @@ mjbase::spi::PreservedAnalyses ArgumentArrayScalarizer::run(
                         || store == nullptr || dup->op != Op::DUP || store->op != Op::AASTORE
                         || !method_rewrite_util::intValueOf(session, *idxIn, ix)
                         || static_cast<ca::u32>(ix) != e
-                        || !argMatchesTi(session, *arg, plan.elemNames[e])) {
+                        || !argMatchesTi(session, *arg, order[b + 1], plan.elemNames[e], actx)) {
                         ok = false;
                         break;
                     }

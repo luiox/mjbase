@@ -339,6 +339,17 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   升格。8 单测（全链还原/null 实参/重复取参同槽、类型失配/逃逸/下标缺口
   /非窗位点弃收、注册面），全量 1797 绿（1794 过 + 3 既有跳过）。实例
   形态与死数组清理归切片 3。
+- [x] ArgumentArrayScalarizer 切片 2（#37，scope:global）：实参类型对齐面——
+  argMatchesTi 精化三支：ldc Class 常量按常量类对齐（Ti ∈ {常量类,
+  Object}）；aload 实参槽类型提升——调用方描述符入参逐槽展开（对象型去
+  L/; 壳出内部名，数组保留描述符形，J/D 宽 2 只推槽号；实例方法槽 0 =
+  this 取调用方类），读点到达定值经 def_use 证据（恰为同槽入参定值、
+  单定义、未截断——槽未被重存储/多前驱合流）时按声明型对齐，否则维持
+  Ti == Object；数值 CP 常量入引用位 fail-closed 拒收（未装箱不可验证）。
+  调用方 def-use 惰性构建（仅 aload 实参需要证据时，单方法至多一次）。
+  多指令实参形态（装箱工厂 valueOf 等需窗形扩展）挂账切片 3，与实例
+  形态/死数组清理一并。5 单测（Class 常量对齐+失配、static 入参直传、
+  槽重存储拒收、实例 this 直传），全量 1802 绿（1799 过 + 3 既有跳过）。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。
