@@ -23,10 +23,12 @@ namespace mjbase::pass {
 ///     不逃逸（arraylength / 传参 / 返回 / 再存储整体拒收）；参数槽
 ///     无 store/iinc/ret 触碰；
 ///   - 调用侧窗口规范形：长度常量 == n、下标序恰 0..n-1、实参单指令；
-///     实参类型静态可判面（首切片）：aconst_null 匹配任意引用 Ti、
-///     ldc String 要求 Ti ∈ {String, Object}、aload_k 槽类型不可见要求
-///     Ti == Object——其余实参形态（多指令表达式 / 调用产生）与类型
-///     精化挂账切片 2；
+///     实参类型静态可判面（切片 2 对齐面）：aconst_null 匹配任意引用
+///     Ti；ldc String 要求 Ti ∈ {String, Object}；ldc Class 常量要求
+///     Ti ∈ {常量类, Object}；aload_k 槽类型提升——读点到达定值恰为
+///     调用方同槽入参定值（单定义未截断，槽未被重存储）时按调用方
+///     声明型（实例槽 0 = this 取调用方类）对齐，否则要求 Ti == Object。
+///     多指令实参形态（装箱工厂等）挂账切片 3，与窗形扩展一并评估；
 ///   - 容器内全部调用点（按 CP owner+name+desc 解析到目标）都是规范窗；
 ///     CP owner ≠ 声明类的调用（继承静态视图）拒收；他类同名同描述符
 ///     声明（隐藏面）拒收；MethodHandle/indy 钉死（CP 方法柄引用）拒收；
