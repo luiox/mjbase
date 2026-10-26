@@ -48,9 +48,10 @@ namespace mjbase::pass {
 ///     DeadLocalStoreRemover 的链式删除合同，不在本件重复。
 ///
 /// 挂账（帧面余件）：DUP/DUP2 自身作为弹值生产者的吸收（旧栈谓词含
-/// DUP/DUP2，现被中继守卫整体覆盖，待逐中继细化）；LDC(class/
-/// MethodType/MethodHandle) 纯生产者；帧面删除后窗口面的再收敛归管线
-/// 重复驱动，本件单次运行各相位各走一遍。
+/// DUP/DUP2，现被中继守卫整体覆盖，待逐中继细化）。LDC(class/
+/// MethodType/MethodHandle) 纯生产者已认领（Dynamic/condy 不认领——
+/// bootstrap 链有求值副作用）；帧面删除后窗口面的再收敛归管线重复
+/// 驱动，本件单次运行各相位各走一遍。
 ///
 /// 发生消除返回 none()，否则 all()。maxStack/maxLocals 不变（消除只降
 /// 不升）。

@@ -282,6 +282,24 @@ TEST(UselessPopCleanerTest, frameMultiDefMergePopsFolded)
     EXPECT_EQ(ops[4], Op::RETURN);
 }
 
+// ── 帧面：ldc Class 元数据常量为纯生产者（元数据弹弃场景）──
+TEST(UselessPopCleanerTest, frameLdcClassPopFolded)
+{
+    FixtureBuilder b("t/U");
+    const ca::u16 clsConst = b.cls("java/lang/Object");
+    Bytes code;
+    putU8(code, 0x13);
+    putU16(code, clsConst);   // ldc_w Class
+    putU8(code, 0x57);        // pop
+    putU8(code, 0xb1);
+    b.addMethod({"m", "()V", std::move(code)});
+    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::UselessPopCleaner{});
+    EXPECT_TRUE(r.pa.changed());
+    const std::vector<Op> ops = opsOf(inspect(r.out));
+    ASSERT_EQ(ops.size(), 1u);
+    EXPECT_EQ(ops[0], Op::RETURN);
+}
+
 // ── 注册面 ──
 TEST(UselessPopCleanerTest, registeredByName)
 {
