@@ -362,6 +362,14 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   待重论证：标量化后 anewarray 残段属帧溯源族既有删除面覆盖范围）。
   3 单测（装箱链还原+产出型失配拒收、实例形态 invokevirtual 全链），
   全量 1805 绿（1802 过 + 3 既有跳过）。
+- [x] InstanceArrayFieldScalarizer 并入 StaticArrayFieldScalarizer（#39
+  第二切片，scope:class）：实例字段同面——private（去 static-only 门）
+  getfield/putfield 窗形带接收者 aload（读/写窗保持原位，分配窗四条
+  整体删：接收者 aload 唯一消费者是被删 putfield，保留悬栈）；实例
+  分配只在 <init> 收录（运行一次语义；reset 类重执行分配的重置语义
+  不闭包 fail-closed）；新标量字段 access 随原字段静态性。4 单测
+  （实例 roundtrip、非 <init> 分配弃、arraylength 弃、前驱非 aload
+  邻接破坏弃），全量 1809 绿（1806 过 + 3 既有跳过）。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。

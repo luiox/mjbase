@@ -543,6 +543,118 @@ Bytes buildPlain()
     return b.assemble();
 }
 
+// ── 实例字段切片夹具 ──
+
+/// 实例主链：tbl int[3]（private 实例字段），<init> 分配 + 两写，
+/// read()I 常量下标读一（aload_0; getfield; iconst; iaload; ireturn）。
+FixtureBuilder tableIFixture()
+{
+    FixtureBuilder b("T");
+    b.addField({"tbl", "[I", 0x0002});
+    Bytes init;
+    putU8(init, 0x2A);                                             // aload_0
+    putU8(init, 0x06);                                             // iconst_3
+    putU8(init, 0xBC); putU8(init, 0x0A);                          // newarray int
+    putU8(init, 0xB5); putU16(init, b.fieldRef("T", "tbl", "[I")); // putfield
+    putU8(init, 0x2A); putU8(init, 0xB4); putU16(init, b.fieldRef("T", "tbl", "[I"));
+    putU8(init, 0x03); putU8(init, 0x10); putU8(init, 11);
+    putU8(init, 0x4F);                                             // iastore
+    putU8(init, 0x2A); putU8(init, 0xB4); putU16(init, b.fieldRef("T", "tbl", "[I"));
+    putU8(init, 0x04); putU8(init, 0x10); putU8(init, 22);
+    putU8(init, 0x4F);
+    putU8(init, 0xB1);
+    b.addMethod({"<init>", "()V", std::move(init), 0x0001, {}, 4, 1});
+    Bytes read;
+    putU8(read, 0x2A); putU8(read, 0xB4); putU16(read, b.fieldRef("T", "tbl", "[I"));
+    putU8(read, 0x04);
+    putU8(read, 0x2E);
+    putU8(read, 0xAC);
+    b.addMethod({"read", "()I", std::move(read), 0x0001, {}, 3, 1});
+    return b;
+}
+
+TEST(MjPassStaticArrayFieldScalarizerTest, ScalarizesInstanceField)
+{
+    auto session = makeSession(tableIFixture());
+    EXPECT_TRUE(runPass(*session).changed());
+
+    auto re = reRead(*session);
+    const jbc::core::ClassFile& cf = re->backing();
+    EXPECT_EQ(findField(cf, "tbl"), nullptr) << "旧数组字段应删除";
+    for (const char* name : {"tbl_0", "tbl_1"}) {
+        const jbc::core::MemberInfo* f = findField(cf, name);
+        ASSERT_NE(f, nullptr) << name;
+        EXPECT_EQ(cf.utf8(f->descCp), "I");
+        EXPECT_EQ(f->access, 0x0002u) << "private 实例";
+    }
+
+    using jbc::core::Op;
+    const auto ctor = methodFacts(*re, "<init>");
+    // 写窗接收者 aload_0 保持原位（由新 putfield 消费）；分配窗四条全删。
+    ASSERT_EQ(ctor.size(), 7u);
+    EXPECT_EQ(ctor[0].op, Op::ALOAD_0);
+    EXPECT_EQ(ctor[1].op, Op::BIPUSH);
+    EXPECT_EQ(ctor[2].op, Op::PUTFIELD);
+    EXPECT_EQ(ctor[2].member, "tbl_0");
+    EXPECT_EQ(ctor[3].op, Op::ALOAD_0);
+    EXPECT_EQ(ctor[4].op, Op::BIPUSH);
+    EXPECT_EQ(ctor[5].op, Op::PUTFIELD);
+    EXPECT_EQ(ctor[5].member, "tbl_1");
+    EXPECT_EQ(ctor[6].op, Op::RETURN);
+
+    const auto read = methodFacts(*re, "read");
+    ASSERT_EQ(read.size(), 3u);
+    EXPECT_EQ(read[0].op, Op::ALOAD_0);
+    EXPECT_EQ(read[1].op, Op::GETFIELD);
+    EXPECT_EQ(read[1].member, "tbl_1");
+    EXPECT_EQ(read[2].op, Op::IRETURN);
+}
+
+TEST(MjPassStaticArrayFieldScalarizerTest, SkipsInstanceAllocOutsideInit)
+{
+    FixtureBuilder b = tableIFixture();
+    // 追加 reset()V：非 <init> 的第二次分配窗——重执行重置语义不闭包。
+    // （tbl_2 未访问下标不产生字段；reset 触发多分配守卫。）
+    Bytes rst;
+    putU8(rst, 0x2A);
+    putU8(rst, 0x06);
+    putU8(rst, 0xBC); putU8(rst, 0x0A);
+    putU8(rst, 0xB5); putU16(rst, b.fieldRef("T", "tbl", "[I"));
+    putU8(rst, 0xB1);
+    b.addMethod({"reset", "()V", std::move(rst), 0x0001, {}, 3, 1});
+    auto session = makeSession(std::move(b));
+    EXPECT_FALSE(runPass(*session).changed());
+}
+
+TEST(MjPassStaticArrayFieldScalarizerTest, SkipsInstanceNonWindowAccess)
+{
+    FixtureBuilder b = tableIFixture();
+    // 追加 len()I：arraylength 整体引用形态。
+    Bytes len;
+    putU8(len, 0x2A); putU8(len, 0xB4); putU16(len, b.fieldRef("T", "tbl", "[I"));
+    putU8(len, 0xBE);
+    putU8(len, 0xAC);
+    b.addMethod({"len", "()I", std::move(len), 0x0001, {}, 2, 1});
+    auto session = makeSession(std::move(b));
+    EXPECT_FALSE(runPass(*session).changed());
+}
+
+TEST(MjPassStaticArrayFieldScalarizerTest, SkipsInstanceNonWindowReceiver)
+{
+    FixtureBuilder b = tableIFixture();
+    // 追加 len2()I：getfield 前驱非接收者 aload（前驱是前窗 iastore 残段
+    // ——邻接性破坏 → 放弃）。
+    Bytes len2;
+    putU8(len2, 0x04);                                              // iconst_1（非 aload）
+    putU8(len2, 0xB4); putU16(len2, b.fieldRef("T", "tbl", "[I"));  // getfield
+    putU8(len2, 0x04);
+    putU8(len2, 0x2E);
+    putU8(len2, 0xAC);
+    b.addMethod({"len2", "()I", std::move(len2), 0x0001, {}, 3, 1});
+    auto session = makeSession(std::move(b));
+    EXPECT_FALSE(runPass(*session).changed());
+}
+
 }   // namespace
 
 // 容器级主链：TableHost 两字段拆分并提交回容器，其余三类字节恒等。

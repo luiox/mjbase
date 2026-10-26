@@ -159,13 +159,21 @@ bool classHasNestAttr(const jbc::core::ClassFile& cf)
     return false;
 }
 
+/// 接收者 aload 识别（泛形 + 紧凑形）。
+bool isAload(const jbc::ir::Insn& in)
+{
+    using jbc::core::Op;
+    return in.op == Op::ALOAD || (in.op >= Op::ALOAD_0 && in.op <= Op::ALOAD_3);
+}
+
 /// 判定期记录的窗口（InsnId 句柄在 CodeUnitRef 存活期间稳定）。
 struct Window
 {
     enum class Kind : ca::u8 { Alloc, Load, Store };
     Kind            kind = Kind::Load;
     ca::usize       methodIdx = 0;      ///< unit.methods 下标
-    jbc::ir::InsnId i0{}, i1{}, i2{}, i3{};   ///< Store 用满四个，其余三个
+    jbc::ir::InsnId i0{}, i1{}, i2{}, i3{}, i4{};   ///< 实例 Store 用满五个
+    bool            wide5 = false;      ///< 实例写窗：i4 携带 xASTORE 位点
 };
 
 /// 单字段判定产物。
@@ -176,6 +184,7 @@ struct FieldPlan
     std::string_view          arrayDesc;
     std::string_view          elemDesc;
     ca::i32                   len = -1;         ///< 分配长度
+    bool                      isStatic = true;
     std::vector<Window>       windows;
     std::unordered_set<ca::i32> accessed;       ///< 被访问下标
 };
@@ -199,16 +208,18 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
     jbc::ir::ClassUnit&    unit     = session.unit();
     const std::string_view thisName = unit.symbols().str(unit.thisClass);
 
-    // 候选字段：private static + 原始类型数组。字段名集用于新名冲突检查。
+    // 候选字段：private（static 或实例）+ 原始类型数组。字段名集用于
+    // 新名冲突检查。
     std::vector<FieldPlan> plans;
     std::unordered_set<std::string_view> fieldNames;
     for (const jbc::ir::FieldUnit& f : unit.fields) {
         fieldNames.insert(unit.symbols().str(f.name));
     }
     for (const jbc::ir::FieldUnit& f : unit.fields) {
-        if ((f.access & kAccPrivate) == 0 || (f.access & kAccStatic) == 0) continue;
+        if ((f.access & kAccPrivate) == 0) continue;
         FieldPlan plan;
         plan.id        = f.id;
+        plan.isStatic  = (f.access & kAccStatic) != 0;
         plan.name      = unit.symbols().str(f.name);
         plan.arrayDesc = unit.symbols().str(f.desc);
         if (!arrayElemDesc(plan.arrayDesc, plan.elemDesc)) continue;
@@ -245,6 +256,8 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
         const ValueKind     valueKind = refElem ? ValueKind::Ref
                                    : ((plan.elemDesc == "J" || plan.elemDesc == "D") ? ValueKind::Cat2
                                                                                     : ValueKind::Cat1);
+        const jbc::core::Op getOp = plan.isStatic ? jbc::core::Op::GETSTATIC : jbc::core::Op::GETFIELD;
+        const jbc::core::Op putOp = plan.isStatic ? jbc::core::Op::PUTSTATIC : jbc::core::Op::PUTFIELD;
         ca::usize           allocCount = 0;
 
         for (const MethodDom& md : doms) {
@@ -254,10 +267,28 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
                 if (in == nullptr) continue;
                 jbc::ir::ClassSession::MemberSem ref;
 
-                // putstatic f：分配窗口尾（前驱 newarray + 常量 LEN）或裸重赋。
-                if (in->op == jbc::core::Op::PUTSTATIC && session.memberOf(*in, ref) &&
+                // putstatic/putfield f：分配窗口尾（前驱 newarray + 常量
+                // LEN，实例窗再前置接收者 aload）或裸重赋。实例分配只在
+                // <init> 收录（运行一次语义；reset 形态重执行语义不闭包）。
+                if (in->op == putOp && session.memberOf(*in, ref) &&
                     ref.owner == thisName && ref.name == plan.name && ref.desc == plan.arrayDesc) {
-                    if (k < 2) { dead[p] = true; break; }
+                    jbc::ir::InsnId allocRecv{};
+                    if (!plan.isStatic) {
+                        if (unit.symbols().str(unit.methods[md.idx].name) != "<init>") {
+                            dead[p] = true;   // 非 <init> 分配：重执行重置语义不闭包
+                            break;
+                        }
+                        if (k < 3) { dead[p] = true; break; }
+                        const jbc::ir::Insn* recv = md.ref->dom.peek(order[k - 3]);
+                        if (recv == nullptr || !isAload(*recv)) {
+                            dead[p] = true;
+                            break;
+                        }
+                        allocRecv = order[k - 3];
+                    } else if (k < 2) {
+                        dead[p] = true;
+                        break;
+                    }
                     const jbc::ir::Insn* na = md.ref->dom.peek(order[k - 1]);
                     const jbc::ir::Insn* ln = md.ref->dom.peek(order[k - 2]);
                     ca::i32 len = 0;
@@ -276,16 +307,32 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
                         dead[p] = true;   // 重赋整个数组或畸形分配
                         break;
                     }
-                    plan.windows.push_back(
-                        {Window::Kind::Alloc, md.idx, order[k - 2], order[k - 1], order[k], {}});
+                    if (plan.isStatic) {
+                        plan.windows.push_back(
+                            {Window::Kind::Alloc, md.idx, order[k - 2], order[k - 1], order[k], {}});
+                    } else {
+                        plan.windows.push_back({Window::Kind::Alloc, md.idx, allocRecv, order[k - 2],
+                                                order[k - 1], order[k], {}, false});
+                    }
                     plan.len = len;
                     ++allocCount;
                     continue;
                 }
 
-                // getstatic f：读/写窗口头或整体引用。
-                if (in->op == jbc::core::Op::GETSTATIC && session.memberOf(*in, ref) &&
+                // getstatic/getfield f：读/写窗口头或整体引用。实例窗头
+                // 前须邻接接收者 aload（保持原位，不删）。
+                if (in->op == getOp && session.memberOf(*in, ref) &&
                     ref.owner == thisName && ref.name == plan.name && ref.desc == plan.arrayDesc) {
+                    jbc::ir::InsnId recvId{};
+                    if (!plan.isStatic) {
+                        if (k == 0) { dead[p] = true; break; }
+                        const jbc::ir::Insn* recv = md.ref->dom.peek(order[k - 1]);
+                        if (recv == nullptr || !isAload(*recv)) {
+                            dead[p] = true;
+                            break;
+                        }
+                        recvId = order[k - 1];
+                    }
                     const jbc::ir::Insn* idxInsn = k + 1 < order.size() ? md.ref->dom.peek(order[k + 1]) : nullptr;
                     ca::i32 i = 0;
                     if (idxInsn == nullptr || !intConstOf(session, *idxInsn, i)) {
@@ -295,16 +342,26 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
                     const jbc::ir::Insn* third  = k + 2 < order.size() ? md.ref->dom.peek(order[k + 2]) : nullptr;
                     const jbc::ir::Insn* fourth = k + 3 < order.size() ? md.ref->dom.peek(order[k + 3]) : nullptr;
                     if (third != nullptr && third->op == loadOp) {
-                        plan.windows.push_back(
-                            {Window::Kind::Load, md.idx, order[k], order[k + 1], order[k + 2], {}});
+                        if (plan.isStatic) {
+                            plan.windows.push_back(
+                                {Window::Kind::Load, md.idx, order[k], order[k + 1], order[k + 2], {}});
+                        } else {
+                            plan.windows.push_back({Window::Kind::Load, md.idx, recvId, order[k],
+                                                    order[k + 1], order[k + 2], {}, false});
+                        }
                         plan.accessed.insert(i);
                         k += 2;           // 连同 const_i/xALOAD 跳过（下一兴趣点 k+3）
                         continue;
                     }
                     if (third != nullptr && constLoadMatches(session, *third, valueKind) &&
                         fourth != nullptr && fourth->op == storeOp) {
-                        plan.windows.push_back({Window::Kind::Store, md.idx, order[k], order[k + 1],
-                                                order[k + 2], order[k + 3]});
+                        if (plan.isStatic) {
+                            plan.windows.push_back({Window::Kind::Store, md.idx, order[k], order[k + 1],
+                                                    order[k + 2], order[k + 3]});
+                        } else {
+                            plan.windows.push_back({Window::Kind::Store, md.idx, recvId, order[k],
+                                                    order[k + 1], order[k + 2], order[k + 3], true});
+                        }
                         plan.accessed.insert(i);
                         k += 3;
                         continue;
@@ -330,7 +387,8 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
             if (method_rewrite_util::labelsAnchorAt(dom, w.i0) ||
                 method_rewrite_util::labelsAnchorAt(dom, w.i1) ||
                 method_rewrite_util::labelsAnchorAt(dom, w.i2) ||
-                (w.kind == Window::Kind::Store && method_rewrite_util::labelsAnchorAt(dom, w.i3))) {
+                (w.kind == Window::Kind::Store && method_rewrite_util::labelsAnchorAt(dom, w.i3)) ||
+                (w.wide5 && method_rewrite_util::labelsAnchorAt(dom, w.i4))) {
                 ok = false;
             }
         }
@@ -359,29 +417,60 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
             ca::i32 index = 0;
             switch (w.kind) {
             case Window::Kind::Alloc:
-                editor.erase(w.i0);
-                editor.erase(w.i1);
-                editor.erase(w.i2);
+                if (plan.isStatic) {
+                    editor.erase(w.i0);
+                    editor.erase(w.i1);
+                    editor.erase(w.i2);
+                } else {
+                    // 四条整体删：接收者 aload 的唯一消费者就是被删的
+                    // putfield，保留会悬出栈。
+                    editor.erase(w.i0);
+                    editor.erase(w.i1);   // 长度常量
+                    editor.erase(w.i2);   // newarray
+                    editor.erase(w.i3);   // putfield
+                }
                 break;
             case Window::Kind::Load:
-                intConstOf(session, *dom.peek(w.i1), index);
-                if (auto r = dom.get(w.i0); r.is_ok()) {
-                    session.setMember(*r.unwrap(), jbc::ir::ClassSession::MemberSem::Kind::Field,
-                                      thisName, scalarName(plan.name, index), plan.elemDesc);
+                if (plan.isStatic) {
+                    intConstOf(session, *dom.peek(w.i1), index);
+                    if (auto r = dom.get(w.i0); r.is_ok()) {
+                        session.setMember(*r.unwrap(), jbc::ir::ClassSession::MemberSem::Kind::Field,
+                                          thisName, scalarName(plan.name, index), plan.elemDesc);
+                    }
+                    editor.erase(w.i1);
+                    editor.erase(w.i2);
+                } else {
+                    intConstOf(session, *dom.peek(w.i2), index);
+                    if (auto r = dom.get(w.i1); r.is_ok()) {
+                        session.setMember(*r.unwrap(), jbc::ir::ClassSession::MemberSem::Kind::Field,
+                                          thisName, scalarName(plan.name, index), plan.elemDesc);
+                    }
+                    editor.erase(w.i2);
+                    editor.erase(w.i3);
                 }
-                editor.erase(w.i1);
-                editor.erase(w.i2);
                 break;
             case Window::Kind::Store:
-                intConstOf(session, *dom.peek(w.i1), index);
-                if (auto r = dom.get(w.i3); r.is_ok()) {
-                    jbc::ir::Insn* insn = r.unwrap();
-                    insn->op = jbc::core::Op::PUTSTATIC;
-                    session.setMember(*insn, jbc::ir::ClassSession::MemberSem::Kind::Field,
-                                      thisName, scalarName(plan.name, index), plan.elemDesc);
+                if (plan.isStatic) {
+                    intConstOf(session, *dom.peek(w.i1), index);
+                    if (auto r = dom.get(w.i3); r.is_ok()) {
+                        jbc::ir::Insn* insn = r.unwrap();
+                        insn->op = jbc::core::Op::PUTSTATIC;
+                        session.setMember(*insn, jbc::ir::ClassSession::MemberSem::Kind::Field,
+                                          thisName, scalarName(plan.name, index), plan.elemDesc);
+                    }
+                    editor.erase(w.i0);
+                    editor.erase(w.i1);
+                } else {
+                    intConstOf(session, *dom.peek(w.i2), index);
+                    if (auto r = dom.get(w.i4); r.is_ok()) {
+                        jbc::ir::Insn* insn = r.unwrap();
+                        insn->op = jbc::core::Op::PUTFIELD;
+                        session.setMember(*insn, jbc::ir::ClassSession::MemberSem::Kind::Field,
+                                          thisName, scalarName(plan.name, index), plan.elemDesc);
+                    }
+                    editor.erase(w.i1);
+                    editor.erase(w.i2);
                 }
-                editor.erase(w.i0);
-                editor.erase(w.i1);
                 break;
             }
             touchedMethods.insert(w.methodIdx);
@@ -413,7 +502,7 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
             jbc::ir::FieldSeed seed;
             seed.name   = newName;
             seed.desc   = plan.elemDesc;
-            seed.access = kAccPrivate | kAccStatic;
+            seed.access = kAccPrivate | (plan.isStatic ? kAccStatic : 0);
             if (session.addField(seed).is_err()) {
                 return mjbase::spi::PreservedAnalyses::all();
             }
