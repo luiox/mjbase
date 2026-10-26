@@ -47,6 +47,12 @@ package("libjbc")
     add_versions("0.4.14", "8a00e45613254ba7811b6f196e45afc98c435a9f") -- v0.4.14 快照  2026-10-15
     -- 0.4.15 = Module 族属性 typed 建模 + 压缩封闭集收编；首版测试树完整入库（此前 15+2 文件被忽略规则吞）。
     add_versions("0.4.15", "9f1a13ec3df96f3493703ee3c6fbb7c5186187bf") -- v0.4.15 快照  2026-10-16
+    -- 0.4.16 = 类构建挂载面（typed 属性合成 attach 家族）+ BSM 语义 intern 家族 + consumer 协议面（0.4.17 即移除）。
+    add_versions("0.4.16", "edce61d83be812b933731142b811d82c347b3fc0") -- v0.4.16 发版 main 头  2026-10-17
+    -- 0.4.17 = consumer 模块移除（协议面归上层仓单份持有，mjbase consumer/renamer 已收编）。
+    add_versions("0.4.17", "2a44a3749d4cbca04a6221c37b78a56d4620d254") -- v0.4.17 发版（tag 同 commit）  2026-10-20
+    -- 0.4.18 = MethodEditor（从零建方法门面，PR #9）+ MethodParameters 接收者行放行（PR #11）；0.4.17 后堆叠快照。
+    add_versions("0.4.18", "29f6ef436461fa48ca27661778ffb8f139633bed") -- 0.4.18 快照 = fix/method-parameters-receiver-arity 头
 
     -- 嵌套 libca 直接钉到本仓单源版本：项目内联包定义不吃 deps.lua 的
     -- **.libca / libjbc.libca requireconfs（实测），裸声明会解析到仓库最新版

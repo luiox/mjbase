@@ -6,11 +6,14 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "jbc/core/attr_codec.hpp"
+#include "jbc/core/bytes.hpp"
 #include "jbc/core/class_file.hpp"
 #include "jbc/core/reader.hpp"
 #include "jbc/core/writer.hpp"
@@ -28,6 +31,7 @@ namespace {
 
 using jbc::core::AnnotationsAttr;
 using jbc::core::AttrKind;
+using jbc::core::ByteSink;
 using jbc::core::AttrSlot;
 using jbc::core::ClassFile;
 using jbc::core::CodeAttr;
@@ -157,12 +161,13 @@ Bytes recordAttrPayload(FixtureBuilder& b, std::vector<RecordCompSpec> comps)
     return out;
 }
 
-/// MethodParameters：u2 参数数 + {u2 名字 CP, u2 access}*。
+/// MethodParameters：u1 参数数（JVMS 4.7.24 parameters_count）+
+/// {u2 名字 CP, u2 access}*。
 Bytes methodParameters(FixtureBuilder&                     b,
                        std::initializer_list<std::pair<const char*, ca::u16>> params)
 {
     Bytes out;
-    putU16(out, static_cast<ca::u16>(params.size()));
+    putU8(out, static_cast<ca::u8>(params.size()));
     for (const auto& [n, acc] : params) {
         putU16(out, b.utf8(n));
         putU16(out, acc);
@@ -275,18 +280,33 @@ const RecordAttr* decodedRecordAttr(ClassFile& cf)
     return nullptr;
 }
 
-/// 属性表中指定名 Raw 槽的载荷字节（无槽/解码失败/非 Raw 为空）。
-const std::vector<ca::u8>* rawSlotBytes(ClassFile& cf, std::vector<AttrSlot>& attrs,
-                                        std::string_view name)
+/// 属性表指定名槽的载荷字节（typed 体经 encodeAttr 重编码去槽头；Raw 直取；
+/// 解码失败的 legacy 形态——body 为空且未被接管——走源 span）。
+/// 无槽/序列化失败为 nullopt。
+std::optional<std::vector<ca::u8>> slotPayloadBytes(ClassFile& cf, std::vector<AttrSlot>& attrs,
+                                                    std::string_view name)
 {
     for (AttrSlot& slot : attrs) {
         if (cf.utf8(slot.nameCp) != name) continue;
-        auto d = cf.decodeAttr(slot);
-        if (d.is_err()) return nullptr;
-        if (std::move(d).unwrap()->kind() != AttrKind::Raw) return nullptr;
-        return &ca::core::tag_cast::cast<const RawAttr*>(slot.peek())->bytes();
+        if (auto d = cf.decodeAttr(slot); d.is_err() && !slot.decoded()) {
+            const auto view = cf.source().spanOrEmpty(slot.data);
+            return std::vector<ca::u8>(view.data(), view.data() + view.size());
+        }
+        if (slot.decoded() && slot.peek()->kind() == AttrKind::Raw) {
+            return ca::core::tag_cast::cast<const RawAttr*>(slot.peek())->bytes();
+        }
+        ByteSink out;
+        if (encodeAttr(cf, slot, out, cf.source()).is_err()) return std::nullopt;
+        std::vector<ca::u8> full = std::move(out.bytes());
+        if (full.size() < 6) return std::nullopt;
+        const ca::u32 len = (static_cast<ca::u32>(full[2]) << 24)
+                            | (static_cast<ca::u32>(full[3]) << 16)
+                            | (static_cast<ca::u32>(full[4]) << 8)
+                            | static_cast<ca::u32>(full[5]);
+        if (full.size() != 6 + static_cast<std::size_t>(len)) return std::nullopt;
+        return std::vector<ca::u8>(full.begin() + 6, full.end());
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 /// 组会话（按值收 builder，CP 物化在 assemble 内完成）。
@@ -878,17 +898,15 @@ TEST(MjPassIllegalAccessRemoverTest, MasksPerKindTwoSidedAndParamPayload)
         if (cf.utf8(slot.nameCp) == "MethodParameters") paramsSlot = &slot;
     }
     ASSERT_NE(paramsSlot, nullptr);
-    auto decoded = cf.decodeAttr(*paramsSlot);
-    ASSERT_TRUE(decoded.is_ok());
-    const auto* body = ca::core::tag_cast::cast<const RawAttr*>(paramsSlot->peek());
-    ASSERT_NE(body, nullptr);
-    const std::vector<ca::u8>& bytes = body->bytes();
-    ASSERT_EQ(bytes.size(), 2u + 3u * 4u);
-    EXPECT_EQ((static_cast<ca::u16>(bytes[4]) << 8) | bytes[5], 0x0010)
+    const std::optional<std::vector<ca::u8>> payload = slotPayloadBytes(cf, mp->attrs, "MethodParameters");
+    ASSERT_TRUE(payload.has_value());
+    const std::vector<ca::u8>& bytes = *payload;
+    ASSERT_EQ(bytes.size(), 1u + 3u * 4u);
+    EXPECT_EQ((static_cast<ca::u16>(bytes[3]) << 8) | bytes[4], 0x0010)
         << "FINAL 位幸存";
-    EXPECT_EQ((static_cast<ca::u16>(bytes[8]) << 8) | bytes[9], 0x0000)
+    EXPECT_EQ((static_cast<ca::u16>(bytes[7]) << 8) | bytes[8], 0x0000)
         << "PUBLIC 位清除";
-    EXPECT_EQ((static_cast<ca::u16>(bytes[12]) << 8) | bytes[13], 0x8000)
+    EXPECT_EQ((static_cast<ca::u16>(bytes[11]) << 8) | bytes[12], 0x8000)
         << "MANDATED 位幸存";
 
     EXPECT_TRUE(pass.run(*session, cam).areAllPreserved()) << "二跑幂等";
@@ -897,7 +915,9 @@ TEST(MjPassIllegalAccessRemoverTest, MasksPerKindTwoSidedAndParamPayload)
 TEST(MjPassIllegalAccessRemoverTest, LegacyU1CountParameterLayoutMasked)
 {
     FixtureBuilder builder("T");
-    // 遗留布局：u1 count + {u2 name, u2 acc}*（5 字节）。
+    // 旧栈 writer 字节形（u1 count + {u2 name, u2 acc}*，与 JVMS 4.7.24 同
+    // 形；名字 CP 指针 0x0021 为不透明字面值）：0.4.18 typed 面解码命中，
+    // 行模型清位后重编码须逐字节恒同。
     builder.addMethod({"mp", "()V", bareReturn(), 0x0009, {}, 1, 1,
                        {{"MethodParameters", Bytes{0x01, 0x00, 0x21, 0x80, 0x11}}}});
     builder.addMethod({"m", "()V", bareReturn()});
@@ -916,11 +936,9 @@ TEST(MjPassIllegalAccessRemoverTest, LegacyU1CountParameterLayoutMasked)
         if (cf.utf8(slot.nameCp) == "MethodParameters") paramsSlot = &slot;
     }
     ASSERT_NE(paramsSlot, nullptr);
-    auto decoded = cf.decodeAttr(*paramsSlot);
-    ASSERT_TRUE(decoded.is_ok());
-    const auto* body = ca::core::tag_cast::cast<const RawAttr*>(paramsSlot->peek());
-    ASSERT_NE(body, nullptr);
-    const std::vector<ca::u8>& bytes = body->bytes();
+    const std::optional<std::vector<ca::u8>> payload = slotPayloadBytes(cf, mp->attrs, "MethodParameters");
+    ASSERT_TRUE(payload.has_value());
+    const std::vector<ca::u8>& bytes = *payload;
     ASSERT_EQ(bytes.size(), 5u);
     EXPECT_EQ(bytes[0], 0x01) << "u1 count 原样";
     EXPECT_EQ((static_cast<ca::u16>(bytes[3]) << 8) | bytes[4], 0x8010)
@@ -996,9 +1014,9 @@ TEST(MjPassSpecificAnnotationRemoverTest, ParameterAnnotationEntriesFilteredSlot
 
     ClassFile& cf = session->backing();
     // 部分命中：槽存活，行数保持（num_parameters 与方法描述符参数数对应）。
-    const std::vector<ca::u8>* raw = rawSlotBytes(
+    const std::optional<std::vector<ca::u8>> raw = slotPayloadBytes(
         cf, cf.methods[0].attrs, "RuntimeVisibleParameterAnnotations");
-    ASSERT_NE(raw, nullptr);
+    ASSERT_TRUE(raw.has_value());
     // 重建载荷逐字节断言：u1 参数数=2；行 0 摘黑名单留幸存；行 1 原样。
     const ca::u16 keep = builder.utf8("Lcom/app/Keep;");
     const Bytes   expected = {
@@ -1031,9 +1049,9 @@ TEST(MjPassSpecificAnnotationRemoverTest, ParameterAnnotationNestedEntryRemovedW
     EXPECT_TRUE(pass.run(*session, cam).changed());
 
     ClassFile& cf = session->backing();
-    const std::vector<ca::u8>* raw = rawSlotBytes(
+    const std::optional<std::vector<ca::u8>> raw = slotPayloadBytes(
         cf, cf.methods[0].attrs, "RuntimeInvisibleParameterAnnotations");
-    ASSERT_NE(raw, nullptr);
+    ASSERT_TRUE(raw.has_value());
     const ca::u16 keep     = builder.utf8("Lcom/app/Keep;");
     const Bytes   expected = {
         0x01, 0x00, 0x01,
@@ -1064,9 +1082,9 @@ TEST(MjPassSpecificAnnotationRemoverTest, ParameterAnnotationSlotDroppedWhenAllE
     MemberInfo* keepM = findMember(cf, cf.methods, "keep");
     ASSERT_NE(m, nullptr);
     ASSERT_NE(keepM, nullptr);
-    EXPECT_EQ(rawSlotBytes(cf, m->attrs, "RuntimeVisibleParameterAnnotations"), nullptr)
+    EXPECT_EQ(slotPayloadBytes(cf, m->attrs, "RuntimeVisibleParameterAnnotations"), std::nullopt)
         << "全空摘槽";
-    EXPECT_NE(rawSlotBytes(cf, keepM->attrs, "RuntimeVisibleParameterAnnotations"), nullptr)
+    EXPECT_NE(slotPayloadBytes(cf, keepM->attrs, "RuntimeVisibleParameterAnnotations"), std::nullopt)
         << "非目标注解不动";
 }
 

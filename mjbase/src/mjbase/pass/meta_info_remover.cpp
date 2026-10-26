@@ -25,6 +25,8 @@ using jbc::core::ClassFile;
 using jbc::core::CodeAttr;
 using jbc::core::Cursor;
 using jbc::core::MemberInfo;
+using jbc::core::MethodParametersAttr;
+using jbc::core::ParameterAnnotationsAttr;
 using jbc::core::RawAttr;
 using jbc::core::RecordAttr;
 using jbc::core::TypeAnnotationsAttr;
@@ -461,23 +463,45 @@ bool removeUnknownAttrSlots(const ClassFile& cf, std::vector<AttrSlot>& attrs)
     return changed;
 }
 
-/// MethodParameters 槽内非法参数访问位清除（JVMS 4.7.24：u2 count +
-/// {u2 name_index, u2 access_flags}*；libjbc 未建模，Raw 槽原位改写）。
-/// 布局双道：标准 u2 count 形态与旧栈 writer 的遗留形态（u1 count——旧栈树
-/// writer 参数表计数字段按 u1 落盘，批 B 语料与 golden 皆此形态）都接，其余
-/// 形状保守跳过。返回是否发生改写。
-bool clearIllegalParameterAccess(ClassFile& cf, std::vector<AttrSlot>& attrs)
+/// 槽载荷字节副本：未解码走源 span；已解码 Raw 直取；typed 体经 encodeAttr
+/// 重编码（Modified 重编码、Decoded 应与源恒同）去 6 字节槽头取 body。
+/// typed 解码失败的 legacy 形态（body 为空）自然落源 span 道。取不到返回空。
+std::vector<ca::u8> slotPayloadCopy(const ClassFile& cf, AttrSlot& slot)
 {
-    AttrSlot* slot = findSlot(cf, attrs, kMethodParameters);
-    if (slot == nullptr) return false;
-    auto decoded = cf.decodeAttr(*slot);
-    if (decoded.is_err()) return false;
-    if (std::move(decoded).unwrap()->kind() != AttrKind::Raw) return false;
-    const auto* body = ca::core::tag_cast::cast<const RawAttr*>(slot->peek());
-    const std::vector<ca::u8>& bytes = body->bytes();
-    // 布局判定：标准 u2 count（2 + 4n）优先，遗留 u1 count（1 + 4n）兜底。
-    ca::u32     count = 0;
-    std::size_t base  = 0;
+    if (slot.decoded()) {
+        if (slot.peek()->kind() == AttrKind::Raw) {
+            return ca::core::tag_cast::cast<const RawAttr*>(slot.peek())->bytes();
+        }
+        ByteSink out;
+        if (encodeAttr(cf, slot, out, cf.source()).is_err()) return {};
+        std::vector<ca::u8> full = std::move(out.bytes());
+        if (full.size() < 6) return {};
+        const ca::u32 len = (static_cast<ca::u32>(full[2]) << 24)
+                            | (static_cast<ca::u32>(full[3]) << 16)
+                            | (static_cast<ca::u32>(full[4]) << 8)
+                            | static_cast<ca::u32>(full[5]);
+        if (full.size() != 6 + static_cast<std::size_t>(len)) return {};
+        return std::vector<ca::u8>(full.begin() + 6, full.end());
+    }
+    const auto view = cf.source().spanOrEmpty(slot.data);
+    return std::vector<ca::u8>(view.data(), view.data() + view.size());
+}
+
+/// MethodParameters 载荷布局判定：JVMS 标准 u1 count（1+4n，javac 产物与
+/// 旧栈 writer 同形）优先；非标 u2 count（2+4n，历史夹具/未知产物）兜底；
+/// base = count 字段宽，其余形状 base=0。
+void methodParamLayoutOf(const std::vector<ca::u8>& bytes, ca::u32& count, std::size_t& base)
+{
+    count = 0;
+    base  = 0;
+    if (!bytes.empty()) {
+        const ca::u32 n = bytes[0];
+        if (bytes.size() == 1 + n * 4) {
+            count = n;
+            base  = 1;
+            return;
+        }
+    }
     if (bytes.size() >= 2) {
         const ca::u32 n = (static_cast<ca::u32>(bytes[0]) << 8) | static_cast<ca::u32>(bytes[1]);
         if (bytes.size() == 2 + n * 4) {
@@ -485,14 +509,16 @@ bool clearIllegalParameterAccess(ClassFile& cf, std::vector<AttrSlot>& attrs)
             base  = 2;
         }
     }
-    if (base == 0 && !bytes.empty()) {
-        const ca::u32 n = bytes[0];
-        if (bytes.size() == 1 + n * 4) {
-            count = n;
-            base  = 1;
-        }
-    }
-    if (base == 0) return false;
+}
+
+/// MethodParameters 槽内非法参数访问位清除（JVMS 4.7.24：u1 count +
+/// {u2 name_index, u2 access_flags}*）。0.4.16+ typed 面按行模型原位清位
+/// （重编码保 trailing）；typed 拒收的形状落 Raw 字节双道（u1 标准形与
+/// u2 非标形都接，其余保守跳过）。返回是否发生改写。
+bool clearIllegalParameterAccess(ClassFile& cf, std::vector<AttrSlot>& attrs)
+{
+    AttrSlot* slot = findSlot(cf, attrs, kMethodParameters);
+    if (slot == nullptr) return false;
     // 旧 ILLEGAL_PARAM_ACCESS 表的 u16 位并集（SUPER/VOLATILE/VARARGS 三常量
     // 承载 module 语境别名位 OPEN/TRANSITIVE/STATIC_PHASE 与 SYNCHRONIZED/
     // BRIDGE/TRANSIENT；FINAL/SYNTHETIC/MANDATED 幸存；RECORD/DEPRECATED 位
@@ -501,6 +527,31 @@ bool clearIllegalParameterAccess(ClassFile& cf, std::vector<AttrSlot>& attrs)
                                       | kAccSuper | kAccVolatile | kAccVarargs | kAccNative
                                       | kAccInterface | kAccAbstract | kAccStrict
                                       | kAccAnnotation | kAccEnum;
+    // 0.4.16+ typed 面：well-formed u1 布局 typed 解码命中，行模型原位清位
+    // （重编码保 trailing）；解码拒绝的形状落源字节双道。
+    if (auto decoded = cf.decodeAttr(*slot); decoded.is_ok()) {
+        if (std::move(decoded).unwrap()->kind() == AttrKind::MethodParameters) {
+            const auto* ro = ca::core::tag_cast::cast<const MethodParametersAttr*>(slot->peek());
+            bool needWrite = false;
+            for (const MethodParametersAttr::Row& row : ro->rows) {
+                if (static_cast<ca::u16>(row.accessFlags & ~kIllegalParamMask) != row.accessFlags) {
+                    needWrite = true;
+                }
+            }
+            if (!needWrite) return false;
+            auto* mut = ca::core::tag_cast::cast<MethodParametersAttr*>(slot->mutate());
+            for (MethodParametersAttr::Row& row : mut->rows) {
+                row.accessFlags = static_cast<ca::u16>(row.accessFlags & ~kIllegalParamMask);
+            }
+            return true;
+        }
+    }
+    std::vector<ca::u8> bytes = slotPayloadCopy(cf, *slot);
+    // 布局判定：JVMS 标准 u1 count（1 + 4n）优先，非标 u2 count（2 + 4n）兜底。
+    ca::u32     count = 0;
+    std::size_t base  = 0;
+    methodParamLayoutOf(bytes, count, base);
+    if (base == 0) return false;
     bool needWrite = false;
     for (ca::u32 i = 0; i < count; ++i) {
         const std::size_t off = base + i * 4 + 2;
@@ -509,8 +560,7 @@ bool clearIllegalParameterAccess(ClassFile& cf, std::vector<AttrSlot>& attrs)
         if (static_cast<ca::u16>(acc & ~kIllegalParamMask) != acc) needWrite = true;
     }
     if (!needWrite) return false;
-    auto* mutableBody = ca::core::tag_cast::cast<RawAttr*>(slot->mutate());
-    std::vector<ca::u8>& out = mutableBody->bytes();
+    std::vector<ca::u8>& out = bytes;
     for (ca::u32 i = 0; i < count; ++i) {
         const std::size_t off    = base + i * 4 + 2;
         const ca::u16     acc    = static_cast<ca::u16>((static_cast<ca::u16>(out[off]) << 8)
@@ -519,6 +569,14 @@ bool clearIllegalParameterAccess(ClassFile& cf, std::vector<AttrSlot>& attrs)
         out[off]     = static_cast<ca::u8>(masked >> 8);
         out[off + 1] = static_cast<ca::u8>(masked);
     }
+    // 写回：已解码 Raw 原位；typed 拒收的 legacy（body 空）以 Raw 接管载荷
+    // （setDecoded 后 mutate 置 Modified，写回走重编码）。
+    if (slot->decoded()) {
+        ca::core::tag_cast::cast<RawAttr*>(slot->mutate())->bytes() = std::move(bytes);
+        return true;
+    }
+    slot->setDecoded(std::make_unique<RawAttr>(std::move(bytes)));
+    (void)slot->mutate();
     return true;
 }
 
@@ -599,8 +657,9 @@ bool skipRawAnnoPairs(Cursor& cur)
 /// 参数注解两槽槽内过滤：命中谓词的条目摘除——部分摘除留槽（参数行数与行序
 /// 保持：num_parameters 与方法描述符参数数对应，不缩行）、全部条目摘空时连
 /// 槽摘除（旧栈 annotation 表清空后旧 writer 不再产出该属性，语义等价）。
-/// 布局不符/截尾/尾随字节一律整槽保守跳过（fail-closed，不产半截改写）。
-/// 返回是否发生任何变化。
+/// 双道：0.4.16+ typed 面（ParameterAnnotationsAttr 行模型）为主，Raw 载荷
+/// 二进制手术为 legacy 兜底（typed 解码拒绝的形态）；Raw 道布局不符/截尾/
+/// 尾随字节整槽保守跳过（fail-closed，不产半截改写）。返回是否发生任何变化。
 bool filterParameterAnnotationSlots(ClassFile&             cf,
                                     std::vector<AttrSlot>& attrs,
                                     const AnnoFilter       filter)
@@ -611,7 +670,39 @@ bool filterParameterAnnotationSlots(ClassFile&             cf,
         if (!slotNameIs(cf, slot, kRvpa) && !slotNameIs(cf, slot, kRipa)) continue;
         auto decoded = cf.decodeAttr(slot);
         if (decoded.is_err()) continue;
-        if (std::move(decoded).unwrap()->kind() != AttrKind::Raw) continue;
+        const AttrKind slotKind = std::move(decoded).unwrap()->kind();
+        if (slotKind == AttrKind::ParameterAnnotations) {
+            // 0.4.16+ typed 面：注解结构同 AnnotationsAttr 模型，行保持语义
+            // 与 Raw 道一致（部分摘除留槽、全空摘槽）。
+            const auto* ro = ca::core::tag_cast::cast<const ParameterAnnotationsAttr*>(slot.peek());
+            const auto hit = [&cf, filter](const AnnotationsAttr::Annotation& a) {
+                return annoFilterMatches(filter, cf.utf8(a.typeCp));
+            };
+            bool anyHit  = false;
+            bool anyKept = false;
+            for (const std::vector<AnnotationsAttr::Annotation>& row : ro->parameters) {
+                for (const AnnotationsAttr::Annotation& a : row) {
+                    if (hit(a)) {
+                        anyHit = true;
+                    } else {
+                        anyKept = true;
+                    }
+                }
+            }
+            if (!anyHit) continue;
+            changed = true;
+            if (!anyKept) {
+                attrs.erase(attrs.begin() + static_cast<std::ptrdiff_t>(i));
+                continue;
+            }
+            auto& rows =
+                ca::core::tag_cast::cast<ParameterAnnotationsAttr*>(slot.mutate())->parameters;
+            for (std::vector<AnnotationsAttr::Annotation>& row : rows) {
+                row.erase(std::remove_if(row.begin(), row.end(), hit), row.end());
+            }
+            continue;
+        }
+        if (slotKind != AttrKind::Raw) continue;
         const std::vector<ca::u8>& bytes =
             ca::core::tag_cast::cast<const RawAttr*>(slot.peek())->bytes();
         if (bytes.empty()) continue;

@@ -151,9 +151,18 @@ std::optional<ConstantValueInfo> fieldConstantValue(jbc::core::ClassFile& cf,
     if (!slot->decoded()) {
         if (cf.decodeAttr(const_cast<jbc::core::AttrSlot&>(*slot)).is_err()) return std::nullopt;
     }
-    const auto* raw = ca::core::tag_cast::cast<jbc::core::RawAttr>(slot->peek());
-    if (raw == nullptr || raw->bytes().size() < 2) return std::nullopt;
-    const ca::u32 cpIndex = readU2(raw->bytes(), 0);
+    // 0.4.16+ typed 面：解码命中 ConstantValueAttr（constantValueCp 单域）；
+    // 拒收形态落 Raw 槽 2 字节原读。cast 无检查，kind 分道先于 cast。
+    ca::u32 cpIndex = 0;
+    if (slot->peek()->kind() == jbc::core::AttrKind::ConstantValue) {
+        cpIndex = ca::core::tag_cast::cast<const jbc::core::ConstantValueAttr*>(slot->peek())
+                      ->constantValueCp;
+    }
+    else {
+        const auto* raw = ca::core::tag_cast::cast<const jbc::core::RawAttr>(slot->peek());
+        if (raw == nullptr || raw->bytes().size() < 2) return std::nullopt;
+        cpIndex = readU2(raw->bytes(), 0);
+    }
     if (!cf.cp.valid(cpIndex)) return std::nullopt;
     const ConstantPool::Entry& entry = cf.cp.at(cpIndex);
     ConstantValueInfo info;

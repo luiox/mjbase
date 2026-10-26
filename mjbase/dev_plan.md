@@ -375,6 +375,23 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   求值副作用，弹弃即纯删；Dynamic/condy 不认领（bootstrap 链有求值
   副作用，fail-closed）。1 单测（ldc Class; pop 收敛），本地构建面被
   并行会话 libjhasm 迁移占用，CI 门验证。
+- [x] libjbc 0.4.15 → 0.4.18 升级适配（迁移批 B1）：typed 属性面扩容
+  （0.4.16 起注解族四件 ParameterAnnotations/AnnotationDefault/
+  MethodParameters/ConstantValue typed 解码，Raw 槽字节手术消费面换道）
+  + mount 面（0.4.16 增 attach 族）+ consumer 模块移除（0.4.17，本仓未
+  消费）+ MethodParameters 接收者行 gate（0.4.18）。消费面适配三处：
+  meta_info_remover MethodParameters 清位改双道（typed 行模型主道 + Raw
+  字节道，布局判定 u1 count 标准形优先、u2 非标形兜底——JVMS 4.7.24
+  parameters_count 实为 u1，javac 产物与旧栈 writer 皆此形，历史夹具的
+  u2 计数形是非标产物，注释口径一并纠正）；Runtime{Visible,Invisible}-
+  ParameterAnnotations 槽过滤接 typed 行模型（Annotation.typeCp 按 utf8
+  过闸，全删擦槽、部分删 mutate 行）；tool_class_combiner ConstantValue
+  回读、workspace fieldConstantValue（其 cast<RawAttr> 无检查，typed 槽
+  上 UB 致 WorkspaceCore 指令族用例 SEH——cast 契约是 isa 守护后使用，
+  kind 分道先于 cast）改 kind 分道双读。测试面：MethodParameters 夹具
+  改 u1 标准形（13 字节）+ 断言偏移随行；3 个读回断言块接 slotPayload-
+  Bytes（typed 重编码去槽头/Raw 直取/源 span 兜底）。全量 1810 绿
+  （1807 过 + 3 既有跳过）。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。

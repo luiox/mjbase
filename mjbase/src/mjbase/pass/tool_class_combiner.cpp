@@ -196,17 +196,31 @@ void rebuildConstantValue(jbc::ir::ClassSession& src, const jbc::ir::FieldUnit& 
     jbc::core::MemberInfo& sm = srcCf.fields[srcField.backingIndex];
     for (jbc::core::AttrSlot& slot : sm.attrs) {
         if (!srcCf.cp.utf8Equals(slot.nameCp, "ConstantValue")) continue;
-        const auto decoded = srcCf.decodeAttr(slot);
-        if (decoded.is_err() || decoded.unwrap()->kind() != jbc::core::AttrKind::Raw) {
-            throw std::runtime_error("ToolClassCombiner: ConstantValue 属性不可解码");
+        // 双道读：0.4.16+ ConstantValue typed 解码为主；Raw/typed 拒收的
+        // legacy 载荷按 2 字节 CV 兜底。
+        ca::u32 srcIdx = 0;
+        if (auto decoded = srcCf.decodeAttr(slot); decoded.is_ok()) {
+            const jbc::core::AttrBody* body = std::move(decoded).unwrap();
+            if (body->kind() == jbc::core::AttrKind::ConstantValue) {
+                srcIdx = static_cast<const jbc::core::ConstantValueAttr*>(slot.body.get())
+                             ->constantValueCp;
+            } else if (body->kind() == jbc::core::AttrKind::Raw) {
+                const auto* raw = static_cast<const jbc::core::RawAttr*>(slot.body.get());
+                if (raw->bytes().size() != 2) {
+                    throw std::runtime_error("ToolClassCombiner: ConstantValue 载荷长度非法");
+                }
+                srcIdx = (static_cast<ca::u32>(raw->bytes()[0]) << 8)
+                         | static_cast<ca::u32>(raw->bytes()[1]);
+            } else {
+                throw std::runtime_error("ToolClassCombiner: ConstantValue 属性不可解码");
+            }
+        } else {
+            const auto view = srcCf.source().spanOrEmpty(slot.data);
+            if (view.size() != 2) {
+                throw std::runtime_error("ToolClassCombiner: ConstantValue 属性不可解码");
+            }
+            srcIdx = (static_cast<ca::u32>(view[0]) << 8) | static_cast<ca::u32>(view[1]);
         }
-        const auto* raw = static_cast<const jbc::core::RawAttr*>(slot.body.get());
-        const std::vector<ca::u8>& payload = raw->bytes();
-        if (payload.size() != 2) {
-            throw std::runtime_error("ToolClassCombiner: ConstantValue 载荷长度非法");
-        }
-        const ca::u32 srcIdx =
-            (static_cast<ca::u32>(payload[0]) << 8) | static_cast<ca::u32>(payload[1]);
         // 值拷贝后再动宿主池（Entry& 不得跨追加持存）。
         const jbc::core::ConstantPool::Entry entry = srcCf.cp.at(srcIdx);
         ca::u32 newIdx = 0;

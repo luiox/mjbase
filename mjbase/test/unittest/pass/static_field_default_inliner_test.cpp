@@ -81,11 +81,18 @@ std::optional<CvView> constantValueOf(ClassFile& cf, MemberInfo& f)
         if (cf.utf8(slot.nameCp) != "ConstantValue") continue;
         auto d = cf.decodeAttr(slot);
         if (d.is_err()) return std::nullopt;
-        if (std::move(d).unwrap()->kind() != AttrKind::Raw) return std::nullopt;
-        const auto* raw = ca::core::tag_cast::cast<const RawAttr*>(slot.peek());
-        if (raw == nullptr || raw->bytes().size() != 2) return std::nullopt;
-        const ca::u32 idx = (static_cast<ca::u32>(raw->bytes()[0]) << 8) |
-                            static_cast<ca::u32>(raw->bytes()[1]);
+        ca::u32 idx = 0;
+        if (std::move(d).unwrap()->kind() == AttrKind::ConstantValue) {
+            idx = ca::core::tag_cast::cast<const jbc::core::ConstantValueAttr*>(slot.peek())
+                      ->constantValueCp;
+        } else if (slot.peek()->kind() == AttrKind::Raw) {
+            const auto* raw = ca::core::tag_cast::cast<const RawAttr*>(slot.peek());
+            if (raw == nullptr || raw->bytes().size() != 2) return std::nullopt;
+            idx = (static_cast<ca::u32>(raw->bytes()[0]) << 8) |
+                  static_cast<ca::u32>(raw->bytes()[1]);
+        } else {
+            return std::nullopt;
+        }
         const jbc::core::ConstantPool::Entry e = cf.cp.at(idx);
         switch (e.tag) {
         case CpTag::Integer: return CvView{CpTag::Integer, e.ival, 0};
