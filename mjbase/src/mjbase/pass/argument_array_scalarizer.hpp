@@ -16,19 +16,23 @@ namespace mjbase::pass {
 ///     aastore)*; invoke`——实参按序入数组后整体传参。
 ///
 /// 判定（充分条件，任一失败整目标放弃，fail-closed）：
-///   - 被调方 static（实例形态与继承面挂账切片 3）、容器内声明、
-///     desc 恰为 `([Ljava/lang/Object;)R`；
+///   - 被调方容器内声明、desc 恰为 `([Ljava/lang/Object;)R`（static 与
+///     实例同面：实例参数槽基 1，调用位点静态性须与候选一致，收
+///     invokestatic / invokevirtual / invokespecial）；
 ///   - 取参窗下标完整覆盖 0..n-1（无缺口；同元素重复取允许）；参数槽
 ///     全部使用（def-use 入参定义边）都落在取参窗的 aaload 上——数组
 ///     不逃逸（arraylength / 传参 / 返回 / 再存储整体拒收）；参数槽
 ///     无 store/iinc/ret 触碰；
-///   - 调用侧窗口规范形：长度常量 == n、下标序恰 0..n-1、实参单指令；
-///     实参类型静态可判面（切片 2 对齐面）：aconst_null 匹配任意引用
-///     Ti；ldc String 要求 Ti ∈ {String, Object}；ldc Class 常量要求
-///     Ti ∈ {常量类, Object}；aload_k 槽类型提升——读点到达定值恰为
-///     调用方同槽入参定值（单定义未截断，槽未被重存储）时按调用方
-///     声明型（实例槽 0 = this 取调用方类）对齐，否则要求 Ti == Object。
-///     多指令实参形态（装箱工厂等）挂账切片 3，与窗形扩展一并评估；
+///   - 调用侧窗口规范形（切片 3 顺序扫描形）：长度常量 == n、下标序恰
+///     0..n-1、实参组非空且至多 kMaxArgInsns 条（窗头锚定回扫，元素
+///     边界回溯容嵌套同形序列）；实参类型静态可判面：aconst_null 匹配
+///     任意引用 Ti；ldc String 要求 Ti ∈ {String, Object}；ldc Class
+///     常量要求 Ti ∈ {常量类, Object}；aload_k 槽类型提升——读点到达
+///     定值恰为调用方同槽入参定值（单定义未截断，槽未被重存储）时按
+///     调用方声明型（实例槽 0 = this 取调用方类）对齐，否则要求
+///     Ti == Object；双指令装箱链 [单值生产者; wrapper.valueOf(prim) /
+///     String.valueOf(...)] 按产出型对齐（生产者只做宽度形态校验），
+///     其余多指令形态 fail-closed 拒收；
 ///   - 容器内全部调用点（按 CP owner+name+desc 解析到目标）都是规范窗；
 ///     CP owner ≠ 声明类的调用（继承静态视图）拒收；他类同名同描述符
 ///     声明（隐藏面）拒收；MethodHandle/indy 钉死（CP 方法柄引用）拒收；

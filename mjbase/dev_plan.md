@@ -350,6 +350,18 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   多指令实参形态（装箱工厂 valueOf 等需窗形扩展）挂账切片 3，与实例
   形态/死数组清理一并。5 单测（Class 常量对齐+失配、static 入参直传、
   槽重存储拒收、实例 this 直传），全量 1802 绿（1799 过 + 3 既有跳过）。
+- [x] ArgumentArrayScalarizer 切片 3（#37，scope:global）：多指令实参窗形
+  扩展 + 实例形态——调用侧装箱窗从固定步长改顺序扫描（窗头锚定回扫，
+  元素边界回溯容嵌套同形序列，实参组至多 kMaxArgInsns 有界）；实参组
+  静态可判面新增双指令装箱链 [单值生产者; wrapper.valueOf(prim) /
+  String.valueOf(...)]（产出型由调用决定，生产者只做宽度形态校验：
+  基本型 op 族与入参字母匹配，B/S/C/Z 走 I 面），其余多指令形态
+  fail-closed；实例候选落地（参数槽基 1，逃逸审计 sig 带静态性，调用
+  位点收 invokestatic/virtual/special 且静态性须与候选一致，槽平移/
+  窗头改写/描述符同步对 paramSlot 全泛型）。死数组清理仍挂账（载体
+  待重论证：标量化后 anewarray 残段属帧溯源族既有删除面覆盖范围）。
+  3 单测（装箱链还原+产出型失配拒收、实例形态 invokevirtual 全链），
+  全量 1805 绿（1802 过 + 3 既有跳过）。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。
