@@ -172,29 +172,81 @@ mjbase::spi::PreservedAnalyses FlatteningReverser::run(mjbase::spi::MethodScope&
     const jbc::ir::Insn* sw = cu.dom.peek(order[swPos]);
 
     // ── 引擎步 2：分发操作数解析（形态表：折叠步规格）。
-    //    从 switch 向上吞掉至多 maxSteps 个 (intConst C; binop) 对，随后
-    //    必须恰到一个 iload（状态槽），区间再无其他指令。──
-    ca::usize           headPos = swPos;
-    std::vector<FoldStep> steps;
-    while (steps.size() < dispatch_.maxSteps && headPos >= 2) {
-        const jbc::ir::Insn* binop  = cu.dom.peek(order[headPos - 1]);
-        const jbc::ir::Insn* constIn = cu.dom.peek(order[headPos - 2]);
-        ca::i32             c = 0;
-        if (binop == nullptr || constIn == nullptr) break;
-        const bool binopOk = std::find(dispatch_.binops.begin(), dispatch_.binops.end(),
-                                       binop->op) != dispatch_.binops.end();
-        if (!binopOk || !isIntConstInsn(scope.session, *constIn, c)) break;
-        steps.push_back({c, binop->op});
-        headPos -= 2;
-    }
-    if (headPos < 1) return abandon();
+    //    形态 A（常量在右，既有）：[iload s; (intConst C; binop)*; switch]，
+    //      v = ((K op C₁) op C₂)…；
+    //    形态 B（镜像，常量在左）：[intConst 列; iload s; binop 链; switch]，
+    //      常量列在装载之下，近载端常量先应用、与 binop 链远端配对：
+    //      v = C₂ op₂ (C₁ op₁ K)。
+    //    两形态各自整链一致，混合链（部分步常量在左部分在右）拒收（挂账）。──
+    ca::usize             iloadPos  = n;
+    ca::usize             blockHead = n;   // 分发块头（入边守卫用）
+    bool                  mirrored  = false;
+    std::vector<FoldStep> steps;           // 应用序：先应用的在前
     {
-        const jbc::ir::Insn* load = cu.dom.peek(order[headPos - 1]);
-        if (load == nullptr || !isIntLoadOp(load->op)) return abandon();
-        --headPos;   // headPos 现指向 iload 本身
+        // 形态 A：从 switch 向上吞 (intConst C; binop) 对到 iload。
+        ca::usize             p = swPos;
+        std::vector<FoldStep> scanned;   // 近 switch → 远
+        while (scanned.size() < dispatch_.maxSteps && p >= 2) {
+            const jbc::ir::Insn* binop   = cu.dom.peek(order[p - 1]);
+            const jbc::ir::Insn* constIn = cu.dom.peek(order[p - 2]);
+            ca::i32              c       = 0;
+            if (binop == nullptr || constIn == nullptr) break;
+            const bool binopOk = std::find(dispatch_.binops.begin(), dispatch_.binops.end(),
+                                           binop->op) != dispatch_.binops.end();
+            if (!binopOk || !isIntConstInsn(scope.session, *constIn, c)) break;
+            scanned.push_back({c, binop->op});
+            p -= 2;
+        }
+        if (p >= 1) {
+            const jbc::ir::Insn* load = cu.dom.peek(order[p - 1]);
+            if (load != nullptr && isIntLoadOp(load->op)) {
+                iloadPos  = p - 1;
+                blockHead = iloadPos;   // 形态 A 块头即装载
+                steps.assign(scanned.rbegin(), scanned.rend());
+            }
+        }
     }
-    const ca::u32 slot = slotOfIntLoad(*cu.dom.peek(order[headPos]));
-    if (headPos == 0) return abandon();   // 入口边不可静态解析
+    if (iloadPos == n) {
+        // 形态 B：binop 链紧邻 switch、iload 在链下、常量列在 iload 之下。
+        ca::usize       p = swPos;
+        std::vector<Op> ops;   // 近 switch → 远
+        while (ops.size() < dispatch_.maxSteps && p >= 1) {
+            const jbc::ir::Insn* binop = cu.dom.peek(order[p - 1]);
+            if (binop == nullptr
+                || std::find(dispatch_.binops.begin(), dispatch_.binops.end(), binop->op)
+                       == dispatch_.binops.end()) {
+                break;
+            }
+            ops.push_back(binop->op);
+            --p;
+        }
+        if (!ops.empty() && p >= 1) {
+            const jbc::ir::Insn* load = cu.dom.peek(order[p - 1]);
+            if (load != nullptr && isIntLoadOp(load->op)) {
+                const ca::usize m = ops.size();
+                iloadPos = p - 1;
+                if (iloadPos < m) return abandon();
+                bool ok = true;
+                for (ca::usize j = 0; j < m && ok; ++j) {
+                    const jbc::ir::Insn* constIn = cu.dom.peek(order[iloadPos - 1 - j]);
+                    ca::i32              c       = 0;
+                    if (constIn == nullptr || !isIntConstInsn(scope.session, *constIn, c)) {
+                        ok = false;
+                        break;
+                    }
+                    steps.push_back({c, ops[m - 1 - j]});
+                }
+                if (ok) {
+                    blockHead = iloadPos - m;
+                    mirrored  = true;
+                } else {
+                    steps.clear();
+                }
+            }
+        }
+    }
+    if (iloadPos == n || blockHead == 0) return abandon();   // 无形态 / 入口边不可静态解析
+    const ca::u32 slot = slotOfIntLoad(*cu.dom.peek(order[iloadPos]));
 
     // ── 引擎步 3：状态槽读写全量审计。──
     std::vector<ca::usize> writes;
@@ -202,7 +254,7 @@ mjbase::spi::PreservedAnalyses FlatteningReverser::run(mjbase::spi::MethodScope&
         const jbc::ir::Insn* in = cu.dom.peek(order[i]);
         if (in == nullptr) continue;
         if (isIntLoadOp(in->op) && slotOfIntLoad(*in) == slot) {
-            if (i != headPos) return abandon();   // 第二读点：被读作他用
+            if (i != iloadPos) return abandon();   // 第二读点：被读作他用
         }
         if (isIntStoreOp(in->op) && slotOfIntStore(*in) == slot) writes.push_back(i);
         // iinc 是读改写，两槽值高半槽是隐式覆盖：两者都不在引擎建模面。
@@ -230,7 +282,7 @@ mjbase::spi::PreservedAnalyses FlatteningReverser::run(mjbase::spi::MethodScope&
         auto resolved = cu.dom.resolveLabel(gotoIn->target);
         if (resolved.is_err()) return abandon();
         const jbc::ir::LabelTarget t = std::move(resolved).unwrap();
-        if (t.isEnd() || posOfInsn(order, t.insn) != headPos) return abandon();
+        if (t.isEnd() || posOfInsn(order, t.insn) != blockHead) return abandon();
 
         ca::i32 k = 0;
         bool   matched = false;
@@ -242,15 +294,20 @@ mjbase::spi::PreservedAnalyses FlatteningReverser::run(mjbase::spi::MethodScope&
         }
         if (!matched) return abandon();
 
-        // v = ((K op1 C1) op2 C2)…：折叠步按距 switch 由近及远记录，
-        // 求值逆序复合（先复合最靠近 iload 的步）。u32 环绕，无符号 UB。
+        // 折叠步按应用序复合：形态 A 常量在右 v = v op C（v 从 K 起），
+        // 形态 B 常量在左 v = C op v。u32 环绕，无符号 UB。
         ca::u32 v = static_cast<ca::u32>(k);
-        for (auto it = steps.rbegin(); it != steps.rend(); ++it) {
-            const ca::u32 c = static_cast<ca::u32>(it->c);
-            if (it->op == Op::IADD) v += c;
-            else if (it->op == Op::ISUB) v -= c;
-            else if (it->op == Op::IXOR) v ^= c;
-            else return abandon();
+        for (const FoldStep& st : steps) {
+            const ca::u32 c = static_cast<ca::u32>(st.c);
+            if (st.op == Op::IADD) {
+                v = v + c;
+            } else if (st.op == Op::ISUB) {
+                v = mirrored ? c - v : v - c;
+            } else if (st.op == Op::IXOR) {
+                v = v ^ c;
+            } else {
+                return abandon();
+            }
         }
         const LabelId caseLabel =
             method_rewrite_util::switchCaseLabelOf(*sw, static_cast<ca::i32>(v));
@@ -259,8 +316,8 @@ mjbase::spi::PreservedAnalyses FlatteningReverser::run(mjbase::spi::MethodScope&
     }
 
     // ── 引擎步 5a：入边守卫——非前驱分支/switch 目标锚入分发块区间
-    //    [headPos, swPos]（含块头）→ 拒收；switch 案表自引用由同一条扫描
-    //    覆盖（switch 不是前驱 goto）。──
+    //    (blockHead, swPos] 或块头本身 → 拒收；switch 案表自引用由同一条
+    //    扫描覆盖（switch 不是前驱 goto）。──
     {
         std::vector<InsnId> predGotos;
         predGotos.reserve(preds.size());
@@ -276,8 +333,8 @@ mjbase::spi::PreservedAnalyses FlatteningReverser::run(mjbase::spi::MethodScope&
                 const jbc::ir::LabelTarget t = std::move(resolved).unwrap();
                 if (t.isEnd()) return true;
                 const ca::usize pos = posOfInsn(order, t.insn);
-                if (pos > headPos && pos <= swPos) return false;   // 锚入区间
-                if (pos == headPos &&
+                if (pos > blockHead && pos <= swPos) return false;   // 锚入区间
+                if (pos == blockHead &&
                     std::find(predGotos.begin(), predGotos.end(), id) == predGotos.end()) {
                     return false;   // 指向 D 头但不是已识别前驱
                 }
@@ -292,7 +349,7 @@ mjbase::spi::PreservedAnalyses FlatteningReverser::run(mjbase::spi::MethodScope&
 
     // ── 引擎步 5b：物理直落进分发块头——前邻必须是无直落指令。──
     {
-        const jbc::ir::Insn* prev = cu.dom.peek(order[headPos - 1]);
+        const jbc::ir::Insn* prev = cu.dom.peek(order[blockHead - 1]);
         if (prev == nullptr || !neverFallsThrough(prev->op)) return abandon();
     }
 

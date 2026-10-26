@@ -423,6 +423,127 @@ TEST(FlatteningReverserTest, customPredFormRowExtendsFacility)
     EXPECT_EQ(gotoTargetPositions(fx), (std::set<ca::i64>{nthPos(fx, Op::ICONST_1, 0)}));
 }
 
+// ── 镜像形态 B（常量在左）：[ldc C; iload s; ISUB; switch] → v = C - K ──
+TEST(FlatteningReverserTest, mirroredSingleSubResolves)
+{
+    // v = C - K：K = 111111111、C = 111111113 → v = 2 命中 key 2 → A 块。
+    DomFixture fx("t/F", "m", "(I)I", 4, 4, [&](Body& b) {
+        LabelId dL = b.label();
+        LabelId aL = b.label();
+        LabelId bL = b.label();
+        LabelId xL = b.label();
+        // 入口前驱：ldc K; istore s; goto D。
+        b.ldcInt(111111111).istore(1).branch(Op::GOTO, dL);
+        // 分发块 D（镜像单步，块头 = 常量）：ldc C; iload s; ISUB; switch。
+        b.ldcInt(111111113);
+        b.bindHere(dL);
+        b.iload(1).op(Op::ISUB);
+        b.lookupSwitch(xL, {2, 7}, {aL, bL});
+        b.iconst_1();
+        b.bindHere(aL);
+        b.ireturn();
+        b.iconst_2();
+        b.bindHere(bL);
+        b.ireturn();
+        b.iconst_0();
+        b.bindHere(xL);
+        b.ireturn();
+    });
+    const auto before = opsOf(fx);
+    const auto pa     = fx.run(mjbase::pass::FlatteningReverser{});
+    EXPECT_TRUE(pa.changed());
+    EXPECT_EQ(opsOf(fx), before);
+    // 唯一前驱 goto 直达 key=2 的 A 块头（首个 ICONST_1）。
+    EXPECT_EQ(gotoTargetPositions(fx), (std::set<ca::i64>{nthPos(fx, Op::ICONST_1, 0)}));
+}
+
+// ── 镜像两步：[C2; C1; iload s; ISUB; IADD; switch] → v = C2 + (C1 - K) ──
+TEST(FlatteningReverserTest, mirroredTwoStepChainResolves)
+{
+    // K = 111111111、C1 = 111111110（近载端，配远端 ISUB）、C2 = 3（配近端
+    // IADD）→ v = 3 + (-1) = 2 命中 key 2。块头 = 最深常量 C2。
+    DomFixture fx("t/F", "m", "(I)I", 4, 4, [&](Body& b) {
+        LabelId dL = b.label();
+        LabelId aL = b.label();
+        LabelId bL = b.label();
+        LabelId xL = b.label();
+        b.ldcInt(111111111).istore(1).branch(Op::GOTO, dL);
+        b.ldcInt(3);
+        b.bindHere(dL);
+        b.ldcInt(111111110);
+        b.iload(1).op(Op::ISUB).op(Op::IADD);
+        b.lookupSwitch(xL, {2, 7}, {aL, bL});
+        b.iconst_1();
+        b.bindHere(aL);
+        b.ireturn();
+        b.iconst_2();
+        b.bindHere(bL);
+        b.ireturn();
+        b.iconst_0();
+        b.bindHere(xL);
+        b.ireturn();
+    });
+    // 默认规格 maxSteps=1，两步链注入 maxSteps=2（形态表扩展面）。
+    const auto pa = fx.run(mjbase::pass::FlatteningReverser(
+        mjbase::pass::FlatteningReverser::defaultPredForms(),
+        mjbase::pass::FlatteningReverser::DispatchSpec{2, {Op::IADD, Op::ISUB, Op::IXOR}}));
+    EXPECT_TRUE(pa.changed());
+    EXPECT_EQ(gotoTargetPositions(fx), (std::set<ca::i64>{nthPos(fx, Op::ICONST_1, 0)}));
+}
+
+// ── 镜像 XOR（交换律下与形态 A 等价）：[ldc C; iload s; IXOR; switch] ──
+TEST(FlatteningReverserTest, mirroredXorResolves)
+{
+    // K = 6、C = 5 → v = 5 ^ 6 = 3 命中 key 3。
+    DomFixture fx("t/F", "m", "(I)I", 4, 4, [&](Body& b) {
+        LabelId dL = b.label();
+        LabelId aL = b.label();
+        LabelId xL = b.label();
+        b.ldcInt(6).istore(1).branch(Op::GOTO, dL);
+        b.ldcInt(5);
+        b.bindHere(dL);
+        b.iload(1).op(Op::IXOR);
+        b.lookupSwitch(xL, {3}, {aL});
+        b.iconst_1();
+        b.bindHere(aL);
+        b.ireturn();
+        b.iconst_0();
+        b.bindHere(xL);
+        b.ireturn();
+    });
+    const auto pa = fx.run(mjbase::pass::FlatteningReverser{});
+    EXPECT_TRUE(pa.changed());
+    EXPECT_EQ(gotoTargetPositions(fx), (std::set<ca::i64>{nthPos(fx, Op::ICONST_1, 0)}));
+}
+
+// ── 混合操作数链拒收：内层镜像（C1 在左）+ 外层正常（C2 在右）→ 整族不动 ──
+TEST(FlatteningReverserTest, mixedOperandChainRejected)
+{
+    // [ldc C1; iload s; ISUB; ldc C2; IADD; switch]：形态 A 解析在 iload 处
+    // 被 ldc C2 隔断失配，形态 B 要求 binop 链紧贴 iload 也失配 → 拒收
+    // （混合链挂账）。
+    DomFixture fx("t/F", "m", "(I)I", 4, 4, [&](Body& b) {
+        LabelId dL = b.label();
+        LabelId aL = b.label();
+        LabelId xL = b.label();
+        b.ldcInt(1).istore(1).branch(Op::GOTO, dL);
+        b.ldcInt(2);
+        b.bindHere(dL);
+        b.iload(1).op(Op::ISUB).ldcInt(3).op(Op::IADD);
+        b.lookupSwitch(xL, {4}, {aL});
+        b.iconst_1();
+        b.bindHere(aL);
+        b.ireturn();
+        b.iconst_0();
+        b.bindHere(xL);
+        b.ireturn();
+    });
+    const auto before = opsOf(fx);
+    const auto pa     = fx.run(mjbase::pass::FlatteningReverser{});
+    EXPECT_TRUE(pa.areAllPreserved());
+    EXPECT_EQ(opsOf(fx), before);
+}
+
 // ── 注册面 ──
 TEST(FlatteningReverserTest, registeredAsFlatteningReverser)
 {
