@@ -280,6 +280,77 @@ TEST(ArgumentArrayScalarizerTest, thisAliasPassthroughScalarized)
     EXPECT_EQ(methodDesc(callee->get(), "go"), "(LCaller;)V");
 }
 
+// ── 切片 3 正面：双指令装箱链实参（iconst_5; Integer.valueOf）──
+TEST(ArgumentArrayScalarizerTest, boxValueOfArgScalarized)
+{
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "Svc.class", buildCalleeTi("java/lang/Integer"));
+    {
+        FixtureBuilder b("Caller");
+        const ca::u16 vof = b.methodRef("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;");
+        b.addMethod(method("main", "()V", buildCaller1(b, cat({0x08, 0xb8}, u16b(vof)))));
+        addClassResource(container, "Caller.class", b.assemble());
+    }
+    EXPECT_TRUE(runPass(container).changed());
+    const auto* callee = classResource(container, "Svc.class");
+    ASSERT_NE(callee, nullptr);
+    EXPECT_EQ(methodDesc(callee->get(), "go"), "(Ljava/lang/Integer;)V");
+    const std::vector<jbc::core::Op> cops = methodOps(classResource(container, "Caller.class")->get(), "main");
+    ASSERT_EQ(cops.size(), 4u);
+    EXPECT_EQ(cops[0], jbc::core::Op::ICONST_5);
+    EXPECT_EQ(cops[1], jbc::core::Op::INVOKESTATIC);
+}
+
+// ── 切片 3 拒绝：装箱链产出型与 Ti 失配 ──
+TEST(ArgumentArrayScalarizerTest, boxValueOfMismatchRejected)
+{
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "Svc.class", buildCalleeTi("java/lang/String"));
+    {
+        FixtureBuilder b("Caller");
+        const ca::u16 vof = b.methodRef("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;");
+        b.addMethod(method("main", "()V", buildCaller1(b, cat({0x08, 0xb8}, u16b(vof)))));
+        addClassResource(container, "Caller.class", b.assemble());
+    }
+    EXPECT_FALSE(runPass(container).changed());
+}
+
+// ── 切片 3 正面：实例形态（槽 1 取参 + invokevirtual 位点）──
+TEST(ArgumentArrayScalarizerTest, instanceCalleeScalarized)
+{
+    mjbase::model::ResourceContainer container;
+    {
+        FixtureBuilder b("Svc");
+        const ca::u16 tiCls = b.cls("java/lang/String");
+        // 实例取参窗：aload_1（槽 1 = 首参）; iconst_0; aaload; checkcast; astore_2
+        Bytes w0 = cat({0x2b, 0x03, 0x32, 0xc0}, cat(u16b(tiCls), {0x4d}));
+        FixtureMethod im = method("go", "([Ljava/lang/Object;)V", cat(w0, {0xb1}));
+        im.access = 0x0001;   // 实例：槽 0 = this
+        b.addMethod(std::move(im));
+        addClassResource(container, "Svc.class", b.assemble());
+    }
+    {
+        FixtureBuilder b("Caller");
+        const ca::u16 objCls = b.cls("java/lang/Object");
+        const ca::u16 mref   = b.methodRef("Svc", "go", "([Ljava/lang/Object;)V");
+        // aconst_null 作 receiver；装箱窗；invokevirtual
+        Bytes code = cat({0x01, 0x04, 0xbd}, u16b(objCls));
+        code = cat(code, cat({0x59, 0x13}, cat(u16b(b.strConst("z")), {0x03, 0x53})));
+        code = cat(code, cat({0xb6}, cat(u16b(mref), {0xb1})));
+        b.addMethod(method("main", "()V", std::move(code)));
+        addClassResource(container, "Caller.class", b.assemble());
+    }
+    EXPECT_TRUE(runPass(container).changed());
+    const auto* callee = classResource(container, "Svc.class");
+    ASSERT_NE(callee, nullptr);
+    EXPECT_EQ(methodDesc(callee->get(), "go"), "(Ljava/lang/String;)V");
+    const std::vector<jbc::core::Op> cops = methodOps(classResource(container, "Caller.class")->get(), "main");
+    ASSERT_EQ(cops.size(), 4u);
+    EXPECT_EQ(cops[0], jbc::core::Op::ACONST_NULL);
+    EXPECT_EQ(cops[1], jbc::core::Op::LDC_W);
+    EXPECT_EQ(cops[2], jbc::core::Op::INVOKEVIRTUAL);
+}
+
 // ── 正面：全链还原（被调方取参窗 + 描述符 + 调用方装箱窗）──
 TEST(ArgumentArrayScalarizerTest, fullRoundTripScalarized)
 {

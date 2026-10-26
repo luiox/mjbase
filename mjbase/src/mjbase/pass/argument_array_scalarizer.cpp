@@ -164,7 +164,8 @@ std::string typeDescOf(std::string_view internalName)
 struct CalleePlan
 {
     MemberTriple             key;
-    ca::u32                  paramSlot = 0;   ///< static：数组参数在槽 0
+    ca::u32                  paramSlot = 0;   ///< static：0；实例：1（槽 0 = this）
+    bool                     isStatic  = true;
     ca::u32                  n         = 0;
     std::vector<std::string> elemDescs;       ///< 按下标序的新参数描述符
     std::vector<std::string> elemNames;       ///< 按下标序的 checkcast 内部名
@@ -260,7 +261,7 @@ void analyzeCallee(CalleePlan& plan, jbc::ir::ClassSession& session, ca::usize m
         return;
     }
     // 逃逸审计：入参定义的全部使用边都落在窗的 aaload 上（数组不逃逸）。
-    const jbc::analysis::MethodSig sig{true, plan.key.desc};
+    const jbc::analysis::MethodSig sig{plan.isStatic, plan.key.desc};
     const mjbase::asm_analyzer::MethodDefUse du =
         mjbase::asm_analyzer::analyzeDefUse(session.backing().cp, cu, sig);
     if (!du.ok() || du.truncated()) {
@@ -328,6 +329,125 @@ struct CallerArgCtx
     std::string                    desc;
     std::optional<mjbase::asm_analyzer::MethodDefUse> du;
 };
+
+/// 装箱工厂 owner → valueOf 入参基本类型字母；非装箱族返回空。
+std::string_view boxPrimOf(std::string_view owner)
+{
+    const std::string_view known[] = {"java/lang/Integer",   "java/lang/Long", "java/lang/Double",
+                                      "java/lang/Float",     "java/lang/Short", "java/lang/Byte",
+                                      "java/lang/Character", "java/lang/Boolean"};
+    const std::string_view prims[] = {"I", "J", "D", "F", "S", "B", "C", "Z"};
+    for (ca::usize i = 0; i < 8; ++i) {
+        if (owner == known[i]) return prims[i];
+    }
+    return {};
+}
+
+/// 单值基本型生产者：op 族须与装箱工厂入参字母匹配（B/S/C/Z 走 I 面）。
+bool primPushMatches(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in,
+                     std::string_view prim)
+{
+    using jbc::core::Op;
+    const auto kLong = jbc::ir::ClassSession::ConstSem::Kind::Long;
+    const auto kFlt  = jbc::ir::ClassSession::ConstSem::Kind::Float;
+    const auto kDbl  = jbc::ir::ClassSession::ConstSem::Kind::Double;
+    if (prim == "I" || prim == "B" || prim == "S" || prim == "C" || prim == "Z") {
+        if ((in.op >= Op::ICONST_M1 && in.op <= Op::ICONST_5) || in.op == Op::BIPUSH
+            || in.op == Op::SIPUSH || in.op == Op::ILOAD
+            || (in.op >= Op::ILOAD_0 && in.op <= Op::ILOAD_3)) {
+            return true;
+        }
+        ca::i32 iv = 0;
+        return method_rewrite_util::intValueOf(session, in, iv);
+    }
+    jbc::ir::ClassSession::ConstSem c;
+    if (prim == "J") {
+        if (in.op == Op::LCONST_0 || in.op == Op::LCONST_1 || in.op == Op::LLOAD
+            || (in.op >= Op::LLOAD_0 && in.op <= Op::LLOAD_3)) {
+            return true;
+        }
+        return in.op == Op::LDC2_W && session.constOf(in, c) && c.kind == kLong;
+    }
+    if (prim == "F") {
+        if ((in.op >= Op::FCONST_0 && in.op <= Op::FCONST_2) || in.op == Op::FLOAD
+            || (in.op >= Op::FLOAD_0 && in.op <= Op::FLOAD_3)) {
+            return true;
+        }
+        return (in.op == Op::LDC || in.op == Op::LDC_W) && session.constOf(in, c)
+            && c.kind == kFlt;
+    }
+    if (prim == "D") {
+        if ((in.op >= Op::DCONST_0 && in.op <= Op::DCONST_1) || in.op == Op::DLOAD
+            || (in.op >= Op::DLOAD_0 && in.op <= Op::DLOAD_3)) {
+            return true;
+        }
+        return in.op == Op::LDC2_W && session.constOf(in, c) && c.kind == kDbl;
+    }
+    return false;
+}
+
+/// 单值生产者（String.valueOf 前置面）：基本型/引用常量/aconst_null/aload。
+bool isSingleValueProducer(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in)
+{
+    static constexpr std::string_view kAllPrims[] = {"I", "J", "F", "D"};
+    for (const std::string_view pr : kAllPrims) {
+        if (primPushMatches(session, in, pr)) return true;
+    }
+    if (in.op == Op::ACONST_NULL) return true;
+    LocalAccess la;
+    if (localAccessOf(in, la) && la.generic == Op::ALOAD) return true;
+    jbc::ir::ClassSession::ConstSem c;
+    if (session.constOf(in, c)) {
+        return c.kind == jbc::ir::ClassSession::ConstSem::Kind::String
+            || c.kind == jbc::ir::ClassSession::ConstSem::Kind::Class;
+    }
+    return false;
+}
+
+bool argMatchesTi(const jbc::ir::ClassSession& session, const jbc::ir::Insn& arg,
+                  jbc::ir::InsnId argId, std::string_view tiName, CallerArgCtx& actx);
+
+/// 实参组类型守卫（切片 3 面向）：组净效果须恰为压入 1 个引用。已判形：
+/// 单指令（argMatchesTi 全面）；双指令装箱链 [单值生产者;
+/// <wrapper>.valueOf(<prim>) / String.valueOf(...)]——产出型由调用决定，
+/// 生产者只做宽度形态校验。其余形态 fail-closed 拒收。
+bool argGroupMatchesTi(const jbc::ir::ClassSession& session, jbc::ir::CodeUnit& cu,
+                       const std::vector<InsnId>& order, ca::usize from, ca::usize to,
+                       std::string_view tiName, CallerArgCtx& actx)
+{
+    const ca::usize len = to - from;
+    if (len == 1) {
+        const jbc::ir::Insn* a = cu.dom.peek(order[from]);
+        return a != nullptr && argMatchesTi(session, *a, order[from], tiName, actx);
+    }
+    if (len != 2) return false;
+    const jbc::ir::Insn* a = cu.dom.peek(order[from]);
+    const jbc::ir::Insn* b = cu.dom.peek(order[from + 1]);
+    if (a == nullptr || b == nullptr || b->op != Op::INVOKESTATIC) return false;
+    jbc::ir::ClassSession::MemberSem ms;
+    if (!session.memberOf(*b, ms)
+        || ms.kind != jbc::ir::ClassSession::MemberSem::Kind::Method) {
+        return false;
+    }
+    if (ms.name == "valueOf") {
+        const std::string_view prim = boxPrimOf(ms.owner);
+        if (prim.empty()) return false;
+        std::string want;
+        want.reserve(ms.owner.size() + prim.size() + 4);
+        want.append("(").append(prim).append(")L").append(ms.owner).append(";");
+        if (ms.desc != want) return false;
+        if (!primPushMatches(session, *a, prim)) return false;
+        return tiName == ms.owner || tiName == "java/lang/Object";
+    }
+    if (ms.owner == "java/lang/String" && ms.name == "valueOf" && ms.desc.size() >= 19
+        && ms.desc.substr(ms.desc.size() - 19) == ")Ljava/lang/String;") {
+        if (!isSingleValueProducer(session, *a)) return false;
+        return tiName == "java/lang/String" || tiName == "java/lang/Object";
+    }
+    return false;
+}
+
+constexpr ca::usize kMaxArgInsns = 8;   ///< 实参组长度上界（扫描有界）
 
 /// 单指令实参类型守卫（切片 2 对齐面）：
 ///   - aconst_null → 任意引用 Ti；
@@ -399,7 +519,6 @@ mjbase::spi::PreservedAnalyses ArgumentArrayScalarizer::run(
         const jbc::ir::SymbolPool& sym  = u.symbols();
         for (ca::usize idx = 0; idx < u.methods.size(); ++idx) {
             const jbc::ir::MethodUnit& m = u.methods[idx];
-            if ((m.access & mjbase::hierarchy::kAccStatic) == 0) continue;
             const std::string name(std::string_view(sym.str(m.name)));
             const std::string desc(std::string_view(sym.str(m.desc)));
             if (desc.compare(0, 21, "([Ljava/lang/Object;)") != 0) continue;
@@ -415,7 +534,8 @@ mjbase::spi::PreservedAnalyses ArgumentArrayScalarizer::run(
             if (sameCount != 1) continue;
             CalleePlan plan;
             plan.key       = key;
-            plan.paramSlot = 0;
+            plan.isStatic  = (m.access & mjbase::hierarchy::kAccStatic) != 0;
+            plan.paramSlot = plan.isStatic ? 0 : 1;
             plan.owner     = &lc;
             plan.methodIdx = idx;
             analyzeCallee(plan, session, idx);
@@ -463,7 +583,11 @@ mjbase::spi::PreservedAnalyses ArgumentArrayScalarizer::run(
             collectCallerRefParams(actx.desc, actx.isStatic, lc.name, actx.refTypeBySlot);
             for (ca::usize t = 0; t < n; ++t) {
                 const jbc::ir::Insn* inv = cu.dom.peek(order[t]);
-                if (inv == nullptr || inv->op != Op::INVOKESTATIC) continue;
+                if (inv == nullptr
+                    || (inv->op != Op::INVOKESTATIC && inv->op != Op::INVOKEVIRTUAL
+                        && inv->op != Op::INVOKESPECIAL)) {
+                    continue;
+                }
                 jbc::ir::ClassSession::MemberSem sem;
                 if (!session.memberOf(*inv, sem)) continue;
                 ca::usize planIdx = plans.size();
@@ -476,50 +600,72 @@ mjbase::spi::PreservedAnalyses ArgumentArrayScalarizer::run(
                 if (planIdx == plans.size()) continue;
                 CalleePlan& plan = plans[planIdx];
                 if (plan.dead) continue;   // 已死候选的残余位点静默跳过
+                if ((inv->op == Op::INVOKESTATIC) != plan.isStatic) continue;
                 if (sem.owner != plan.key.owner) { plan.dead = true; continue; }
-                // 规范装箱窗：[iconst n; anewarray Object; (dup; arg;
-                // iconst_j; aastore)×n; invoke]，invoke 在 t。
-                const ca::usize m = plan.n;
+                // 规范装箱窗（切片 3 顺序扫描形）：[长度常量; anewarray
+                // Object; (dup; 实参组; intConst e; aastore)×m; invoke]。
+                // 实参组非空、至多 kMaxArgInsns 条（装箱工厂链）；窗头锚定
+                // 回扫（组不等长），元素边界回溯容嵌套同形序列。
+                const ca::usize m      = plan.n;
+                const ca::usize maxWin = 2 + m * (3 + kMaxArgInsns);
                 if (t < 4 * m + 2) { plan.dead = true; continue; }
-                const ca::usize ws = t - (4 * m + 2);
-                bool ok = true;
-                {
-                    ca::i32                len = 0;
-                    const jbc::ir::Insn* lenIn  = cu.dom.peek(order[ws]);
-                    const jbc::ir::Insn* newArr = cu.dom.peek(order[ws + 1]);
+                bool                ok     = false;
+                std::vector<InsnId> windowErases;
+                for (ca::usize back = 4 * m + 1; !ok && back <= maxWin && back <= t;
+                     ++back) {
+                    const ca::usize wsTry = t - back;
+                    ca::i32         len   = 0;
+                    const jbc::ir::Insn* lenIn  = cu.dom.peek(order[wsTry]);
+                    const jbc::ir::Insn* newArr = cu.dom.peek(order[wsTry + 1]);
                     if (lenIn == nullptr || newArr == nullptr
                         || !method_rewrite_util::intValueOf(session, *lenIn, len)
                         || static_cast<ca::u32>(len) != m || newArr->op != Op::ANEWARRAY
                         || session.classOf(*newArr) != "java/lang/Object") {
-                        ok = false;
+                        continue;
                     }
-                }
-                for (ca::usize e = 0; ok && e < m; ++e) {
-                    const ca::usize      b    = ws + 2 + 4 * e;
-                    const jbc::ir::Insn* dup  = cu.dom.peek(order[b]);
-                    const jbc::ir::Insn* arg  = cu.dom.peek(order[b + 1]);
-                    const jbc::ir::Insn* idxIn = cu.dom.peek(order[b + 2]);
-                    const jbc::ir::Insn* store = cu.dom.peek(order[b + 3]);
-                    ca::i32              ix    = 0;
-                    if (dup == nullptr || arg == nullptr || idxIn == nullptr
-                        || store == nullptr || dup->op != Op::DUP || store->op != Op::AASTORE
-                        || !method_rewrite_util::intValueOf(session, *idxIn, ix)
-                        || static_cast<ca::u32>(ix) != e
-                        || !argMatchesTi(session, *arg, order[b + 1], plan.elemNames[e], actx)) {
-                        ok = false;
-                        break;
+                    std::vector<InsnId> erases{order[wsTry], order[wsTry + 1]};
+                    ca::usize           c      = wsTry + 2;
+                    bool                scanOk = true;
+                    for (ca::usize e = 0; scanOk && e < m; ++e) {
+                        if (c + 4 > t) {
+                            scanOk = false;
+                            break;
+                        }
+                        const jbc::ir::Insn* dup = cu.dom.peek(order[c]);
+                        if (dup == nullptr || dup->op != Op::DUP) {
+                            scanOk = false;
+                            break;
+                        }
+                        bool matched = false;
+                        for (ca::usize bound = c + 1;
+                             !matched && bound + 1 < t && bound - c - 1 < kMaxArgInsns;
+                             ++bound) {
+                            const jbc::ir::Insn* idxIn = cu.dom.peek(order[bound]);
+                            const jbc::ir::Insn* store = cu.dom.peek(order[bound + 1]);
+                            ca::i32              ix    = 0;
+                            if (idxIn == nullptr || store == nullptr) break;
+                            if (!method_rewrite_util::intValueOf(session, *idxIn, ix)
+                                || static_cast<ca::u32>(ix) != e
+                                || store->op != Op::AASTORE) {
+                                continue;
+                            }
+                            if (!argGroupMatchesTi(session, cu, order, c + 1, bound,
+                                                   plan.elemNames[e], actx)) {
+                                continue;   // 试下一候选边界（嵌套同形序列）
+                            }
+                            erases.push_back(order[c]);          // dup
+                            erases.push_back(order[bound]);      // 下标
+                            erases.push_back(order[bound + 1]);  // aastore
+                            c       = bound + 2;
+                            matched = true;
+                        }
+                        if (!matched) scanOk = false;
                     }
+                    if (!scanOk || c != t) continue;
+                    ok           = true;
+                    windowErases = std::move(erases);
                 }
                 if (!ok) { plan.dead = true; continue; }
-                std::vector<InsnId> windowErases;
-                windowErases.push_back(order[ws]);
-                windowErases.push_back(order[ws + 1]);
-                for (ca::usize e = 0; e < m; ++e) {
-                    const ca::usize b = ws + 2 + 4 * e;
-                    windowErases.push_back(order[b]);       // dup
-                    windowErases.push_back(order[b + 2]);   // iconst_j
-                    windowErases.push_back(order[b + 3]);   // aastore
-                }
                 for (const InsnId id : windowErases) {
                     if (method_rewrite_util::labelsAnchorAt(cu.dom, id)) {
                         plan.dead = true;
