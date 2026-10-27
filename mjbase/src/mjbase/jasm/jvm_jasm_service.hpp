@@ -90,7 +90,6 @@ struct JvmJasmContext final
     const mjbase::hierarchy::ClassHierarchy* hierarchy         = nullptr;
     ca::i32                                  classMajorVersion = 61;
     ca::i32                                  classMinorVersion = 0;
-    ca::i32                                  maxStackHint      = 128;
     /// @brief 校验门模式（只影响 validate；assemble/disassemble 不读）。
     ValidationMode validationMode = ValidationMode::Relaxed;
 };
