@@ -418,11 +418,17 @@ TEST(MjPassToolClassCombinerTest, ConstantValueRebuiltOnAdoptedField)
         if (!host.cp.utf8Equals(slot.nameCp, "ConstantValue")) continue;
         auto decoded = host.decodeAttr(slot);
         ASSERT_TRUE(decoded.is_ok());
-        ASSERT_EQ(decoded.unwrap()->kind(), jbc::core::AttrKind::Raw);
-        const auto* raw = static_cast<const jbc::core::RawAttr*>(slot.body.get());
-        ASSERT_EQ(raw->bytes().size(), 2u);
-        const ca::u32 idx = (static_cast<ca::u32>(raw->bytes()[0]) << 8)
-                            | static_cast<ca::u32>(raw->bytes()[1]);
+        ca::u32 idx = 0;
+        if (decoded.unwrap()->kind() == jbc::core::AttrKind::ConstantValue) {
+            idx = static_cast<const jbc::core::ConstantValueAttr*>(slot.body.get())
+                      ->constantValueCp;
+        } else {
+            ASSERT_EQ(decoded.unwrap()->kind(), jbc::core::AttrKind::Raw);
+            const auto* raw = static_cast<const jbc::core::RawAttr*>(slot.body.get());
+            ASSERT_EQ(raw->bytes().size(), 2u);
+            idx = (static_cast<ca::u32>(raw->bytes()[0]) << 8)
+                  | static_cast<ca::u32>(raw->bytes()[1]);
+        }
         EXPECT_EQ(host.cp.tagOf(idx), jbc::core::CpTag::Integer);
         EXPECT_EQ(host.cp.at(idx).ival, 4242);
         rebuilt = true;
