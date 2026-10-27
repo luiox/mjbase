@@ -71,7 +71,10 @@ target("mjbase")
     -- public：测试面直接 include jbc/... 与 libca/... 头，包 include 需传递。
     -- libjbytecode 直连（relaxed_verifier analysis 面）：0.0.x 时代经 libjhasm
     -- 传递，0.3.0 后端换 libjbc 后改为本仓直连依赖。
-    add_packages("libjbc", "libjzip", "libca", "libjhasm", "libjstd",
+    -- GNU ld 单遍扫描「消费库在前、被依赖库在后」：libjhasm 0.3.x 的
+    -- jvm_compiler.o 回引 libjbc 的 attach/internDynamic 族，libjhasm 置前
+    -- 其回引才能落到其后扫描的 libjbc（MSVC 多遍扫描不敏感，linux 红根因）。
+    add_packages("libjhasm", "libjbc", "libjzip", "libca", "libjstd",
                  "libjclassfile", "libjbytecode", {public = true})
     add_packages("libarchive")
     -- 迁移切片：按批次收编模块（消费方驱动，逐批验证；忌整库一次搬运）。
@@ -147,8 +150,8 @@ target("mjbase_unittest")
     -- 显式闭包（consumer→dep 序）：xmake 3.x 不自动链静态依赖的传递闭包。
     -- libjhasm 0.3.0 后端换 libjbc：libjblw 出链；libjbytecode 仍直连
     -- （relaxed_verifier analysis 面）。
-    mjbase_binary_link_closure("mjbase", "libjbc", "test_helper", "libjdk_finder",
-                               "libjzip", "libjhasm", "libjbytecode_util",
+    mjbase_binary_link_closure("mjbase", "libjhasm", "libjbc", "test_helper",
+                               "libjdk_finder", "libjzip", "libjbytecode_util",
                                "libjbytecode_commons", "libjbytecode_analysis",
                                "libjbytecode_tree", "libjbytecode_core",
                                "libjclassfile", "libgarena", "libjstr")

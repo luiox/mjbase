@@ -57,18 +57,6 @@ jobs:
       - name: Configure (with tests)
         run: xmake f -p linux --with_tests=y -y
 
-      - name: Diagnose libjbc archive (attach family link failure)
-        run: |
-          A=$(ls ~/.xmake/packages/l/libjbc/0.4.18/*/lib/*.a | head -1)
-          echo "archive: $A"
-          echo "== object members =="
-          ar t "$A" | sort
-          echo "== attachClassAttr symbol presence =="
-          nm "$A" 2>/dev/null | grep -c "attachClassAttr" || echo "0 (absent)"
-          echo "== verbose relink tail =="
-          rm -f build/linux/x64/release/mjbase_unittest
-          xmake -v mjbase_unittest 2>&1 | grep -A40 "linking" | tail -80 || true
-
       - name: Build library
         run: xmake -y
       - name: Build tests
