@@ -595,9 +595,13 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   record 组件注解清空 + SpecificAnnotationRemover 参数注解槽内过滤
   （Raw 面 JVMS 4.7.20 布局条目摘除）。普查砍单：家族 method 级八件为
   scope:method，归 C 方法级组；unused_member_remover 已由批 A 收口，不重迁。
-  - [ ] pass 余量：类增删/重建类变换（挂账 libjbc A3/A4/A5：成员增删、
-    整类构建）与结构化泛型/TypeAnnotation 读写 pass（挂账 libjbc B1/B2）
-    暂不迁；方法级余量按 module-map 四批拆法继续。
+  - [ ] pass 余量：libjbc 侧挂账已全部解除（2026-10-28 台账校准）——
+    成员增删 addMethod/addField（A3/A4）、整类构建 makeSession(NewClassSeed)
+    （A5）、结构化泛型/TypeAnnotation 读写面 ir/sig_attr.hpp +
+    ir/type_annotation_attr.hpp（B1/B2）均已在 libjbc 落地（units.hpp/
+    ir 头实证）。余下是 mjbase 消费面迁移：结构化 attr pass 按 RFC 0002
+    B8 8.3 迁移中；类增删/重建类变换消费按需排期；方法级余量按
+    module-map 四批拆法继续。
 - B7 设施请求：[x] renamer apply 面接线收口（引擎计划经 asm/remapper 域
   applyResourceRemapPlan+RemapPolicy 就地应用；apply 模式 E2E（javac 多类样本
   重读断言 + JVM 真跑门 + 反射读新名）与 remap_policy_matrix 应用面真语义用例
