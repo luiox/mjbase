@@ -721,3 +721,60 @@ TEST(MjAsmAnalyzerTest, ConstSeededArgumentsLayoutSlotsAndFallbackToTop)
         EXPECT_EQ(v->asI64(), 82);
     }
 }
+
+// ---------------------------------------------------------------------------
+// fake-try 处理器汇合（引擎 handler 种子时序回归）：handler 落在直链中部、
+// 真实入边栈更深且晚于异常种子到达。种子抢先单跑的旧口径下，handler 体以
+// [exc] 单槽残帧执行，iand 双操作数当场 Underflow，propagateConstants 整体
+// 失败；待并参与者口径（verifier 语义：入口帧 = 全部入边 join）下种子与真
+// 实边同权汇合——槽位布局保持、值被吸收为 Top，后续可折点照常出常量。
+// ---------------------------------------------------------------------------
+
+TEST(MjAsmAnalyzerTest, FakeTryHandlerMergeKeepsAnalysisAlive)
+{
+    ConstantPool cp;
+    CodeDom dom;
+    // 入口块：iconst_1; goto 深路径
+    const InsnId i1 = appendOp(dom, Op::ICONST_1);
+    const LabelId lDeep = newLbl(dom, i1);
+    appendBr(dom, Op::GOTO, lDeep);
+    // 深路径块：iconst_2; goto handler——正常边晚于种子处理到达 handler。
+    const InsnId i2 = appendOp(dom, Op::ICONST_2);
+    const LabelId lHandler = newLbl(dom, i2);
+    appendBr(dom, Op::GOTO, lHandler);
+    // handler 体：istore_0; iconst_m1; iand; istore_1; return。
+    const InsnId st0 = appendOp(dom, Op::ISTORE_0);
+    const InsnId pushM1 = appendOp(dom, Op::ICONST_M1);
+    const InsnId andInsn = appendOp(dom, Op::IAND);
+    appendOp(dom, Op::ISTORE_1);
+    appendOp(dom, Op::RETURN);
+    bindLbl(dom, lDeep, i2);
+    bindLbl(dom, lHandler, st0);
+
+    // try [入口, handler)；catch any。fake-try：覆盖范围无任何可抛指令。
+    const LabelId lStart = newLbl(dom, i1);
+    const LabelId lEnd = newLbl(dom, st0);
+
+    CodeUnit u = unitOf(std::move(dom));
+    u.exc.push_back({lStart, lEnd, lHandler, 0});
+
+    ConstResult r = propagateConstants(cp, u);
+    ASSERT_TRUE(r.ok());
+
+    // handler 入口帧 = 异常种子(未知引用) ⊔ 正常边 [Int1, Int2]：两行槽位
+    // 齐，值并成 Top（宽度 1 槽保持）。
+    ASSERT_TRUE(r.reachable(st0));
+    const ConstLattice* top = r.stackFromTop(st0, 0);
+    ASSERT_NE(top, nullptr);
+    EXPECT_TRUE(top->isTop());
+    const ConstLattice* below = r.stackFromTop(st0, 1);
+    ASSERT_NE(below, nullptr);
+    EXPECT_TRUE(below->isTop());
+
+    // 汇合吸收不阻断后续可折点：iand 入口栈顶仍是 iconst_m1 的 -1。
+    ASSERT_TRUE(r.reachable(andInsn));
+    const ConstLattice* rhs = r.stackFromTop(andInsn, 0);
+    ASSERT_NE(rhs, nullptr);
+    ASSERT_TRUE(rhs->isInt());
+    EXPECT_EQ(rhs->asI64(), -1);
+}
