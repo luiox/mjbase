@@ -46,6 +46,7 @@
 #include "mjbase/pass/global_str_pool_optimizer.hpp"
 #include "mjbase/pass/insn_rearranger.hpp"
 #include "mjbase/pass/stack_trace_recover.hpp"
+#include "mjbase/pass/write_only_array_cleaner.hpp"
 #include "mjbase/pass/redundant_invoke_remover.hpp"
 #include "mjbase/pass/argument_array_scalarizer.hpp"
 #include "mjbase/pass/static_field_default_inliner.hpp"
@@ -398,6 +399,11 @@ PassNameRegistry makeDefaultRegistry()
         "CommutativeOperatorReorder",
         [] { return std::make_unique<mjbase::pass::CommutativeOperatorReorder>(); },
         "Move constants to the tail of commutative arithmetic chains."));
+    // 装箱还原收尾（#37）：只写数组分配连存储窗整体删除。
+    seed(reg.registerMethodPass(
+        "WriteOnlyArrayCleaner",
+        [] { return std::make_unique<mjbase::pass::WriteOnlyArrayCleaner>(); },
+        "Remove array allocations consumed only by element stores."));
     // opt pass 波次（#20）：调试信息恢复——source 属性 + handler 打印调用 + 行号。
     seed(reg.registerGlobalPass(
         "StackTraceRecover",

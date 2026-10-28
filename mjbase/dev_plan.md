@@ -416,6 +416,23 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   真实改名后条目经 prune 存在性口径存活/失配。5 单测（desc 序编号与反查、
   真实名/shadow 撞号递增、手工名保留与幂等、字节零写入、批量事务全校验
   面），全量 1981 绿（1978 过 + 3 既有跳过）。
+- [x] WriteOnlyArrayCleaner（#37 第三件收口，scope:method，新增件）：只写
+  数组分配连存储窗整体删除——S1 直通形 [size; NEWARRAY/ANEWARRAY; (DUP;
+  int常量; 元素常量; XASTORE)*; POP] 与 S2 暂存形 [size; 分配; ASTORE n;
+  (ALOAD n; int常量; 元素常量; XASTORE)*] 连续窗形状匹配（k>=0，含
+  分配;pop 与 分配;astore 死分配特形）；元素/下标生产者限单条纯常量装载
+  （DeadLocalStoreRemover 帧面同族口径），size 限紧邻前驱纯 int 常量。
+  安全门 fail-closed：窗内（含窗首与 size 生产者）任一锚标签弃、任一异常
+  范围与窗相交弃（分配/存储抛出可观测，全含亦弃）、S2 局部 n 窗外任一
+  读写出现弃（各类型 load/store 族 + IINC + RET 全扫）、MULTIANEWARRAY
+  不收、eraseBatch 全有或全无失败整件放弃。裁决收口：管线串联用例钉死
+  调用方装箱窗由 ArgumentArrayScalarizer 自删零残段（挂账的「残段归既有
+  删除面覆盖」假设以实证收口：不成立也不需要——scalarizer 自删其窗），
+  窗外只写哑数组 survive scalarizer 由本件串联清理；旧栈无对应件
+  （dead_code_remover 把分配归副作用族不删），本件为新增件。纯删除
+  maxStack/maxLocals 不变。13 单测（S1/S2/原始数组/k=0/快捷形删除五件、
+  读取逃逸/非常量元素/非常量 size/异常域相交/窗内锚标保留五件、管线串联
+  裁决、注册面），全量 1994 绿（1991 过 + 3 既有跳过）。
 - [x] ArgumentArrayScalarizer 切片 1（#37 首件，scope:global）：装箱参数数组
   标量化——static ([Ljava/lang/Object;)R 候选（句柄钉死/同类同签名唯一门）
   被调方取参窗 [aload p; intConst i; aaload; checkcast Ti] 重建为直接局部
