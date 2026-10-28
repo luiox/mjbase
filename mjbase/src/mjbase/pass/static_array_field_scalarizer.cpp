@@ -174,6 +174,8 @@ struct Window
     ca::usize       methodIdx = 0;      ///< unit.methods 下标
     jbc::ir::InsnId i0{}, i1{}, i2{}, i3{}, i4{};   ///< 实例 Store 用满五个
     bool            wide5 = false;      ///< 实例写窗：i4 携带 xASTORE 位点
+    jbc::ir::InsnId castId{};           ///< 引用读窗后继 checkcast（精化证据位）
+    bool            hasCast = false;    ///< castId 有效（证据已登记，可折叠）
 };
 
 /// 单字段判定产物。
@@ -187,6 +189,7 @@ struct FieldPlan
     bool                      isStatic = true;
     std::vector<Window>       windows;
     std::unordered_set<ca::i32> accessed;       ///< 被访问下标
+    std::unordered_map<ca::i32, std::string> evidence;   ///< 引用元素精化证据
 };
 
 std::string scalarName(std::string_view base, ca::i32 index)
@@ -195,6 +198,26 @@ std::string scalarName(std::string_view base, ca::i32 index)
     out += '_';
     out += std::to_string(index);
     return out;
+}
+
+/// 精化后的标量字段描述符：有证据下标用记录的类内部名构引用描述符，
+/// 否则沿用声明元素描述符（#39 切片 3）。
+std::string refinedDescOf(const FieldPlan& plan, ca::i32 index)
+{
+    const auto hit = plan.evidence.find(index);
+    if (hit == plan.evidence.end()) return std::string(plan.elemDesc);
+    return "L" + hit->second + ";";
+}
+
+/// 证据登记结果：与声明元素型一致不重复记录；同下标异证冲突；首个证据登记。
+enum class EvidenceResult : ca::u8 { Conflict, Consistent, Recorded };
+
+EvidenceResult recordElemEvidence(FieldPlan& plan, ca::i32 index, std::string_view internalName)
+{
+    if (internalName == refElemInternalName(plan.elemDesc)) return EvidenceResult::Consistent;
+    const auto [it, inserted] = plan.evidence.try_emplace(index, std::string(internalName));
+    if (!inserted && it->second != internalName) return EvidenceResult::Conflict;
+    return inserted ? EvidenceResult::Recorded : EvidenceResult::Consistent;
 }
 
 }   // namespace
@@ -342,12 +365,33 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
                     const jbc::ir::Insn* third  = k + 2 < order.size() ? md.ref->dom.peek(order[k + 2]) : nullptr;
                     const jbc::ir::Insn* fourth = k + 3 < order.size() ? md.ref->dom.peek(order[k + 3]) : nullptr;
                     if (third != nullptr && third->op == loadOp) {
+                        // 引用元素精化证据：后继 checkcast 目标（#39 切片 3）。
+                        jbc::ir::InsnId castId{};
+                        bool            hasCast = false;
+                        if (refElem) {
+                            const jbc::ir::Insn* post =
+                                k + 3 < order.size() ? md.ref->dom.peek(order[k + 3]) : nullptr;
+                            if (post != nullptr && post->op == jbc::core::Op::CHECKCAST) {
+                                const std::string_view ti = session.classOf(*post);
+                                const EvidenceResult   ev =
+                                    ti.empty() ? EvidenceResult::Conflict
+                                               : recordElemEvidence(plan, i, ti);
+                                if (ev == EvidenceResult::Conflict) {
+                                    dead[p] = true;
+                                    break;
+                                }
+                                castId  = order[k + 3];
+                                hasCast = ev == EvidenceResult::Recorded;
+                            }
+                        }
                         if (plan.isStatic) {
-                            plan.windows.push_back(
-                                {Window::Kind::Load, md.idx, order[k], order[k + 1], order[k + 2], {}});
+                            plan.windows.push_back({Window::Kind::Load, md.idx, order[k],
+                                                    order[k + 1], order[k + 2], {}, {}, false,
+                                                    castId, hasCast});
                         } else {
                             plan.windows.push_back({Window::Kind::Load, md.idx, recvId, order[k],
-                                                    order[k + 1], order[k + 2], {}, false});
+                                                    order[k + 1], order[k + 2], {}, false, castId,
+                                                    hasCast});
                         }
                         plan.accessed.insert(i);
                         k += 2;           // 连同 const_i/xALOAD 跳过（下一兴趣点 k+3）
@@ -355,6 +399,19 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
                     }
                     if (third != nullptr && constLoadMatches(session, *third, valueKind) &&
                         fourth != nullptr && fourth->op == storeOp) {
+                        // 引用元素精化证据：写窗常量值静态型（#39 切片 3）。
+                        if (refElem && third->op != jbc::core::Op::ACONST_NULL) {
+                            jbc::ir::ClassSession::ConstSem c;
+                            const std::string_view ev =
+                                (session.constOf(*third, c) &&
+                                 c.kind == jbc::ir::ClassSession::ConstSem::Kind::String)
+                                    ? std::string_view{"java/lang/String"}
+                                    : std::string_view{"java/lang/Class"};
+                            if (recordElemEvidence(plan, i, ev) == EvidenceResult::Conflict) {
+                                dead[p] = true;
+                                break;
+                            }
+                        }
                         if (plan.isStatic) {
                             plan.windows.push_back({Window::Kind::Store, md.idx, order[k], order[k + 1],
                                                     order[k + 2], order[k + 3]});
@@ -388,8 +445,20 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
                 method_rewrite_util::labelsAnchorAt(dom, w.i1) ||
                 method_rewrite_util::labelsAnchorAt(dom, w.i2) ||
                 (w.kind == Window::Kind::Store && method_rewrite_util::labelsAnchorAt(dom, w.i3)) ||
-                (w.wide5 && method_rewrite_util::labelsAnchorAt(dom, w.i4))) {
+                (w.wide5 && method_rewrite_util::labelsAnchorAt(dom, w.i4)) ||
+                (w.hasCast && method_rewrite_util::labelsAnchorAt(dom, w.castId))) {
                 ok = false;
+            }
+        }
+        if (ok) {
+            // 声明元素非 Object：证据必须与声明一致（无层级查询面，任何
+            // 窄化声明都 fail-closed）。
+            const std::string_view declared = refElemInternalName(plan.elemDesc);
+            for (const auto& entry : plan.evidence) {
+                if (declared != "java/lang/Object" && entry.second != declared) {
+                    ok = false;
+                    break;
+                }
             }
         }
         if (ok) {
@@ -433,40 +502,46 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
             case Window::Kind::Load:
                 if (plan.isStatic) {
                     intConstOf(session, *dom.peek(w.i1), index);
+                    const std::string desc = refinedDescOf(plan, index);
                     if (auto r = dom.get(w.i0); r.is_ok()) {
                         session.setMember(*r.unwrap(), jbc::ir::ClassSession::MemberSem::Kind::Field,
-                                          thisName, scalarName(plan.name, index), plan.elemDesc);
+                                          thisName, scalarName(plan.name, index), desc);
                     }
                     editor.erase(w.i1);
                     editor.erase(w.i2);
+                    if (w.hasCast) editor.erase(w.castId);
                 } else {
                     intConstOf(session, *dom.peek(w.i2), index);
+                    const std::string desc = refinedDescOf(plan, index);
                     if (auto r = dom.get(w.i1); r.is_ok()) {
                         session.setMember(*r.unwrap(), jbc::ir::ClassSession::MemberSem::Kind::Field,
-                                          thisName, scalarName(plan.name, index), plan.elemDesc);
+                                          thisName, scalarName(plan.name, index), desc);
                     }
                     editor.erase(w.i2);
                     editor.erase(w.i3);
+                    if (w.hasCast) editor.erase(w.castId);
                 }
                 break;
             case Window::Kind::Store:
                 if (plan.isStatic) {
                     intConstOf(session, *dom.peek(w.i1), index);
+                    const std::string desc = refinedDescOf(plan, index);
                     if (auto r = dom.get(w.i3); r.is_ok()) {
                         jbc::ir::Insn* insn = r.unwrap();
                         insn->op = jbc::core::Op::PUTSTATIC;
                         session.setMember(*insn, jbc::ir::ClassSession::MemberSem::Kind::Field,
-                                          thisName, scalarName(plan.name, index), plan.elemDesc);
+                                          thisName, scalarName(plan.name, index), desc);
                     }
                     editor.erase(w.i0);
                     editor.erase(w.i1);
                 } else {
                     intConstOf(session, *dom.peek(w.i2), index);
+                    const std::string desc = refinedDescOf(plan, index);
                     if (auto r = dom.get(w.i4); r.is_ok()) {
                         jbc::ir::Insn* insn = r.unwrap();
                         insn->op = jbc::core::Op::PUTFIELD;
                         session.setMember(*insn, jbc::ir::ClassSession::MemberSem::Kind::Field,
-                                          thisName, scalarName(plan.name, index), plan.elemDesc);
+                                          thisName, scalarName(plan.name, index), desc);
                     }
                     editor.erase(w.i1);
                     editor.erase(w.i2);
@@ -496,12 +571,14 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
             }
         }
         for (const ca::i32 i : idxList) {
-            // FieldSeed::name 是借用视图：持有具名 std::string 直到 addField
-            // 消化完（临时 string 悬垂会写出首字节被栈复用清零的名字）。
+            // FieldSeed::name/desc 是借用视图：持有具名 std::string 直到
+            // addField 消化完（临时 string 悬垂会写出首字节被栈复用清零的
+            // 名字）。
             const std::string newName = scalarName(plan.name, i);
+            const std::string newDesc = refinedDescOf(plan, i);
             jbc::ir::FieldSeed seed;
             seed.name   = newName;
-            seed.desc   = plan.elemDesc;
+            seed.desc   = newDesc;
             seed.access = kAccPrivate | (plan.isStatic ? kAccStatic : 0);
             if (session.addField(seed).is_err()) {
                 return mjbase::spi::PreservedAnalyses::all();

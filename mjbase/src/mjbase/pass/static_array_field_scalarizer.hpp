@@ -24,13 +24,19 @@ namespace mjbase::pass {
 ///   putfield，保留会悬出栈）。putstatic/putfield f 的其他出现（重赋
 ///   整个数组）→ 放弃。
 /// - 读窗口 `getstatic/getfield f; iconst_i; xALOAD`（实例窗头前须邻接
-///   接收者 aload，保持原位由改写后的 getfield 消费；引用数组的后继
-///   checkcast 保留原位，不并入字段描述符——多调用点类型冲突留给 #37
-///   的类型对齐分析）与写窗口 `getstatic/getfield f; iconst_i;
-///   <单条常量装载>; xASTORE`（实例形同带前置接收者，改写后由新
-///   putfield 消费；xALOAD/xASTORE 与元素描述符匹配；引用值的常量面为
-///   aconst_null 与 ldc String/Class）。字段整体引用的其他出现
-///   （arraylength、传参、返回、再存储、前驱非 aload 的访问）→ 放弃。
+///   接收者 aload，保持原位由改写后的 getfield 消费）与写窗口
+///   `getstatic/getfield f; iconst_i; <单条常量装载>; xASTORE`（实例形同带
+///   前置接收者，改写后由新 putfield 消费；xALOAD/xASTORE 与元素描述符
+///   匹配；引用值的常量面为 aconst_null 与 ldc String/Class）。字段整体
+///   引用的其他出现（arraylength、传参、返回、再存储、前驱非 aload 的
+///   访问）→ 放弃。
+/// - 引用元素类型精化（#39 切片 3）：读窗后继 checkcast 目标与写窗常量
+///   值静态型（ldc String/Class）作为该下标的元素型证据；同下标证据不
+///   一致 → 整字段放弃。声明元素为 java/lang/Object 时标量字段按证据
+///   精化（`L<证据类>;`），证据位上的 checkcast 与新字段描述符一致（CCE
+///   被写值面证明不可达）随读窗折叠；无证据下标沿用声明元素描述符。
+///   声明元素非 Object 时证据必须与声明一致（无层级查询面，fail-closed）；
+///   与声明一致的证据不登记、checkcast 保持既有「保留原位」语义。
 /// - 有读写窗口时必须存在分配窗口——无分配的字段读是 null 数组语义
 ///   （NPE），拆成标量默认值不等价。
 /// - 下标越 [0, LEN) → 放弃（越界抛 AIOOBE 的语义不能静默吞）。

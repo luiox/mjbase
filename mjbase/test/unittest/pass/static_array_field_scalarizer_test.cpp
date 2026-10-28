@@ -711,3 +711,172 @@ TEST(MjPassStaticArrayFieldScalarizerContainerTest, ScalarizesTableHostAndLeaves
     EXPECT_EQ(resourceBytes(container, "ct/DynamicUser.class"), dynamic);
     EXPECT_EQ(resourceBytes(container, "ct/Plain.class"), plain);
 }
+
+
+// ── #39 切片 3：引用元素类型精化（Object[] 声明 + 访问点证据） ──
+
+namespace {
+
+/// Object[2] 写窗值形态（夹具内部物化 CP，操作数取真索引）。
+enum class StoreVal : ca::u8 { Null, StrX, ClassString };
+
+/// Object[2] 主链夹具：clinit 分配 + 两个写窗，read0/read1 各一带可选
+/// checkcast 读。
+FixtureBuilder objsFixture(StoreVal v0, StoreVal v1,
+                           const std::string& cast0 = {},
+                           const std::string& cast1 = {},
+                           ca::i32 idx0 = 0, ca::i32 idx1 = 1)
+{
+    FixtureBuilder b("T");
+    const ca::u16 fref   = b.fieldRef("T", "objs", "[Ljava/lang/Object;");
+    const ca::u16 objCp  = b.cls("java/lang/Object");
+    const ca::u16 strCp  = b.strConst("x");
+    const ca::u16 clsCp  = b.cls("java/lang/String");
+    const auto storeBytes = [&](StoreVal v) {
+        switch (v) {
+        case StoreVal::StrX: return Bytes{0x12, static_cast<ca::u8>(strCp)};
+        case StoreVal::ClassString: return Bytes{0x12, static_cast<ca::u8>(clsCp)};
+        default: return Bytes{0x01};
+        }
+    };
+    b.addField({"objs", "[Ljava/lang/Object;", 0x000A});
+    Bytes clinit;
+    putU8(clinit, 0x05);                                            // iconst_2
+    putU8(clinit, 0xBD); putU16(clinit, objCp);                     // anewarray Object
+    putU8(clinit, 0xB3); putU16(clinit, fref);                      // putstatic objs
+    putU8(clinit, 0xB2); putU16(clinit, fref);                      // getstatic objs
+    putU8(clinit, 0x03);                                            // iconst_0
+    const Bytes s0 = storeBytes(v0);
+    clinit.insert(clinit.end(), s0.begin(), s0.end());
+    putU8(clinit, 0x53);                                            // aastore
+    putU8(clinit, 0xB2); putU16(clinit, fref);
+    putU8(clinit, 0x04);                                            // iconst_1
+    const Bytes s1 = storeBytes(v1);
+    clinit.insert(clinit.end(), s1.begin(), s1.end());
+    putU8(clinit, 0x53);
+    putU8(clinit, 0xB1);                                            // return
+    b.addMethod({"<clinit>", "()V", std::move(clinit), 0x0008, {}, 4, 0});
+    for (int k = 0; k < 2; ++k) {
+        const std::string cast = k == 0 ? cast0 : cast1;
+        Bytes read;
+        putU8(read, 0xB2); putU16(read, fref);
+        putU8(read, 0x03 + (k == 0 ? idx0 : idx1));                 // iconst_idx
+        putU8(read, 0x32);                                          // aaload
+        if (!cast.empty()) {
+            putU8(read, 0xC0); putU16(read, b.cls(cast));           // checkcast
+        }
+        putU8(read, 0xB0);                                          // areturn
+        b.addMethod({k == 0 ? "read0" : "read1", "()Ljava/lang/Object;",
+                     std::move(read), 0x0009, {}, 2, 0});
+    }
+    return b;
+}
+
+}   // namespace
+
+// ── String 证据（写窗 ldc String + 读窗 checkcast String）：objs_0 精化
+//    Ljava/lang/String;，checkcast 随读窗折叠；无证据下标沿用声明元素型 ──
+TEST(MjPassStaticArrayFieldScalarizerTest, RefinesObjectArrayElementByEvidence)
+{
+    auto session = makeSession(objsFixture(StoreVal::StrX, StoreVal::Null,
+                                           "java/lang/String"));
+    EXPECT_TRUE(runPass(*session).changed());
+    auto re = reRead(*session);
+    const jbc::core::ClassFile& cf = re->backing();
+    EXPECT_EQ(findField(cf, "objs"), nullptr);
+    const jbc::core::MemberInfo* f0 = findField(cf, "objs_0");
+    ASSERT_NE(f0, nullptr);
+    EXPECT_EQ(cf.utf8(f0->descCp), "Ljava/lang/String;");
+    const jbc::core::MemberInfo* f1 = findField(cf, "objs_1");
+    ASSERT_NE(f1, nullptr);
+    EXPECT_EQ(cf.utf8(f1->descCp), "Ljava/lang/Object;");   // 无证据下标不精化
+    const auto read0 = methodFacts(*re, "read0");
+    ASSERT_EQ(read0.size(), 3u);          // cast 与写证据一致：保留原位
+    EXPECT_EQ(read0[0].op, jbc::core::Op::GETSTATIC);
+    EXPECT_EQ(read0[0].member, "objs_0");
+    EXPECT_EQ(read0[1].op, jbc::core::Op::CHECKCAST);
+    EXPECT_EQ(read0[2].op, jbc::core::Op::ARETURN);
+}
+
+// ── 同下标证据冲突（checkcast String vs checkcast Integer）：整字段放弃 ──
+TEST(MjPassStaticArrayFieldScalarizerTest, ConflictingEvidenceAbortsField)
+{
+    auto session = makeSession(objsFixture(StoreVal::Null, StoreVal::Null,
+                                           "java/lang/String", "java/lang/Integer",
+                                           0, 0));
+    EXPECT_TRUE(runPass(*session).areAllPreserved());
+    auto re = reRead(*session);
+    EXPECT_NE(findField(re->backing(), "objs"), nullptr);
+    EXPECT_EQ(findField(re->backing(), "objs_0"), nullptr);
+}
+
+// ── Class 常量写 + checkcast Class 读：精化 Ljava/lang/Class; ──
+TEST(MjPassStaticArrayFieldScalarizerTest, ClassConstWriteRefinesToClass)
+{
+    auto session = makeSession(objsFixture(StoreVal::ClassString, StoreVal::Null,
+                                           "java/lang/Class"));
+    EXPECT_TRUE(runPass(*session).changed());
+    auto re = reRead(*session);
+    const jbc::core::MemberInfo* f0 = findField(re->backing(), "objs_0");
+    ASSERT_NE(f0, nullptr);
+    EXPECT_EQ(re->backing().utf8(f0->descCp), "Ljava/lang/Class;");
+    const auto read0 = methodFacts(*re, "read0");
+    ASSERT_EQ(read0.size(), 3u);          // checkcast Class 与证据一致：保留
+    EXPECT_EQ(read0[1].op, jbc::core::Op::CHECKCAST);
+}
+
+// ── Class 常量写 + checkcast String 读：证据冲突，整字段放弃 ──
+TEST(MjPassStaticArrayFieldScalarizerTest, ClassWriteStringReadAborts)
+{
+    auto session = makeSession(objsFixture(StoreVal::ClassString, StoreVal::Null,
+                                           "java/lang/String"));
+    EXPECT_TRUE(runPass(*session).areAllPreserved());
+    auto re = reRead(*session);
+    EXPECT_NE(findField(re->backing(), "objs"), nullptr);
+}
+
+// ── 声明元素非 Object：证据与声明不一致（ldc Class 写入 String[]）→
+//    放弃（修复既有改写面会产出验证错误的潜在缺口） ──
+TEST(MjPassStaticArrayFieldScalarizerTest, NonObjectDeclaredMismatchAborts)
+{
+    FixtureBuilder b("T");
+    const ca::u16 fref   = b.fieldRef("T", "names", "[Ljava/lang/String;");
+    const ca::u16 nameCp = b.cls("java/lang/String");
+    const ca::u16 strCls = b.cls("java/lang/String");
+    b.addField({"names", "[Ljava/lang/String;", 0x000A});
+    Bytes clinit;
+    putU8(clinit, 0x05);                          // iconst_2
+    putU8(clinit, 0xBD); putU16(clinit, nameCp);  // anewarray String
+    putU8(clinit, 0xB3); putU16(clinit, fref);
+    putU8(clinit, 0xB2); putU16(clinit, fref);
+    putU8(clinit, 0x03);
+    putU8(clinit, 0x12); putU8(clinit, static_cast<ca::u8>(strCls));   // ldc Class
+    putU8(clinit, 0x53);
+    putU8(clinit, 0xB1);
+    b.addMethod({"<clinit>", "()V", std::move(clinit), 0x0008, {}, 4, 0});
+    auto session = makeSession(std::move(b));
+    EXPECT_TRUE(runPass(*session).areAllPreserved());
+    auto re = reRead(*session);
+    EXPECT_NE(findField(re->backing(), "names"), nullptr);
+}
+
+// ── 逐下标独立精化：index0 String 证据、index1 Integer 证据并存 ──
+TEST(MjPassStaticArrayFieldScalarizerTest, PerIndexIndependentRefinement)
+{
+    auto session = makeSession(objsFixture(StoreVal::StrX, StoreVal::Null,
+                                           "java/lang/String", "java/lang/Integer"));
+    EXPECT_TRUE(runPass(*session).changed());
+    auto re = reRead(*session);
+    const jbc::core::ClassFile& cf = re->backing();
+    const jbc::core::MemberInfo* f0 = findField(cf, "objs_0");
+    ASSERT_NE(f0, nullptr);
+    EXPECT_EQ(cf.utf8(f0->descCp), "Ljava/lang/String;");
+    const jbc::core::MemberInfo* f1 = findField(cf, "objs_1");
+    ASSERT_NE(f1, nullptr);
+    EXPECT_EQ(cf.utf8(f1->descCp), "Ljava/lang/Integer;");
+    const auto read1 = methodFacts(*re, "read1");
+    ASSERT_EQ(read1.size(), 2u);          // idx1 首证据来自读 cast：折叠
+    EXPECT_EQ(read1[0].op, jbc::core::Op::GETSTATIC);
+    EXPECT_EQ(read1[0].member, "objs_1");
+    EXPECT_EQ(read1[1].op, jbc::core::Op::ARETURN);
+}
