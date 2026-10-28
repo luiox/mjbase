@@ -403,6 +403,19 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   恒 none()，对齐旧栈）。10 单测（单型/catch-all/多型冲突共享/同型共享
   注入与 owner、LNT 行写入与跨方法递增、source 属性写入与既有覆盖、
   不可解析放弃、注册面），全量 1976 绿（1973 过 + 3 既有跳过）。
+- [x] 重载拆分 shadow 生成策略（#22 视图层，新增件）：同名异签方法组内按
+  desc 字典序生成 `<原名>$N` shadow 名写入 ShadowAliasTable（字节码零写入，
+  显示层专用）；拆分键 = (owner, name, desc) 表既有三元组，descriptor 只
+  参与组内排序与反查；仅 size>=2 组拆分；候选撞类内真实方法/字段名或作用域
+  内已分配 shadow → N 递增跳过；已登记成员保留原 shadow（幂等，手工名不丢，
+  不占号）；类/组/组内三级字典序保证容器遍历序无关。批量指派单事务：全部
+  规格校验过才落表（未知类/方法、空名、撞真实名、撞他成员 shadow 含同批
+  先到、异 shadow 重指派、同成员异 shadow 重复规格全走显式 Err，表零改动），
+  同 shadow 幂等重指派 Ok(0)；收尾 backfillTokens 同机械占位名生成。与
+  rename 的优先级：shadow 永不进 RenamePlan/字节码（表头注释既有红线），
+  真实改名后条目经 prune 存在性口径存活/失配。5 单测（desc 序编号与反查、
+  真实名/shadow 撞号递增、手工名保留与幂等、字节零写入、批量事务全校验
+  面），全量 1981 绿（1978 过 + 3 既有跳过）。
 - [x] ArgumentArrayScalarizer 切片 1（#37 首件，scope:global）：装箱参数数组
   标量化——static ([Ljava/lang/Object;)R 候选（句柄钉死/同类同签名唯一门）
   被调方取参窗 [aload p; intConst i; aaload; checkcast Ti] 重建为直接局部

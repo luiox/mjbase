@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -509,6 +510,159 @@ ca::core::Result<ShadowGenStats, std::string> generateMechanicalShadowNames(
         return ca::core::Err(std::move(tokens).unwrap_err());
     }
     return ca::core::Ok(stats);
+}
+
+// ─────────────────────────── 重载拆分（同名异签视图层） ───────────────────────────
+
+namespace {
+
+/// `<原名>$N` 候选名（N 十进制）。
+std::string overloadCandidate(std::string_view raw, ca::usize n)
+{
+    std::string out;
+    out.reserve(raw.size() + 12);
+    out.append(raw);
+    out.push_back('$');
+    out.append(std::to_string(n));
+    return out;
+}
+
+}   // namespace
+
+ca::core::Result<OverloadSplitStats, std::string> generateOverloadSplitShadows(
+    const mjbase::model::ResourceContainer& container, ShadowAliasTable& table)
+{
+    OverloadSplitStats stats;
+
+    auto samples = sampleContainerClasses(container);
+    std::sort(samples.begin(), samples.end(),
+              [](const ClassSample& a, const ClassSample& b) { return a.name < b.name; });
+
+    for (const auto& sample : samples) {
+        const std::string& owner = sample.name;
+
+        // 同名分组（std::map 键序 = 名字字典序）；值即组内 desc 列表。
+        // 真实名避让集含方法与字段（候选撞任一真实名都递增跳过）。
+        std::map<std::string, std::vector<std::string>> groups;
+        std::unordered_set<std::string>                 realNames;
+        for (const auto& [methodName, methodDesc] : sample.methods) {
+            groups[methodName].push_back(methodDesc);
+            realNames.insert(methodName);
+        }
+        for (const auto& [fieldName, fieldDesc] : sample.fields) {
+            (void)fieldDesc;
+            realNames.insert(fieldName);
+        }
+
+        for (auto& [groupName, descs] : groups) {
+            if (descs.size() < 2) continue;   // 无重载不拆分
+            std::sort(descs.begin(), descs.end());   // 组内 desc 字典序
+            ++stats.splitGroups;
+            ca::usize n = 0;
+            for (const std::string& methodDesc : descs) {
+                if (!table.methodShadow(owner, groupName, methodDesc).empty()) {
+                    ++stats.keptEntries;   // 已登记（手工/上一轮）：保留，不占号
+                    continue;
+                }
+                std::string candidate = overloadCandidate(groupName, n);
+                while (realNames.count(candidate) != 0
+                       || table.memberShadowTaken(owner, candidate)) {
+                    ++n;
+                    candidate = overloadCandidate(groupName, n);
+                }
+                table.addMethod(owner, methodDesc, groupName, candidate);
+                ++n;
+                ++stats.assignedMethods;
+            }
+        }
+    }
+
+    auto tokens = table.backfillTokens();
+    if (tokens.is_err()) {
+        return ca::core::Err(std::move(tokens).unwrap_err());
+    }
+    return ca::core::Ok(stats);
+}
+
+ca::core::Result<ca::usize, std::string> assignMethodShadowBatch(
+    const mjbase::model::ResourceContainer& container, ShadowAliasTable& table,
+    const std::vector<OverloadShadowSpec>& specs)
+{
+    // 存在性索引：owner → (成员签名集, 类内真实名集)。
+    struct ClassIndex
+    {
+        std::unordered_set<std::string> memberSigs;   // "name\x1fdesc"
+        std::unordered_set<std::string> realNames;
+    };
+    std::unordered_map<std::string, ClassIndex> byOwner;
+    for (const auto& sample : sampleContainerClasses(container)) {
+        ClassIndex& index = byOwner[sample.name];
+        for (const auto& [methodName, methodDesc] : sample.methods) {
+            index.memberSigs.insert(methodName + '\x1f' + methodDesc);
+            index.realNames.insert(methodName);
+        }
+        for (const auto& [fieldName, fieldDesc] : sample.fields) {
+            (void)fieldDesc;
+            index.realNames.insert(fieldName);
+        }
+    }
+
+    // 事务校验（表零改动）：逐规格 + 同批占用面（同批双成员同 shadow 拦截）。
+    std::unordered_map<std::string, std::string> seen;   // 成员签名 → shadow
+    std::unordered_map<std::string, std::unordered_set<std::string>> batchTaken;
+    for (const OverloadShadowSpec& spec : specs) {
+        if (spec.shadow.empty()) {
+            return ca::core::Err("assignMethodShadowBatch: empty shadow for '"
+                                 + spec.owner + "." + spec.name + "'");
+        }
+        const auto ownerIt = byOwner.find(spec.owner);
+        if (ownerIt == byOwner.end()) {
+            return ca::core::Err("assignMethodShadowBatch: unknown class '" + spec.owner
+                                 + "'");
+        }
+        if (ownerIt->second.memberSigs.count(spec.name + '\x1f' + spec.desc) == 0) {
+            return ca::core::Err("assignMethodShadowBatch: unknown method '" + spec.owner
+                                 + "." + spec.name + spec.desc + "'");
+        }
+        if (ownerIt->second.realNames.count(spec.shadow) != 0) {
+            return ca::core::Err("assignMethodShadowBatch: shadow '" + spec.shadow
+                                 + "' collides with a real member name in '" + spec.owner
+                                 + "'");
+        }
+        const std::string_view current = table.methodShadow(spec.owner, spec.name, spec.desc);
+        if (!current.empty()) {
+            if (current != spec.shadow) {
+                return ca::core::Err("assignMethodShadowBatch: '" + spec.owner + "."
+                                     + spec.name + spec.desc + "' already assigned '"
+                                     + std::string(current) + "'");
+            }
+        } else if (table.memberShadowTaken(spec.owner, spec.shadow)
+                   || batchTaken[spec.owner].count(spec.shadow) != 0) {
+            return ca::core::Err("assignMethodShadowBatch: shadow '" + spec.shadow
+                                 + "' already taken in '" + spec.owner + "'");
+        }
+        auto [hit, fresh] = seen.emplace(
+            spec.owner + '\x1f' + spec.name + '\x1f' + spec.desc, spec.shadow);
+        if (!fresh && hit->second != spec.shadow) {
+            return ca::core::Err("assignMethodShadowBatch: conflicting specs for '"
+                                 + spec.owner + "." + spec.name + spec.desc + "'");
+        }
+        batchTaken[spec.owner].insert(spec.shadow);
+    }
+
+    // 校验全过才落表；已登记成员幂等保留。
+    ca::usize applied = 0;
+    for (const OverloadShadowSpec& spec : specs) {
+        if (!table.methodShadow(spec.owner, spec.name, spec.desc).empty()) continue;
+        table.addMethod(spec.owner, spec.desc, spec.name, spec.shadow);
+        ++applied;
+    }
+
+    auto tokens = table.backfillTokens();
+    if (tokens.is_err()) {
+        return ca::core::Err(std::move(tokens).unwrap_err());
+    }
+    return ca::core::Ok(applied);
 }
 
 ca::usize pruneShadowAliases(const mjbase::model::ResourceContainer& container,

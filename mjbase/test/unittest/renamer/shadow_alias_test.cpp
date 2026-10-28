@@ -647,4 +647,165 @@ TEST(MjShadowAliasTableTest, prunePreservesTokensOnSurvivors)
     }
 }
 
+// ─────────────────────────── 重载拆分（同名异签视图层） ───────────────────────────
+
+namespace {
+
+/// 三同名重载（乱序声明）+ 单方法 + 同名 field 的类（拆分主夹具）。
+ClassBytes overloadBytes()
+{
+    std::string members;
+    members += fixture::voidMethod("public", "foo", "(Ljava/lang/String;)V");
+    members += fixture::voidMethod("public", "foo", "()V");
+    members += fixture::voidMethod("public", "foo", "(I)V");
+    members += fixture::voidMethod("public", "bar", "()V");   // 无重载：不拆
+    members += fixture::fieldDecl("private", "foo", "I");     // 真实名占位
+    return {{"A.class", fixture::assembleClass("A", "java/lang/Object", members)}};
+}
+
+/// 拆分 Result 面（随机源失败 = 环境灾难）测试域 unwrap。
+OverloadSplitStats splitOrDie(const model::ResourceContainer& container,
+                              ShadowAliasTable&               table)
+{
+    auto split = generateOverloadSplitShadows(container, table);
+    EXPECT_TRUE(split.is_ok());
+    return std::move(split).unwrap();
+}
+
+/// 批量指派 Result 面（校验失败走显式 Err 面）测试域 unwrap。
+ca::usize batchOrDie(const model::ResourceContainer&    container,
+                     ShadowAliasTable&                  table,
+                     std::vector<OverloadShadowSpec> specs)
+{
+    auto assigned = assignMethodShadowBatch(container, table, specs);
+    EXPECT_TRUE(assigned.is_ok());
+    return std::move(assigned).unwrap();
+}
+
+}   // namespace
+
+TEST(MjShadowAliasTableTest, overloadSplitAssignsIndexedSuffixesInDescOrder)
+{
+    auto             container = buildContainer(overloadBytes());
+    ShadowAliasTable table;
+    const auto stats = splitOrDie(container, table);
+    EXPECT_EQ(1U, stats.splitGroups);
+    EXPECT_EQ(3U, stats.assignedMethods);
+    EXPECT_EQ(0U, stats.keptEntries);
+
+    // 组内按 desc 字典序编号（声明序无关）。
+    EXPECT_EQ("foo$0", toStd(table.methodShadow("A", "foo", "()V")));
+    EXPECT_EQ("foo$1", toStd(table.methodShadow("A", "foo", "(I)V")));
+    EXPECT_EQ("foo$2", toStd(table.methodShadow("A", "foo", "(Ljava/lang/String;)V")));
+    EXPECT_TRUE(table.methodShadow("A", "bar", "()V").empty());   // 无重载不分配
+
+    // 反查稳定：shadow → 成员三元组。
+    const auto hits = table.findByShadowName("foo$1");
+    ASSERT_EQ(1U, hits.size());
+    EXPECT_EQ("A", toStd(hits[0].owner));
+    EXPECT_EQ("foo", toStd(hits[0].rawName));
+    EXPECT_EQ("(I)V", toStd(hits[0].desc));
+}
+
+TEST(MjShadowAliasTableTest, overloadSplitAvoidsRealNameAndShadowCollisions)
+{
+    std::string members;
+    members += fixture::voidMethod("public", "foo", "()V");
+    members += fixture::voidMethod("public", "foo", "(I)V");
+    members += fixture::voidMethod("public", "foo$0", "()V");   // 撞候选的真实方法名
+    members += fixture::voidMethod("public", "bar", "()V");
+    auto container =
+        buildContainer({{"A.class", fixture::assembleClass("A", "java/lang/Object", members)}});
+    ShadowAliasTable table;
+    ASSERT_TRUE(table.addMethod("A", "()V", "bar", "foo$1"));   // 已占 shadow（他成员）
+
+    const auto stats = splitOrDie(container, table);
+    EXPECT_EQ(1U, stats.splitGroups);
+    EXPECT_EQ(2U, stats.assignedMethods);
+    EXPECT_EQ("foo$2", toStd(table.methodShadow("A", "foo", "()V")));
+    EXPECT_EQ("foo$3", toStd(table.methodShadow("A", "foo", "(I)V")));
+}
+
+TEST(MjShadowAliasTableTest, overloadSplitKeepsManualNamesAndIsIdempotent)
+{
+    auto             container = buildContainer(overloadBytes());
+    ShadowAliasTable table;
+    ASSERT_TRUE(table.addMethod("A", "()V", "foo", "handmade"));   // 手工名先到
+
+    const auto first = splitOrDie(container, table);
+    EXPECT_EQ(2U, first.assignedMethods);
+    EXPECT_EQ(1U, first.keptEntries);
+    EXPECT_EQ("handmade", toStd(table.methodShadow("A", "foo", "()V")));
+    EXPECT_EQ("foo$0", toStd(table.methodShadow("A", "foo", "(I)V")));
+    EXPECT_EQ("foo$1", toStd(table.methodShadow("A", "foo", "(Ljava/lang/String;)V")));
+
+    // 幂等：重跑零分配、全组保留、手工名不丢。
+    const auto second = splitOrDie(container, table);
+    EXPECT_EQ(0U, second.assignedMethods);
+    EXPECT_EQ(3U, second.keptEntries);
+    EXPECT_EQ("handmade", toStd(table.methodShadow("A", "foo", "()V")));
+    EXPECT_EQ(3U, table.size());
+}
+
+TEST(MjShadowAliasTableTest, overloadSplitNeverTouchesClassBytes)
+{
+    auto             container = buildContainer(overloadBytes());
+    ShadowAliasTable table;
+    const auto before = snapshotBytes(container);
+    (void)splitOrDie(container, table);
+    EXPECT_EQ(before, snapshotBytes(container));   // 视图层红线：字节码零写入
+}
+
+TEST(MjShadowAliasTableTest, batchAssignAppliesAndValidatesTransactionally)
+{
+    auto             container = buildContainer(overloadBytes());
+    ShadowAliasTable table;
+
+    EXPECT_EQ(2U, batchOrDie(container, table,
+                             {{"A", "foo", "()V", "foo$0"},
+                              {"A", "foo", "(I)V", "foo$1"}}));
+    EXPECT_EQ("foo$0", toStd(table.methodShadow("A", "foo", "()V")));
+    EXPECT_EQ("foo$1", toStd(table.methodShadow("A", "foo", "(I)V")));
+
+    // 撞已分配 shadow：整批拒绝，表零改动。
+    EXPECT_TRUE(assignMethodShadowBatch(
+                    container, table, {{"A", "foo", "(Ljava/lang/String;)V", "foo$0"}})
+                    .is_err());
+    EXPECT_TRUE(table.methodShadow("A", "foo", "(Ljava/lang/String;)V").empty());
+
+    // 撞类内真实名（方法 bar）。
+    EXPECT_TRUE(assignMethodShadowBatch(
+                    container, table, {{"A", "foo", "(Ljava/lang/String;)V", "bar"}})
+                    .is_err());
+
+    // 未知类 / 未知方法 / 未知描述符。
+    EXPECT_TRUE(
+        assignMethodShadowBatch(container, table, {{"X", "foo", "()V", "s"}}).is_err());
+    EXPECT_TRUE(
+        assignMethodShadowBatch(container, table, {{"A", "nope", "()V", "s"}}).is_err());
+    EXPECT_TRUE(
+        assignMethodShadowBatch(container, table, {{"A", "foo", "(J)V", "s"}}).is_err());
+
+    // 幂等重指派同 shadow：Ok(0)。
+    auto again = assignMethodShadowBatch(container, table, {{"A", "foo", "()V", "foo$0"}});
+    ASSERT_TRUE(again.is_ok());
+    EXPECT_EQ(0U, std::move(again).unwrap());
+
+    // 异 shadow 重指派：Err（先到者优先契约）。
+    EXPECT_TRUE(
+        assignMethodShadowBatch(container, table, {{"A", "foo", "()V", "other"}}).is_err());
+
+    // 同批双成员同 shadow：Err，整批零改动。
+    EXPECT_TRUE(assignMethodShadowBatch(container, table,
+                                        {{"A", "foo", "(Ljava/lang/String;)V", "s"},
+                                         {"A", "bar", "()V", "s"}})
+                    .is_err());
+    EXPECT_TRUE(table.methodShadow("A", "bar", "()V").empty());
+
+    // 冲突过后合法批次仍可落表。
+    EXPECT_EQ(1U, batchOrDie(container, table,
+                             {{"A", "foo", "(Ljava/lang/String;)V", "foo$2"}}));
+    EXPECT_EQ("foo$2", toStd(table.methodShadow("A", "foo", "(Ljava/lang/String;)V")));
+}
+
 }   // namespace mjbase::renamer
