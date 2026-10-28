@@ -1134,6 +1134,74 @@ TEST(MjAsmRemapperTest, remapsTypeHandleInvokeDynamicAndFrameConstants)
     EXPECT_EQ("[Lpkg/NewType;", classTextOf(bcf, smt->frames[0].locals[1].cp));
 }
 
+// B8 8.4 收编 libjbc cp_resolve（PR #14）后的口径收紧点。旧行为（本地宽松
+// 口径）：kind ∉1..4 一律走方法分支——被污染成 kind=10 的句柄会被方法规则
+// 改写；libjbc resolveHandleCp 严格口径下 reference_kind 域检失败 → 条目
+// 整体跳过（对合法类零影响：JVM 解析即拒、libjbc 读闸即拦，此用例覆盖的
+// 是改写器对污染池的防御深度）。
+//
+// 接缝说明：readClass 的 CP 引用校验对畸形 kind 整类拒读，畸形输入到不了
+// 公开读路径；这里 parse 合法类后就地污染句柄 kind 再 makeSession（不走
+// 读闸），直达改写器的解析层。产物断言落在 session backing——重解析会被
+// 读闸拒，不是有效的观察面。
+TEST(MjAsmRemapperTest, skipsMalformedHandleKindInsteadOfMethodFallback)
+{
+    MemberRemapPlan plan;
+    plan.mapMethod("pkg/OldOwner", "oldMethod", "()V", "pkg/NewOwner", "newMethod", "()V");
+
+    ClassBytesBuilder b("pkg/HandleCaller");
+    test::MethodSpec use;
+    use.access    = 0x0009;
+    use.name      = "use";
+    use.desc      = "()V";
+    use.maxStack  = 2;
+    use.maxLocals = 0;
+    use.emit      = [&](test::CodeEmit& e) {
+        e.ldcMethodHandle(6, "pkg/OldOwner", "oldMethod", "()V");   // 合法 kind，事后污染
+        e.op(jbc::core::Op::POP);
+        e.op(jbc::core::Op::RETURN);
+    };
+
+    // 合法类 parse 通过后，就地把句柄 reference_kind 污染成域外值 10。
+    const Bytes bytes = b.assemble({use});
+    auto        parsed = jbc::core::readClass(jbc::core::ByteView(bytes));
+    ASSERT_TRUE(parsed.is_ok());
+    auto file = std::move(parsed).unwrap().file;
+    ASSERT_TRUE(file != nullptr);
+    bool mutated = false;
+    for (ca::u32 i = 1; i < file->cp.size(); ++i) {
+        auto& entry = file->cp.at(i);
+        if (entry.tag != jbc::core::CpTag::MethodHandle) continue;
+        entry.a     = 10;
+        entry.dirty = true;
+        mutated     = true;
+    }
+    ASSERT_TRUE(mutated);
+
+    auto session = jbc::ir::makeSession(std::move(file));
+    ASSERT_TRUE(session.is_ok());
+    auto sessionPtr = std::move(session).unwrap();
+    auto applied    = mjbase::asm_remapper::applyMemberRemapPlan(*sessionPtr, plan,
+                                                               RemapPolicy::bytecodeOnly());
+    ASSERT_FALSE(applied.is_err());
+
+    // 收紧后：畸形 kind 句柄整体跳过，引用三段保持原形；宽松口径（旧）会
+    // 经方法分支把三段改写成 pkg/NewOwner.newMethod。
+    const ClassFile& out       = sessionPtr->backing();
+    bool             sawHandle = false;
+    for (ca::u32 i = 1; i < out.cp.size(); ++i) {
+        const auto& entry = out.cp.at(i);
+        if (entry.tag != jbc::core::CpTag::MethodHandle) continue;
+        sawHandle = true;
+        ASSERT_EQ(10, static_cast<int>(entry.a));
+        const MemberRefText ref = memberRefOf(out, entry.b);
+        ASSERT_TRUE(ref.ok);
+        EXPECT_EQ("pkg/OldOwner", ref.owner);
+        EXPECT_EQ("oldMethod", ref.name);
+    }
+    EXPECT_TRUE(sawHandle);
+}
+
 // 旧例 5：remapsMethodDebugExceptionAndModuleClassMetadata
 TEST(MjAsmRemapperTest, remapsMethodDebugExceptionAndModuleClassMetadata)
 {

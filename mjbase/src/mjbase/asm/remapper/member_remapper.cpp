@@ -7,6 +7,7 @@
 
 #include "jbc/core/attr_codec.hpp"
 #include "jbc/core/constant_pool.hpp"
+#include "jbc/core/cp_resolve.hpp"
 #include "jbc/core/opcode.hpp"
 
 #include "mjbase/analysis/alias_analysis.hpp"
@@ -28,6 +29,7 @@ using jbc::core::ConstantPool;
 using jbc::core::CpTag;
 using jbc::core::EnclosingMethodAttr;
 using jbc::core::ExceptionsAttr;
+using jbc::core::HandleSem;
 using jbc::core::InnerClassesAttr;
 using jbc::core::LocalVariableTableAttr;
 using jbc::core::MemberInfo;
@@ -96,45 +98,12 @@ ca::u32 internClassName(ClassSession& session, std::string_view utf8Name)
     return session.internClass(utf8ToCp(utf8Name));
 }
 
-/// @brief 成员引用三段语义（Fieldref/Methodref/InterfaceMethodref 一跳解析）。
-struct RefSem
-{
-    std::string owner;
-    std::string name;
-    std::string desc;
-};
-
-/// @brief 解析成员引用条目；结构不符返回 false。三段一律解码为规范形。
-bool resolveRefCp(const ClassFile& cf, ca::u32 refIdx, RefSem& out)
-{
-    const ConstantPool& cp = cf.cp;
-    if (!cp.valid(refIdx)) return false;
-    const auto& ref = cp.at(refIdx);
-    if (ref.tag != CpTag::Fieldref && ref.tag != CpTag::Methodref &&
-        ref.tag != CpTag::InterfaceMethodref) {
-        return false;
-    }
-    if (!cp.valid(ref.b)) return false;
-    const auto& nat = cp.at(ref.b);
-    if (nat.tag != CpTag::NameAndType || !cp.isUtf8(nat.a) || !cp.isUtf8(nat.b)) return false;
-    out.owner = cpToUtf8(classNameOfCp(cf, ref.a));
-    if (out.owner.empty()) return false;
-    out.name = cpToUtf8(cp.utf8Of(nat.a));
-    out.desc = cpToUtf8(cp.utf8Of(nat.b));
-    return true;
-}
-
-/// @brief 方法句柄条目语义：引用三段 + reference_kind（JVMS 4.4.8）。
-bool resolveHandleCp(const ClassFile& cf, ca::u32 handleIdx, RefSem& out, ca::u32& kind)
-{
-    const ConstantPool& cp = cf.cp;
-    if (!cp.valid(handleIdx) || cp.tagOf(handleIdx) != CpTag::MethodHandle) return false;
-    const auto& handle = cp.at(handleIdx);
-    kind = handle.a;
-    return resolveRefCp(cf, handle.b, out);
-}
-
-inline bool isFieldHandleKind(ca::u32 kind) noexcept { return kind >= 1 && kind <= 4; }
+// 句柄/成员引用的 CP 解析自 B8 8.4 起直用 libjbc cp_resolve 原语
+//（jbc::core::resolveHandleCp / resolveMemberRef：严格口径，reference_kind
+// ∉1..9 及 kind-tag 不匹配即解析失败；旧本地宽松版「非字段 kind 一律走方
+// 法分支」随收编退役——对合法类零影响，JVM 解析与 libjbc 读闸本就即拒）。
+// libjbc 版返回零拷贝 view，本文件的消费边界见 remapHandle / remapInvoke
+// dynamic 里的落 string 纪律。
 
 inline bool isLdcFamily(Op op) noexcept
 {
@@ -236,38 +205,53 @@ struct RemapCtx
     ///
     /// 数组型 owner（数组 clone 等句柄可指向 `[LX;`）与直接类名同口径映射；
     /// 条目就地改对全部共享方一致（同一内容在同一计划下映射结果逐字节相同）。
+    /// 解析走 libjbc cp_resolve 严格口径（reference_kind ∉1..9 / kind-tag
+    /// 不匹配即失败跳过），成功时 kind 必在 1..9、(kind, isInterface) 与引用
+    /// 条目 tag 严格一致。
     bool remapHandle(ca::u32 handleIdx) const
     {
-        RefSem  old;
-        ca::u32 kind = 0;
-        if (!resolveHandleCp(cf, handleIdx, old, kind)) return false;
-        std::string_view newOwner = plan.mapOwnerRef(old.owner);
-        std::string_view newName  = old.name;
-        std::string_view newDesc  = old.desc;
-        if (isFieldHandleKind(kind)) {
-            if (const auto* rule = plan.findField(old.owner, old.name, old.desc)) {
+        HandleSem sem;
+        if (!jbc::core::resolveHandleCp(cf.cp, handleIdx, sem)) return false;
+        // 三段先落规范形 string（plan 键是标准 UTF-8，cp view 是 modified
+        // UTF-8，直接比较/查表对增补平面名必 miss——见文件头「cp 字符串边
+        // 界」）；同时满足 view 生命周期纪律：下方 internRef 会向池追加，
+        // cp 视图不得跨扩池使用（remapCondy 同款教训）。
+        const std::string oldOwner = cpToUtf8(sem.owner);
+        const std::string oldName  = cpToUtf8(sem.name);
+        const std::string oldDesc  = cpToUtf8(sem.desc);
+        std::string_view  newOwner = plan.mapOwnerRef(oldOwner);
+        std::string_view  newName  = oldName;
+        std::string_view  newDesc  = oldDesc;
+        if (sem.kind >= 1 && sem.kind <= 4) {
+            if (const auto* rule = plan.findField(oldOwner, oldName, oldDesc)) {
                 newOwner = ruleOwner(rule->newKey.cls);
                 newName  = ruleName(rule->newKey.name);
                 // 描述符空规则（映射文件形态）：命中后描述符保持现状。
-                newDesc  = rule->newKey.desc != 0 ? ruleDesc(rule->newKey.desc) : old.desc;
+                newDesc  = rule->newKey.desc != 0 ? ruleDesc(rule->newKey.desc) : oldDesc;
             }
             else {
-                newDesc = plan.mapFieldDescriptor(old.desc);
+                newDesc = plan.mapFieldDescriptor(oldDesc);
             }
         }
         else {
-            if (const auto* rule = plan.findMethod(old.owner, old.name, old.desc)) {
+            if (const auto* rule = plan.findMethod(oldOwner, oldName, oldDesc)) {
                 newOwner = ruleOwner(rule->newKey.cls);
                 newName  = ruleName(rule->newKey.name);
                 newDesc  = ruleDesc(rule->newKey.desc);
             }
             else {
-                newDesc = plan.mapMethodDescriptor(old.desc);
+                newDesc = plan.mapMethodDescriptor(oldDesc);
             }
         }
-        if (newOwner == old.owner && newName == old.name && newDesc == old.desc) return false;
+        if (newOwner == oldOwner && newName == oldName && newDesc == oldDesc) return false;
 
-        const CpTag          refTag = cf.cp.at(cf.cp.at(handleIdx).b).tag;
+        // re-intern 保原引用条目 tag：严格口径下 tag 由 (kind, isInterface)
+        // 唯一决定——1..4 必为 Fieldref，9 必为 InterfaceMethodref，5..8 按
+        // isInterface 分叉。newDesc 绑定的 oldDesc 存活到函数尾，internRef
+        // 内先拷贝后扩池，视图安全。
+        const CpTag refTag = sem.kind <= 4 ? CpTag::Fieldref
+                                           : (sem.isInterface ? CpTag::InterfaceMethodref
+                                                              : CpTag::Methodref);
         const ca::u32        newRef = internRef(refTag, newOwner, newName, newDesc);
         ConstantPool::Entry& handle = cf.cp.at(handleIdx);
         handle.b                    = newRef;
@@ -952,12 +936,18 @@ bool remapInvokedynamic(const RemapCtx& ctx, Insn& in)
         // LambdaMetafactory 合成方法按 SAM 规则改名：BSM 方法句柄为 metafactory/
         // altMetafactory 且调用点描述符返回类型为对象类型时，
         // findMethod(返回类型, indy 名, SAM 描述符) 命中才改。SAM 描述符取自
-        // 改写前的 BSM 首实参（先判名后改链）。
-        RefSem  bsmSem;
-        ca::u32 bsmKind = 0;
-        if (resolveHandleCp(ctx.cf, bsmEntry.methodRef, bsmSem, bsmKind) &&
-            bsmSem.owner == "java/lang/invoke/LambdaMetafactory" &&
-            (bsmSem.name == "metafactory" || bsmSem.name == "altMetafactory") &&
+        // 改写前的 BSM 首实参（先判名后改链）。识别用名字先落 string：libjbc
+        // resolveHandleCp 返回 cp 视图，下方 remapHandle/remapBsmArgsOf 链路
+        // 会向池追加，视图不得跨扩池使用。
+        HandleSem   bsmHandle;
+        std::string bsmOwner;
+        std::string bsmName;
+        if (jbc::core::resolveHandleCp(cp, bsmEntry.methodRef, bsmHandle)) {
+            bsmOwner = cpToUtf8(bsmHandle.owner);
+            bsmName  = cpToUtf8(bsmHandle.name);
+        }
+        if (bsmOwner == "java/lang/invoke/LambdaMetafactory" &&
+            (bsmName == "metafactory" || bsmName == "altMetafactory") &&
             !bsmEntry.args.empty()) {
             const ca::u32 samIdx = bsmEntry.args.front();
             if (cp.valid(samIdx) && cp.tagOf(samIdx) == CpTag::MethodType &&

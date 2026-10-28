@@ -285,6 +285,20 @@ Bytes buildIndirectBytecodeReferenceClass()
     return b.assemble(ms);
 }
 
+/// 畸形 kind 句柄夹具：ldc MethodHandle 的 reference_kind 域外（10）。
+Bytes buildMalformedHandleReferenceClass()
+{
+    ClassBytesBuilder b("MalformedHandleUser");
+    std::vector<MethodSpec> ms;
+    ms.push_back(m("lambdaTarget", "()V", 0, 0, [](CodeEmit& e) { e.op(Op::RETURN); }));
+    ms.push_back(m("use", "()V", 2, 0, [](CodeEmit& e) {
+        e.ldcMethodHandle(10, "MalformedHandleUser", "lambdaTarget", "()V");
+        e.op(Op::POP);
+        e.op(Op::RETURN);
+    }));
+    return b.assemble(ms);
+}
+
 // ── 常量反射成员查找夹具 ────────────────────────────────────────
 
 /// ReflectTarget：secret 字段 + <init> + reflectTarget/otherTarget 静态方法。
@@ -959,6 +973,30 @@ TEST(MjReferenceTest, indexesReflectionStringsMethodHandlesAndLambdaTargets)
     EXPECT_TRUE(
         indexHasMethodEdge(index, "IndirectUser", "use", "()V", "IndirectUser", "lambdaTarget",
                            "()V"));
+}
+
+// ── 9b. 畸形 MethodHandle kind：读侧域闸边界 ────────────────────
+
+// B8 8.4 收编 libjbc cp_resolve（PR #14）的口径背景：reference_index 侧
+// resolveHandleCp 换 libjbc 严格版后，reference_kind ∉1..9 的句柄不再落
+// 任何事实。该收紧在本侧公开读路径上不可达观察——libjbc readClass 的
+// ConstantPool::validateReferences 对畸形 kind 整类拒读（JVMS 4.4.8 类
+// 解析即拒），scanClassResources 随之跳过。此用例钉死这层边界：畸形类
+// 整体不进索引（而不是部分事实落表）。
+TEST(MjReferenceTest, malformedHandleKindClassIsRejectedAtReadGate)
+{
+    ResourceContainer container;
+    addClassBytes(container, "MalformedHandleUser", buildMalformedHandleReferenceClass());
+
+    ReferenceIndex index;
+    index.build(container);
+
+    // 类整体缺席：声明与全部引用事实都不落表。
+    EXPECT_TRUE(index.declaredClass("MalformedHandleUser") == nullptr);
+    EXPECT_TRUE(index.methodReferencesToOwner("MalformedHandleUser").empty());
+    EXPECT_TRUE(index.methodReferencesTo("MalformedHandleUser", "lambdaTarget", "()V").empty());
+    EXPECT_TRUE(index.fieldReferencesTo("MalformedHandleUser", "lambdaTarget", "()V").empty());
+    EXPECT_TRUE(index.typeReferencesTo("MalformedHandleUser").empty());
 }
 
 // ── 10. 常量反射成员查找 ────────────────────────────────────────
