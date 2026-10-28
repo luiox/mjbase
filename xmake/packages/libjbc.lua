@@ -57,6 +57,8 @@ package("libjbc")
     add_versions("0.4.19", "81173a0f724f9d0369fedc1d5f95ccd14fe984a4") -- PR #13 合入 main 头  2026-10-28
     -- 0.4.20 = cp_resolve CP 读侧语义解析原语三件：resolveMemberRef / resolveHandleCp / resolveClassName（PR #14）+ 版本对齐（PR #15，main 合入头）。
     add_versions("0.4.20", "16ca1076ea9e9bfc7aaed2debab9b15a248d0e56") -- PR #15 合入 main 头  2026-10-28
+    -- 0.4.21 = 域引擎基础档处理器种子改待并参与者（不再抢先单跑），fake-try 假阳性 Underflow 消除（PR #16）+ 版本对齐（PR #17，main 合入头）。
+    add_versions("0.4.21", "4a782744447a862593218412c64b2fb9a7ea9967") -- PR #17 合入 main 头  2026-10-28
 
     -- 嵌套 libca 直接钉到本仓单源版本：项目内联包定义不吃 deps.lua 的
     -- **.libca / libjbc.libca requireconfs（实测），裸声明会解析到仓库最新版
