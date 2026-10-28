@@ -92,11 +92,14 @@ struct FullFrameSpec
     std::vector<VTypeSpec> stack;
 };
 
-/// 注解元素值（remapper 夹具只用 'c'：返回描述符形态的 Utf8 载荷，JVMS 4.7.16.1）。
+/// 注解元素值（'c'：返回描述符形态的 Utf8 载荷，JVMS 4.7.16.1；'['：数组
+/// 载荷 items；'@'：嵌套注解载荷 nested——注解数组/嵌套注解边角用）。
 struct ElementValue
 {
-    char             tag = 'c';
-    std::string_view value;   ///< 'c': 返回描述符文本（如 "Lcom/Old;"）
+    char                      tag    = 'c';
+    std::string_view          value  = {};   ///< 'c': 返回描述符文本（如 "Lcom/Old;"）
+    std::vector<ElementValue> items;         ///< '[': 逐项元素值
+    const struct AnnotationSpec* nested = nullptr;   ///< '@': 嵌套注解（借用）
 };
 
 struct AnnotationPair
@@ -112,13 +115,28 @@ struct AnnotationSpec
     std::vector<AnnotationPair> pairs;
 };
 
+/// type annotation 规格（JVMS 4.7.20）：target_type + target_info 载荷 +
+/// type_path + 注解体。载荷支持：0x13/0x14/0x15（空）、0x00/0x01（u1）、
+/// 0x11/0x12（u1+u1）、0x10/0x17/0x42/0x43..0x46（u2）、0x47/0x48..0x4B
+/// （u2+u1）；0x40/0x41（localvar）夹具不支持。
+struct TypeAnnotationSpec
+{
+    ca::u8                                 targetType = 0x13;   ///< 空载荷 = 字段类型位
+    ca::u8                                 index8     = 0;   ///< u1 载荷（type_parameter/类型实参下标等）
+    ca::u8                                 boundIndex = 0;   ///< 0x11/0x12 的第二 u1（bound_index）
+    ca::u16                                index16    = 0;   ///< u2 载荷（supertype/throws/catch/offset）
+    std::vector<std::pair<ca::u8, ca::u8>> typePath;   ///< (kind, type_argument_index)
+    AnnotationSpec anno;
+};
+
 /// Record 组件规格。
 struct RecordComponentSpec
 {
-    std::string_view            name;
-    std::string_view            desc;
-    std::string_view            signature;   ///< 空 = 无 Signature 属性
-    std::vector<AnnotationSpec> annotations; ///< 组件 RuntimeVisibleAnnotations
+    std::string_view                        name;
+    std::string_view                        desc;
+    std::string_view                        signature;   ///< 空 = 无 Signature 属性
+    std::vector<AnnotationSpec>             annotations; ///< 组件 RuntimeVisibleAnnotations
+    std::vector<TypeAnnotationSpec>         typeAnnotations;   ///< 组件 RuntimeVisibleTypeAnnotations
 };
 
 /// Bootstrap 方法实参：'M' = MethodType(desc)；'H' = MethodHandle；'C' = Class。
@@ -148,15 +166,21 @@ struct MethodSpec
     std::vector<LvtSpec>                 localVariables;
     std::vector<FullFrameSpec>           stackMapFrames;
     std::vector<AnnotationSpec>          annotations;   ///< RuntimeVisibleAnnotations
+    std::vector<TypeAnnotationSpec>      typeAnnotations;   ///< RuntimeVisibleTypeAnnotations
+    std::vector<TypeAnnotationSpec>      codeTypeAnnotations;   ///< Code 嵌套 RVTA
+    std::vector<std::vector<AnnotationSpec>> parameterAnnotations;  ///< RVPA 行表
+    ElementValue                         annotationDefault;   ///< AnnotationDefault 载荷
+    bool                                 hasAnnotationDefault = false;
 };
 
 struct FieldSpec
 {
-    ca::u16                     access = 0x0002;   // private
-    std::string_view            name;
-    std::string_view            desc;
-    std::string_view            signature;   ///< 空 = 无 Signature 属性
-    std::vector<AnnotationSpec> annotations; ///< RuntimeVisibleAnnotations
+    ca::u16                            access = 0x0002;   // private
+    std::string_view                   name;
+    std::string_view                   desc;
+    std::string_view                   signature;   ///< 空 = 无 Signature 属性
+    std::vector<AnnotationSpec>        annotations; ///< RuntimeVisibleAnnotations
+    std::vector<TypeAnnotationSpec>    typeAnnotations;   ///< RuntimeVisibleTypeAnnotations
 };
 
 /// 单方法代码发射器：标签先占号后绑定，branch 2 字节相对偏移装配末回填。
@@ -507,6 +531,10 @@ public:
 
     void setClassSignature(std::string_view sig) { classSignature_ = sig; }
     void addClassAnnotation(const AnnotationSpec& anno) { classAnnotations_.push_back(anno); }
+    void addClassTypeAnnotation(const TypeAnnotationSpec& ta)
+    {
+        classTypeAnnotations_.push_back(ta);
+    }
     void setEnclosingMethod(std::string_view owner, std::string_view name,
                             std::string_view desc)
     {
@@ -586,12 +614,23 @@ public:
         std::vector<std::vector<AttrBytes>> fieldAttrs;
         fieldAttrs.reserve(fields_.size());
         for (const FieldSpec& f : fields_) {
-            fieldAttrs.push_back(buildAnnotatableAttrs(f.signature, f.annotations));
+            fieldAttrs.push_back(
+                buildAnnotatableAttrs(f.signature, f.annotations, f.typeAnnotations));
         }
         std::vector<std::vector<AttrBytes>> methodAttrs;
         methodAttrs.reserve(methods.size());
         for (const MethodSpec& m : methods) {
-            std::vector<AttrBytes> attrs = buildAnnotatableAttrs(m.signature, m.annotations);
+            std::vector<AttrBytes> attrs =
+                buildAnnotatableAttrs(m.signature, m.annotations, m.typeAnnotations);
+            if (!m.parameterAnnotations.empty()) {
+                attrs.push_back(AttrBytes{utf8("RuntimeVisibleParameterAnnotations"),
+                                          parameterAnnotationsPayload(m.parameterAnnotations)});
+            }
+            if (m.hasAnnotationDefault) {
+                Bytes payload;
+                writeElemValue(payload, m.annotationDefault);
+                attrs.push_back(AttrBytes{utf8("AnnotationDefault"), std::move(payload)});
+            }
             if (!m.exceptions.empty()) {
                 Bytes payload;
                 putU16(payload, static_cast<ca::u16>(m.exceptions.size()));
@@ -692,8 +731,7 @@ private:
     std::vector<AttrBytes> buildCodeAttrs(const MethodSpec& m, const CodeEmit& e)
     {
         std::vector<AttrBytes> attrs;
-        if (!m.lineNumbers.empty()) {
-            Bytes payload;
+        if (!m.lineNumbers.empty()) {            Bytes payload;
             putU16(payload, static_cast<ca::u16>(m.lineNumbers.size()));
             for (const LineSpec& row : m.lineNumbers) {
                 putU16(payload, e.labelPc(row.label));
@@ -752,6 +790,10 @@ private:
             }
             attrs.push_back(AttrBytes{utf8("StackMapTable"), std::move(payload)});
         }
+        if (!m.codeTypeAnnotations.empty()) {
+            attrs.push_back(AttrBytes{utf8("RuntimeVisibleTypeAnnotations"),
+                                      typeAnnotationListPayload(m.codeTypeAnnotations)});
+        }
         return attrs;
     }
 
@@ -765,6 +807,34 @@ private:
         putU16(payload, cls(v.className));
     }
 
+    /// 注解元素值载荷（'c'/'['/'@'；其余 tag 夹具不支持）。
+    void writeElemValue(Bytes& payload, const ElementValue& v)
+    {
+        putU8(payload, static_cast<ca::u8>(v.tag));
+        switch (v.tag) {
+        case 'c': putU16(payload, utf8(v.value)); break;
+        case '[':
+            putU16(payload, static_cast<ca::u16>(v.items.size()));
+            for (const ElementValue& item : v.items) {
+                writeElemValue(payload, item);
+            }
+            break;
+        case '@':
+            if (v.nested == nullptr) {
+                ADD_FAILURE() << "'@' element value requires nested annotation";
+                break;
+            }
+            putU16(payload, utf8(v.nested->type));
+            putU16(payload, static_cast<ca::u16>(v.nested->pairs.size()));
+            for (const AnnotationPair& pair : v.nested->pairs) {
+                putU16(payload, utf8(pair.name));
+                writeElemValue(payload, pair.value);
+            }
+            break;
+        default: ADD_FAILURE() << "unsupported element value tag in fixture"; break;
+        }
+    }
+
     /// 注解列表载荷：u2 count + 注解体（type + pairs + element_value）。
     Bytes annotationListPayload(const std::vector<AnnotationSpec>& annos)
     {
@@ -775,21 +845,99 @@ private:
             putU16(payload, static_cast<ca::u16>(anno.pairs.size()));
             for (const AnnotationPair& pair : anno.pairs) {
                 putU16(payload, utf8(pair.name));
-                putU8(payload, static_cast<ca::u8>(pair.value.tag));
-                if (pair.value.tag == 'c') {
-                    putU16(payload, utf8(pair.value.value));   // 'c' 载荷 = 返回描述符 Utf8
-                }
-                else {
-                    ADD_FAILURE() << "unsupported element value tag in fixture";
+                writeElemValue(payload, pair.value);
+            }
+        }
+        return payload;
+    }
+
+    /// 参数注解载荷（JVMS 4.7.18/4.7.19）：u1 参数数 + { u2 注解数 + 注解体 }*。
+    Bytes parameterAnnotationsPayload(
+        const std::vector<std::vector<AnnotationSpec>>& rows)
+    {
+        Bytes payload;
+        putU8(payload, static_cast<ca::u8>(rows.size()));
+        for (const std::vector<AnnotationSpec>& row : rows) {
+            putU16(payload, static_cast<ca::u16>(row.size()));
+            for (const AnnotationSpec& anno : row) {
+                putU16(payload, utf8(anno.type));
+                putU16(payload, static_cast<ca::u16>(anno.pairs.size()));
+                for (const AnnotationPair& pair : anno.pairs) {
+                    putU16(payload, utf8(pair.name));
+                    writeElemValue(payload, pair.value);
                 }
             }
         }
         return payload;
     }
 
-    /// Signature/RuntimeVisibleAnnotations 属性族（字段/方法共用）。
-    std::vector<AttrBytes> buildAnnotatableAttrs(std::string_view                    signature,
-                                                 const std::vector<AnnotationSpec>& annotations)
+    /// type annotation 条目载荷：target_type + target_info + type_path + 注解体。
+    Bytes typeAnnotationEntryPayload(const TypeAnnotationSpec& ta)
+    {
+        Bytes payload;
+        putU8(payload, ta.targetType);
+        switch (ta.targetType) {
+        case 0x00:
+        case 0x01: putU8(payload, ta.index8); break;
+        case 0x11:
+        case 0x12:
+            putU8(payload, ta.index8);
+            putU8(payload, ta.boundIndex);
+            break;
+        case 0x10:
+        case 0x17:
+        case 0x42:
+        case 0x43:
+        case 0x44:
+        case 0x45:
+        case 0x46: putU16(payload, ta.index16); break;
+        case 0x47:
+        case 0x48:
+        case 0x49:
+        case 0x4A:
+        case 0x4B:
+            putU16(payload, ta.index16);
+            putU8(payload, ta.index8);
+            break;
+        case 0x13:
+        case 0x14:
+        case 0x15: break;
+        default:
+            ADD_FAILURE() << "unsupported type_annotation target in fixture";
+            break;
+        }
+        putU8(payload, static_cast<ca::u8>(ta.typePath.size()));
+        for (const auto& [kind, argIndex] : ta.typePath) {
+            putU8(payload, kind);
+            putU8(payload, argIndex);
+        }
+        putU16(payload, utf8(ta.anno.type));
+        putU16(payload, static_cast<ca::u16>(ta.anno.pairs.size()));
+        for (const AnnotationPair& pair : ta.anno.pairs) {
+            putU16(payload, utf8(pair.name));
+            writeElemValue(payload, pair.value);
+        }
+        return payload;
+    }
+
+    /// type annotation 列表载荷（JVMS 4.7.20）：u2 count + 条目*。
+    Bytes typeAnnotationListPayload(const std::vector<TypeAnnotationSpec>& tas)
+    {
+        Bytes payload;
+        putU16(payload, static_cast<ca::u16>(tas.size()));
+        for (const TypeAnnotationSpec& ta : tas) {
+            const Bytes entry = typeAnnotationEntryPayload(ta);
+            payload.insert(payload.end(), entry.begin(), entry.end());
+        }
+        return payload;
+    }
+
+    /// Signature/RuntimeVisibleAnnotations/RuntimeVisibleTypeAnnotations 属性族
+    ///（字段/方法/Record 组件共用）。
+    std::vector<AttrBytes> buildAnnotatableAttrs(
+        std::string_view                           signature,
+        const std::vector<AnnotationSpec>&         annotations,
+        const std::vector<TypeAnnotationSpec>&     typeAnnotations)
     {
         std::vector<AttrBytes> attrs;
         if (!signature.empty()) {
@@ -799,6 +947,10 @@ private:
         }
         if (!annotations.empty()) {
             attrs.push_back(AttrBytes{annoName_, annotationListPayload(annotations)});
+        }
+        if (!typeAnnotations.empty()) {
+            attrs.push_back(AttrBytes{utf8("RuntimeVisibleTypeAnnotations"),
+                                      typeAnnotationListPayload(typeAnnotations)});
         }
         return attrs;
     }
@@ -813,6 +965,10 @@ private:
         }
         if (!classAnnotations_.empty()) {
             attrs.push_back(AttrBytes{annoName_, annotationListPayload(classAnnotations_)});
+        }
+        if (!classTypeAnnotations_.empty()) {
+            attrs.push_back(AttrBytes{utf8("RuntimeVisibleTypeAnnotations"),
+                                      typeAnnotationListPayload(classTypeAnnotations_)});
         }
         if (enclosing_ != std::nullopt) {
             Bytes payload;
@@ -858,8 +1014,8 @@ private:
             for (const RecordComponentSpec& rc : recordComponents_) {
                 putU16(payload, utf8(rc.name));
                 putU16(payload, utf8(rc.desc));
-                std::vector<AttrBytes> compAttrs =
-                    buildAnnotatableAttrs(rc.signature, rc.annotations);
+                std::vector<AttrBytes> compAttrs = buildAnnotatableAttrs(
+                    rc.signature, rc.annotations, rc.typeAnnotations);
                 putU16(payload, static_cast<ca::u16>(compAttrs.size()));
                 for (const AttrBytes& attr : compAttrs) {
                     putU16(payload, attr.nameCp);
@@ -961,6 +1117,7 @@ private:
     std::vector<std::string_view>         interfaces_;
     std::string_view                      classSignature_;
     std::vector<AnnotationSpec>           classAnnotations_;
+    std::vector<TypeAnnotationSpec>       classTypeAnnotations_;
     std::optional<std::tuple<std::string_view, std::string_view, std::string_view>> enclosing_;
     std::string_view                      nestHost_;
     std::vector<std::string_view>         nestMembers_;

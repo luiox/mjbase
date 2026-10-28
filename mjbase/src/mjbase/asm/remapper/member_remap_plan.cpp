@@ -1,7 +1,15 @@
 #include "mjbase/asm/remapper/member_remap_plan.hpp"
 
+#include <algorithm>
+
+#include "jbc/type/signature.hpp"
+
 namespace mjbase::asm_remapper {
 namespace {
+
+// 命名空间别名置匿名命名空间作用域：函数体内别名在 MSVC 泛型 lambda 延迟
+// 实例化里查找失败（sig::X 被归解为 jbc::sig）。
+namespace jbsig = jbc::type;
 
 /// @brief 字段描述符单类型重写：'['* 前缀保留，对象类型 `Lname;` 内部名重映射。
 ///
@@ -68,6 +76,210 @@ std::string rewriteMethodDescriptorText(std::string_view desc, MapName&& mapName
     out.push_back(')');
     out.append(rewriteFieldDescriptorText(desc.substr(close + 1), mapName));
     return out;
+}
+
+/// @brief 结构化签名重写：libjbc jbc::type::signature 消费面（B8 8.3 收口）。
+///
+/// 解析树定界全部类类型出现（parseSignature 自动分派三形态），逐类类型按
+/// **完整内部名**（首段全名 + 后缀段按 '$' 连接，对齐 libjbc
+/// internalNameOf 口径）查类映射，命中以段级 span 补丁拼装新串——逐字节
+/// 边界来自解析树，杜绝扫描式改写的边界误读。形态纪律对齐 libjbc
+/// renameClassInSignature 契约（v1 段链形态轴）并延伸一个改名语义分支：
+///   - **扁平段链**（单段、无 '.' 后缀段）：全名命中整段替换，新名原文写满
+///     本段（跨 '$' 形态替换，跨混淆器映射还原的载体）；
+///   - **真嵌套段链（部件对齐）**：新名按 '$' 部件对齐替换（每段消费
+///     dollarCount(段名)+1 个部件），段链结构与链上实参原样保留；
+///   - **真嵌套段链（部件数不一致）**：改名 pass 给嵌套类配独立新名
+///     （a/B$C → p/Q），签名引用的二元名整体易主——整链坍缩为扁平新名
+///     （ASM SignatureRemapper 同语义），链间 '.' 与链上实参随旧链结构
+///     一并消失（libjbc 单对手术 API 无法表达此语义，计划驱动重写可以）；
+///   - 类型实参/通配符/数组维度/类型变量等其余字节原样保留。
+/// 解析失败原样返回 false（fail-closed 保真，畸形签名的清洗归
+/// IllegalSignatureRemover；不做扫描式兜底）。单遍同时替换语义：每个类类型
+/// 出现只查一次映射，新名不会被后续映射再吃（A→B、B→C 并存时不串链）。
+///
+/// @returns 发生改写时 true 并把新串写入 @p out；未命中/解析失败 false。
+template <typename MapName>
+bool rewriteSignatureText(std::string_view signature, MapName&& mapName, std::string& out)
+{
+    // 三形态显式解析（与 parseSignature 自动分派等价，见下方分派序注记）。
+
+    /// 一个段级改写坐标（offset 相对输入串；text 为替换字节）。
+    struct SigPatch
+    {
+        ca::u32     offset = 0;
+        ca::u32     length = 0;
+        std::string text;
+    };
+
+    std::vector<SigPatch> patches;
+    bool                  changed = false;
+
+    /// 段名里的 '$' 个数（该段消费的部件数 = 个数 + 1，与 libjbc 同口径）。
+    const auto dollarCount = [](std::string_view name) {
+        ca::usize n = 0;
+        for (const char c : name) {
+            if (c == '$') ++n;
+        }
+        return n;
+    };
+    /// 按 '$' 切内部名为部件（供真嵌套段链的部件对齐）。
+    const auto splitParts = [](std::string_view name) {
+        std::vector<std::string_view> parts;
+        ca::usize                     begin = 0;
+        for (ca::usize i = 0; i <= name.size(); ++i) {
+            if (i == name.size() || name[i] == '$') {
+                parts.push_back(name.substr(begin, i - begin));
+                begin = i + 1;
+            }
+        }
+        return parts;
+    };
+
+    /// 一个类类型的映射改写（命中挂段级补丁；类型实参随后由调用方递归）。
+    /// @returns 整链坍缩时 true（链上实参随旧链结构一并消失，调用方不得
+    /// 再递归——否则会产生与坍缩补丁重叠的实参补丁）。
+    const auto mapClassType = [&](const jbsig::SigClassType& ct) -> bool {
+        const std::string_view prefix = ct.package_prefix;
+        std::string            full(prefix);
+        for (ca::usize i = 0; i < ct.segments.size(); ++i) {
+            if (i > 0) full.push_back('$');
+            full.append(ct.segments[i].name);
+        }
+        const std::string_view mapped = mapName(full);
+        if (mapped == full) return false;
+
+        const auto base = static_cast<ca::u32>(prefix.data() - signature.data());
+        if (ct.segments.size() == 1) {
+            // 扁平段链：全名命中整段替换（新名须为合法内部名）。
+            if (!jbsig::isValidSigInternalName(mapped)) return false;
+            patches.push_back(
+                SigPatch{base,
+                         static_cast<ca::u32>(prefix.size() + ct.segments[0].name.size()),
+                         std::string(mapped)});
+            changed = true;
+            return false;
+        }
+        // 真嵌套段链（canonical '.' 形态），全名命中后按新旧部件结构分派：
+        const auto oldParts = splitParts(full);
+        const auto newParts = splitParts(mapped);
+        if (newParts.size() == oldParts.size()) {
+            // 部件对齐：逐段替换，段链结构与链上类型实参原样保留。
+            ca::usize       part    = 0;
+            const ca::usize partEnd = patches.size();
+            for (ca::usize i = 0; i < ct.segments.size(); ++i) {
+                const jbsig::SigClassSegment& seg  = ct.segments[i];
+                const ca::usize             need = dollarCount(seg.name) + 1;
+                if (part + need > newParts.size()) {
+                    patches.resize(partEnd);
+                    return false;
+                }
+                std::string replacement(newParts[part]);
+                for (ca::usize k = 1; k < need; ++k) {
+                    replacement.push_back('$');
+                    replacement.append(newParts[part + k]);
+                }
+                const bool valid = (i == 0) ? jbsig::isValidSigInternalName(replacement)
+                                            : jbsig::isValidSigSimpleName(replacement);
+                if (!valid) {
+                    patches.resize(partEnd);
+                    return false;
+                }
+                if (i == 0) {
+                    patches.push_back(
+                        SigPatch{base,
+                                 static_cast<ca::u32>(prefix.size() + seg.name.size()),
+                                 std::move(replacement)});
+                }
+                else {
+                    patches.push_back(
+                        SigPatch{static_cast<ca::u32>(seg.name.data() - signature.data()),
+                                 static_cast<ca::u32>(seg.name.size()),
+                                 std::move(replacement)});
+                }
+                part += need;
+            }
+            changed = true;
+            return false;
+        }
+        // 部件数不一致：改名 pass 给嵌套类配的是独立新名（如 a/B$C → p/Q，
+        // 新类是扁平顶级类）。签名引用的二元名已整体易主——整链坍缩为扁平
+        // 新名（ASM SignatureRemapper 同语义）：补丁盖住前缀起到末段名止的
+        // 全部字节，链间 '.' 与各段实参（旧链外围参数化，扁平新类不再需要）
+        // 一并收编。新名须为合法内部名。
+        if (!jbsig::isValidSigInternalName(mapped)) return false;
+        const jbsig::SigClassSegment& last = ct.segments.back();
+        patches.push_back(
+            SigPatch{base,
+                     static_cast<ca::u32>((last.name.data() - signature.data()) +
+                                          last.name.size()) -
+                         base,
+                     std::string(mapped)});
+        changed = true;
+        return true;
+    };
+
+    /// 树遍历：类类型 → 映射 + 逐段实参递归（span 序与 libjbc 同款字节序）。
+    const auto walkType = [&](const jbsig::SigType& t, auto&& self) -> void {
+        if (t.kind != jbsig::SigType::Kind::Class) return;
+        if (mapClassType(t.class_type)) return;   // 整链坍缩：实参随旧链消失
+        for (const jbsig::SigClassSegment& seg : t.class_type.segments) {
+            for (const jbsig::SigTypeArg& arg : seg.type_args) {
+                if (arg.bound != nullptr) self(*arg.bound, self);
+            }
+        }
+    };
+
+    // 三形态显式解析 + move-unwrap（树含 unique_ptr 成员不可拷贝）。分派序
+    // 类 → 方法 → 字段与 parseSignature 自动分派等价（'(' 与 '['/'T' 起始
+    // 只可能是一种形态；'L' 起先试类、失败落字段；'<' 起类失败落方法）。
+    {
+        auto classSig = jbsig::parseClassSignature(signature);
+        if (classSig.is_ok()) {
+            auto cs = std::move(classSig).unwrap();
+            for (const jbsig::SigTypeParam& tp : cs.type_params) {
+                if (tp.class_bound != nullptr) walkType(*tp.class_bound, walkType);
+                for (const jbsig::SigType& ib : tp.interface_bounds) walkType(ib, walkType);
+            }
+            walkType(cs.superclass, walkType);
+            for (const jbsig::SigType& itf : cs.super_interfaces) walkType(itf, walkType);
+        }
+        else {
+            auto methodSig = jbsig::parseMethodSignature(signature);
+            if (methodSig.is_ok()) {
+                auto ms = std::move(methodSig).unwrap();
+                for (const jbsig::SigTypeParam& tp : ms.type_params) {
+                    if (tp.class_bound != nullptr) walkType(*tp.class_bound, walkType);
+                    for (const jbsig::SigType& ib : tp.interface_bounds) {
+                        walkType(ib, walkType);
+                    }
+                }
+                for (const jbsig::SigType& param : ms.params) walkType(param, walkType);
+                if (!ms.ret_void) walkType(ms.ret, walkType);
+                for (const jbsig::SigType& thrown : ms.throws_list) walkType(thrown, walkType);
+            }
+            else {
+                auto fieldSig = jbsig::parseFieldSignature(signature);
+                if (fieldSig.is_err()) return false;
+                walkType(std::move(fieldSig).unwrap(), walkType);
+            }
+        }
+    }
+
+    if (!changed) return false;
+    // 补丁按字节序前向拼装（坐标两两不相交：段名与其实参在字节上互不重叠）。
+    std::sort(patches.begin(), patches.end(),
+              [](const SigPatch& a, const SigPatch& b) { return a.offset < b.offset; });
+    out.clear();
+    out.reserve(signature.size());
+    ca::usize copied = 0;
+    for (const SigPatch& patch : patches) {
+        out.append(signature.substr(copied, patch.offset - copied));
+        out.append(patch.text);
+        copied = patch.offset + patch.length;
+    }
+    out.append(signature.substr(copied));
+    return true;
 }
 
 }   // namespace
@@ -158,22 +370,17 @@ std::string_view MemberRemapPlan::mapSignature(std::string_view signature) const
     const auto    hit = descCache_.find(key);
     if (hit != descCache_.end()) return pool_.str(hit->second);
 
-    std::string out;
-    out.reserve(signature.size());
-    for (ca::usize i = 0; i < signature.size(); ++i) {
-        const char c = signature[i];
-        out.push_back(c);
-        if (c != 'L') continue;
-        const ca::usize start = i + 1;
-        ca::usize       end   = start;
-        while (end < signature.size() && signature[end] != ';' && signature[end] != '<') end++;
-        if (end <= start) continue;
-        out.append(mapInternalName(signature.substr(start, end - start)));
-        i = end - 1;
-        // 泛型嵌套（`Lx<T;>` 形态）的类名已终止于 '<'；'>' 与参数段原样保留，
-        // 后续 `L...;` 由主循环继续处理。
+    // 结构化重写（libjbc jbc::type::signature 消费面，见 rewriteSignatureText）；
+    // 解析失败/未命中原样驻留返回（fail-closed 保真）。
+    std::string rewritten;
+    if (rewriteSignatureText(signature,
+                             [this](std::string_view name) { return mapInternalName(name); },
+                             rewritten)) {
+        const ca::u32 result = pool_.intern(rewritten);
+        descCache_.emplace(key, result);
+        return pool_.str(result);
     }
-    const ca::u32 result = pool_.intern(out);
+    const ca::u32 result = pool_.intern(signature);
     descCache_.emplace(key, result);
     return pool_.str(result);
 }
