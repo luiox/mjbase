@@ -986,6 +986,303 @@ TEST(FixPatternSimplifierTest, identityFamilyIdempotentOnSecondRun)
     EXPECT_EQ(fx.writeBack(), once);
 }
 
+// ── #44 long 族（规则 15–17：lxor/land/lshl 位级恒等式窗口。long 与 int
+// 族窗口形态差异：cat2 dup 家族无法完成 int 的中段栈重排（dup2_x2 下插仅
+// 2 槽、无 dup2_x4、swap 非法），窗口弃用 dup 舞蹈改为直排形态——lsub 按
+// "深减顶"排操作数，语义经真 JVM 硬验收对拍）──
+
+TEST(FixPatternSimplifierTest, halfAdderLongWindowFoldsToLadd)
+{
+    DomFixture fx("t/F", "m", "(J)J", 8, 2, [](Body& b) {
+        b.lload(0);
+        b.ldcLong(11111111111111LL);
+        b.op(Op::LAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::LSHL);
+        b.lload(0);
+        b.ldcLong(11111111111111LL);
+        b.op(Op::LXOR);
+        b.op(Op::LADD);
+        b.lreturn();
+    });
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 4u);
+    EXPECT_EQ(ops[0], Op::LLOAD);
+    EXPECT_TRUE(ops[1] == Op::LDC2_W || ops[1] == Op::LCONST_0 || ops[1] == Op::LCONST_1);
+    EXPECT_EQ(ops[2], Op::LADD);
+    EXPECT_EQ(ops[3], Op::LRETURN);
+}
+
+TEST(FixPatternSimplifierTest, borrowLongWindowFoldsToLsub)
+{
+    DomFixture fx("t/F", "m", "(J)J", 8, 2, [](Body& b) {
+        b.lload(0);
+        b.ldcLong(-22222222222222LL);
+        b.op(Op::LXOR);
+        b.lload(0);
+        b.op(Op::ICONST_M1);
+        b.op(Op::I2L);
+        b.op(Op::LXOR);
+        b.ldcLong(-22222222222222LL);
+        b.op(Op::LAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::LSHL);
+        b.op(Op::LSUB);
+        b.lreturn();
+    });
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 4u);
+    EXPECT_EQ(ops[0], Op::LLOAD);
+    EXPECT_TRUE(ops[1] == Op::LDC2_W || ops[1] == Op::LCONST_0 || ops[1] == Op::LCONST_1);
+    EXPECT_EQ(ops[2], Op::LSUB);
+    EXPECT_EQ(ops[3], Op::LRETURN);
+}
+
+TEST(FixPatternSimplifierTest, carryCancelLongWindowFoldsToLxor)
+{
+    DomFixture fx("t/F", "m", "(J)J", 8, 2, [](Body& b) {
+        b.lload(0);
+        b.ldcLong(33333333333333LL);
+        b.op(Op::LADD);
+        b.lload(0);
+        b.ldcLong(33333333333333LL);
+        b.op(Op::LAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::LSHL);
+        b.op(Op::LSUB);
+        b.lreturn();
+    });
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 4u);
+    EXPECT_EQ(ops[0], Op::LLOAD);
+    EXPECT_TRUE(ops[1] == Op::LDC2_W || ops[1] == Op::LCONST_0 || ops[1] == Op::LCONST_1);
+    EXPECT_EQ(ops[2], Op::LXOR);
+    EXPECT_EQ(ops[3], Op::LRETURN);
+}
+
+TEST(FixPatternSimplifierTest, halfAdderLongRejectsDifferentSlots)
+{
+    DomFixture fx("t/F", "m", "(JJ)J", 8, 4, [](Body& b) {
+        b.lload(0);
+        b.ldcLong(11111111111111LL);
+        b.op(Op::LAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::LSHL);
+        b.lload(2);
+        b.ldcLong(11111111111111LL);
+        b.op(Op::LXOR);
+        b.op(Op::LADD);
+        b.lreturn();
+    });
+    const Bytes before = fx.writeBack();
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).areAllPreserved());
+    EXPECT_EQ(fx.writeBack(), before);
+}
+
+TEST(FixPatternSimplifierTest, halfAdderLongRejectsDifferentConstants)
+{
+    DomFixture fx("t/F", "m", "(J)J", 8, 2, [](Body& b) {
+        b.lload(0);
+        b.ldcLong(11111111111111LL);
+        b.op(Op::LAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::LSHL);
+        b.lload(0);
+        b.ldcLong(-22222222222222LL);
+        b.op(Op::LXOR);
+        b.op(Op::LADD);
+        b.lreturn();
+    });
+    const Bytes before = fx.writeBack();
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).areAllPreserved());
+    EXPECT_EQ(fx.writeBack(), before);
+}
+
+// 移位量不是 1：long 借位恒等式不成立（<<2 不是借位<<1），窗口拒收。
+TEST(FixPatternSimplifierTest, borrowLongRejectsShiftAmountTwo)
+{
+    DomFixture fx("t/F", "m", "(J)J", 8, 2, [](Body& b) {
+        b.lload(0);
+        b.ldcLong(-22222222222222LL);
+        b.op(Op::LXOR);
+        b.lload(0);
+        b.op(Op::ICONST_M1);
+        b.op(Op::I2L);
+        b.op(Op::LXOR);
+        b.ldcLong(-22222222222222LL);
+        b.op(Op::LAND);
+        b.op(Op::ICONST_2);
+        b.op(Op::LSHL);
+        b.op(Op::LSUB);
+        b.lreturn();
+    });
+    const Bytes before = fx.writeBack();
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).areAllPreserved());
+    EXPECT_EQ(fx.writeBack(), before);
+}
+
+// 主项装载不同槽：~x 取错变量，恒等式不成立，窗口拒收。
+TEST(FixPatternSimplifierTest, borrowLongRejectsDifferentReloadSlot)
+{
+    DomFixture fx("t/F", "m", "(JJ)J", 8, 4, [](Body& b) {
+        b.lload(0);
+        b.ldcLong(-22222222222222LL);
+        b.op(Op::LXOR);
+        b.lload(2);
+        b.op(Op::ICONST_M1);
+        b.op(Op::I2L);
+        b.op(Op::LXOR);
+        b.ldcLong(-22222222222222LL);
+        b.op(Op::LAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::LSHL);
+        b.op(Op::LSUB);
+        b.lreturn();
+    });
+    const Bytes before = fx.writeBack();
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).areAllPreserved());
+    EXPECT_EQ(fx.writeBack(), before);
+}
+
+// 同方法两窗串联：15 → 17（新窗口各自自包含装载，栈效应互不依赖），
+// 不动点轮次逐窗收敛。
+TEST(FixPatternSimplifierTest, chainedLongStagesFold)
+{
+    DomFixture fx("t/F", "m", "(J)J", 8, 2, [](Body& b) {
+        b.lload(0);
+        b.ldcLong(11111111111111LL);
+        b.op(Op::LAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::LSHL);
+        b.lload(0);
+        b.ldcLong(11111111111111LL);
+        b.op(Op::LXOR);
+        b.op(Op::LADD);
+        b.lload(0);
+        b.ldcLong(-22222222222222LL);
+        b.op(Op::LADD);
+        b.lload(0);
+        b.ldcLong(-22222222222222LL);
+        b.op(Op::LAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::LSHL);
+        b.op(Op::LSUB);
+        b.op(Op::LADD);
+        b.lreturn();
+    });
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).changed());
+    const std::vector<Op> ops = opsOf(fx);
+    // lload 0; ldc2_w K1; ladd; lload 0; ldc2_w K2; lxor; ladd; lreturn
+    ASSERT_EQ(ops.size(), 8u);
+    EXPECT_EQ(ops[0], Op::LLOAD);
+    EXPECT_EQ(ops[2], Op::LADD);
+    EXPECT_EQ(ops[3], Op::LLOAD);
+    EXPECT_EQ(ops[5], Op::LXOR);
+    EXPECT_EQ(ops[6], Op::LADD);
+    EXPECT_EQ(ops[7], Op::LRETURN);
+}
+
+// ── #44 long 族（规则 18–19：x^x / x cmp x 恒 0；规则 20：转换族往返）──
+
+TEST(FixPatternSimplifierTest, loadLongDup2LxorFoldsToLconst0)
+{
+    DomFixture fx("t/F", "m", "(J)J", 4, 2, [](Body& b) {
+        b.lload(0);
+        b.op(Op::DUP2);
+        b.op(Op::LXOR);
+        b.lreturn();
+    });
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 2u);
+    EXPECT_EQ(ops[0], Op::LCONST_0);
+    EXPECT_EQ(ops[1], Op::LRETURN);
+}
+
+TEST(FixPatternSimplifierTest, loadLongDup2LcmpFoldsToIconst0)
+{
+    DomFixture fx("t/F", "m", "(J)I", 4, 2, [](Body& b) {
+        b.lload(0);
+        b.op(Op::DUP2);
+        b.op(Op::LCMP);
+        b.ireturn();
+    });
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 2u);
+    EXPECT_EQ(ops[0], Op::ICONST_0);
+    EXPECT_EQ(ops[1], Op::IRETURN);
+}
+
+// 常量头的 K^K 形态不在规则表内（18 仅收局部变量装载头）：保守保持原形。
+TEST(FixPatternSimplifierTest, constLedDup2LxorStaysUntouched)
+{
+    DomFixture fx("t/F", "m", "()J", 4, 0, [](Body& b) {
+        b.ldcLong(123456789012345LL);
+        b.op(Op::DUP2);
+        b.op(Op::LXOR);
+        b.lreturn();
+    });
+    const Bytes before = fx.writeBack();
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).areAllPreserved());
+    EXPECT_EQ(fx.writeBack(), before);
+}
+
+TEST(FixPatternSimplifierTest, i2lL2iRoundTripRemoved)
+{
+    DomFixture fx("t/F", "m", "(I)I", 3, 1, [](Body& b) {
+        b.iload(0);
+        b.op(Op::I2L);
+        b.op(Op::L2I);
+        b.ireturn();
+    });
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 2u);
+    EXPECT_EQ(ops[0], Op::ILOAD);
+    EXPECT_EQ(ops[1], Op::IRETURN);
+}
+
+// 逆序 l2i; i2l 是截断 + 符号扩展非恒等：必须保留原形。
+TEST(FixPatternSimplifierTest, l2iI2lRoundTripKept)
+{
+    DomFixture fx("t/F", "m", "(J)J", 4, 2, [](Body& b) {
+        b.lload(0);
+        b.op(Op::L2I);
+        b.op(Op::I2L);
+        b.lreturn();
+    });
+    const Bytes before = fx.writeBack();
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).areAllPreserved());
+    EXPECT_EQ(fx.writeBack(), before);
+}
+
+TEST(FixPatternSimplifierTest, longIdentityFamilyIdempotentOnSecondRun)
+{
+    DomFixture fx("t/F", "m", "(J)J", 8, 2, [](Body& b) {
+        b.lload(0);
+        b.ldcLong(-22222222222222LL);
+        b.op(Op::LXOR);
+        b.lload(0);
+        b.op(Op::ICONST_M1);
+        b.op(Op::I2L);
+        b.op(Op::LXOR);
+        b.ldcLong(-22222222222222LL);
+        b.op(Op::LAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::LSHL);
+        b.op(Op::LSUB);
+        b.lreturn();
+    });
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).changed());
+    const Bytes once = fx.writeBack();
+    EXPECT_TRUE(fx.run(mjbase::pass::FixPatternSimplifier{}).areAllPreserved());
+    EXPECT_EQ(fx.writeBack(), once);
+}
+
 // ── 注册面 ──
 
 TEST(FixPatternSimplifierTest, registeredByName)

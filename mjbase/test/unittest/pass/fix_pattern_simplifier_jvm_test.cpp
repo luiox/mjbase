@@ -135,6 +135,72 @@ std::shared_ptr<jbc::ir::ClassSession> buildProbeSession()
         b.op(Op::POP);
         b.op(Op::RETURN);
     });
+    // longHalfAdder(J)J：规则 15（(x^K)+((x&K)<<1) == x+K 的 long 形态，
+    // 先算进位项再算主项）。
+    addBodyMethod(*s, "longHalfAdder", "(J)J", 8, 2, [](Body& b) {
+        b.lload(0);
+        b.ldcLong(11111111111111LL);
+        b.op(Op::LAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::LSHL);
+        b.lload(0);
+        b.ldcLong(11111111111111LL);
+        b.op(Op::LXOR);
+        b.op(Op::LADD);
+        b.lreturn();
+    });
+    // longBorrow(J)J：规则 16（(x^K)-((K&~x)<<1) == x-K 的 long 形态，
+    // 主项先行、借位项压顶——lsub 深减顶）。
+    addBodyMethod(*s, "longBorrow", "(J)J", 8, 2, [](Body& b) {
+        b.lload(0);
+        b.ldcLong(-22222222222222LL);
+        b.op(Op::LXOR);
+        b.lload(0);
+        b.op(Op::ICONST_M1);
+        b.op(Op::I2L);
+        b.op(Op::LXOR);
+        b.ldcLong(-22222222222222LL);
+        b.op(Op::LAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::LSHL);
+        b.op(Op::LSUB);
+        b.lreturn();
+    });
+    // longCarryCancel(J)J：规则 17（(x+K)-((x&K)<<1) == x^K 的 long 形态，
+    // 主项先行、进位项压顶——lsub 深减顶）。
+    addBodyMethod(*s, "longCarryCancel", "(J)J", 8, 2, [](Body& b) {
+        b.lload(0);
+        b.ldcLong(33333333333333LL);
+        b.op(Op::LADD);
+        b.lload(0);
+        b.ldcLong(33333333333333LL);
+        b.op(Op::LAND);
+        b.op(Op::ICONST_1);
+        b.op(Op::LSHL);
+        b.op(Op::LSUB);
+        b.lreturn();
+    });
+    // longXorZero(J)J：规则 18（x ^ x == 0）。
+    addBodyMethod(*s, "longXorZero", "(J)J", 4, 2, [](Body& b) {
+        b.lload(0);
+        b.op(Op::DUP2);
+        b.op(Op::LXOR);
+        b.lreturn();
+    });
+    // longCmpSelf(J)I：规则 19（lcmp 自比恒 0）。
+    addBodyMethod(*s, "longCmpSelf", "(J)I", 4, 2, [](Body& b) {
+        b.lload(0);
+        b.op(Op::DUP2);
+        b.op(Op::LCMP);
+        b.ireturn();
+    });
+    // wideRoundTrip(I)I：规则 20（i2l; l2i 往返恒等）。
+    addBodyMethod(*s, "wideRoundTrip", "(I)I", 3, 1, [](Body& b) {
+        b.iload(0);
+        b.op(Op::I2L);
+        b.op(Op::L2I);
+        b.ireturn();
+    });
     return s;
 }
 
@@ -176,6 +242,25 @@ System.out.println(hb.jvm.FixProbe.bitwise());
 System.out.println(hb.jvm.FixProbe.xorZero(42));
 System.out.println(hb.jvm.FixProbe.xorZero(Integer.MIN_VALUE));
 hb.jvm.FixProbe.deadPair();
+System.out.println(hb.jvm.FixProbe.longHalfAdder(0L));
+System.out.println(hb.jvm.FixProbe.longHalfAdder(-1L));
+System.out.println(hb.jvm.FixProbe.longHalfAdder(Long.MIN_VALUE));
+System.out.println(hb.jvm.FixProbe.longHalfAdder(Long.MAX_VALUE));
+System.out.println(hb.jvm.FixProbe.longBorrow(123456789012345L));
+System.out.println(hb.jvm.FixProbe.longBorrow(-1L));
+System.out.println(hb.jvm.FixProbe.longBorrow(Long.MIN_VALUE));
+System.out.println(hb.jvm.FixProbe.longBorrow(Long.MAX_VALUE));
+System.out.println(hb.jvm.FixProbe.longCarryCancel(987654321098L));
+System.out.println(hb.jvm.FixProbe.longCarryCancel(-1L));
+System.out.println(hb.jvm.FixProbe.longCarryCancel(Long.MIN_VALUE));
+System.out.println(hb.jvm.FixProbe.longCarryCancel(Long.MAX_VALUE));
+System.out.println(hb.jvm.FixProbe.longXorZero(42L));
+System.out.println(hb.jvm.FixProbe.longXorZero(Long.MIN_VALUE));
+System.out.println(hb.jvm.FixProbe.longCmpSelf(0L));
+System.out.println(hb.jvm.FixProbe.longCmpSelf(-987654321098L));
+System.out.println(hb.jvm.FixProbe.wideRoundTrip(0));
+System.out.println(hb.jvm.FixProbe.wideRoundTrip(-5));
+System.out.println(hb.jvm.FixProbe.wideRoundTrip(Integer.MIN_VALUE));
 System.out.println("done");
 )JAVA";
 
