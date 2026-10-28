@@ -133,7 +133,15 @@ mjbase::spi::PreservedAnalyses ClassRenamer::run(mjbase::model::ResourceContaine
     updated.reserve(loaded.size());
 
     for (LoadedClass& entry : loaded) {
-        auto remapped = mjbase::asm_remapper::applyMemberRemapPlan(*entry.session, plan);
+        // 改写面 = bytecode + annotations + signatures（bytecodeAndMetadata）：
+        // 泛型 Signature、Runtime*（Type/Parameter）Annotations 与
+        // AnnotationDefault 的类引用随类映射结构化同步（B8 8.3 收口——
+        // libjbc sig_attr/type_annotation_attr 结构化面接线，签名走解析树
+        // span 手术、注解走 typed 属性模型；此前 bytecodeOnly 面签名/注解
+        // 引用滞留旧名的偏差注记随之退役）。反射字符串/资源面不开启（旧栈
+        // 口径一致，属其他批次语义）。
+        auto remapped = mjbase::asm_remapper::applyMemberRemapPlan(
+            *entry.session, plan, mjbase::asm_remapper::RemapPolicy::bytecodeAndMetadata());
         if (remapped.is_err()) {
             throw std::runtime_error(std::string("ClassRenamer: remap failed for '") +
                                      entry.name + "': " +
