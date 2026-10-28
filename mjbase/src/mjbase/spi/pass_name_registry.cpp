@@ -22,6 +22,7 @@
 #include "mjbase/pass/goto_rearranger.hpp"
 #include "mjbase/pass/identity_wrapper_inliner.hpp"
 #include "mjbase/pass/illegal_class_file_cleaner.hpp"
+#include "mjbase/pass/intrinsic_folding.hpp"
 #include "mjbase/pass/local_constant_propagation.hpp"
 #include "mjbase/pass/junk_code_inserter.hpp"
 #include "mjbase/pass/meta_info_remover.hpp"
@@ -411,6 +412,18 @@ PassNameRegistry makeDefaultRegistry()
         "ConstantPropagator",
         [] { return std::make_unique<mjbase::pass::ConstantPropagator>(); },
         "Propagate constant stores across blocks via def-use reaching definitions."));
+    // opt pass 波次（常量传播与折叠族收官件，#15）：intrinsic 常量折叠——
+    // 装箱/拆箱对整删、种子 Random 五窗 LCG 折叠（jstd::Random 权威面）、
+    // 白名单纯函数（Math.abs/max/min、String.length/isEmpty/substring、
+    // Integer/Long 位运算与格式化、parseInt/parseLong）实参全常量时折叠
+    // 为常量结果。窗内边界锚标签拒收；非 ASCII 常量串 length/substring
+    // 按码元语义修正（旧栈按字节错折）。标签：scope:method /
+    // action:rewrite / stability:opt-in（默认链不收，CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "IntrinsicFolding",
+        [] { return std::make_unique<mjbase::pass::IntrinsicFolding>(); },
+        "Fold intrinsic calls on constant arguments: box/unbox pairs, seeded "
+        "Random, pure JDK functions."));
     // opt pass 波次（标签布局族首件）：目标落在顺序后继前置边界的跳转
     // 消解——GOTO 整条删除（fallthrough 等价），条件跳原位换 POP/POP;POP
     // （分支与汇合重合，条件值被丢弃，弹宽对齐谓词元数）。方法末 GOTO
