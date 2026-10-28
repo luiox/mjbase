@@ -361,6 +361,20 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   单测（ldc/null 直达改写、多级暂存穿透、再写穿透、Param/汇合未知/
   白名单外/自赋值保留、幂等、注册面），全量 1940 绿（1937 过 + 3 既有
   跳过）。
+- [x] GlobalStrPoolOptimizer（#19 组员，scope:global）：容器内 String ldc
+  去重迁移进合成字符串池类，ldc 原位改写为「索引装载 + getStr(I) 调用」。
+  载体换会话合成模型——makeSession(NewClassSeed) → addMethod →
+  promote/append/lower 全合成 helper（旧栈 visit 流式 writer）；改写对
+  净栈中性（分支目标帧不漂移，无需帧再生），maxStack 每方法保守 +1（任一
+  点位中间深度不超旧 max+1）。偏离逐条申报：池类名改中性 `str/Pool`——
+  旧栈类名携带来源仓身份，公开面禁现；clinit 计数由旧栈无条件 SIPUSH
+  （n>32767 溢出）改 materializeIntConst 波段（ICONST/BIPUSH/SIPUSH/
+  LDC）；索引按遭遇序编号、clinit 字典序写出（对齐旧栈）。安全门：任一
+  类不可解析整件放弃（fail-closed），两阶段提交（改写批次与 helper 全部
+  序列化成功才动容器），池类已存在幂等整件跳过。9 单测（迁移与改写含
+  波段与 maxStack、跨类去重、非 String ldc 保留、非 class 资源忽略、
+  池类已存在/二轮幂等、不可解析放弃、无字符串不动、helper 形状、注册
+  面），全量 1949 绿（1946 过 + 3 既有跳过）。
 - [x] ArgumentArrayScalarizer 切片 1（#37 首件，scope:global）：装箱参数数组
   标量化——static ([Ljava/lang/Object;)R 候选（句柄钉死/同类同签名唯一门）
   被调方取参窗 [aload p; intConst i; aaload; checkcast Ti] 重建为直接局部

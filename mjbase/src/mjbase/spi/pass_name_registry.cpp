@@ -43,6 +43,7 @@
 #include "mjbase/pass/redundant_store_eliminater.hpp"
 #include "mjbase/pass/store_load_relay_eliminator.hpp"
 #include "mjbase/pass/ref_copy_propagator.hpp"
+#include "mjbase/pass/global_str_pool_optimizer.hpp"
 #include "mjbase/pass/redundant_invoke_remover.hpp"
 #include "mjbase/pass/argument_array_scalarizer.hpp"
 #include "mjbase/pass/static_field_default_inliner.hpp"
@@ -379,6 +380,12 @@ PassNameRegistry makeDefaultRegistry()
         [] { return std::make_unique<mjbase::pass::RefCopyPropagator>(); },
         "Rewrite aload reads with a single immutable-ref origin to the "
         "originating instruction."));
+    // opt pass 波次（#19）：容器内 String ldc 去重迁进合成字符串池，ldc 改索引+取值调用。
+    seed(reg.registerGlobalPass(
+        "GlobalStrPoolOptimizer",
+        [] { return std::make_unique<mjbase::pass::GlobalStrPoolOptimizer>(); },
+        "Relocate container String ldc constants into a synthesized pool "
+        "class and rewrite loads to indexed access."));
     // opt pass 波次（帧溯源面批次收口）：容器内纯方法的弹弃调用点整组摘除。
     seed(reg.registerGlobalPass(
         "RedundantInvokeRemover",
