@@ -350,6 +350,17 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   int）。12 单测（int/long/引用/快捷形删除、多读点/handler 读点保留、
   双侧锚拒收、不动点、幂等、注册面），全量 1930 绿（1927 过 + 3 既有
   跳过）。
+- [x] RefCopyPropagator（#19 首件，scope:method）：单来源不可变引用的
+  aload 原位改写为来源指令。载体换 traceOrigins 来源域——aload 读槽的单
+  来源事实即全路径同源，旧栈「方法级恰一次 store」预扫描门槛被来源单值
+  性内化（覆盖只宽不窄）；来源域穿透 aload，多级暂存槽链一步折叠到最初
+  来源（比旧栈更远）。白名单 = aload 族/ldc 引用常量（String/Class/
+  MethodType 同条目恒等）/aconst_null；Param 来源不可克隆且槽可再写不可
+  回指保守保留，aload→aload 即时折叠不可判（交 StoreLoadRelayEliminator
+  /RSE 族收敛）。双侧守卫 fail-closed，单遍无不动点（与旧栈一致）。10
+  单测（ldc/null 直达改写、多级暂存穿透、再写穿透、Param/汇合未知/
+  白名单外/自赋值保留、幂等、注册面），全量 1940 绿（1937 过 + 3 既有
+  跳过）。
 - [x] ArgumentArrayScalarizer 切片 1（#37 首件，scope:global）：装箱参数数组
   标量化——static ([Ljava/lang/Object;)R 候选（句柄钉死/同类同签名唯一门）
   被调方取参窗 [aload p; intConst i; aaload; checkcast Ti] 重建为直接局部
