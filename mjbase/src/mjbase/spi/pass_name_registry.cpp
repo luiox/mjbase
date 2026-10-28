@@ -8,6 +8,7 @@
 #include "mjbase/pass/char_arr_to_str_simplifier.hpp"
 #include "mjbase/pass/class_member_sorter.hpp"
 #include "mjbase/pass/class_renamer.hpp"
+#include "mjbase/pass/constant_propagator.hpp"
 #include "mjbase/pass/cons_jump_optimizer.hpp"
 #include "mjbase/pass/constant_switch_folder.hpp"
 #include "mjbase/pass/const_char_array_string_folder.hpp"
@@ -21,6 +22,7 @@
 #include "mjbase/pass/goto_rearranger.hpp"
 #include "mjbase/pass/identity_wrapper_inliner.hpp"
 #include "mjbase/pass/illegal_class_file_cleaner.hpp"
+#include "mjbase/pass/local_constant_propagation.hpp"
 #include "mjbase/pass/junk_code_inserter.hpp"
 #include "mjbase/pass/meta_info_remover.hpp"
 #include "mjbase/pass/nop_remover.hpp"
@@ -390,6 +392,25 @@ PassNameRegistry makeDefaultRegistry()
         "ConstantSwitchFolder",
         [] { return std::make_unique<mjbase::pass::ConstantSwitchFolder>(); },
         "Fold constant-selector switches into a goto to the resolved case target."));
+    // opt pass 波次（常量传播与折叠族，#15）：直线段常量槽位追踪——「常量
+    // 装载 + store」后同类装载原位物化为常量生产者，IINC 32 位回绕递推；
+    // 引用槽只认 ACONST_NULL；标签锚定/控制流边界整体清空（宁可漏折不可
+    // 折错）。槽族严格匹配为声明收紧（旧栈快捷形可产出 Verifier 非法替换）。
+    // 标签：scope:method / action:rewrite / stability:opt-in（默认链不收，
+    // CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "LocalConstantPropagation",
+        [] { return std::make_unique<mjbase::pass::LocalConstantPropagation>(); },
+        "Propagate constant stores to later same-kind loads within straight-line segments."));
+    // opt pass 波次（常量传播与折叠族，#15）：def-use 到达定义面——装载点
+    // 到达定义唯一且其 store 弹值定义为常量生产者时原位物化为常量。跨块
+    // 传播（分支/汇合不阻断），路径精确；store 前装载不误折（旧栈整方法
+    // 单 store 面的正确性修正）；截断集合整件跳过。标签：scope:method /
+    // action:rewrite / stability:opt-in（默认链不收，CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "ConstantPropagator",
+        [] { return std::make_unique<mjbase::pass::ConstantPropagator>(); },
+        "Propagate constant stores across blocks via def-use reaching definitions."));
     // opt pass 波次（标签布局族首件）：目标落在顺序后继前置边界的跳转
     // 消解——GOTO 整条删除（fallthrough 等价），条件跳原位换 POP/POP;POP
     // （分支与汇合重合，条件值被丢弃，弹宽对齐谓词元数）。方法末 GOTO
