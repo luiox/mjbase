@@ -18,7 +18,7 @@ namespace mjbase::pass::window_rule {
 /// （含放弃语义）、边界守卫、标签迁移、来源 pc 继承、右界优先的不动点轮次。
 /// libjbc CodeEditor 提供 insertBefore/erase/bindLabel 单个原语，但「替换一段
 /// 指令序列并保持边界语义」的组合没有一等入口——replaceWindow 是该组合的承载；
-/// libjbc 侧一等 replaceWindow 原语的缺口见模块地图挂账。
+/// 不下沉 libjbc（dev_plan 裁决：组合协议留 mjbase 侧，库不扩）。
 ///
 /// 语义复刻旧栈 PatternMatcher（mbase/asm/matcher）：窗口内不得有标签/行号/
 /// 帧边界（旧栈三者都是指令表成员，天然阻断相邻匹配）；替换拥有新节点或 clone，
