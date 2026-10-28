@@ -18,6 +18,7 @@
 #include "mjbase/pass/expression_simplifier.hpp"
 #include "mjbase/pass/fix_pattern_simplifier.hpp"
 #include "mjbase/pass/flattening_reverser.hpp"
+#include "mjbase/pass/goto_rearranger.hpp"
 #include "mjbase/pass/identity_wrapper_inliner.hpp"
 #include "mjbase/pass/illegal_class_file_cleaner.hpp"
 #include "mjbase/pass/junk_code_inserter.hpp"
@@ -398,6 +399,16 @@ PassNameRegistry makeDefaultRegistry()
         "RedundantJumpRemover",
         [] { return std::make_unique<mjbase::pass::RedundantJumpRemover>(); },
         "Remove jumps whose target is the immediately following instruction."));
+    // opt pass 波次（标签布局族第二件，消费 libjbc 0.4.19 moveRange）：GOTO
+    // 目标尾段整体搬移使 GOTO 退化为紧邻冗余跳转再按 fallthrough 等价整删
+    // ——无条件跳转次数 -1、方法尾布局改写（尾段提前、中间段沉底）。保守
+    // 门：前向非邻接、无 JSR/RET、异常表不触段/不触 GOTO 边界、目标单前驱、
+    // 段内无段外回边。标签：scope:method / action:rewrite / stability:opt-in
+    // （默认链不收，CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "GotoRearranger",
+        [] { return std::make_unique<mjbase::pass::GotoRearranger>(); },
+        "Move the goto target tail segment so the goto becomes an eliminable fallthrough."));
     // 批 A（容器级直写组首件）：全容器确定性类重命名。
     seed(reg.registerGlobalPass(
         "ClassRenamer", [] { return std::make_unique<mjbase::pass::ClassRenamer>(); },
