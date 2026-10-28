@@ -2,7 +2,6 @@
 
 #include "classfile_utf8.hpp"
 #include "jhasm/jhasm.hpp"
-#include "jblw/version/java_version.hpp"
 #include "jbc/core/reader.hpp"
 #include "mjbase/hierarchy/class_hierarchy.hpp"
 #include "mjbase/jasm/relaxed_verifier.hpp"
@@ -150,9 +149,8 @@ Result<JvmJasmClass> JvmJasmService::assemble(ca::str::Utf16StringRef sourceName
 {
     try {
         ::jhasm::compile::JvmCompilerOptions options;
-        options.version      = jblw::version::JavaVersion::classVersion(context.classMajorVersion,
-                                                                   context.classMinorVersion);
-        options.maxStackHint = context.maxStackHint;
+        options.majorVersion = static_cast<ca::u16>(context.classMajorVersion);
+        options.minorVersion = static_cast<ca::u16>(context.classMinorVersion);
 
         std::optional<HierarchyInheritanceChecker> checker;
         if (context.hierarchy) {

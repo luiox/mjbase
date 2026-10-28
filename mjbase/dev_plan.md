@@ -392,6 +392,23 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   改 u1 标准形（13 字节）+ 断言偏移随行；3 个读回断言块接 slotPayload-
   Bytes（typed 重编码去槽头/Raw 直取/源 span 兜底）。全量 1810 绿
   （1807 过 + 3 既有跳过）。
+- [x] libjhasm 0.0.1 → 0.3.2 升级适配（迁移批 B3）：jasm 文本面后端整体
+  换道——libjhasm 0.3.x 自身已把后端切到 libjbc（0.3.0，libjblw/
+  libjbytecode 在 jhasm 内退役），本仓随之去 libjblw 直连依赖。
+  消费面适配：JvmCompilerOptions 改 majorVersion/minorVersion u16 直载
+  （去 jblw JavaVersion 与 maxStackHint，后者零消费方实证删除）；
+  requireconfs 去 libjblw/libjbytecode 嵌套钉定五条；unittest 闭包去
+  libjblw；libjbytecode 保持本仓直连（relaxed_verifier analysis 面，
+  P6 收口）。升级途中两笔 libjhasm 端修复合入（PR #2/#4，0.3.1/0.3.2）：
+  strict 复核三面（字段操作此前按方法描述符 ')' 定位字段描述符恒跳过、
+  虚分发接收者/ARETURN 缺名字互赋）+ anewarray 落码组件口径（JVMS 6.5，
+  javac 同形；打印按 CP 原样，两种既有形态均可往返，JDK21 加载验证过）。
+  包安装陷阱记录：xmake git 直连包的源缓存（~/.xmake/cache/packages/
+  .../source）不随 install 清理——换版本重装若源缓存滞留旧 checkout，
+  会静默按旧源构建（"Invalid type descriptor" 假阳性即此）， purge 须
+  同时清 cache/packages 源缓存与 packages 安装目录。全量 1810 绿
+  （1807 过 + 3 既有跳过）。遗留：帧发射缺异常处理器入口帧（libjhasm
+  issue #3，独立切片）；relaxed_verifier 改写 jhasm::analyze 归 P6。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。
