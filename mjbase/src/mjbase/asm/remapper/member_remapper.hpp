@@ -15,8 +15,15 @@
 ///   StackMapTable Object 校验类型、局部变量表描述符。
 /// - reflectionStrings：常量反射成员查找的名称字符串改写（线性状态机 +
 ///   alias 数据流快照）。
-/// - annotations：Runtime{Visible,Invisible}Annotations 与 AnnotationDefault。
-/// - signatures：类/字段/方法 Signature 属性与 LVTT 签名。
+/// - annotations：Runtime{Visible,Invisible}Annotations、Runtime{Visible,
+///   Invisible}TypeAnnotations（类/字段/方法/Record 组件/Code 嵌套全挂载
+///   点）、Runtime{Visible,Invisible}ParameterAnnotations 与 AnnotationDefault
+///   ——全部经 typed 属性模型结构化改写（B8 8.3 收口，Raw 字节手术与
+///   copy-through 缺口退役；type_path/target_info 不承载类名，随 typed 体
+///   往返保真）。
+/// - signatures：类/字段/方法 Signature 属性与 LVTT 签名——签名文本经
+///   计划的结构化签名面改写（libjbc jbc::type::signature 解析树 span 手术，
+///   非字符串替换）。
 ///
 /// 资源面（jar 内 URI 换名、META-INF/services、MANIFEST、映射文本）在
 /// resource_remapper。

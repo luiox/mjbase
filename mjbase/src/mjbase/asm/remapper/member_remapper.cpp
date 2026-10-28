@@ -17,6 +17,7 @@ namespace mjbase::asm_remapper {
 namespace {
 
 using jbc::core::AnnotationsAttr;
+using jbc::core::AnnotationDefaultAttr;
 using jbc::core::AttrBody;
 using jbc::core::AttrKind;
 using jbc::core::AttrSlot;
@@ -34,10 +35,11 @@ using jbc::core::ModuleAttr;
 using jbc::core::ModuleMainClassAttr;
 using jbc::core::NestHostAttr;
 using jbc::core::NestMembersAttr;
+using jbc::core::ParameterAnnotationsAttr;
 using jbc::core::PermittedSubclassesAttr;
-using jbc::core::RawAttr;
 using jbc::core::RecordAttr;
 using jbc::core::StackMapTableAttr;
+using jbc::core::TypeAnnotationsAttr;
 using jbc::ir::ClassSession;
 using jbc::ir::CodeUnit;
 using jbc::ir::Insn;
@@ -189,79 +191,16 @@ inline bool annotationsSlotName(const ClassFile& cf, const AttrSlot& slot) noexc
            cf.cp.utf8Equals(slot.nameCp, "RuntimeInvisibleAnnotations");
 }
 
-// ── 原始属性字节读写 ────────────────────────────────────────────────────────
-
-/// @brief 原始属性字节的顺序读取器（越界即置 fail，返回值回退 0）。
-struct ByteReader
+inline bool typeAnnotationsSlotName(const ClassFile& cf, const AttrSlot& slot) noexcept
 {
-    const ca::u8* data   = nullptr;
-    ca::usize     size   = 0;
-    ca::usize     pos    = 0;
-    bool          failed = false;
-
-    explicit ByteReader(const std::vector<ca::u8>& bytes) noexcept
-        : data(bytes.data())
-        , size(bytes.size())
-    {}
-
-    ca::u32 u8()
-    {
-        if (failed || pos + 1 > size) {
-            failed = true;
-            return 0;
-        }
-        return data[pos++];
-    }
-    ca::u32 u16()
-    {
-        if (failed || pos + 2 > size) {
-            failed = true;
-            return 0;
-        }
-        const ca::u32 v = (static_cast<ca::u32>(data[pos]) << 8) | data[pos + 1];
-        pos += 2;
-        return v;
-    }
-    ca::u32 u32()
-    {
-        if (failed || pos + 4 > size) {
-            failed = true;
-            return 0;
-        }
-        const ca::u32 v = (static_cast<ca::u32>(data[pos]) << 24) |
-                          (static_cast<ca::u32>(data[pos + 1]) << 16) |
-                          (static_cast<ca::u32>(data[pos + 2]) << 8) |
-                          static_cast<ca::u32>(data[pos + 3]);
-        pos += 4;
-        return v;
-    }
-    /// @brief 切出 n 字节并前移（嵌套载荷透传用）。
-    std::string_view view(ca::usize n)
-    {
-        if (failed || pos + n > size) {
-            failed = true;
-            return {};
-        }
-        const std::string_view slice(reinterpret_cast<const char*>(data + pos), n);
-        pos += n;
-        return slice;
-    }
-};
-
-inline void putU8(std::vector<ca::u8>& out, ca::u32 v)
-{
-    out.push_back(static_cast<ca::u8>(v));
+    return cf.cp.utf8Equals(slot.nameCp, "RuntimeVisibleTypeAnnotations") ||
+           cf.cp.utf8Equals(slot.nameCp, "RuntimeInvisibleTypeAnnotations");
 }
 
-inline void putU16(std::vector<ca::u8>& out, ca::u32 v)
+inline bool parameterAnnotationsSlotName(const ClassFile& cf, const AttrSlot& slot) noexcept
 {
-    out.push_back(static_cast<ca::u8>(v >> 8));
-    out.push_back(static_cast<ca::u8>(v));
-}
-
-inline void putUtf8Index(std::vector<ca::u8>& out, ClassFile& cf, std::string_view text)
-{
-    putU16(out, findOrAddUtf8(cf, text));
+    return cf.cp.utf8Equals(slot.nameCp, "RuntimeVisibleParameterAnnotations") ||
+           cf.cp.utf8Equals(slot.nameCp, "RuntimeInvisibleParameterAnnotations");
 }
 
 // ── 改写上下文（CP 常量改写 + 会话 intern 收口）────────────────────────────
@@ -508,9 +447,85 @@ bool remapAnnotationSlots(const RemapCtx& ctx, std::vector<AttrSlot>& attrs)
     return changed;
 }
 
-// ── 原始属性重写（未建模属性按字节结构解析重拼）────────────────────────────
+/// @brief 重映射一个 TypeAnnotationsAttr 体（Runtime{Visible,Invisible}-
+///        TypeAnnotations，typed 全结构模型——B8 8.3 收口，此前整族 copy-through）。
+///
+/// 类名承载位与 libjbc jbc::ir::type_annotation_attr（design §32.7）同口径：
+/// 注解类型描述符（typeIndexCp，字段描述符形态）与元素值（'c' 类字面量、
+/// 'e' 枚举类型名、'@' 嵌套、'[' 数组）走计划映射面；**type_path 与
+/// target_info 不承载类名**（type_path 是泛型结构定位 (kind,index) 序列、
+/// supertype/throws 下标指向类级 interfaces/Exceptions 表的 CP Class 条目），
+/// 随 typed 体往返原样保留，后者随类头/Exceptions 的条目级重指向自动跟随，
+/// 不在此改写。解码失败的槽保守保真（fail-closed，不产半截改写）。
+bool remapTypeAnnotationBody(const RemapCtx& ctx, TypeAnnotationsAttr& body)
+{
+    bool changed = false;
+    for (auto& ta : body.annotations) {
+        if (ctx.cf.cp.isUtf8(ta.typeIndexCp)) {
+            const std::string oldText     = cpToUtf8(ctx.cf.cp.utf8Of(ta.typeIndexCp));
+            const std::string_view mapped = ctx.plan.mapFieldDescriptor(oldText);
+            if (mapped != oldText) {
+                ta.typeIndexCp = findOrAddUtf8(ctx.cf, mapped);
+                changed        = true;
+            }
+        }
+        for (auto& kv : ta.values) {
+            changed |= remapElemValue(ctx, kv.second);
+        }
+    }
+    return changed;
+}
+
+/// @brief 重映射属性槽表中全部 Runtime{Visible,Invisible}TypeAnnotations。
+bool remapTypeAnnotationSlots(const RemapCtx& ctx, std::vector<AttrSlot>& attrs)
+{
+    bool changed = false;
+    for (AttrSlot& slot : attrs) {
+        if (!typeAnnotationsSlotName(ctx.cf, slot)) continue;
+        auto* body = decodedAttrOf<TypeAnnotationsAttr>(ctx.cf, slot);
+        if (body == nullptr) continue;
+        if (remapTypeAnnotationBody(ctx, *body)) {
+            (void)slot.mutate();
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+/// @brief 重映射方法级 Runtime{Visible,Invisible}ParameterAnnotations
+///        （typed ParameterAnnotationsAttr 行模型——B8 8.3 收口，此前整族
+///        copy-through）。逐参数行的注解走与成员级同一条结构化手术路径
+///        （remapAnnotation）；行数与行序是方法描述符参数数的结构事实，
+///        原样保留。解码失败的槽保守保真。
+bool remapParameterAnnotationSlots(const RemapCtx& ctx, std::vector<AttrSlot>& attrs)
+{
+    bool changed = false;
+    for (AttrSlot& slot : attrs) {
+        if (!parameterAnnotationsSlotName(ctx.cf, slot)) continue;
+        auto* body = decodedAttrOf<ParameterAnnotationsAttr>(ctx.cf, slot);
+        if (body == nullptr) continue;
+        bool attrChanged = false;
+        for (auto& row : body->parameters) {
+            for (auto& annotation : row) {
+                attrChanged |= remapAnnotation(ctx, annotation);
+            }
+        }
+        if (attrChanged) {
+            (void)slot.mutate();
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+// ── Signature 与元数据属性（typed 体手术）────────────────────────────────────
 
 /// @brief Signature 属性（typed SignatureAttr，u2 utf8）：泛型签名重映射。
+///
+/// 签名文本经计划的结构化签名面改写（mapSignature → libjbc
+/// jbc::type::signature 解析树 span 手术，B8 8.3 收口；扫描式字符串替换
+/// 退役），类/字段/方法三级挂载点共用本入口（形态无关：结构化重写按签名
+/// 自身语法分派）。解析失败的签名原样保真（清洗归 IllegalSignatureRemover）。
 bool remapSignatureAttr(const RemapCtx& ctx, std::vector<AttrSlot>& attrs)
 {
     AttrSlot* slot = findAttrByName(ctx.cf, attrs, "Signature");
@@ -739,98 +754,17 @@ bool remapInnerClassesAttr(const RemapCtx& ctx)
     return true;
 }
 
-// ── 原始注解字节重写（AnnotationDefault；Record 嵌套注解已迁 typed 面）─────
-
-bool rewriteRawAnnotation(const RemapCtx& ctx, ByteReader& r, std::vector<ca::u8>& out);
-
-/// @brief 重写一个原始 element_value；返回是否变化。
-bool rewriteRawElemValue(const RemapCtx& ctx, ByteReader& r, std::vector<ca::u8>& out)
-{
-    const ca::u32 tag = r.u8();
-    putU8(out, tag);
-    bool changed = false;
-    switch (static_cast<char>(tag)) {
-    case 'e': {
-        const ca::u32          typeName  = r.u16();
-        const ca::u32          constName = r.u16();
-        const std::string text          = cpToUtf8(ctx.cf.cp.utf8Of(typeName));
-        const std::string_view mapped   = ctx.plan.mapFieldDescriptor(text);
-        if (mapped != text) {
-            putUtf8Index(out, ctx.cf, mapped);
-            changed = true;
-        }
-        else {
-            putU16(out, typeName);
-        }
-        putU16(out, constName);
-        break;
-    }
-    case 'c': {
-        const ca::u32          cpIdx  = r.u16();
-        const std::string text        = cpToUtf8(ctx.cf.cp.utf8Of(cpIdx));
-        const std::string_view mapped = ctx.plan.mapFieldDescriptor(text);
-        if (mapped != text) {
-            putUtf8Index(out, ctx.cf, mapped);
-            changed = true;
-        }
-        else {
-            putU16(out, cpIdx);
-        }
-        break;
-    }
-    case '@':
-        changed |= rewriteRawAnnotation(ctx, r, out);
-        break;
-    case '[': {
-        const ca::u32 count = r.u16();
-        putU16(out, count);
-        for (ca::u32 i = 0; i < count && !r.failed; ++i) {
-            changed |= rewriteRawElemValue(ctx, r, out);
-        }
-        break;
-    }
-    default:
-        putU16(out, r.u16());   // 常量载荷原样
-        break;
-    }
-    return changed;
-}
-
-/// @brief 重写一个原始 annotation 结构（type 描述符 + 元素对）。
-bool rewriteRawAnnotation(const RemapCtx& ctx, ByteReader& r, std::vector<ca::u8>& out)
-{
-    const ca::u32          typeCp = r.u16();
-    const ca::u32          count  = r.u16();
-    const std::string      text   = cpToUtf8(ctx.cf.cp.utf8Of(typeCp));
-    const std::string_view mapped = ctx.plan.mapFieldDescriptor(text);
-    bool                   changed = false;
-    if (mapped != text) {
-        putUtf8Index(out, ctx.cf, mapped);
-        changed = true;
-    }
-    else {
-        putU16(out, typeCp);
-    }
-    putU16(out, count);
-    for (ca::u32 i = 0; i < count && !r.failed; ++i) {
-        putU16(out, r.u16());   // 元素名原样
-        changed |= rewriteRawElemValue(ctx, r, out);
-    }
-    return changed;
-}
-
-/// @brief AnnotationDefault 属性（单个 element_value 原始形态）。
+/// @brief AnnotationDefault 属性（typed AnnotationDefaultAttr，单 element_value）：
+///        注解类型方法默认值重映射。B8 8.3 收口：Raw 字节手术（ByteReader 重拼）
+///        退役，typed 体经公开解码入口读出后复用 remapElemValue 同一条结构化
+///        路径（'c'/'e'/'@'/'[' 全 tag 递归）；typed 解码拒绝的形状保守保真。
 bool remapAnnotationDefaultAttr(const RemapCtx& ctx, MemberInfo& method)
 {
     AttrSlot* slot = findAttrByName(ctx.cf, method.attrs, "AnnotationDefault");
     if (slot == nullptr) return false;
-    auto* raw = decodedAttrOf<RawAttr>(ctx.cf, *slot);
-    if (raw == nullptr || raw->bytes().empty()) return false;
-    std::vector<ca::u8> out;
-    ByteReader          r(raw->bytes());
-    const bool          changed = rewriteRawElemValue(ctx, r, out);
-    if (r.failed || !changed) return false;
-    raw->bytes() = std::move(out);
+    auto* attr = decodedAttrOf<AnnotationDefaultAttr>(ctx.cf, *slot);
+    if (attr == nullptr) return false;
+    if (!remapElemValue(ctx, attr->defaultValue)) return false;
     (void)slot->mutate();
     return true;
 }
@@ -857,9 +791,10 @@ std::string_view recordComponentMappedName(const RemapCtx& ctx, std::string_view
 ///
 /// 组件名映射走字段/访问器规则择一，描述符走字段描述符映射面；组件嵌套
 /// 属性表逐槽手术——Signature 槽走 typed 签名手术、Runtime{Visible,Invisible}
-/// Annotations 槽走 typed 注解手术（与成员级同一条路径），其余嵌套属性槽
-/// 不触碰走 copy-through。typed 体经公开解码入口读出；组件或嵌套命中才置脏
-/// （makeNew 置 New / 嵌套槽 mutate），全 miss 原样。
+/// Annotations 与 Runtime{Visible,Invisible}TypeAnnotations 槽走 typed 注解
+/// 手术（与成员级同一条路径），其余嵌套属性槽不触碰走 copy-through。typed
+/// 体经公开解码入口读出；组件或嵌套命中才置脏（makeNew 置 New / 嵌套槽
+/// mutate），全 miss 原样。
 bool remapRecordAttr(const RemapCtx& ctx, std::string_view owner, bool signatures,
                      bool annotations)
 {
@@ -885,7 +820,10 @@ bool remapRecordAttr(const RemapCtx& ctx, std::string_view owner, bool signature
             changed                = true;
         }
         if (signatures) changed |= remapSignatureAttr(ctx, component.attrs);
-        if (annotations) changed |= remapAnnotationSlots(ctx, component.attrs);
+        if (annotations) {
+            changed |= remapAnnotationSlots(ctx, component.attrs);
+            changed |= remapTypeAnnotationSlots(ctx, component.attrs);
+        }
     }
     if (!changed) return false;
     *slot = AttrSlot::makeNew(slot->nameCp, std::move(body));
@@ -1360,10 +1298,14 @@ bool remapReflectionNames(const RemapCtx& ctx, CodeUnit& code, std::string_view 
 
 // ── 方法体与嵌套代码元数据 ──────────────────────────────────────────────────
 
-/// @brief Code 嵌套元数据：StackMapTable Object 校验类型 + LVT/LVTT 描述符。
+/// @brief Code 嵌套元数据：StackMapTable Object 校验类型 + LVT/LVTT 描述符 +
+///        Runtime{Visible,Invisible}TypeAnnotations（B8 8.3 收口，此前嵌套
+///        TypeAnnotation 槽 copy-through）。
 ///
-/// lower 布局未变走 copy-through 会把嵌套直改吞掉——有改即显式把 Code 槽
-/// 置脏，强制 writeClass 重编码（嵌套槽状态随行）。
+/// LVTT 行的 descriptor 列承载字段形态签名，走计划的结构化签名面
+/// （mapSignature）；LVT 行走描述符映射面。lower 布局未变走 copy-through 会
+/// 把嵌套直改吞掉——有改即显式把 Code 槽置脏，强制 writeClass 重编码
+///（嵌套槽状态随行）。
 bool remapCodeMetadata(const RemapCtx& ctx, MemberInfo& method)
 {
     AttrSlot* codeSlot = findAttrByName(ctx.cf, method.attrs, "Code");
@@ -1395,6 +1337,13 @@ bool remapCodeMetadata(const RemapCtx& ctx, MemberInfo& method)
                                                            : ctx.plan.mapFieldDescriptor(text);
                     if (mapped != text) row.descCp = findOrAddUtf8(ctx.cf, mapped);
                 }
+                changed = true;
+            }
+        }
+        else if (typeAnnotationsSlotName(ctx.cf, nested)) {
+            auto* ta = decodedAttrOf<TypeAnnotationsAttr>(ctx.cf, nested);
+            if (ta != nullptr && remapTypeAnnotationBody(ctx, *ta)) {
+                (void)nested.mutate();
                 changed = true;
             }
         }
@@ -1582,7 +1531,10 @@ Result<bool, RemapError> applyMemberRemapPlan(jbc::ir::ClassSession&      sessio
         changed |= remapModuleAttrs(ctx);
     }
     if (policy.signatures) changed |= remapSignatureAttr(ctx, cf.attrs);
-    if (policy.annotations) changed |= remapAnnotationSlots(ctx, cf.attrs);
+    if (policy.annotations) {
+        changed |= remapAnnotationSlots(ctx, cf.attrs);
+        changed |= remapTypeAnnotationSlots(ctx, cf.attrs);
+    }
     if (policy.bytecode || policy.signatures || policy.annotations) {
         changed |= remapRecordAttr(ctx, oldOwner, policy.signatures, policy.annotations);
     }
@@ -1615,7 +1567,10 @@ Result<bool, RemapError> applyMemberRemapPlan(jbc::ir::ClassSession&      sessio
             }
         }
         if (policy.signatures) changed |= remapSignatureAttr(ctx, field.attrs);
-        if (policy.annotations) changed |= remapAnnotationSlots(ctx, field.attrs);
+        if (policy.annotations) {
+            changed |= remapAnnotationSlots(ctx, field.attrs);
+            changed |= remapTypeAnnotationSlots(ctx, field.attrs);
+        }
     }
 
     for (ca::usize methodIdx = 0; methodIdx < cf.methods.size(); ++methodIdx) {
@@ -1643,6 +1598,8 @@ Result<bool, RemapError> applyMemberRemapPlan(jbc::ir::ClassSession&      sessio
         if (policy.signatures) changed |= remapSignatureAttr(ctx, method.attrs);
         if (policy.annotations) {
             changed |= remapAnnotationSlots(ctx, method.attrs);
+            changed |= remapTypeAnnotationSlots(ctx, method.attrs);
+            changed |= remapParameterAnnotationSlots(ctx, method.attrs);
             changed |= remapAnnotationDefaultAttr(ctx, method);
         }
         auto bodyResult =

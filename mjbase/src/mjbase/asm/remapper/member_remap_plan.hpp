@@ -79,8 +79,15 @@ public:
     /// @brief 重写方法描述符中内嵌的对象类型（缓存语义同上）。
     std::string_view mapMethodDescriptor(std::string_view desc) const;
 
-    /// @brief 重写泛型签名文本：逐个 `L...;`（遇 `<` 泛型嵌套不停）类名重映射，
-    ///        其余字符原样保留。
+    /// @brief 重写泛型签名文本：结构化签名树读写（libjbc
+    ///        jbc::type::signature 消费面）。解析树定界全部类类型出现，逐类
+    ///        类型按完整内部名查映射，段级 span 替换拼装（扁平段链跨 '$'
+    ///        形态整段替换；真嵌套段链部件对齐逐段替换，新名部件数不一致
+    ///        即整链坍缩为扁平新名——改名 pass 给嵌套类配独立新名，二元名
+    ///        整体易主，链间 '.' 与链上实参随旧链结构一并消失）；类型实参/
+    ///        通配符/数组维度/类型变量原样保留。解析失败原样返回输入
+    ///        （fail-closed，畸形签名清洗归 IllegalSignatureRemover）。单遍
+    ///        同时替换语义：每个类类型出现只查一次映射，映射结果不再串链。
     std::string_view mapSignature(std::string_view signature) const;
 
     /// @brief 精确字段规则查询；退化匹配描述符为空的 owner/name 规则。

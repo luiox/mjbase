@@ -22,6 +22,7 @@
 #include "jbc/core/reader.hpp"
 #include "jbc/core/writer.hpp"
 #include "jbc/ir/units.hpp"
+#include "jbc/type/signature.hpp"
 
 #include "mjbase/analysis/alias_analysis.hpp"
 #include "mjbase/asm/remapper/mapping_remapper.hpp"
@@ -94,7 +95,8 @@ std::unique_ptr<ClassFile> applyAndReparse(jbc::ir::ClassSession&               
 {
     auto applied = mjbase::asm_remapper::applyMemberRemapPlan(session, plan, policy);
     if (applied.is_err()) {
-        ADD_FAILURE() << "applyMemberRemapPlan err";
+        ADD_FAILURE() << "applyMemberRemapPlan err "
+                      << mjbase::asm_remapper::to_string(std::move(applied).unwrap_err());
         return nullptr;
     }
     Bytes out = writeClassOf(session);
@@ -199,6 +201,37 @@ std::string annotationElementText(ClassFile& cf, const jbc::core::AttrSlot& slot
     const jbc::core::AnnotationsAttr* body = annotationsOf(cf, slot);
     if (body == nullptr || body->annos.empty() || body->annos[0].values.empty()) return {};
     return utf8TextOf(cf, body->annos[0].values[0].second.cp);
+}
+
+/// @brief 解码 TypeAnnotations 槽（Runtime{Visible,Invisible}TypeAnnotations）。
+const jbc::core::TypeAnnotationsAttr* typeAnnotationsOf(ClassFile&                 cf,
+                                                        const jbc::core::AttrSlot& slot)
+{
+    if (!slot.decoded()) {
+        if (cf.decodeAttr(const_cast<jbc::core::AttrSlot&>(slot)).is_err()) return nullptr;
+    }
+    return ca::core::tag_cast::cast<const jbc::core::TypeAnnotationsAttr>(slot.peek());
+}
+
+/// @brief 解码 ParameterAnnotations 槽（Runtime{Visible,Invisible}Parameter-
+///        Annotations）。
+const jbc::core::ParameterAnnotationsAttr* parameterAnnotationsOf(
+    ClassFile& cf, const jbc::core::AttrSlot& slot)
+{
+    if (!slot.decoded()) {
+        if (cf.decodeAttr(const_cast<jbc::core::AttrSlot&>(slot)).is_err()) return nullptr;
+    }
+    return ca::core::tag_cast::cast<const jbc::core::ParameterAnnotationsAttr>(slot.peek());
+}
+
+/// @brief 解码 AnnotationDefault 槽。
+const jbc::core::AnnotationDefaultAttr* annotationDefaultOf(ClassFile&                 cf,
+                                                            const jbc::core::AttrSlot& slot)
+{
+    if (!slot.decoded()) {
+        if (cf.decodeAttr(const_cast<jbc::core::AttrSlot&>(slot)).is_err()) return nullptr;
+    }
+    return ca::core::tag_cast::cast<const jbc::core::AnnotationDefaultAttr>(slot.peek());
 }
 
 /// @brief 解码属性槽并按 tag_cast 取 typed SignatureAttr；不匹配返回空。
@@ -2140,6 +2173,298 @@ TEST(MjAsmRemapperTest, containerRemapSkipsUnplannedUnreadableClasses)
     EXPECT_EQ("pkg/NewName", classTextOf(*cf, cf->thisClass));
     // 计划外畸形类原样保留。
     EXPECT_TRUE(classResourceOf(container.getResource("pkg/Broken.class")) != nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// B8 8.3 收口：结构化签名 / TypeAnnotation / 参数注解 / AnnotationDefault 面。
+// ---------------------------------------------------------------------------
+
+// 结构化签名映射的文法边界：解析树定界 + 段级 span 手术（非字符串替换）。
+TEST(MjAsmRemapperTest, structuredSignatureMappingFollowsGrammarBoundaries)
+{
+    MemberRemapPlan plan;
+    plan.mapClass("Old", "New");
+
+    // 扁平段链：全名命中整段替换；数组维度原样。
+    EXPECT_EQ("LNew;", std::string(plan.mapSignature("LOld;")));
+    EXPECT_EQ("[LNew;", std::string(plan.mapSignature("[LOld;")));
+    EXPECT_EQ("[[LNew;", std::string(plan.mapSignature("[[LOld;")));
+
+    // 通配符三形态：无界 '*' 原样、上界/下界载荷内的类类型参与改写。
+    EXPECT_EQ("LList<*>;", std::string(plan.mapSignature("LList<*>;")));
+    EXPECT_EQ("LList<+LNew;>;", std::string(plan.mapSignature("LList<+LOld;>;")));
+    EXPECT_EQ("LList<-LNew;>;", std::string(plan.mapSignature("LList<-LOld;>;")));
+
+    // 泛型嵌套：类型实参内的类类型参与改写，类型变量原样。
+    EXPECT_EQ("Ljava/util/List<LNew;>;",
+              std::string(plan.mapSignature("Ljava/util/List<LOld;>;")));
+    EXPECT_EQ("Ljava/util/List<Ljava/util/List<LNew;>;>;",
+              std::string(plan.mapSignature("Ljava/util/List<Ljava/util/List<LOld;>;>;")));
+    EXPECT_EQ("Ljava/util/Map<TK;LNew;>;",
+              std::string(plan.mapSignature("Ljava/util/Map<TK;LOld;>;")));
+
+    // 方法形态：参数/throws 参与改写，类型参数段名与类型变量原样。
+    EXPECT_EQ("<T:Ljava/lang/Object;>([LNew;)TT;^LNew;",
+              std::string(plan.mapSignature("<T:Ljava/lang/Object;>([LOld;)TT;^LOld;")));
+    EXPECT_EQ("(LNew;)V", std::string(plan.mapSignature("(LOld;)V")));
+
+    // 畸形输入 fail-closed：解析失败原样返回（清洗归 IllegalSignatureRemover）。
+    EXPECT_EQ("LOld", std::string(plan.mapSignature("LOld")));
+    EXPECT_EQ("LOld;;", std::string(plan.mapSignature("LOld;;")));
+
+    // 单遍同时替换语义：A→B 与 B→C 并存时新名不被串链。
+    MemberRemapPlan chain;
+    chain.mapClass("A", "B");
+    chain.mapClass("B", "C");
+    EXPECT_EQ("LB;LC;", std::string(chain.mapSignature("LA;LB;")));
+}
+
+// 真嵌套段链（'.' 形态）与扁平 '$' 形态的等价改写；部件数不一致不命中。
+TEST(MjAsmRemapperTest, structuredSignatureHandlesNestedSegmentChains)
+{
+    MemberRemapPlan nested;
+    nested.mapClass("pkg/Box$Item", "pkg/NewBox$NewItem");
+
+    // '$' 扁平形态：全名命中整段替换（跨形态写满单段）。
+    EXPECT_EQ("Lpkg/NewBox$NewItem;", std::string(nested.mapSignature("Lpkg/Box$Item;")));
+    // '.' 段链形态：部件对齐替换，段链结构与类型实参原样保留。
+    EXPECT_EQ("Lpkg/NewBox<TT;>.NewItem;",
+              std::string(nested.mapSignature("Lpkg/Box<TT;>.Item;")));
+    // 类型实参里嵌套的段链类类型（深一层）同样命中。
+    EXPECT_EQ("Ljava/util/List<Lpkg/NewBox<TT;>.NewItem;>;",
+              std::string(nested.mapSignature("Ljava/util/List<Lpkg/Box<TT;>.Item;>;")));
+    // 更深段链（两段后缀）：部件逐段消费。类型实参用合法类型变量
+    // （'T' 前缀 + 标识符，如 TT;/TV;——裸 UU; 不是合法实参形态）。
+    MemberRemapPlan deep;
+    deep.mapClass("pkg/Box$Item$Leaf", "pkg/NB$NI$NL");
+    EXPECT_EQ("Lpkg/NB<TT;>.NI<TV;>.NL;",
+              std::string(deep.mapSignature("Lpkg/Box<TT;>.Item<TV;>.Leaf;")));
+
+    // 部件数不一致：真嵌套链全名命中即整链坍缩为新扁平名（改名 pass 给嵌套
+    // 类配独立新名的语义），链间 '.' 与链上实参随旧链结构一并消失。
+    MemberRemapPlan flatten;
+    flatten.mapClass("pkg/Box$Item", "pkg/Flatten");
+    EXPECT_EQ("Lpkg/Flatten;",
+              std::string(flatten.mapSignature("Lpkg/Box<TT;>.Item;")));
+    EXPECT_EQ("Lpkg/Flatten;", std::string(flatten.mapSignature("Lpkg/Box$Item;")));
+}
+
+// B8 8.3 收口：Runtime*TypeAnnotations / ParameterAnnotations / AnnotationDefault
+// 的结构化改写（typed 模型；type_path/target_info/行结构保真 + 门控面 copy-through）。
+TEST(MjAsmRemapperTest, remapsTypeAndParameterAnnotationsStructurally)
+{
+    // 类级 RVTA：supertype 目标（0x10 指向 superclass）+ type_path 深入实参。
+    test::TypeAnnotationSpec classTa;
+    classTa.targetType = 0x10;
+    classTa.index16    = 0xFFFF;   // superclass_case
+    classTa.typePath   = {{3, 0}}; // 深入第一个类型实参（嵌套 type_path）
+    classTa.anno.type  = "LOldTa;";
+    classTa.anno.pairs.push_back({"v", test::ElementValue{'c', "LOldType;"}});
+
+    test::FieldSpec field;
+    field.access    = 0x0001;
+    field.name      = "oldField";
+    field.desc      = "Ljava/util/List;";
+    field.signature = "Ljava/util/List<+LOldType;>;";   // 通配符上界
+    // 字段级 RVTA（0x13 空载荷）+ 注解数组元素值（'[' 两项 'c'）。
+    test::TypeAnnotationSpec fieldTa;
+    fieldTa.anno.type = "LOldArrTa;";
+    test::ElementValue arr;
+    arr.tag = '[';
+    arr.items.push_back(test::ElementValue{'c', "LOldType;"});
+    arr.items.push_back(test::ElementValue{'c', "LOldOther;"});
+    fieldTa.anno.pairs.push_back({"arr", arr});
+    field.typeAnnotations.push_back(fieldTa);
+
+    // 方法级 RVTA：返回类型位（0x14）+ '@' 嵌套注解元素值。
+    test::AnnotationSpec innerAnno;
+    innerAnno.type = "LOldInner;";
+    innerAnno.pairs.push_back({"c", test::ElementValue{'c', "LOldOther;"}});
+    test::TypeAnnotationSpec retTa;
+    retTa.targetType = 0x14;
+    retTa.anno.type  = "LOldRetTa;";
+    test::ElementValue nestedElem;
+    nestedElem.tag    = '@';
+    nestedElem.nested = &innerAnno;
+    retTa.anno.pairs.push_back({"n", nestedElem});
+
+    // 方法体：INSTANCEOF 在 pc 2（ALOAD 0x19 0x00 两字节先行），Code 嵌套 RVTA
+    // 以 0x43 指向它。
+    test::TypeAnnotationSpec codeTa;
+    codeTa.targetType = 0x43;
+    codeTa.index16    = 2;
+    codeTa.anno.type  = "LOldCodeTa;";
+
+    test::MethodSpec use;
+    use.access    = 0x0009;
+    use.name      = "use";
+    use.desc      = "(Ljava/lang/Object;)V";
+    use.maxLocals = 1;
+    use.emit      = [](test::CodeEmit& e) {
+        e.varInsn(jbc::core::Op::ALOAD, 0);
+        e.typeInsn(jbc::core::Op::INSTANCEOF, "OldType");
+        e.op(jbc::core::Op::POP);
+        e.op(jbc::core::Op::RETURN);
+    };
+    use.typeAnnotations.push_back(retTa);
+    use.codeTypeAnnotations.push_back(codeTa);
+    // 参数注解 RVPA：两行（行 1 一条注解带 'c' 值；行 2 空 = 无注解参数）。
+    test::AnnotationSpec paramAnno;
+    paramAnno.type = "LOldParamAnno;";
+    paramAnno.pairs.push_back({"c", test::ElementValue{'c', "LOldType;"}});
+    use.parameterAnnotations.push_back({paramAnno});
+    use.parameterAnnotations.push_back({});
+
+    // AnnotationDefault：注解类型方法的 'c' 默认值。
+    test::MethodSpec withDefault;
+    withDefault.access               = 0x0009;
+    withDefault.name                 = "withDefault";
+    withDefault.desc                 = "()V";
+    withDefault.hasAnnotationDefault = true;
+    withDefault.annotationDefault    = test::ElementValue{'c', "LOldType;"};
+
+    ClassBytesBuilder b("OldOwner");
+    b.addClassTypeAnnotation(classTa);
+    b.addField(field);
+    const Bytes bytes = b.assemble({use, withDefault});
+
+    MemberRemapPlan plan;
+    plan.mapClass("OldOwner", "NewOwner");
+    plan.mapClass("OldType", "NewType");
+    plan.mapClass("OldOther", "NewOther");
+    plan.mapClass("OldTa", "NewTa");
+    plan.mapClass("OldArrTa", "NewArrTa");
+    plan.mapClass("OldInner", "NewInner");
+    plan.mapClass("OldRetTa", "NewRetTa");
+    plan.mapClass("OldCodeTa", "NewCodeTa");
+    plan.mapClass("OldParamAnno", "NewParamAnno");
+
+    // 面一：bytecodeOnly —— 注解/签名族全部 copy-through（门控面）。
+    {
+        auto session = openSession(bytes);
+        ASSERT_TRUE(session != nullptr);
+        auto cf = applyAndReparse(*session, plan, RemapPolicy::bytecodeOnly());
+        ASSERT_TRUE(cf != nullptr);
+        MemberInfo* f = fieldOf(*cf, "oldField");
+        ASSERT_TRUE(f != nullptr);
+        EXPECT_EQ("Ljava/util/List<+LOldType;>;", signatureOf(*cf, f->attrs));
+        const jbc::core::AttrSlot* taSlot =
+            slotOf(*cf, f->attrs, "RuntimeVisibleTypeAnnotations");
+        ASSERT_TRUE(taSlot != nullptr);
+        const auto* taBody = typeAnnotationsOf(*cf, *taSlot);
+        ASSERT_TRUE(taBody != nullptr);
+        ASSERT_EQ(1U, taBody->annotations.size());
+        EXPECT_EQ("LOldArrTa;", utf8TextOf(*cf, taBody->annotations[0].typeIndexCp));
+    }
+
+    // 面二：bytecodeAndMetadata —— 全族结构化改写。
+    {
+        auto session = openSession(bytes);
+        ASSERT_TRUE(session != nullptr);
+        auto cf = applyAndReparse(*session, plan, RemapPolicy::bytecodeAndMetadata());
+        ASSERT_TRUE(cf != nullptr);
+
+        // 类级：target_type/supertype/type_path 保真 + type_index/元素值改写。
+        const jbc::core::AttrSlot* classTaSlot =
+            slotOf(*cf, cf->attrs, "RuntimeVisibleTypeAnnotations");
+        ASSERT_TRUE(classTaSlot != nullptr);
+        const auto* classTaBody = typeAnnotationsOf(*cf, *classTaSlot);
+        ASSERT_TRUE(classTaBody != nullptr);
+        ASSERT_EQ(1U, classTaBody->annotations.size());
+        {
+            const auto& ta = classTaBody->annotations[0];
+            EXPECT_EQ(0x10, ta.targetType);
+            EXPECT_EQ(0xFFFFU, ta.supertypeIndex);
+            ASSERT_EQ(1U, ta.typePath.size());
+            EXPECT_EQ(3, ta.typePath[0].kind);
+            EXPECT_EQ(0, ta.typePath[0].typeArgIndex);
+            EXPECT_EQ("LNewTa;", utf8TextOf(*cf, ta.typeIndexCp));
+            ASSERT_EQ(1U, ta.values.size());
+            EXPECT_EQ("LNewType;", utf8TextOf(*cf, ta.values[0].second.cp));
+        }
+
+        // 字段：泛型签名通配符边界 + 注解数组元素逐项改写。
+        MemberInfo* f = fieldOf(*cf, "oldField");
+        ASSERT_TRUE(f != nullptr);
+        EXPECT_EQ("Ljava/util/List<+LNewType;>;", signatureOf(*cf, f->attrs));
+        const jbc::core::AttrSlot* fTaSlot =
+            slotOf(*cf, f->attrs, "RuntimeVisibleTypeAnnotations");
+        ASSERT_TRUE(fTaSlot != nullptr);
+        {
+            const auto* body = typeAnnotationsOf(*cf, *fTaSlot);
+            ASSERT_TRUE(body != nullptr);
+            ASSERT_EQ(1U, body->annotations.size());
+            EXPECT_EQ(0x13, body->annotations[0].targetType);
+            EXPECT_EQ("LNewArrTa;", utf8TextOf(*cf, body->annotations[0].typeIndexCp));
+            ASSERT_EQ(1U, body->annotations[0].values.size());
+            const auto& arrVal = body->annotations[0].values[0].second;
+            ASSERT_EQ(2U, arrVal.items.size());
+            EXPECT_EQ("LNewType;", utf8TextOf(*cf, arrVal.items[0].cp));
+            EXPECT_EQ("LNewOther;", utf8TextOf(*cf, arrVal.items[1].cp));
+        }
+
+        // 方法：返回位 type annotation（嵌套 '@'）+ 参数注解行结构 + Code 嵌套。
+        MemberInfo* m = methodOf(*cf, "use");
+        ASSERT_TRUE(m != nullptr);
+        const jbc::core::AttrSlot* mTaSlot =
+            slotOf(*cf, m->attrs, "RuntimeVisibleTypeAnnotations");
+        ASSERT_TRUE(mTaSlot != nullptr);
+        {
+            const auto* body = typeAnnotationsOf(*cf, *mTaSlot);
+            ASSERT_TRUE(body != nullptr);
+            ASSERT_EQ(1U, body->annotations.size());
+            EXPECT_EQ(0x14, body->annotations[0].targetType);
+            EXPECT_EQ("LNewRetTa;", utf8TextOf(*cf, body->annotations[0].typeIndexCp));
+            ASSERT_EQ(1U, body->annotations[0].values.size());
+            const auto& nestedVal = body->annotations[0].values[0].second;
+            ASSERT_TRUE(nestedVal.nested != nullptr);
+            EXPECT_EQ("LNewInner;", utf8TextOf(*cf, nestedVal.nested->typeCp));
+            ASSERT_EQ(1U, nestedVal.nested->values.size());
+            EXPECT_EQ("LNewOther;",
+                      utf8TextOf(*cf, nestedVal.nested->values[0].second.cp));
+        }
+        const jbc::core::AttrSlot* paSlot =
+            slotOf(*cf, m->attrs, "RuntimeVisibleParameterAnnotations");
+        ASSERT_TRUE(paSlot != nullptr);
+        {
+            const auto* body = parameterAnnotationsOf(*cf, *paSlot);
+            ASSERT_TRUE(body != nullptr);
+            // 行结构保真：两行（行 2 空 = 无注解参数），行 1 注解全改写。
+            ASSERT_EQ(2U, body->parameters.size());
+            ASSERT_EQ(1U, body->parameters[0].size());
+            EXPECT_EQ("LNewParamAnno;",
+                      utf8TextOf(*cf, body->parameters[0][0].typeCp));
+            ASSERT_EQ(1U, body->parameters[0][0].values.size());
+            EXPECT_EQ("LNewType;",
+                      utf8TextOf(*cf, body->parameters[0][0].values[0].second.cp));
+            EXPECT_EQ(0U, body->parameters[1].size());
+        }
+        const jbc::core::CodeAttr* code = codeOf(*cf, *m);
+        ASSERT_TRUE(code != nullptr);
+        const jbc::core::AttrSlot* codeTaSlot =
+            slotOf(*cf, code->attrs, "RuntimeVisibleTypeAnnotations");
+        ASSERT_TRUE(codeTaSlot != nullptr);
+        {
+            const auto* body = typeAnnotationsOf(*cf, *codeTaSlot);
+            ASSERT_TRUE(body != nullptr);
+            ASSERT_EQ(1U, body->annotations.size());
+            EXPECT_EQ(0x43, body->annotations[0].targetType);
+            EXPECT_EQ(2U, body->annotations[0].offset);   // instanceof pc 保真
+            EXPECT_EQ("LNewCodeTa;", utf8TextOf(*cf, body->annotations[0].typeIndexCp));
+        }
+
+        // AnnotationDefault：typed 体 'c' 默认值改写。
+        MemberInfo* d = methodOf(*cf, "withDefault");
+        ASSERT_TRUE(d != nullptr);
+        const jbc::core::AttrSlot* adSlot = slotOf(*cf, d->attrs, "AnnotationDefault");
+        ASSERT_TRUE(adSlot != nullptr);
+        {
+            const auto* body = annotationDefaultOf(*cf, *adSlot);
+            ASSERT_TRUE(body != nullptr);
+            EXPECT_EQ('c', body->defaultValue.tag);
+            EXPECT_EQ("LNewType;", utf8TextOf(*cf, body->defaultValue.cp));
+        }
+    }
 }
 
 }   // namespace

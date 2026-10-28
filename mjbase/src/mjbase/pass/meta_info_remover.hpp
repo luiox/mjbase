@@ -37,9 +37,10 @@ namespace mjbase::pass {
 /// 组件 AttrSlot 表可达，MetaInfoRemover 对组件的 Runtime{Visible,Invisible}-
 /// Annotations 与 TypeAnnotations 槽做与成员级同规则的槽内清空，父 Record 槽
 /// 连带置脏驱动重编码）；Runtime{Visible,Invisible}Parameter-
-/// Annotations 的槽内过滤（SpecificAnnotationRemover——libjbc 未建模该族
-/// （解码 Raw），按 JVMS 4.7.20 布局做二进制级条目摘除，布局不符整槽保守
-/// 跳过；MetaInfoRemover 对该两槽是整槽摘除，照常落面）。余下 code 目标
+/// Annotations 的槽内过滤（SpecificAnnotationRemover——typed
+/// ParameterAnnotationsAttr 行模型为主（libjbc 0.4.16+ 建模），typed 解码
+/// 拒绝的 legacy 形状按 JVMS 4.7.18/4.7.19 布局做二进制级条目摘除（Raw 兜底），
+/// 布局不符整槽保守跳过；MetaInfoRemover 对该两槽是整槽摘除，照常落面）。余下 code 目标
 /// 形态普通注解是 JVMS 无此挂载点的非缺口（树读入即弃，新载体如出现保持
 /// 原样）。
 ///
@@ -281,9 +282,10 @@ public:
 /// 描述符封闭集（origincloud/jvavx/jetbrains/skidonium 族，含旧表原样重复
 /// 条目——集合语义，重复不影响判定）。查类/字段/方法的 visible/invisible
 /// 注解两族；不查 type annotation。参数注解两槽（Runtime{Visible,Invisible}-
-/// ParameterAnnotations）同谓词槽内过滤——libjbc 未建模该族（解码 Raw），
-/// 按 JVMS 4.7.20 布局做二进制级条目摘除：部分摘除留槽（参数行数与行序
-/// 保持）、全空摘槽、布局不符/截尾整槽保守保持原样。
+/// ParameterAnnotations）同谓词槽内过滤——typed ParameterAnnotationsAttr
+/// 行模型为主（libjbc 0.4.16+ 建模），typed 解码拒绝的 legacy 形状按 JVMS
+/// 4.7.18/4.7.19 布局做二进制级条目摘除（Raw 兜底）：部分摘除留槽（参数行数
+/// 与行序保持）、全空摘槽、布局不符/截尾整槽保守保持原样。
 ///
 /// @par 标签
 /// - `scope:class`
