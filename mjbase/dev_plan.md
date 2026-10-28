@@ -375,6 +375,18 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   波段与 maxStack、跨类去重、非 String ldc 保留、非 class 资源忽略、
   池类已存在/二轮幂等、不可解析放弃、无字符串不动、helper 形状、注册
   面），全量 1949 绿（1946 过 + 3 既有跳过）。
+- [x] ArithmeticInsnRearranger + CommutativeOperatorReorder（#20 重排家族，
+  scope:method）：连续 xLOAD;CONST;可交换算术;xSTORE 四元块按槽首现序
+  分组重排 + 交换律链常量操作数后移（常量相邻供折叠命中）。载体换
+  CodeDom 快照 + 原位内容置换（srcPc 随内容搬移；旧栈 clone 重建整列，
+  可观测指令序一致）；快捷形与泛形同判（旧栈 tree 规范化等价面），常量
+  面补 LDC_W/LDC2_W。标签守卫 fail-closed：窗口/链起点与内部任一边界
+  锚标签拒收（锚点随重排漂移改变入边落点；旧栈列表语义对链首锚点隐式
+  重锚，不复刻）；旧栈头注宣称的 getstatic I/J 操作数实现未覆盖，以
+  旧实现代码为准不补声称面；入口门槛按指令计数（旧栈含标签/行号列表
+  项）。17 单测（跨槽归组 int/long/快捷形、单块/同槽恒等/幂等、锚标签
+  守卫两件、非交换律/异宽操作数/形状不齐保留、常量后移 int/long、注册
+  面），全量 1966 绿（1963 过 + 3 既有跳过）。
 - [x] ArgumentArrayScalarizer 切片 1（#37 首件，scope:global）：装箱参数数组
   标量化——static ([Ljava/lang/Object;)R 候选（句柄钉死/同类同签名唯一门）
   被调方取参窗 [aload p; intConst i; aaload; checkcast Ti] 重建为直接局部

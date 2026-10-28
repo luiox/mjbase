@@ -44,6 +44,7 @@
 #include "mjbase/pass/store_load_relay_eliminator.hpp"
 #include "mjbase/pass/ref_copy_propagator.hpp"
 #include "mjbase/pass/global_str_pool_optimizer.hpp"
+#include "mjbase/pass/insn_rearranger.hpp"
 #include "mjbase/pass/redundant_invoke_remover.hpp"
 #include "mjbase/pass/argument_array_scalarizer.hpp"
 #include "mjbase/pass/static_field_default_inliner.hpp"
@@ -386,6 +387,16 @@ PassNameRegistry makeDefaultRegistry()
         [] { return std::make_unique<mjbase::pass::GlobalStrPoolOptimizer>(); },
         "Relocate container String ldc constants into a synthesized pool "
         "class and rewrite loads to indexed access."));
+    // opt pass 波次（#20）：连续算术赋值块按槽首现序分组重排。
+    seed(reg.registerMethodPass(
+        "ArithmeticInsnRearranger",
+        [] { return std::make_unique<mjbase::pass::ArithmeticInsnRearranger>(); },
+        "Regroup consecutive commutative arithmetic assignment blocks by slot."));
+    // opt pass 波次（#20）：交换律链常量后移，常量相邻供折叠命中。
+    seed(reg.registerMethodPass(
+        "CommutativeOperatorReorder",
+        [] { return std::make_unique<mjbase::pass::CommutativeOperatorReorder>(); },
+        "Move constants to the tail of commutative arithmetic chains."));
     // opt pass 波次（帧溯源面批次收口）：容器内纯方法的弹弃调用点整组摘除。
     seed(reg.registerGlobalPass(
         "RedundantInvokeRemover",
