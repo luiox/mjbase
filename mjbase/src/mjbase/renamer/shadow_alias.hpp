@@ -183,6 +183,54 @@ private:
 ca::core::Result<ShadowGenStats, std::string> generateMechanicalShadowNames(
     const mjbase::model::ResourceContainer& container, ShadowAliasTable& table);
 
+/// @brief 重载拆分生成统计（同名异签方法的视图层拆分）。
+struct OverloadSplitStats
+{
+    ca::usize splitGroups     = 0;  ///< 拆分的同名异签组数（size >= 2）
+    ca::usize assignedMethods = 0;  ///< 本次新分配 shadow 的方法数
+    ca::usize keptEntries     = 0;  ///< 已登记 shadow 保留（幂等）的方法数
+};
+
+/// @brief 重载拆分（视图层同名异签拆分）：同名方法组内按描述符字典序生成
+///        `<原名>$N`（N 从 0 递增）shadow 名，写入本表；字节码零写入。
+///
+/// - 拆分键 = (owner, name, desc) 成员三元组（表既有身份键；descriptor 只
+///   参与组内排序与反查，不另立身份面）；
+/// - 仅 size >= 2 的同名组拆分（无重载不分配）；组内已登记成员保留原
+///   shadow（幂等：重跑不换号、手工名不丢），其占用照常参与撞号递增；
+/// - 候选名撞车（类内真实方法/字段名或作用域内已分配 shadow）→ N 递增
+///   跳过；
+/// - 类按内部名字典序、组按名字字典序、组内按 desc 字典序——容器遍历序
+///   无关，jar 不变重跑输出不变；
+/// - 收尾 backfillTokens()（同机械占位名生成；随机源失败 → Err，已分配
+///   编号保留在表，重跑幂等补号）。
+ca::core::Result<OverloadSplitStats, std::string> generateOverloadSplitShadows(
+    const mjbase::model::ResourceContainer& container, ShadowAliasTable& table);
+
+/// @brief 批量 shadow 指派规格（成员身份 = (owner, name, desc) 三元组）。
+struct OverloadShadowSpec
+{
+    std::string owner;    ///< class 内部名
+    std::string name;     ///< 方法真名
+    std::string desc;     ///< 方法描述符
+    std::string shadow;   ///< 指派 shadow 名（显示层）
+};
+
+/// @brief 批量方法 shadow 指派（单事务）：全部规格校验通过才落表，任一
+///        失败整批拒绝（表零改动，Result 单错误通道）。返回本次新登记条数。
+///
+/// 校验面（逐规格）：
+/// - owner 类存在且声明了 (name, desc) 方法，否则 Err；
+/// - shadow 非空；撞类内真实方法/字段名 → Err；撞作用域内其它成员的
+///   shadow（含同批先到规格）→ Err；
+/// - 成员已登记同 shadow → 幂等保留（不计新增）；已登记异 shadow → Err
+///   （先到者优先契约；撤销/重算走 clear/prune 重建路径）；
+/// - 同成员重复规格：同 shadow 视为一条，异 shadow → Err。
+/// 落表后收尾 backfillTokens()（随机源失败 → Err）。
+ca::core::Result<ca::usize, std::string> assignMethodShadowBatch(
+    const mjbase::model::ResourceContainer& container, ShadowAliasTable& table,
+    const std::vector<OverloadShadowSpec>& specs);
+
 /// @brief 清理指向不存在符号的过期条目（jar 变更后的失配容忍补充，--shadow-prune）。
 ///
 /// 存在性口径：class 条目要求容器内有该 class；成员条目要求 owner 存在且
