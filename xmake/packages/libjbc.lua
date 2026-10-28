@@ -55,6 +55,8 @@ package("libjbc")
     add_versions("0.4.18", "ada334a12ec875ca9769bd5d4cb1f7e8494d2ebd") -- PR #11 合入 main 头  2026-10-26
     -- 0.4.19 = CodeDom/CodeEditor move-range 指令区间整体搬移原语（PR #12）+ self-version 对齐（PR #13，main 合入头）。
     add_versions("0.4.19", "81173a0f724f9d0369fedc1d5f95ccd14fe984a4") -- PR #13 合入 main 头  2026-10-28
+    -- 0.4.20 = cp_resolve CP 读侧语义解析原语三件：resolveMemberRef / resolveHandleCp / resolveClassName（PR #14）+ 版本对齐（PR #15，main 合入头）。
+    add_versions("0.4.20", "16ca1076ea9e9bfc7aaed2debab9b15a248d0e56") -- PR #15 合入 main 头  2026-10-28
 
     -- 嵌套 libca 直接钉到本仓单源版本：项目内联包定义不吃 deps.lua 的
     -- **.libca / libjbc.libca requireconfs（实测），裸声明会解析到仓库最新版
