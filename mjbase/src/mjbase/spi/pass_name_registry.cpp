@@ -42,6 +42,7 @@
 #include "mjbase/pass/dead_side_effect_free_call_remover.hpp"
 #include "mjbase/pass/redundant_store_eliminater.hpp"
 #include "mjbase/pass/store_load_relay_eliminator.hpp"
+#include "mjbase/pass/ref_copy_propagator.hpp"
 #include "mjbase/pass/redundant_invoke_remover.hpp"
 #include "mjbase/pass/argument_array_scalarizer.hpp"
 #include "mjbase/pass/static_field_default_inliner.hpp"
@@ -372,6 +373,12 @@ PassNameRegistry makeDefaultRegistry()
         [] { return std::make_unique<mjbase::pass::StoreLoadRelayEliminator>(); },
         "Erase adjacent store/load relay pairs whose store definition has "
         "exactly one use: the adjacent reload."));
+    // opt pass 波次（#19）：单来源不变引用的 aload 原位改写为来源指令。
+    seed(reg.registerMethodPass(
+        "RefCopyPropagator",
+        [] { return std::make_unique<mjbase::pass::RefCopyPropagator>(); },
+        "Rewrite aload reads with a single immutable-ref origin to the "
+        "originating instruction."));
     // opt pass 波次（帧溯源面批次收口）：容器内纯方法的弹弃调用点整组摘除。
     seed(reg.registerGlobalPass(
         "RedundantInvokeRemover",
