@@ -745,5 +745,6 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   （产品线 promote 分流、CLI 批）出现真实需求时再排；ContainerClassSource
   的容器结构冻结前提靠借用契约约束（无运行期守卫），出现违约场景再评估是否
   引入代际校验。
+- [x] StaticArrayFieldScalarizer 引用元素类型精化（#39 切片 3，既有件增强）：读窗后继 checkcast 目标与写窗常量值静态型（ldc String→java/lang/String、ldc Class→java/lang/Class，aconst_null 不产证据）作为该下标元素型证据；同下标证据不一致 → 整字段放弃。声明元素为 java/lang/Object 时标量字段按证据精化（L<证据类>;），无证据下标沿用声明元素描述符；证据位上的 checkcast 与新字段描述符一致（CCE 被写值面证明不可达）随读窗折叠，与声明元素型一致的证据不登记、checkcast 保持保留原位语义。声明元素非 Object 时证据必须与声明一致（无层级查询面 fail-closed）——顺带收口既有改写面会把 ldc Class 写入 String[] 产出验证错误描述符的潜在缺口。锚标签门补 castId 位；窄化声明证据门 fail-closed；6 用例钉死精化/冲突放弃/Class 精化/写读证据冲突/窄化声明放弃/逐下标独立。全量 2000 绿。
 - 旧 matcher 与 tmatcher 的合并裁决（集成期）。
 - 层次图 `.ihc` 序列化：暂不迁，出现真实消费方再按 libjbc 会话模型重设计。
