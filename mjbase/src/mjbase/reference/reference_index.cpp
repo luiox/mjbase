@@ -6,6 +6,7 @@
 
 #include "jbc/core/attr_codec.hpp"
 #include "jbc/core/attribute.hpp"
+#include "jbc/core/cp_resolve.hpp"
 #include "jbc/ir/change_set.hpp"
 #include "jbc/ir/units.hpp"
 
@@ -21,6 +22,7 @@ namespace mjbase::reference {
 
 using jbc::core::AttrSlot;
 using jbc::core::CpTag;
+using jbc::core::HandleSem;
 using jbc::core::Op;
 using jbc::ir::SymbolId;
 using ConstSem    = jbc::ir::ClassSession::ConstSem;
@@ -111,45 +113,12 @@ bool isReflectionFieldLookup(std::string_view owner, std::string_view name, std:
            desc == "(Ljava/lang/String;)Ljava/lang/reflect/Field;";
 }
 
-// ── method handle（JVMS 4.4.8 reference_kind：1..4 字段、5..9 方法）──
-
-bool isMethodHandleKind(ca::u32 kind)
-{
-    return kind >= 5 && kind <= 9;
-}
-
-bool isFieldHandleKind(ca::u32 kind)
-{
-    return kind >= 1 && kind <= 4;
-}
-
-struct HandleSem
-{
-    std::string_view owner;
-    std::string_view name;
-    std::string_view desc;
-    ca::u32          kind        = 0;
-    bool             isInterface = false;
-};
-
-/// 解析 CP MethodHandle 条目（a = reference_kind，b = 成员 ref 索引）。
-bool resolveHandleCp(const jbc::core::ConstantPool& cp, ca::u32 cpIdx, HandleSem& out)
-{
-    out = {};
-    if (!cp.valid(cpIdx)) return false;
-    const auto& mh = cp.at(cpIdx);
-    if (mh.tag != CpTag::MethodHandle) return false;
-    if (!cp.valid(mh.b)) return false;
-    mjbase::analysis::MemberRefSem member;
-    if (!resolveMemberRef(cp, mh.b, member)) return false;
-    const auto& ref = cp.at(mh.b);
-    out.owner       = member.owner;
-    out.name        = member.name;
-    out.desc        = member.desc;
-    out.kind        = mh.a;
-    out.isInterface = ref.tag == CpTag::InterfaceMethodref;
-    return true;
-}
+// ── method handle（JVMS 4.4.8）─────────────────────────────────
+//
+// 句柄解析自 B8 8.4 起直用 libjbc cp_resolve 的严格口径原语
+//（jbc::core::resolveHandleCp：reference_kind ∉1..9 及 kind-tag 不匹配即
+// 解析失败），本文件不再持有本地副本。kind 域的 1..4 字段 / 5..9 方法分
+// 流语义见 appendHandleReference 的分支注。
 
 bool isLambdaMetafactoryHandle(const HandleSem& handle)
 {
@@ -887,7 +856,9 @@ void ReferenceIndex::indexMethodBody(jbc::ir::ClassSession&                sessi
         ownerRef.kind       = TypeReferenceKind::MethodHandleOwner;
         appendTypeReference(ownerRef, true);
 
-        if (isMethodHandleKind(handle.kind)) {
+        // kind 1..4 字段 / 5..9 方法（libjbc resolveHandleCp 已做域检与
+        // kind-tag 匹配，能到这里的 handle.kind 必在 1..9 内）。
+        if (handle.kind >= 5 && handle.kind <= 9) {
             MethodReference ref;
             ref.site        = site;
             ref.target      = MethodRefKey{iv(handle.owner), iv(handle.name), iv(handle.desc)};
@@ -896,7 +867,7 @@ void ReferenceIndex::indexMethodBody(jbc::ir::ClassSession&                sessi
             appendMethodReference(ref);
             appendMemberDescriptorTypes(handle.desc, TypeReferenceKind::MethodDescriptor, site);
         }
-        else if (isFieldHandleKind(handle.kind)) {
+        else if (handle.kind >= 1 && handle.kind <= 4) {
             FieldReference ref;
             ref.site   = site;
             ref.target = FieldRefKey{iv(handle.owner), iv(handle.name), iv(handle.desc)};
@@ -1039,7 +1010,7 @@ void ReferenceIndex::indexMethodBody(jbc::ir::ClassSession&                sessi
             }
             if (csem.kind == ConstSem::Kind::MethodHandle) {
                 HandleSem handle;
-                if (resolveHandleCp(cp, in->cp, handle)) {
+                if (jbc::core::resolveHandleCp(cp, in->cp, handle)) {
                     appendHandleReference(handle, makeSite(pos),
                                           MethodReferenceKind::MethodHandle);
                 }
@@ -1083,7 +1054,7 @@ void ReferenceIndex::indexMethodBody(jbc::ir::ClassSession&                sessi
                 const auto& indy = cp.at(in->cp);
                 if (indy.tag == CpTag::InvokeDynamic && indy.a < modeled->entries.size()) {
                     const auto& entry = modeled->entries[indy.a];
-                    if (resolveHandleCp(cp, entry.methodRef, bsmHandle)) {
+                    if (jbc::core::resolveHandleCp(cp, entry.methodRef, bsmHandle)) {
                         appendHandleReference(bsmHandle, site, MethodReferenceKind::MethodHandle);
                         methodKind = isLambdaMetafactoryHandle(bsmHandle)
                                          ? MethodReferenceKind::Lambda
@@ -1097,7 +1068,7 @@ void ReferenceIndex::indexMethodBody(jbc::ir::ClassSession&                sessi
                 const auto& entry = cp.at(argCp);
                 if (entry.tag == CpTag::MethodHandle) {
                     HandleSem handle;
-                    if (resolveHandleCp(cp, argCp, handle)) {
+                    if (jbc::core::resolveHandleCp(cp, argCp, handle)) {
                         appendHandleReference(handle, site, methodKind);
                     }
                 }
