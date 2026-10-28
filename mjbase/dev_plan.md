@@ -88,9 +88,17 @@
   iload_n 与泛型同权）、K 为 int 常量（同值校验，跨 CP 条目同权）。栈操作
   噪声（dup_x2/pop/swap/dup2）窗口内消化；iconst_0 恒等算子噪声归
   ExpressionSimplifier（管线序本件在前）。落地形态为 window_rule 框架的
-  规则表扩展（不动点轮次/边界守卫/写回纪律全复用），非新 pass；long 族
-  挂账。9 单测（三窗口/链式收敛留噪声/异槽/异值/移位量 2/内部标签阻断/
-  幂等），全量 1656 绿（3 既有跳过）。
+  规则表扩展（不动点轮次/边界守卫/写回纪律全复用），非新 pass。9 单测
+  （三窗口/链式收敛留噪声/异槽/异值/移位量 2/内部标签阻断/幂等），全量
+  1656 绿（3 既有跳过）。
+- [x] long 族规则 15-20（#44 收口，RFC 0002 B8 8.7 切片）：窗口形态与
+  int 族不互为转写（实证：dup2_x2 在 all-cat2 三值栈产出 [x,v,K,v]，与
+  libjbc dupSlots 及真 JVM 实测一致；无 dup2_x4、swap 对 cat2 非法）。
+  15 半加器/16 借位/17 消进位（lload+ldc2_w K 窗）、18 lload;dup2;lxor→
+  lconst_0、19 lload;dup2;lcmp→iconst_0、20 i2l;l2i→空。真 JVM 基线/变换
+  对拍硬验收（中途抓出 dup2_x2 深度与 lsub「深减顶」两处语义错修正）。
+  逐规则正反用例（同槽/同值/移位量/重装载槽四拒收面+链式+幂等），
+  FixPatternSimplifier 两套件 57/57 绿（mjbase PR #72）。
 - [x] 控制流反扁平化首件（#45，FlatteningReverser，三层链收尾件）：常量
   状态传播 + switch 分发静态解析——每个「写常量状态; goto 分发块」前驱的
   goto 直接改写到 switch 案表命中的功能块入口（未命中走 default，default
@@ -194,10 +202,13 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     是 backing 不可见面）。新载体无标签节点、无引用计数成本，多个标签同
     锚一界各随引用者物化同一 pc，合并不产生任何字节级改写。除非未来出现
     以标签身份为键的分析面需要规范化，本件在新载体无落点。
-    GotoRearranger 挂账待载体原语——块搬移消跳转有真实可观测价值（减少
-    跳转次数、改写布局），但实现需要「带锚定标签的指令区间整体搬移」
-    原语：CodeDom 现有 swap 仅支持双指令交换，erase+重建会破坏标签锚定。
-    待 jbc 侧补 move-range 类原语后再论证迁移。标签布局族首件已落地，
+    GotoRearranger 已落地（标签布局族第二件，mjbase PR #71）：载体原语
+    jbc move-range（libjbc#10，libjbc PR #12 CodeDom::moveRange 机械层 +
+    CodeEditor::moveRange 策略层）到位后按台账语义重论证实现——前向非邻接
+    GOTO 目标尾段经 moveRange 尾哨兵搬移使跳转变 fallthrough 等价整删；
+    保守门五条（前向非邻接/JSR-RET 整体不动/异常表锚定拒动/目标单前驱/
+    环形拒动），帧面与 RedundantJumpRemover 同口径 Strict 重算兜底。
+    13 单测全经生产管线真链验证。标签布局族首件已落地，
     族内分析至此收口。
 - [ ] UnreachableInsnRemover 家族（dead_code_remover.cpp 1594 行内非 NopRemover
   部分，切片迁移）：帧可达性证明删不可达指令。NopRemover 已由方法级四件批收口。
@@ -245,8 +256,13 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     跨路径对窗口面不可见，def-use 合并到达定义天然覆盖（分支汇合多定义
     同组处理）；帧面不需要窗口面标签守卫（边覆盖进入 pop 的全部路径），
     删除仍走 fallthrough 重定向。安全门：DUP/DUP2 族/SWAP 任一在场禁用
-    帧面（复制类无使用边，删生产者留悬空中继破坏栈元数——挂账逐中继
-    细化）；分析失败/truncated 跳过；不播种入参（参数弹值无到达定义边，
+    帧面（复制类无使用边，删生产者留悬空中继破坏栈元数）——逐中继细化
+    已落地（RFC 0002 B8 8.6，mjbase PR #70）：jbc dupSlots 中继拷贝沿用
+    原定义（透明、永不成为 def）是整族禁用的根因；细化后从 pop 回溯模拟
+    输入槽需求，DUP/DUP2 拷贝别名折叠为一份原件、溯源常量与 def 侧互证、
+    共享连通分组组栈平衡非零整组弃；X 族/SWAP/cat2 双槽/链上标签锚定等
+    保持 fail-closed。方法无中继 = 既有纯 def 路逐字节不变；分析失败/
+    truncated 跳过；不播种入参（参数弹值无到达定义边，
     保守不动）；局部装载不作帧面生产者（def-use 里定义归 store，隔距离
     装载对删除需连 store 活跃性一起判，归 DeadLocalStoreRemover 合同，
     不在本件重复）；LDC(class/MT/MH) 纯生产者挂账帧面余件。10 单测
@@ -321,8 +337,8 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     局部清理族后续收敛。只删调用点不删定义（悬垂方法归 unused-member
     族收尾）。8 单测（纯弹弃删、只读/非纯/返回被消费/容器外目标保留、
     跨类全应用、被调方不改写、注册面），全量 1785 绿（1782 过 + 3
-    既有跳过）。GotoRearranger 挂账的 jbc move-range 原语已开
-    libjbc#10 跟踪。
+    既有跳过）。GotoRearranger 挂账的 jbc move-range 原语已收口
+    （libjbc#10，libjbc PR #12，0.4.19）。
 - [x] ArgumentArrayScalarizer 切片 1（#37 首件，scope:global）：装箱参数数组
   标量化——static ([Ljava/lang/Object;)R 候选（句柄钉死/同类同签名唯一门）
   被调方取参窗 [aload p; intConst i; aaload; checkcast Ti] 重建为直接局部
@@ -398,8 +414,8 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   消费面适配：JvmCompilerOptions 改 majorVersion/minorVersion u16 直载
   （去 jblw JavaVersion 与 maxStackHint，后者零消费方实证删除）；
   requireconfs 去 libjblw/libjbytecode 嵌套钉定五条；unittest 闭包去
-  libjblw；libjbytecode 保持本仓直连（relaxed_verifier analysis 面，
-  P6 收口）。升级途中两笔 libjhasm 端修复合入（PR #2/#4，0.3.1/0.3.2）：
+  libjblw；libjbytecode 后随 RFC 0002 B8 8.7 全摘（mjbase PR #72，
+  relaxed_verifier 直驱 libjbc FrameEngine 后 jbytecode 符号归零）。升级途中两笔 libjhasm 端修复合入（PR #2/#4，0.3.1/0.3.2）：
   strict 复核三面（字段操作此前按方法描述符 ')' 定位字段描述符恒跳过、
   虚分发接收者/ARETURN 缺名字互赋）+ anewarray 落码组件口径（JVMS 6.5，
   javac 同形；打印按 CP 原样，两种既有形态均可往返，JDK21 加载验证过）。
@@ -408,7 +424,11 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   会静默按旧源构建（"Invalid type descriptor" 假阳性即此）， purge 须
   同时清 cache/packages 源缓存与 packages 安装目录。全量 1810 绿
   （1807 过 + 3 既有跳过）。遗留：帧发射缺异常处理器入口帧（libjhasm
-  issue #3，独立切片）；relaxed_verifier 改写 jhasm::analyze 归 P6。
+  issue #3，独立切片）；relaxed_verifier 改写已随 RFC 0002 B8 8.7 落地
+  （mjbase PR #72：不走纯转发 jhasm::analyze——其 refCompatible 硬编码
+  拒数组协变面会破 pinned 语义，改直驱 libjbc FrameEngine Strict 档 +
+  自写 RelaxedResolver，对外 analyzeRelaxed 签名不变，六条语义差异
+  头注存档；libjbytecode 随之全摘）。
 - [x] StaticFieldDefaultInliner（121 行，scope:class）：clinit 单写常量 →
   字段 ConstantValue（backing 槽）+ 等价初始化删除；类级载体重定型首件
   候选（双面落盘纪律）。
@@ -599,16 +619,28 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     成员增删 addMethod/addField（A3/A4）、整类构建 makeSession(NewClassSeed)
     （A5）、结构化泛型/TypeAnnotation 读写面 ir/sig_attr.hpp +
     ir/type_annotation_attr.hpp（B1/B2）均已在 libjbc 落地（units.hpp/
-    ir 头实证）。余下是 mjbase 消费面迁移：结构化 attr pass 按 RFC 0002
-    B8 8.3 迁移中；类增删/重建类变换消费按需排期；方法级余量按
-    module-map 四批拆法继续。
+    ir 头实证）。结构化 attr pass 消费面迁移已落地（RFC 0002 B8 8.3，
+    mjbase PR #73）：Signature 槽扫描式改写收口为 jbc::type::signature
+    解析树 span 手术（嵌套链部件数不一致按 ASM SignatureRemapper 同语义
+    坍缩扁平新名），TypeAnnotations/ParameterAnnotations/AnnotationDefault
+    从不改写/Raw 手术迁 typed 结构化读写，class_renamer 开
+    bytecodeAndMetadata；整槽摘除族保留字节面（无需结构决策）。类增删/
+    重建类变换消费按需排期；方法级余量按 module-map 四批拆法继续。
 - B7 设施请求：[x] renamer apply 面接线收口（引擎计划经 asm/remapper 域
   applyResourceRemapPlan+RemapPolicy 就地应用；apply 模式 E2E（javac 多类样本
   重读断言 + JVM 真跑门 + 反射读新名）与 remap_policy_matrix 应用面真语义用例
   落位，旧栈四件 apply 用例断言移植；类资源 URI 随动的双门口径差异已在
   module-map renamer 行声明）；AliasAnalysis 反射 receiver 闭包补「消费队列」
-  形态（container 取出转手调用，当前 T13 类场景 fail-open）；resolveHandleCp
-  （句柄→owner/name/desc/kind）评估下沉 ClassSession。
+  形态（container 取出转手调用，当前 T13 类场景 fail-open——注意该缺口
+  属 AliasAnalysis 接收者数据流建模：容器介导的 Class 流不在图上，与
+  句柄解析下沉无关，两者是同条挂账的独立子项）；resolveHandleCp
+  （句柄→owner/name/desc/kind）下沉已闭环（RFC 0002 B8 8.4）：评估结论
+  下沉 jbc/core 纯池自由函数（mjbase 两处实现语义同构但输出形态分叉，
+  reference 版为零拷贝 view+严格 kind 基准），libjbc 0.4.20 落
+  cp_resolve.hpp（libjbc PR #14/#15），mjbase 侧 reference_index/
+  member_remapper 两处换装 + cp_refs.hpp 转发头（mjbase PR #74；
+  行为收紧：kind 域外从「误走方法分支」变「跳过」，readClass 读闸下
+  畸形类不可达，remapper 侧污染接缝真红→绿用例钉死）。
 - E 系消费者对接（module-map 第八批）：[x] E3 类字节供给面 + 骨架扫描面
   （consumer/class_source + consumer/summary_scanner，14 用例全绿）；
   [x] E2 ChangeSet 消费方接线（2026-10-14，libjbc design §35）：ReferenceIndex
