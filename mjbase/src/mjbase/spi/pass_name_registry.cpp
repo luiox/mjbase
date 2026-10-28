@@ -41,6 +41,7 @@
 #include "mjbase/pass/dead_local_store_remover.hpp"
 #include "mjbase/pass/dead_side_effect_free_call_remover.hpp"
 #include "mjbase/pass/redundant_store_eliminater.hpp"
+#include "mjbase/pass/store_load_relay_eliminator.hpp"
 #include "mjbase/pass/redundant_invoke_remover.hpp"
 #include "mjbase/pass/argument_array_scalarizer.hpp"
 #include "mjbase/pass/static_field_default_inliner.hpp"
@@ -364,6 +365,13 @@ PassNameRegistry makeDefaultRegistry()
         "RedundantStoreEliminater",
         [] { return std::make_unique<mjbase::pass::RedundantStoreEliminater>(); },
         "Downgrade stores whose definitions have no use edges to pop/pop2."));
+    // opt pass 波次（#18 LDVSE 复刻）：store 定义使用边恰为紧邻 reload 的
+    // 中转对整删（def-use 单使用证明；旧栈标签窗近似载体的偏离申报见头注）。
+    seed(reg.registerMethodPass(
+        "StoreLoadRelayEliminator",
+        [] { return std::make_unique<mjbase::pass::StoreLoadRelayEliminator>(); },
+        "Erase adjacent store/load relay pairs whose store definition has "
+        "exactly one use: the adjacent reload."));
     // opt pass 波次（帧溯源面批次收口）：容器内纯方法的弹弃调用点整组摘除。
     seed(reg.registerGlobalPass(
         "RedundantInvokeRemover",
