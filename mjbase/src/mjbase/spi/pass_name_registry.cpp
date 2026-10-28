@@ -32,6 +32,7 @@
 #include "mjbase/pass/redundant_load_val_eliminator.hpp"
 #include "mjbase/pass/remove_method_calls.hpp"
 #include "mjbase/pass/stack_operation.hpp"
+#include "mjbase/pass/try_catch_cleanup.hpp"
 #include "mjbase/pass/strength_reducer.hpp"
 #include "mjbase/pass/tool_class_combiner.hpp"
 #include "mjbase/pass/type_cast_simplifier.hpp"
@@ -424,6 +425,18 @@ PassNameRegistry makeDefaultRegistry()
         [] { return std::make_unique<mjbase::pass::IntrinsicFolding>(); },
         "Fold intrinsic calls on constant arguments: box/unbox pairs, seeded "
         "Random, pure JDK functions."));
+    // opt pass 波次（死代码与控制流清理族，#18）：异常边界清理——透明
+    // 重抛条目删除（athrow / 同槽 astore-aload / 恒等静态包装三形状 +
+    // 共享/可达/重叠守卫）、恒不抛段收口（域分析可达帧 + 保守可抛集合）、
+    // NPE 形与自捕抛改写（栈深门槛 + 锚入标签守卫，旧栈缺失面的补强）。
+    // 悬空标签与空区间条目修复性删除；乱序条目保留（合法类文件允许）。
+    // 标签：scope:method / action:rewrite / stability:opt-in（默认链不收，
+    // CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "TryCatchCleanup",
+        [] { return std::make_unique<mjbase::pass::TryCatchCleanup>(); },
+        "Clean up redundant try-catch entries: transparent rethrow, "
+        "impossible catch, NPE shape, self-caught throw."));
     // opt pass 波次（标签布局族首件）：目标落在顺序后继前置边界的跳转
     // 消解——GOTO 整条删除（fallthrough 等价），条件跳原位换 POP/POP;POP
     // （分支与汇合重合，条件值被丢弃，弹宽对齐谓词元数）。方法末 GOTO
