@@ -387,6 +387,22 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   项）。17 单测（跨槽归组 int/long/快捷形、单块/同槽恒等/幂等、锚标签
   守卫两件、非交换律/异宽操作数/形状不齐保留、常量后移 int/long、注册
   面），全量 1966 绿（1963 过 + 3 既有跳过）。
+- [x] StackTraceRecover（#20 组员，scope:global）：堆栈可读性恢复三件套——
+  SourceFile/SourceDebug 覆盖式写入（name.replace('/', '.') + '.java'，
+  SourceDebug 同值 RawAttr u2 载荷承载）、异常 handler 聚合注入
+  dup;invokevirtual printStackTrace()V（单型取该型，catch-all/多型共享取
+  java/lang/Throwable——硬编码 Exception 会让 catch-all handler 入栈类型
+  不可赋值产生 VerifyError；聚合键取 handler 锚定指令，旧栈 LabelNode 按
+  pc 去重，IR 侧 LabelId 异同不作数）、每标签锚点一行 LNT（行号类级跨方法
+  递增，>65535 回绕；行按旧 pc 坐标前置落位，lowerMethod 按 pcmap 重定向
+  注入漂移）。偏离逐条申报：GlobalPass 整件 fail-closed（任一类不可解析或
+  任一步失败整批放弃，旧栈逐类 best-effort 不复刻，对齐容器两阶段提交
+  口径）；LNT 直写 backing Code 属性嵌套槽（旧栈 LineNumberNode 树节点
+  不复存在），外层 Code 槽手工置脏走 writer 重编码；maxStack 保守 +1
+  （旧栈 ASM 自动重算不复刻）；未锚定 handler 跳过；非幂等（覆盖式写入 +
+  恒 none()，对齐旧栈）。10 单测（单型/catch-all/多型冲突共享/同型共享
+  注入与 owner、LNT 行写入与跨方法递增、source 属性写入与既有覆盖、
+  不可解析放弃、注册面），全量 1976 绿（1973 过 + 3 既有跳过）。
 - [x] ArgumentArrayScalarizer 切片 1（#37 首件，scope:global）：装箱参数数组
   标量化——static ([Ljava/lang/Object;)R 候选（句柄钉死/同类同签名唯一门）
   被调方取参窗 [aload p; intConst i; aaload; checkcast Ti] 重建为直接局部
