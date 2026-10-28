@@ -323,9 +323,165 @@ TEST(FlatteningReverserTest, rejectsSecondSwitch)
     EXPECT_EQ(opsOf(fx), before);
 }
 
-// ── 拒绝面：状态槽被 iinc 触碰（读改写不在引擎建模面） ──
+// ── 相对状态更新（s += D）：iinc 紧凑形，迹模拟定值后双前驱改写 ──
+TEST(FlatteningReverserTest, relativeIincUpdateResolves)
+{
+    // 入口 K=100 → 案 100（A）；iinc s,+7 → s=107 → 案 107（B）。相对写点
+    // 的当前值由状态迹模拟给出：入口锚 → 案表 → A 的 iinc 写点定值 107。
+    DomFixture fx("t/F", "m", "(I)I", 4, 4, [&](Body& b) {
+        LabelId dL = b.label();
+        LabelId aL = b.label();
+        LabelId bL = b.label();
+        LabelId xL = b.label();
+        b.ldcInt(100).istore(1).branch(Op::GOTO, dL);
+        b.iload(1);
+        b.bindHere(dL);
+        b.lookupSwitch(xL, {100, 107}, {aL, bL});
+        b.iinc(1, 7);
+        b.bindHere(aL);
+        b.branch(Op::GOTO, dL);
+        b.iconst_1();
+        b.bindHere(bL);
+        b.ireturn();
+        b.iconst_0();
+        b.bindHere(xL);
+        b.ireturn();
+    });
+    const auto before = opsOf(fx);
+    const auto pa     = fx.run(mjbase::pass::FlatteningReverser{});
+    EXPECT_TRUE(pa.changed());
+    // 指令集原样（只动 goto 目标字段）。
+    EXPECT_EQ(opsOf(fx), before);
+    // 入口 goto → A 头（iinc）；iinc 后 goto → B 头（首个 ICONST_1）。
+    EXPECT_EQ(gotoTargetPositions(fx),
+              (std::set<ca::i64>{nthPos(fx, Op::IINC, 0), nthPos(fx, Op::ICONST_1, 0)}));
+    // 幂等：改写后写点后继不再指回分发块头，二轮整族拒收。
+    const Bytes out1 = fx.writeBack();
+    const auto  pa2  = fx.run(mjbase::pass::FlatteningReverser{});
+    EXPECT_TRUE(pa2.areAllPreserved());
+    EXPECT_EQ(fx.writeBack(), out1);
+}
+
+// ── 相对状态更新：s 在左 ISUB + 分发偏移（形态 A 单步折叠叠加） ──
+TEST(FlatteningReverserTest, relativeIsubUpdateWithDispatchOffsetResolves)
+{
+    // D：v = s - 1；A：s -= 4。入口 100 → v=99 案 A；s=96 → v=95 案 B。
+    DomFixture fx("t/F", "m", "(I)I", 4, 4, [&](Body& b) {
+        LabelId dL = b.label();
+        LabelId aL = b.label();
+        LabelId bL = b.label();
+        LabelId xL = b.label();
+        b.ldcInt(100).istore(1).branch(Op::GOTO, dL);
+        b.iload(1);
+        b.bindHere(dL);
+        b.ldcInt(1).op(Op::ISUB);
+        b.lookupSwitch(xL, {95, 99}, {bL, aL});
+        b.iload(1);
+        b.bindHere(aL);
+        b.ldcInt(4).op(Op::ISUB).istore(1).branch(Op::GOTO, dL);
+        b.iconst_1();
+        b.bindHere(bL);
+        b.ireturn();
+        b.iconst_0();
+        b.bindHere(xL);
+        b.ireturn();
+    });
+    const auto before = opsOf(fx);
+    const auto pa     = fx.run(mjbase::pass::FlatteningReverser{});
+    EXPECT_TRUE(pa.changed());
+    EXPECT_EQ(opsOf(fx), before);
+    // 入口 goto → A 头（第二个 ILOAD）；A 尾 goto → B 头（首个 ICONST_1）。
+    EXPECT_EQ(gotoTargetPositions(fx),
+              (std::set<ca::i64>{nthPos(fx, Op::ILOAD, 1), nthPos(fx, Op::ICONST_1, 0)}));
+}
+
+// ── 相对状态更新：IADD 常量在左镜像（交换律同值放行） ──
+TEST(FlatteningReverserTest, relativeMirroredIaddUpdateResolves)
+{
+    // A：[ldc 3; iload s; IADD; istore s]——D 在左镜像与 s+3 同值。
+    // 入口 100 → 案 100（A）；s=103 → 案 103（B）。
+    DomFixture fx("t/F", "m", "(I)I", 4, 4, [&](Body& b) {
+        LabelId dL = b.label();
+        LabelId aL = b.label();
+        LabelId bL = b.label();
+        LabelId xL = b.label();
+        b.ldcInt(100).istore(1).branch(Op::GOTO, dL);
+        b.iload(1);
+        b.bindHere(dL);
+        b.lookupSwitch(xL, {100, 103}, {aL, bL});
+        b.ldcInt(3);
+        b.bindHere(aL);
+        b.iload(1).iadd().istore(1).branch(Op::GOTO, dL);
+        b.iconst_1();
+        b.bindHere(bL);
+        b.ireturn();
+        b.iconst_0();
+        b.bindHere(xL);
+        b.ireturn();
+    });
+    const auto pa = fx.run(mjbase::pass::FlatteningReverser{});
+    EXPECT_TRUE(pa.changed());
+    // 入口 goto → A 头（第二个 LDC）；A 尾 goto → B 头（首个 ICONST_1）。
+    EXPECT_EQ(gotoTargetPositions(fx),
+              (std::set<ca::i64>{nthPos(fx, Op::LDC, 1), nthPos(fx, Op::ICONST_1, 0)}));
+}
+
+// ── 相对更新拒收：同写点双值（多 key 同案、路径敏感） ──
+TEST(FlatteningReverserTest, relativeUpdatePathConflictRejected)
+{
+    // keys {100, 101} 同指 A；入口 100 → A 定值 s=101 → 再进 A 得 102 ≠ 101
+    // → 冲突整族拒收。
+    DomFixture fx("t/F", "m", "(I)I", 4, 4, [&](Body& b) {
+        LabelId dL = b.label();
+        LabelId aL = b.label();
+        LabelId xL = b.label();
+        b.ldcInt(100).istore(1).branch(Op::GOTO, dL);
+        b.iload(1);
+        b.bindHere(dL);
+        b.lookupSwitch(xL, {100, 101}, {aL, aL});
+        b.iinc(1, 1);
+        b.bindHere(aL);
+        b.branch(Op::GOTO, dL);
+        b.iconst_0();
+        b.bindHere(xL);
+        b.ireturn();
+    });
+    const auto before = opsOf(fx);
+    const auto pa     = fx.run(mjbase::pass::FlatteningReverser{});
+    EXPECT_TRUE(pa.areAllPreserved());
+    EXPECT_EQ(opsOf(fx), before);
+}
+
+// ── 相对更新拒收：ISUB 常量在左是 D - s 形（非 s += D 族，fail-closed） ──
+TEST(FlatteningReverserTest, relativeMirroredIsubRejected)
+{
+    // A：[ldc 3; iload s; ISUB; istore s]——D 在左 ISUB 不在相对形态表。
+    DomFixture fx("t/F", "m", "(I)I", 4, 4, [&](Body& b) {
+        LabelId dL = b.label();
+        LabelId aL = b.label();
+        LabelId xL = b.label();
+        b.ldcInt(10).istore(1).branch(Op::GOTO, dL);
+        b.iload(1);
+        b.bindHere(dL);
+        b.lookupSwitch(xL, {10}, {aL});
+        b.ldcInt(3);
+        b.bindHere(aL);
+        b.iload(1).op(Op::ISUB).istore(1).branch(Op::GOTO, dL);
+        b.iconst_0();
+        b.bindHere(xL);
+        b.ireturn();
+    });
+    const auto before = opsOf(fx);
+    const auto pa     = fx.run(mjbase::pass::FlatteningReverser{});
+    EXPECT_TRUE(pa.areAllPreserved());
+    EXPECT_EQ(opsOf(fx), before);
+}
+
+// ── 拒绝面：状态槽被 iinc 触碰且不在入口迹上（覆盖审计拒收） ──
 TEST(FlatteningReverserTest, rejectsIincOnStateSlot)
 {
+    // iinc 已建模为相对写（s += D 紧凑形）；本形态入口 111111111 走 default
+    // X 终态，iinc 写点不在迹上 → 未定值 → 覆盖审计整族拒收。
     DomFixture fx("t/F", "m", "(I)I", 4, 4, [&](Body& b) {
         LabelId dL = b.label();
         LabelId aL = b.label();
