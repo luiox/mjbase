@@ -1,6 +1,8 @@
 #include "mjbase/pass/flattening_reverser.hpp"
 
 #include <algorithm>
+#include <optional>
+#include <unordered_map>
 #include <vector>
 
 #include "jbc/analysis/frame.hpp"
@@ -129,6 +131,70 @@ bool bounceStorePred(const jbc::ir::ClassSession& session, const jbc::ir::CodeDo
            isIntConstInsn(session, *kIn, k);
 }
 
+/// 相对状态更新语义：s' = s op D（iinc 是 +D 的紧凑形）。
+struct RelUpdate
+{
+    Op      op = Op::NOP;
+    ca::i32 d  = 0;
+};
+
+/// 一个状态槽写点：绝对形态（形态表解析出常量 K）或相对形态（s += D）。
+struct StateWrite
+{
+    ca::usize pos = 0;
+    bool      rel = false;
+    ca::i32   k   = 0;   ///< 绝对形态的常量 K。
+    RelUpdate relupd{};
+};
+
+/// 相对状态更新形态解析（写点 w 是对 slot 的 istore；s' = s op D）：
+///   s 在左：[iload s; intConst D; binop]，binop ∈ {IADD, ISUB, IXOR}；
+///   D 在左：[intConst D; iload s; binop]——IADD/IXOR 交换律下与 s 左同值
+///   放行；ISUB 的 D 在左是 D - s 形（非 s += D 族），fail-closed。
+/// 命中返回 true 并写出更新语义与 s 读点位置（读点审计豁免用）。
+bool matchRelUpdate(const jbc::ir::ClassSession& session, const jbc::ir::CodeDom& dom,
+                    const std::vector<InsnId>& order, ca::usize w, ca::u32 slot,
+                    RelUpdate& out, ca::usize& readPos)
+{
+    if (w < 3) return false;
+    const jbc::ir::Insn* binop = dom.peek(order[w - 1]);
+    if (binop == nullptr) return false;
+    if (binop->op != Op::IADD && binop->op != Op::ISUB && binop->op != Op::IXOR) return false;
+    const jbc::ir::Insn* mid = dom.peek(order[w - 2]);
+    const jbc::ir::Insn* low = dom.peek(order[w - 3]);
+    if (mid == nullptr || low == nullptr) return false;
+    ca::i32 d = 0;
+    if (isIntLoadOp(low->op) && slotOfIntLoad(*low) == slot
+        && isIntConstInsn(session, *mid, d)) {
+        out.op   = binop->op;   // s 在左：s op D
+        out.d    = d;
+        readPos  = w - 3;
+        return true;
+    }
+    if (binop->op == Op::ISUB) return false;   // D - s 形不认
+    if (isIntConstInsn(session, *low, d) && isIntLoadOp(mid->op)
+        && slotOfIntLoad(*mid) == slot) {
+        out.op   = binop->op;   // D 在左：D op s（IADD/IXOR 与 s 左同值）
+        out.d    = d;
+        readPos  = w - 2;
+        return true;
+    }
+    return false;
+}
+
+/// 控制转移指令（状态迹直线供源扫描的停点）：if 族/goto/switch/return/
+/// athrow/jsr/ret。直线供源越过控制转移不可静态成立。
+bool isControlTransfer(Op op)
+{
+    if (isGotoOp(op) || op == Op::ATHROW || op == Op::LOOKUPSWITCH || op == Op::TABLESWITCH
+        || op == Op::JSR || op == Op::JSR_W || op == Op::RET) {
+        return true;
+    }
+    if (op >= Op::IFEQ && op <= Op::IF_ACMPNE) return true;
+    return op == Op::IFNULL || op == Op::IFNONNULL
+           || (op >= Op::IRETURN && op <= Op::RETURN);
+}
+
 }   // namespace
 
 std::vector<FlatteningReverser::PredFormFn> FlatteningReverser::defaultPredForms()
@@ -248,54 +314,77 @@ mjbase::spi::PreservedAnalyses FlatteningReverser::run(mjbase::spi::MethodScope&
     if (iloadPos == n || blockHead == 0) return abandon();   // 无形态 / 入口边不可静态解析
     const ca::u32 slot = slotOfIntLoad(*cu.dom.peek(order[iloadPos]));
 
-    // ── 引擎步 3：状态槽读写全量审计。──
-    std::vector<ca::usize> writes;
+    // ── 引擎步 3：状态槽写点分类（绝对 K / 相对 s += D）+ 读点审计。──
+    //    写点先分类：形态表命中 = 绝对 K；否则尝试相对更新形态（[iload s;
+    //    intConst D; binop; istore s] 与 iinc 紧凑形）；两者皆不命中 = 不可
+    //    静态求值的前驱，整族拒收。iinc 是 s += D 的紧凑形，读改写建模为
+    //    相对写（原先的整族禁用解除，闭环交由相对模式的覆盖审计承担）。
+    std::vector<StateWrite> writes;
+    std::vector<ca::usize>  updateReads;   // 相对更新的 s 读点（审计豁免）
+    bool                    anyRelative = false;
     for (ca::usize i = 0; i < n; ++i) {
         const jbc::ir::Insn* in = cu.dom.peek(order[i]);
         if (in == nullptr) continue;
-        if (isIntLoadOp(in->op) && slotOfIntLoad(*in) == slot) {
-            if (i != iloadPos) return abandon();   // 第二读点：被读作他用
+        if (isIntStoreOp(in->op) && slotOfIntStore(*in) == slot) {
+            StateWrite w;
+            w.pos     = i;
+            bool   matched = false;
+            ca::i32 k      = 0;
+            for (const PredFormFn& form : predForms_) {
+                k = 0;
+                if (form != nullptr && form(scope.session, cu.dom, order, i, k)) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (matched) {
+                w.k = k;
+            } else {
+                RelUpdate ru;
+                ca::usize readPos = 0;
+                if (!matchRelUpdate(scope.session, cu.dom, order, i, slot, ru, readPos)) {
+                    return abandon();
+                }
+                w.rel    = true;
+                w.relupd = ru;
+                updateReads.push_back(readPos);
+                anyRelative = true;
+            }
+            writes.push_back(w);
+            continue;
         }
-        if (isIntStoreOp(in->op) && slotOfIntStore(*in) == slot) writes.push_back(i);
-        // iinc 是读改写，两槽值高半槽是隐式覆盖：两者都不在引擎建模面。
         if (in->op == Op::IINC && static_cast<ca::u32>(in->a) == slot) {
-            return abandon();
+            StateWrite w;
+            w.pos    = i;
+            w.rel    = true;
+            w.relupd = RelUpdate{Op::IADD, in->b};
+            writes.push_back(w);
+            anyRelative = true;
+            continue;
         }
+        // 两槽值（long/double）高半槽是隐式覆盖：不在引擎建模面。
         ca::u32 base = 0;
         if (twoSlotLocalBase(*in, base) && base + 1 == slot) return abandon();
     }
     if (writes.empty()) return abandon();
 
-    // ── 引擎步 4：逐写点用前驱形态表解析常量状态；任一写点无行命中或
-    //    后继不是 goto D → 交叠定值/不可静态求值，整族拒收。──
-    struct ResolvedPred
-    {
-        InsnId  gotoId;
-        LabelId newTarget;
-    };
-    std::vector<ResolvedPred> preds;
-    preds.reserve(writes.size());
-    for (const ca::usize w : writes) {
-        if (w + 1 >= n) return abandon();
-        const jbc::ir::Insn* gotoIn = cu.dom.peek(order[w + 1]);
-        if (gotoIn == nullptr || !isGotoOp(gotoIn->op)) return abandon();
-        auto resolved = cu.dom.resolveLabel(gotoIn->target);
-        if (resolved.is_err()) return abandon();
-        const jbc::ir::LabelTarget t = std::move(resolved).unwrap();
-        if (t.isEnd() || posOfInsn(order, t.insn) != blockHead) return abandon();
-
-        ca::i32 k = 0;
-        bool   matched = false;
-        for (const PredFormFn& form : predForms_) {
-            if (form != nullptr && form(scope.session, cu.dom, order, w, k)) {
-                matched = true;
-                break;
+    // 读点审计：分发装载之外，相对更新的 s 装载（s op D 的操作数）是读改
+    // 写的一部分，按登记位置豁免；其余读点 = 被读作他用，整族拒收。
+    for (ca::usize i = 0; i < n; ++i) {
+        const jbc::ir::Insn* in = cu.dom.peek(order[i]);
+        if (in == nullptr) continue;
+        if (isIntLoadOp(in->op) && slotOfIntLoad(*in) == slot) {
+            if (i == iloadPos) continue;
+            if (std::find(updateReads.begin(), updateReads.end(), i) != updateReads.end()) {
+                continue;
             }
+            return abandon();
         }
-        if (!matched) return abandon();
+    }
 
-        // 折叠步按应用序复合：形态 A 常量在右 v = v op C（v 从 K 起），
-        // 形态 B 常量在左 v = C op v。u32 环绕，无符号 UB。
+    // 分发折叠：应用序复合——形态 A 常量在右 v = v op C（v 从 K 起），形态
+    // B 常量在左 v = C op v。u32 环绕，无符号 UB；op 不在规格内拒收。
+    const auto foldDispatch = [&](ca::i32 k) -> std::optional<ca::i32> {
         ca::u32 v = static_cast<ca::u32>(k);
         for (const FoldStep& st : steps) {
             const ca::u32 c = static_cast<ca::u32>(st.c);
@@ -306,11 +395,138 @@ mjbase::spi::PreservedAnalyses FlatteningReverser::run(mjbase::spi::MethodScope&
             } else if (st.op == Op::IXOR) {
                 v = v ^ c;
             } else {
-                return abandon();
+                return std::nullopt;
             }
         }
-        const LabelId caseLabel =
-            method_rewrite_util::switchCaseLabelOf(*sw, static_cast<ca::i32>(v));
+        return static_cast<ca::i32>(v);
+    };
+
+    // 相对更新求值：s' = s op D（u32 环绕与分发折叠同口径）。
+    const auto applyRel = [](const RelUpdate& ru, ca::i32 prev) -> ca::i32 {
+        const ca::u32 s = static_cast<ca::u32>(prev);
+        const ca::u32 d = static_cast<ca::u32>(ru.d);
+        ca::u32       v = s;
+        if (ru.op == Op::IADD) {
+            v = s + d;
+        } else if (ru.op == Op::ISUB) {
+            v = s - d;
+        } else if (ru.op == Op::IXOR) {
+            v = s ^ d;
+        }
+        return static_cast<ca::i32>(v);
+    };
+
+    // ── 引擎步 3b：相对模式状态迹模拟（s += D 分发形态的闭环求解）。
+    //    绝对写点自解析；相对写点的当前值由「入口锚 → 案表 → 直线供源写
+    //    点」的状态迹模拟定值：
+    //      案表供源：每个案表目标（含 default）从目标起直线扫描到首个状态
+    //        写点；控制转移/分发块头/方法尾 = 无直线供源（终态块）。
+    //      入口锚：不被任何案表供源的绝对写点，唯一才可锚定（入口边必经
+    //        方法头侧进入，不取道分发块）。
+    //      迹：v = fold(s) → 案表目标 → 供源写点 w → s' = valueAfter(w)
+    //        （绝对 = K，相对 = s op D）；同写点双值（路径敏感）→ 拒收；
+    //        环闭合即停。
+    //    模拟后任一相对写点未定值 → 拒收（不可静态求解的前驱）。
+    std::vector<ca::i32> assigned(writes.size(), 0);
+    std::vector<char>    hasValue(writes.size(), 0);
+    if (anyRelative) {
+        const auto straightFeed = [&](LabelId l) -> std::optional<ca::usize> {
+            auto resolved = cu.dom.resolveLabel(l);
+            if (resolved.is_err()) return std::nullopt;
+            const jbc::ir::LabelTarget t = std::move(resolved).unwrap();
+            if (t.isEnd()) return std::nullopt;
+            for (ca::usize p = posOfInsn(order, t.insn); p < n; ++p) {
+                if (p == blockHead) return std::nullopt;
+                const jbc::ir::Insn* in = cu.dom.peek(order[p]);
+                if (in == nullptr) return std::nullopt;
+                for (ca::usize j = 0; j < writes.size(); ++j) {
+                    if (writes[j].pos == p) return j;
+                }
+                if (isControlTransfer(in->op)) return std::nullopt;
+            }
+            return std::nullopt;
+        };
+
+        // 案表目标 → 供源写点（无直线供源的终态块不入表）。
+        std::unordered_map<ca::u32, ca::usize> feedOfTarget;
+        std::vector<char>                      fedByCase(writes.size(), 0);
+        const auto noteCase = [&](LabelId l) {
+            if (l == jbc::ir::kNoLabel) return;
+            const std::optional<ca::usize> feed = straightFeed(l);
+            if (!feed.has_value()) return;
+            auto resolved = cu.dom.resolveLabel(l);
+            if (resolved.is_err()) return;
+            const jbc::ir::LabelTarget t = std::move(resolved).unwrap();
+            if (t.isEnd()) return;
+            feedOfTarget.emplace(t.insn.slot, *feed);
+            fedByCase[*feed] = 1;
+        };
+        noteCase(sw->target);
+        for (const LabelId l : sw->targets) noteCase(l);
+
+        // 入口锚：不被案表供源的绝对写点，唯一。
+        ca::i64 entry = -1;
+        for (ca::usize j = 0; j < writes.size(); ++j) {
+            if (writes[j].rel || fedByCase[j] != 0) continue;
+            if (entry >= 0) return abandon();
+            entry = static_cast<ca::i64>(j);
+        }
+        if (entry < 0) return abandon();
+
+        hasValue[static_cast<ca::usize>(entry)] = 1;
+        assigned[static_cast<ca::usize>(entry)] = writes[static_cast<ca::usize>(entry)].k;
+        ca::usize cur = static_cast<ca::usize>(entry);
+        for (ca::usize bound = 0; bound <= writes.size(); ++bound) {
+            const std::optional<ca::i32> v = foldDispatch(assigned[cur]);
+            if (!v.has_value()) return abandon();
+            const LabelId caseLabel = method_rewrite_util::switchCaseLabelOf(*sw, *v);
+            if (caseLabel == jbc::ir::kNoLabel) return abandon();
+            auto resolved = cu.dom.resolveLabel(caseLabel);
+            if (resolved.is_err()) return abandon();
+            const jbc::ir::LabelTarget t = std::move(resolved).unwrap();
+            if (t.isEnd()) break;   // 迹终止：案表指向方法尾
+            const auto it = feedOfTarget.find(t.insn.slot);
+            if (it == feedOfTarget.end()) break;   // 终态块：迹结束
+            const ca::usize next = it->second;
+            const ca::i32   nv   = writes[next].rel
+                                       ? applyRel(writes[next].relupd, assigned[cur])
+                                       : writes[next].k;
+            if (hasValue[next] != 0) {
+                if (assigned[next] != nv) return abandon();   // 同写点双值：路径敏感
+                break;                                        // 环闭合
+            }
+            hasValue[next] = 1;
+            assigned[next] = nv;
+            cur            = next;
+        }
+        // 覆盖审计：相对写点必须全部定值。
+        for (ca::usize j = 0; j < writes.size(); ++j) {
+            if (writes[j].rel && hasValue[j] == 0) return abandon();
+        }
+    }
+
+    // ── 引擎步 4：逐写点解析分发值并查案表；后继必须 goto 分发块头——
+    //    交叠定值/回环断裂整族拒收。绝对写用形态表 K，相对写用模拟定值。──
+    struct ResolvedPred
+    {
+        InsnId  gotoId;
+        LabelId newTarget;
+    };
+    std::vector<ResolvedPred> preds;
+    preds.reserve(writes.size());
+    for (ca::usize j = 0; j < writes.size(); ++j) {
+        const ca::usize w = writes[j].pos;
+        if (w + 1 >= n) return abandon();
+        const jbc::ir::Insn* gotoIn = cu.dom.peek(order[w + 1]);
+        if (gotoIn == nullptr || !isGotoOp(gotoIn->op)) return abandon();
+        auto resolved = cu.dom.resolveLabel(gotoIn->target);
+        if (resolved.is_err()) return abandon();
+        const jbc::ir::LabelTarget t = std::move(resolved).unwrap();
+        if (t.isEnd() || posOfInsn(order, t.insn) != blockHead) return abandon();
+
+        const std::optional<ca::i32> v = foldDispatch(writes[j].rel ? assigned[j] : writes[j].k);
+        if (!v.has_value()) return abandon();
+        const LabelId caseLabel = method_rewrite_util::switchCaseLabelOf(*sw, *v);
         if (caseLabel == jbc::ir::kNoLabel) return abandon();
         preds.push_back({order[w + 1], caseLabel});
     }
