@@ -98,7 +98,7 @@ LUIOX_LIBCA_MODULES = "core,crypto,str,fs,env,io,json,net,http,process,opt,threa
 -- 其嵌套 libca 由定义内的 add_deps 钉到上面的单源版本，故两处必须同一字面量。
 includes("xmake/packages/libjbc.lua")
 add_requires("libca " .. LUIOX_LIBCA_VERSION, {configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requires("libjbc 0.4.18")
+add_requires("libjbc 0.4.19")
 add_requires("libjstr 0.0.3")
 add_requires("libjbytecode 0.0.3")
 add_requires("libjzip 0.0.3")
