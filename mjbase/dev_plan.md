@@ -339,6 +339,17 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     跨类全应用、被调方不改写、注册面），全量 1785 绿（1782 过 + 3
     既有跳过）。GotoRearranger 挂账的 jbc move-range 原语已收口
     （libjbc#10，libjbc PR #12，0.4.19）。
+- [x] LabelDeadVarStoreEliminator（LDVSE，#18 组员，120 行）：标签锚定面的
+  store/load 中转对消除。复刻落地为 StoreLoadRelayEliminator（scope:method）：
+  载体换 analyzeDefUse——store 定义的局部读边（slot=Local）恰为紧邻 reload
+  → 整对删除、值留栈（栈消费边是 reload 恒等搬运的转发，不计入）。旧栈
+  标签段窗口 + 指令白名单是「无其他观察点」的近似载体，不复刻；其窗内
+  多对面不健全（删对后窗内后续同槽读点观察陈旧槽值，构造反例 2v+2 变
+  2v+1），新栈单使用判据天然拒绝。新增双侧锚标签守卫（分支目标/异常表
+  边界整对拒收，对齐「不重锚异常表边界」惯例）；五族全宽覆盖（旧栈仅
+  int）。12 单测（int/long/引用/快捷形删除、多读点/handler 读点保留、
+  双侧锚拒收、不动点、幂等、注册面），全量 1930 绿（1927 过 + 3 既有
+  跳过）。
 - [x] ArgumentArrayScalarizer 切片 1（#37 首件，scope:global）：装箱参数数组
   标量化——static ([Ljava/lang/Object;)R 候选（句柄钉死/同类同签名唯一门）
   被调方取参窗 [aload p; intConst i; aaload; checkcast Ti] 重建为直接局部
