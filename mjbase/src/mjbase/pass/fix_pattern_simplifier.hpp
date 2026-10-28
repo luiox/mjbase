@@ -61,7 +61,43 @@ namespace mjbase::pass {
 /// 前序指令产出的栈顶值（典型是上一条恒等式的折叠产物——链式分发器经
 /// 不动点轮次单 pass 收敛）。`iconst_0; ior/iadd/isub` 恒等算子噪声不属
 /// 本表，归 ExpressionSimplifier 恒等元规则（管线序建议本件在前）。
-/// long 族（lxor/land/lshl）挂账后续切片。
+///
+/// ## #44 long 族（增补规则 15–20：lxor/land/lshl 位级恒等式）
+///
+/// int 族恒等式在 long 语义下逐位成立（补码回绕，JVM 整数无 UB 面）；窗口
+/// 差异全部来自 cat2 双槽与帧类型面。**窗口形态偏离 int 族（已声明的差异，
+/// 与 #44 int 窗口不互为转写）**：dup 家族按槽位语义只能把复制品下插
+/// 1/2 槽——dup2_x2 在 all-cat2 三值栈 [x,K,v] 上产出 [x,v,K,v]（libjbc
+/// dupSlots 与真 JVM 实测一致），且无 dup2_x4、swap 对 cat2 非法——int 窗
+/// 口中段的 dup_x2/pop/swap 栈重排在 long 上不可达。故 long 窗弃用 dup 舞
+/// 蹈，改为直排形态：修正项（land + (…)<<1）与主项各算各的；**lsub 按
+/// "深减顶"排操作数**（ladd 可交换不敏感）；同槽装载/同值常量校验照 int
+/// 族；lshl 移位量仍是 int 槽——iconst_1 占 1 槽。
+///
+/// 15. `lload s; ldc2_w K; land; iconst_1; lshl; lload s; ldc2_w K; lxor;
+///     ladd` → `lload s; ldc2_w K; ladd`
+///     （半加器进位分解 long 形态：(x^K)+((x&K)<<1) == x+K；进位项先行，
+///     主项压顶后 ladd 收拢）
+/// 16. `lload s; ldc2_w K; lxor; lload s; iconst_m1; i2l; lxor; ldc2_w K;
+///     land; iconst_1; lshl; lsub` → `lload s; ldc2_w K; lsub`
+///     （借位形式 long 形态：(x^K)-((K&~x)<<1) == x-K；主项先行，~x 由同
+///     槽重装载 + iconst_m1/i2l/lxor 构造，借位项压顶——lsub 深减顶）
+/// 17. `lload s; ldc2_w K; ladd; lload s; ldc2_w K; land; iconst_1; lshl;
+///     lsub` → `lload s; ldc2_w K; lxor`
+///     （消进位 long 形态：(x+K)-((x&K)<<1) == x^K；主项先行、进位项压
+///     顶。与 15 在第 2 位 ladd/land 分叉、与 16 在第 2 位 ladd/lxor 分
+///     叉，互不为前缀）
+/// 18. `lload s; dup2; lxor` → `lconst_0`（x ^ x == 0 的 long 形态，"恒 0
+///     压栈"噪声；dup2 对 cat2 顶值即复制整个 long）
+/// 19. `lload s; dup2; lcmp` → `iconst_0`（x cmp x == 0，cmp 族）
+/// 20. `i2l; l2i` → 空（转换族往返恒等：int→long→int 位级还原、净效应零；
+///     逆序 `l2i; i2l` 是截断 + 符号扩展非恒等，不收）
+///
+/// 规则 18/19 仅收局部变量装载头（常量头 K^K 形态交给常量折叠链，保守不
+/// 收）。规则 15/16/17 新窗口不含 dup2（见上，cat2 dup 限制），18/19 全局
+/// 面匹配无吞窗口冲突；15/16/17 前缀互斥（第 2 位 land/lxor/ladd 三向分
+/// 叉），规则表内任意顺序安全。替换式克隆原装载/常量（含 LCONST 形态——
+/// longValueOf 对 LCONST_0/1 与 ldc 族 Long 同权），不新增常量池条目。
 ///
 /// ## 写回与边界纪律
 ///

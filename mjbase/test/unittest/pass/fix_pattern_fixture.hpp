@@ -117,6 +117,13 @@ public:
         return *this;
     }
 
+    /// 通用 LLOAD slot。
+    Body& lload(ca::u32 slot)
+    {
+        last_ = editor_.append(jbc::ir::CodeEditor::local(jbc::core::Op::LLOAD, slot)).unwrap();
+        return *this;
+    }
+
     /// 通用 ISTORE slot。
     Body& istore(ca::u32 slot)
     {
