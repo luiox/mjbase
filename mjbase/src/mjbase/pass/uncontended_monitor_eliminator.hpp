@@ -9,10 +9,12 @@ namespace mjbase::pass {
 ///        junk synchronized 块的无害化）。
 ///
 /// 识别形（全部逐指令相邻 + 无标签锚定）：
-///   [NEW X; DUP; INVOKESPECIAL X.<init>()V; ASTORE L]      头（对象诞生）
-///   ... [ALOAD L; MONITORENTER] ... [ALOAD L; MONITOREXIT]  成对尾
-/// 整组 8 指令 eraseBatch 摘除（组级原子：异常表边界锚定任一成员由编辑
-/// 器前置校验整组拒绝）。
+///   [NEW X; DUP; (ARG)*; INVOKESPECIAL X.<init>(...)V; ASTORE L]   头
+///   ... [ALOAD L; MONITORENTER] ... [ALOAD L; MONITOREXIT]          成对尾
+/// 实参游程 ARG 逐条认领无副作用指令（常量推入，condy 不认领；局部装载
+/// 族含紧凑形）——可整组擦除；任何调用/字段访问/分配/dup 形/iinc 不认领，
+/// 首个不认领指令不是本类 <init> 即整头拒收。整组 eraseBatch 摘除（组级
+/// 原子：异常表边界锚定任一成员由编辑器前置校验整组拒绝）。
 ///
 /// 语义论证：对象由 NEW 诞生、唯一存储 L、L 的全部读点都是监控接收者
 /// （def-use：enter/exit 的栈定义边汇于唯一 ASTORE 定义，ASTORE 的全部
@@ -23,8 +25,8 @@ namespace mjbase::pass {
 ///
 /// 安全门：恰一 enter 一 exit（ASTORE 定义的 Local 使用边恰 2 且都是
 /// 监控接收者、读点的到达定义恰为该唯一 ASTORE、use 全集恰为两读两
-/// 监控）；<init> 须为 ()V（带实参形态的实参指令在窗口之外，擦除后栈
-/// 失衡——fail-closed 拒收，带实参精化挂账）；窗内任何成员（含头段与
+/// 监控）；实参游程全数无副作用可擦（副作用实参指令擦除即语义变化，
+/// fail-closed 拒收）；窗内任何成员（含头段与
 /// 两监控点）及 enter..exit 区间内部锚定存活标签（分支/异常表）整组
 /// 拒收；方法参数作监控接收者（def = Parameter）天然失配。
 ///
