@@ -112,14 +112,12 @@ target("mjbase")
     add_files("src/mjbase/spi/**.cpp")
     add_files("src/mjbase/pass/**.cpp")
     add_files("src/mjbase/plugin/**.cpp")
-    add_files("src/mjbase/asm/classpath/resolved_call_graph.cpp")
     add_files("src/mjbase/asm/remapper/**.cpp")
-    -- 批 4：mcp 与 mjt-py 的直接消费面——renamer、workspace、jasm、log、cli。
-    -- workspace 依赖 jasm，故 jasm 从批 5 提前到本批；cli 只收源码（文案表
-    -- .lang 的规则在上方始终保留）。
+    -- 批 4：mjt 与 mjt-py 的直接消费面——renamer、jasm、log、cli。
+    -- （workspace 已整体退役移交下游，jasm 仍留本批供 cli/验证面消费；
+    -- cli 只收源码（文案表 .lang 的规则在上方始终保留）。）
     add_files("src/mjbase/renamer/**.cpp")
     add_files("src/mjbase/jasm/**.cpp")
-    add_files("src/mjbase/workspace/**.cpp")
     add_files("src/mjbase/cli/*.cpp")
     -- cli 的 ArgParser 文案单源表（i18n_setup 静态注册，public include 供下游覆盖）。
     -- 批 1 不含 cli 源码，但 i18n.hpp 依赖其生成头，故规则始终保留。
@@ -182,11 +180,10 @@ target("mjbase_unittest")
     -- golden 对拍子目录（旧栈 baseline 字节/指纹对拍机器，pass-golden-pipeline.md）。
     add_files("test/unittest/pass/golden/*_test.cpp")
     add_files("test/unittest/asm/remapper/*_test.cpp")
-    -- 批 4：与上面 src 的 renamer/jasm/log/workspace/cli 一一对应。
+    -- 批 4：与上面 src 的 renamer/jasm/log/cli 一一对应（workspace 测试随模块退役）。
     add_files("test/unittest/renamer/*_test.cpp")
     add_files("test/unittest/jasm/*_test.cpp")
     add_files("test/unittest/log/*_test.cpp")
-    add_files("test/unittest/workspace/*_test.cpp")
     add_files("test/unittest/cli/*_test.cpp")
     -- 第 5 批（孤儿测试救回）：keys/i18n/util 伞头与叶子件，
     -- 与 src 的 keys.hpp/i18n.hpp/util 一一对应（B3-A 波次测试面，副本删除前收容）。
