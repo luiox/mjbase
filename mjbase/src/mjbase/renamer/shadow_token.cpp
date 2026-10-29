@@ -85,7 +85,8 @@ void appendRepairAction(ShadowSlotError error, std::string& text)
         break;
     case ShadowSlotError::AmbiguousMember:
         text += "; supply the raw descriptor to disambiguate the overload "
-                "(descriptor token grammar lands later; pass the raw descriptor for now)";
+                "(descriptor slots accept embedded class handles; "
+                "three-part member handles are future work)";
         break;
     case ShadowSlotError::MissingSidecar:
         text += "; generate a shadow sidecar first (MCP shadow_generate, or `mjt shadow -i <jar>`)";
@@ -303,13 +304,14 @@ ShadowSlotResult resolveShadowSlot(const ShadowAliasTable& table,
                                    const std::string&      input,
                                    const ShadowSlotQuery&  query)
 {
+    if (query.position == ShadowSlotPosition::Descriptor) {
+        return resolveShadowDescriptor(table, input);
+    }
     if (query.position != ShadowSlotPosition::Name) {
-        // 未接线分支占位：descriptor / jasm body 标识槽文法未接，fail-loud
-        // 防意外提前使用；后续扩展在本收口内替换本分支，不开新入口。
+        // 未接线分支占位：jasm body 标识槽文法未接，fail-loud 防意外提前使用；
+        // 后续扩展在本收口内替换本分支，不开新入口。
         return failure(ShadowSlotError::MalformedHandle,
-                       std::string(query.position == ShadowSlotPosition::Descriptor
-                                       ? "descriptor"
-                                       : "jasm-body") +
+                       std::string("jasm-body") +
                            " slot does not accept shadow references yet (planned); "
                            "pass the raw form for now");
     }
@@ -348,6 +350,147 @@ ShadowSlotResult resolveShadowSlot(const ShadowAliasTable& table,
     }
     }
     return failure(ShadowSlotError::MalformedHandle, "unreachable reference form");
+}
+
+
+ShadowSlotResult resolveShadowDescriptor(const ShadowAliasTable& table,
+                                         const std::string&      input)
+{
+    ShadowSlotResult result;
+    std::string      out;
+    std::size_t      cursor      = 0;
+    ca::usize        expansions  = 0;
+
+    // 单遍词法走查 + 轻量描述符文法校验（垃圾入 fail-loud，不静默替换）。
+    // 返回 true = 校验与展开完成（result.raw 就绪）；false = 已填 Malformed
+    // 类失败。
+    const auto emitTypeSegment = [&]() -> bool {
+        // 前置 '[' 已由调用方消费；此处 input[cursor] ∈ {基类型, 'L', 'V'?}。
+        const char c = input[cursor];
+        if (c == 'L') {
+            ++cursor;
+            const auto nameBegin = cursor;
+            while (cursor < input.size() && input[cursor] != ';') {
+                // 泛型签名标记：fail-loud（Sig 属性 v2 另批）。
+                if (input[cursor] == '<' || input[cursor] == '>') {
+                    result = failure(ShadowSlotError::MalformedHandle,
+                                     "generic signature marker '" + std::string(1, input[cursor]) +
+                                         "' inside descriptor " + quoted(input) +
+                                         " is not accepted by the descriptor slot (planned); "
+                                         "pass the erased descriptor");
+                    return false;
+                }
+                ++cursor;
+            }
+            if (cursor >= input.size()) {
+                result = failure(ShadowSlotError::MalformedHandle,
+                                 "unterminated object type segment in descriptor " +
+                                     quoted(input));
+                return false;
+            }
+            const auto content = input.substr(nameBegin, cursor - nameBegin);
+            ++cursor;   // ';'
+            const auto parts = parseShadowRef(content);
+            switch (parts.form) {
+            case ShadowRefForm::Raw:
+                out += 'L';
+                out += content;
+                out += ';';
+                break;
+            case ShadowRefForm::EscapedLiteral:
+                // 字面请求：剥 $ 后的段按普通类名输出（与 Name 槽剥皮语义一致）。
+                out += 'L';
+                out += parts.literal;
+                out += ';';
+                break;
+            case ShadowRefForm::ClassRef: {
+                ShadowSlotResult entryResult;
+                const auto entry =
+                    resolveShadowHandleEntry(table, std::string(content), entryResult);
+                if (!entry.has_value()) {
+                    result = std::move(entryResult);
+                    return false;
+                }
+                out += 'L';
+                out += entry->rawName;
+                out += ';';
+                ++expansions;
+                break;
+            }
+            case ShadowRefForm::MemberRef:
+                result = failure(ShadowSlotError::MalformedHandle,
+                                 "member reference " + quoted(content) +
+                                     " cannot appear in a type position of descriptor " +
+                                     quoted(input));
+                return false;
+            case ShadowRefForm::Malformed:
+                result = failure(ShadowSlotError::MalformedHandle,
+                                 "malformed reference " + quoted(content) +
+                                     " inside descriptor " + quoted(input));
+                return false;
+            }
+            return true;
+        }
+        // 基类型（含 V 的调用方约束在外面）。
+        static constexpr std::string_view kPrimitives = "BCDFIJSZ";
+        if (kPrimitives.find(c) == std::string_view::npos) {
+            result = failure(ShadowSlotError::MalformedHandle,
+                             "byte " + std::string(1, c) + " at offset " +
+                                 std::to_string(cursor) + " does not fit a descriptor: " +
+                                 quoted(input));
+            return false;
+        }
+        out += c;
+        ++cursor;
+        return true;
+    };
+
+    const auto parseFieldType = [&]() -> bool {
+        while (cursor < input.size() && input[cursor] == '[') {
+            out += '[';
+            ++cursor;
+        }
+        return emitTypeSegment();
+    };
+
+    bool ok = false;
+    if (cursor < input.size() && input[cursor] == '(') {
+        // 方法描述符：( 参数类型* ) 返回类型（V 或字段类型）。
+        out += '(';
+        ++cursor;
+        while (cursor < input.size() && input[cursor] != ')') {
+            if (!parseFieldType()) return result;
+        }
+        if (cursor >= input.size()) {
+            result = failure(ShadowSlotError::MalformedHandle,
+                             "unterminated parameter list in descriptor " + quoted(input));
+            return result;
+        }
+        out += ')';
+        ++cursor;
+        if (cursor < input.size() && input[cursor] == 'V') {
+            out += 'V';
+            ++cursor;
+        }
+        else {
+            ok = parseFieldType();
+            if (!ok) return result;
+        }
+    }
+    else {
+        ok = parseFieldType();
+        if (!ok) return result;
+    }
+    if (cursor != input.size()) {
+        result = failure(ShadowSlotError::MalformedHandle,
+                         "trailing bytes after descriptor " + quoted(input) + " at offset " +
+                             std::to_string(cursor));
+        return result;
+    }
+    result.error      = ShadowSlotError::None;
+    result.raw        = std::move(out);
+    result.fromHandle = expansions > 0;
+    return result;
 }
 
 std::string shadowRefHandleOf(const ShadowAliasTable& table, const ShadowAliasEntry& entry)

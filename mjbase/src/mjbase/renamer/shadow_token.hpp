@@ -12,7 +12,7 @@
 ///             ambiguous-member，各自带固定修复动作；缺 sidecar 时任何引用
 ///             形状 → 硬报错（missing-sidecar），不静默回落裸名。
 ///
-/// 边界：仅 Name 槽实现；Descriptor/JasmBody 分支未接线（传入即 fail-loud，
+/// 边界：Name/Descriptor 槽已实现；JasmBody 分支未接线（传入即 fail-loud，
 /// 不做文法）。实修：查表命中面一律按值/optional 交付——
 /// findClassByHandle 返回指向 findByShadowName 临时 vector 内部的指针（悬垂
 /// UB，mjt 仓 9e72e9f 已修），本移植自始不带该形状。
@@ -33,7 +33,8 @@ enum class ShadowSlotPosition
     /// 整串参数槽：class/owner/name/class_uri/uri 等表意"类或成员引用"的
     /// 参数。整串 = Ref 或 raw 二选一（无子串扫描）。
     Name,
-    /// 方法/字段描述符、Sig 属性 v2：词法走查 L…; 完整段。未接线。
+    /// 方法/字段描述符：词法走查 L…; 完整段，类型位展开（泛型签名
+    /// fail-loud，Sig 属性 v2 另批）。
     Descriptor,
     /// JASM body 指令操作数中的内部名/描述符。未接线。
     JasmBody,
@@ -148,11 +149,30 @@ struct ShadowSlotResult
 ///   零漂移：无表可核即原样通过）。
 /// - 缺 sidecar（空表）+ 引用形状（ClassRef/MemberRef/Malformed）→
 ///   MissingSidecar 硬报错，不静默回落裸名。
-/// - Descriptor/JasmBody 位置：未接线，fail-loud（MalformedHandle + 指引），
-///   防意外提前使用。
+/// - Descriptor 位置：走 resolveShadowDescriptor（见下）。
+/// - JasmBody 位置：未接线，fail-loud（MalformedHandle + 指引），防意外提前使用。
 ShadowSlotResult resolveShadowSlot(const ShadowAliasTable& table,
                                    const std::string&      input,
                                    const ShadowSlotQuery&  query = {});
+
+/// @brief Descriptor 槽（§3 位置三分之描述符行）：字段/方法描述符内
+///        `L…;` 段的类型位展开。
+///
+/// 文法（纯描述符，泛型签名不在内）：
+/// - 词法走查 `(`/`)`/`[`/基类型（B C D F I J S Z V）逐字节直通；
+/// - `L…;` 段：段内容按 parseShadowRef 分形——
+///   Raw 恒等直通（描述符类型位任指任意类型，零漂移不核表，
+///   query.verifyRaw 在本槽不适用）；EscapedLiteral 剥 `$` 后直通；
+///   ClassRef 查表展开为真实内部名（同 resolveShadowHandleEntry 四分类，
+///   UnknownHandle/MissingSidecar 原样上抛）；MemberRef → MalformedHandle
+///   （类型位不收成员引用）；Malformed → MalformedHandle；
+/// - 其余字节（含 `<`/`>`）不合描述符文法 → MalformedHandle（泛型签名
+///   fail-loud，v2 另批；不静默替换产生垃圾输出）。
+///
+/// 结果：raw = 替换后的完整描述符；fromHandle = 发生过 ≥1 次展开；
+/// descriptor/kind 不承载（类型位没有成员 desc 语义）。
+ShadowSlotResult resolveShadowDescriptor(const ShadowAliasTable& table,
+                                         const std::string&      input);
 
 /// @brief 引用句柄（ClassRef/MemberRef）全量核验 → 命中条目（Ref 分支的条目面，
 ///        供回显工具 handle→条目反查；与 resolveShadowSlot 的 Ref 分支同判同错）。

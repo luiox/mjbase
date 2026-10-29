@@ -203,15 +203,17 @@ TEST(MjShadowTokenTest, EmptyTableAnyReferenceShapeIsMissingSidecarHardError)
     }
 }
 
-TEST(MjShadowTokenTest, NonNamePositionsFailLoudUntilWired)
+TEST(MjShadowTokenTest, NonNamePositionsDispatch)
 {
-    // Descriptor/JasmBody 未接线：fail-loud（MalformedHandle + 指引），不做文法。
+    // Descriptor 已接线：裸 handle 不是描述符 → 文法违约（MalformedHandle），
+    // 不再是「未接线」占位拒绝。
     ShadowSlotQuery query;
     query.position = ShadowSlotPosition::Descriptor;
     const auto desc = resolveShadowSlot(makeTable(), kClassRef, query);
     EXPECT_EQ(ShadowSlotError::MalformedHandle, desc.error);
-    EXPECT_NE(std::string::npos, text(desc).find("does not accept shadow references"));
+    EXPECT_EQ(std::string::npos, text(desc).find("does not accept shadow references"));
 
+    // JasmBody 仍未接线：fail-loud（MalformedHandle + 指引）。
     query.position = ShadowSlotPosition::JasmBody;
     const auto jasm = resolveShadowSlot(makeTable(), kClassRef, query);
     EXPECT_EQ(ShadowSlotError::MalformedHandle, jasm.error);
@@ -382,6 +384,143 @@ TEST(MjShadowTokenTest, HandleIssuanceSkipsTokenlessAndManualNames)
             EXPECT_TRUE(handle.empty());   // 缺 token / 手工名 → 不发句柄
         }
     }
+}
+
+
+// ── Descriptor 槽（A 批 A1：类型位展开）──────────────────────────
+
+namespace {
+
+/// Descriptor 槽快捷入口。
+ShadowSlotResult resolveDesc(const ShadowAliasTable& table, const std::string& input)
+{
+    ShadowSlotQuery query;
+    query.position = ShadowSlotPosition::Descriptor;
+    return resolveShadowSlot(table, input, query);
+}
+
+}   // namespace
+
+TEST(MjShadowTokenTest, DescriptorPlainIdentityZeroDrift)
+{
+    const auto table = makeTable();
+    // 无 token 的纯描述符恒等直通（java/lang/String 不在表内也零漂移）。
+    const auto r1 = resolveDesc(table, "(Ljava/lang/String;I)V");
+    ASSERT_EQ(r1.error, ShadowSlotError::None);
+    EXPECT_EQ(r1.raw, "(Ljava/lang/String;I)V");
+    EXPECT_FALSE(r1.fromHandle);
+
+    const auto r2 = resolveDesc(table, "Ljava/lang/Object;");
+    ASSERT_EQ(r2.error, ShadowSlotError::None);
+    EXPECT_EQ(r2.raw, "Ljava/lang/Object;");
+    EXPECT_FALSE(r2.fromHandle);
+}
+
+TEST(MjShadowTokenTest, DescriptorClassRefExpandsInTypePosition)
+{
+    const auto table = makeTable();
+    const auto r = resolveDesc(table, "(L" + std::string(kClassRef) + ";I)V");
+    ASSERT_EQ(r.error, ShadowSlotError::None) << text(r);
+    EXPECT_EQ(r.raw, "(La/b/Alpha;I)V");
+    EXPECT_TRUE(r.fromHandle);
+}
+
+TEST(MjShadowTokenTest, DescriptorArrayAndFieldForms)
+{
+    const auto table = makeTable();
+    // 字段描述符：数组 + handle 类型位。
+    const auto r = resolveDesc(table, "[L" + std::string(kClassRef) + ";");
+    ASSERT_EQ(r.error, ShadowSlotError::None) << text(r);
+    EXPECT_EQ(r.raw, "[La/b/Alpha;");
+    EXPECT_TRUE(r.fromHandle);
+
+    // 双重数组 + 裸类型恒等。
+    const auto r2 = resolveDesc(table, "[[La/b/Beta;");
+    ASSERT_EQ(r2.error, ShadowSlotError::None) << text(r2);
+    EXPECT_EQ(r2.raw, "[[La/b/Beta;");
+    EXPECT_FALSE(r2.fromHandle);
+
+    // 方法多参数：数组参数 + 基类型参数（连续字段类型）。
+    const auto r3 = resolveDesc(table, "([L" + std::string(kClassRef) + ";[I[I)V");
+    ASSERT_EQ(r3.error, ShadowSlotError::None) << text(r3);
+    EXPECT_EQ(r3.raw, "([La/b/Alpha;[I[I)V");
+    EXPECT_TRUE(r3.fromHandle);
+
+    // 单字段描述符带尾随第二类型 = 文法违约（字段只有一个类型）。
+    EXPECT_EQ(resolveDesc(table, "[L" + std::string(kClassRef) + ";[I").error,
+              ShadowSlotError::MalformedHandle);
+}
+
+TEST(MjShadowTokenTest, DescriptorMultiExpansionAndDispatchViaSlot)
+{
+    const auto table = makeTable();
+    const std::string input =
+        "(L" + std::string(kClassRef) + ";L" + std::string(kClassRef) + ";)L" +
+        std::string(kClassRef) + ";";
+    const auto r = resolveDesc(table, input);
+    ASSERT_EQ(r.error, ShadowSlotError::None) << text(r);
+    EXPECT_EQ(r.raw, "(La/b/Alpha;La/b/Alpha;)La/b/Alpha;");
+    EXPECT_TRUE(r.fromHandle);
+}
+
+TEST(MjShadowTokenTest, DescriptorMissingSidecarHardFails)
+{
+    const ShadowAliasTable empty;
+    const auto r = resolveDesc(empty, "(L" + std::string(kClassRef) + ";)V");
+    EXPECT_EQ(r.error, ShadowSlotError::MissingSidecar);
+}
+
+TEST(MjShadowTokenTest, DescriptorUnknownHandlePropagates)
+{
+    const auto table = makeTable();
+    // token 错 → unknown-handle 原样上抛。
+    const auto r = resolveDesc(table, "(L${Class_1.deadbeef};)V");
+    EXPECT_EQ(r.error, ShadowSlotError::UnknownHandle);
+}
+
+TEST(MjShadowTokenTest, DescriptorMemberRefRejectedInTypePosition)
+{
+    const auto table = makeTable();
+    const auto r = resolveDesc(table, "(L" + std::string(kMemberRef) + ";)V");
+    EXPECT_EQ(r.error, ShadowSlotError::MalformedHandle);
+    EXPECT_NE(r.message.find("type position"), std::string::npos);
+}
+
+TEST(MjShadowTokenTest, DescriptorGenericSignatureFailsLoud)
+{
+    const auto table = makeTable();
+    // 泛型签名标记 fail-loud（Sig v2 另批），不静默替换。
+    const auto r = resolveDesc(table, "(L" + std::string(kClassRef) + "<TT;>;)V");
+    EXPECT_EQ(r.error, ShadowSlotError::MalformedHandle);
+    EXPECT_NE(r.message.find("generic signature"), std::string::npos);
+}
+
+TEST(MjShadowTokenTest, DescriptorGrammarGarbageFailsLoud)
+{
+    const auto table = makeTable();
+    // 裸 handle 不是描述符。
+    EXPECT_EQ(resolveDesc(table, kClassRef).error, ShadowSlotError::MalformedHandle);
+    // 尾随垃圾。
+    EXPECT_EQ(resolveDesc(table, "(I)VX").error, ShadowSlotError::MalformedHandle);
+    // 未闭合参数表。
+    EXPECT_EQ(resolveDesc(table, "(I").error, ShadowSlotError::MalformedHandle);
+    // V 不出现在字段描述符/参数位。
+    EXPECT_EQ(resolveDesc(table, "VI").error, ShadowSlotError::MalformedHandle);
+    // 空串。
+    EXPECT_EQ(resolveDesc(table, "").error, ShadowSlotError::MalformedHandle);
+    // 段内 Malformed 引用。
+    EXPECT_EQ(resolveDesc(table, "(L${;I)V").error, ShadowSlotError::MalformedHandle);
+}
+
+TEST(MjShadowTokenTest, DescriptorEscapedLiteralKeepsLiteralBraces)
+{
+    const auto table = makeTable();
+    // $${…} = 字面请求：剥 $ 后的字面名即含 ${ 的名字本身（与 Name 槽
+    // 剥皮语义一致——字面类名按原样输出，不查表）。
+    const auto r = resolveDesc(table, "(L$${a/b/Weird};)V");
+    ASSERT_EQ(r.error, ShadowSlotError::None) << text(r);
+    EXPECT_EQ(r.raw, "(L${a/b/Weird};)V");
+    EXPECT_FALSE(r.fromHandle);
 }
 
 }   // namespace mjbase::renamer
