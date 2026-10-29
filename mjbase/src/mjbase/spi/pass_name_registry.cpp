@@ -41,6 +41,7 @@
 #include "mjbase/pass/dead_local_store_remover.hpp"
 #include "mjbase/pass/dead_side_effect_free_call_remover.hpp"
 #include "mjbase/pass/string_concat_indirector.hpp"
+#include "mjbase/pass/cse_chain_eliminater.hpp"
 #include "mjbase/pass/uncontended_monitor_eliminator.hpp"
 #include "mjbase/pass/redundant_store_eliminater.hpp"
 #include "mjbase/pass/store_load_relay_eliminator.hpp"
@@ -377,6 +378,11 @@ PassNameRegistry makeDefaultRegistry()
         "UncontendedMonitorEliminater",
         [] { return std::make_unique<mjbase::pass::UncontendedMonitorEliminater>(); },
         "Remove confined monitor enter/exit pairs whose object never escapes the method."));
+    // P1 批：GVN/CSE 第一切片——同直线段内同值纯链复写摘除。
+    seed(reg.registerMethodPass(
+        "CseChainEliminater",
+        [] { return std::make_unique<mjbase::pass::CseChainEliminater>(); },
+        "Erase a later structurally identical pure chain storing the same value to the same local within one straight-line run."));
     // opt pass 波次（帧溯源面批次）：store 定义零使用边的死写降级。
     seed(reg.registerMethodPass(
         "RedundantStoreEliminater",
