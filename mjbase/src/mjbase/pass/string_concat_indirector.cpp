@@ -44,59 +44,119 @@ bool isMember(const ClassSession& session, const Insn& in, Op op,
            && m.name == name && m.desc == desc;
 }
 
-/// 自描述型单实参的静态类型描述符；不认领返回 nullopt。
-std::optional<std::string_view> selfTypedArgDesc(const ClassSession& session,
-                                                 const Insn&          in)
+/// 实参链一步的值收支（cat2 记一个值）；非链指令返回 false。纯面 =
+/// 常量推入（condy 不认领——bootstrap 可抛）、原始局部装载族、二元纯
+/// 算术与比较、取负与数值转换；栈操作/调用/字段/数组/分配不入链。
+bool chainFlow(const ClassSession& session, const Insn& in, int& consume, int& produce)
 {
     const auto inRange = [](Op v, Op first, Op last) { return v >= first && v <= last; };
-    // 常量装载族（数值经窄化查询面、引用经 CP 语义面）。
+    // 常量装载族（数值经窄化查询面、引用经 CP 语义面；condy 拒收）。
     {
         ca::i32          iv = 0;
         ca::i64          lv = 0;
         float            fv = 0.0F;
         double           dv = 0.0;
         std::string_view sv;
-        if (method_rewrite_util::intValueOf(session, in, iv)) return std::string_view("I");
-        if (method_rewrite_util::longValueOf(session, in, lv)) return std::string_view("J");
-        if (method_rewrite_util::floatValueOf(session, in, fv)) return std::string_view("F");
-        if (method_rewrite_util::doubleValueOf(session, in, dv)) return std::string_view("D");
-        if (method_rewrite_util::stringValueOf(session, in, sv)) {
-            return std::string_view("Ljava/lang/String;");
+        if (method_rewrite_util::intValueOf(session, in, iv)
+            || method_rewrite_util::longValueOf(session, in, lv)
+            || method_rewrite_util::floatValueOf(session, in, fv)
+            || method_rewrite_util::doubleValueOf(session, in, dv)
+            || method_rewrite_util::stringValueOf(session, in, sv)) {
+            consume = 0;
+            produce = 1;
+            return true;
         }
     }
-    if (in.op == Op::ACONST_NULL) return std::string_view("Ljava/lang/Object;");
+    if (in.op == Op::ACONST_NULL) {
+        consume = 0;
+        produce = 1;
+        return true;
+    }
     {
         ClassSession::ConstSem cs;
         if (session.constOf(in, cs)) {
-        using K = ClassSession::ConstSem::Kind;
-        switch (cs.kind) {
-        case K::Int: return std::string_view("I");
-        case K::Long: return std::string_view("J");
-        case K::Float: return std::string_view("F");
-        case K::Double: return std::string_view("D");
-        case K::String: return std::string_view("Ljava/lang/String;");
-        case K::Class: return std::string_view("Ljava/lang/Class;");
-        case K::MethodType: return std::string_view("Ljava/lang/invoke/MethodType;");
-        case K::MethodHandle:
-            return std::string_view("Ljava/lang/invoke/MethodHandle;");
-        case K::Dynamic: break;   // condy 实参不认领
+            using K = ClassSession::ConstSem::Kind;
+            switch (cs.kind) {
+            case K::Int:
+            case K::Long:
+            case K::Float:
+            case K::Double:
+            case K::String:
+            case K::Class:
+            case K::MethodType:
+            case K::MethodHandle:
+                consume = 0;
+                produce = 1;
+                return true;
+            case K::Dynamic: return false;   // condy 实参不认领
+            }
         }
-        }
     }
-    // 局部装载族自描述原始型；引用装载（ALOAD）静态型未知不认领。
-    if (in.op == Op::ILOAD || inRange(in.op, Op::ILOAD_0, Op::ILOAD_3)) {
-        return std::string_view("I");
+    // 原始局部装载族（引用装载 ALOAD 静态型未知不入链）。
+    if ((in.op == Op::ILOAD || inRange(in.op, Op::ILOAD_0, Op::ILOAD_3))
+        || (in.op == Op::LLOAD || inRange(in.op, Op::LLOAD_0, Op::LLOAD_3))
+        || (in.op == Op::FLOAD || inRange(in.op, Op::FLOAD_0, Op::FLOAD_3))
+        || (in.op == Op::DLOAD || inRange(in.op, Op::DLOAD_0, Op::DLOAD_3))) {
+        consume = 0;
+        produce = 1;
+        return true;
     }
-    if (in.op == Op::LLOAD || inRange(in.op, Op::LLOAD_0, Op::LLOAD_3)) {
-        return std::string_view("J");
+    // 二元纯算术/移位/位/比较：两值进一出。
+    switch (in.op) {
+    case Op::IADD: case Op::ISUB: case Op::IMUL: case Op::IDIV:
+    case Op::IREM: case Op::IAND: case Op::IOR: case Op::IXOR:
+    case Op::ISHL: case Op::ISHR: case Op::IUSHR:
+    case Op::LADD: case Op::LSUB: case Op::LMUL: case Op::LDIV:
+    case Op::LREM: case Op::LAND: case Op::LOR: case Op::LXOR:
+    case Op::LSHL: case Op::LSHR: case Op::LUSHR:
+    case Op::FADD: case Op::FSUB: case Op::FMUL: case Op::FDIV:
+    case Op::FREM:
+    case Op::DADD: case Op::DSUB: case Op::DMUL: case Op::DDIV:
+    case Op::DREM:
+    case Op::LCMP: case Op::FCMPL: case Op::FCMPG: case Op::DCMPL:
+    case Op::DCMPG:
+        consume = 2;
+        produce = 1;
+        return true;
+    default: break;
     }
-    if (in.op == Op::FLOAD || inRange(in.op, Op::FLOAD_0, Op::FLOAD_3)) {
-        return std::string_view("F");
+    // 取负与数值转换：一值进出。
+    switch (in.op) {
+    case Op::INEG: case Op::LNEG: case Op::FNEG: case Op::DNEG:
+    case Op::I2L: case Op::I2F: case Op::I2D: case Op::I2B: case Op::I2C:
+    case Op::I2S:
+    case Op::L2I: case Op::L2F: case Op::L2D:
+    case Op::F2I: case Op::F2L: case Op::F2D:
+    case Op::D2I: case Op::D2L: case Op::D2F:
+        consume = 1;
+        produce = 1;
+        return true;
+    default: break;
     }
-    if (in.op == Op::DLOAD || inRange(in.op, Op::DLOAD_0, Op::DLOAD_3)) {
-        return std::string_view("D");
+    return false;
+}
+
+/// 实参纯链前向认领：自 a 起贪心收集纯链前缀（验证器保证链为自包含
+/// 表达式、净效应恰 +1 值且 append 紧随其后——链内深度不受限，binop 需
+/// 两值在栈，收尾深度必须恰 1）。返回链尾位（append 位）；空链/形状
+/// 不闭合返回 a。
+ca::usize claimArgChainFwd(const ClassSession& session, const CodeDom& dom,
+                           const std::vector<InsnId>& order, ca::usize a)
+{
+    const ca::usize n = order.size();
+    int             depth = 0;
+    ca::usize       p     = a;
+    while (p < n) {
+        const Insn* in = dom.peek(order[p]);
+        if (in == nullptr) break;
+        int consume = 0;
+        int produce = 0;
+        if (!chainFlow(session, *in, consume, produce)) break;
+        if (consume == 2 && depth < 2) return a;   // binop 缺操作数
+        depth += produce - consume;
+        ++p;
     }
-    return std::nullopt;
+    return depth == 1 ? p : a;
 }
 
 /// 追加族指令的单实参类型；非「恰一参、返回 StringBuilder」的 append 返回
@@ -193,22 +253,25 @@ mjbase::spi::PreservedAnalyses StringConcatIndirector::run(
         w.erase.push_back(order[p]);
         ++p;
 
-        // (ARG; append)+ —— 实参恰一条自描述型单指令，append 恰一参。
+        // (CHAIN; append)+ —— 实参为自包含纯计算链（反向需值抽取；栈操
+        // 作/调用/字段/数组/condy 不入链），append 恰一参。静态型取
+        // append 形参描述符——原方法经验证器，链顶值与形参匹配有保证；
+        // 链指令保留原位（改写后在更低栈深执行，maxStack 天然覆盖）。
         while (true) {
-            const Insn* arg = p < order.size() ? dom.peek(order[p]) : nullptr;
-            if (arg == nullptr) break;
-            const std::optional<std::string_view> argDesc =
-                selfTypedArgDesc(scope.session, *arg);
-            if (!argDesc.has_value()) break;
-            const Insn* app = (p + 1 < order.size()) ? dom.peek(order[p + 1]) : nullptr;
+            if (p >= order.size()) break;
+            const ca::usize chainEnd = claimArgChainFwd(scope.session, dom, order, p);
+            if (chainEnd == p) break;   // 空链：无实参或链外指令截断
+            const Insn* app = dom.peek(order[chainEnd]);
             if (app == nullptr) break;
             const std::optional<std::string_view> paramDesc =
                 appendParamDesc(scope.session, *app);
             if (!paramDesc.has_value()) break;
-            w.args.push_back(order[p]);
+            for (ca::usize q = p; q < chainEnd; ++q) {
+                w.args.push_back(order[q]);
+            }
             w.argDescs.push_back(*paramDesc);
-            w.erase.push_back(order[p + 1]);
-            p += 2;
+            w.erase.push_back(order[chainEnd]);
+            p = chainEnd + 1;
         }
         // toString 收尾（至少一次 append 才成窗——新窗起点约束同排空）。
         // INDY 落位在 toString：栈机按序执行，实参指令保留原位先压栈，

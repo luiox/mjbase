@@ -15,12 +15,16 @@ namespace mjbase::pass {
 /// append/toString 批量 erase（fallthrough 重定向链式闭合）。栈形净效应
 /// 不变（弹全部拼接实参 + 压 String），结果消费面无感。
 ///
-/// 实参认领面（v1，fail-closed）：每 append 的实参须为恰一条自描述型
-/// 单指令——ICONST 族/BIPUSH/SIPUSH/LDC-Int→I、LCONST 族/LDC2_W→J、
-/// FCONST 族→F、DCONST 族/LDC2_W→D、LDC String→Q-String、LDC Class→
-/// Q-Class、LDC MethodType/MethodHandle→对应引用型、ACONST_NULL→
-/// Q-Object。装载族（ILOAD 等）与计算形实参不认领（静态型无自描述），
-/// 整窗拒收——帧面计算形实参挂账。
+/// 实参认领面（fail-closed）：每 append 的实参为**自包含纯计算链**（反
+/// 向需值抽取，cat2 记一个值）——常量推入（ICONST 族/BIPUSH/SIPUSH/
+/// LCONST 族/FCONST 族/DCONST 族/LDC 数值与引用常量/ACONST_NULL；
+/// condy 不认领，bootstrap 有求值副作用）、原始局部装载族（ILOAD 等；
+/// ALOAD 静态型未知不入链）、二元纯算术/移位/位/比较、取负与数值转
+/// 换。栈操作/调用/字段/数组/分配不入链，需求未尽遇链外指令整窗拒收
+/// （fail-closed）。链顶值与 append 形参的匹配由原方法验证器保证，
+/// indy 实参静态型取形参描述符；链指令保留原位，改写后在更低栈深执
+/// 行（SB 接收者不再驻栈），原 maxStack 天然覆盖链内峰值；INDY 汇合
+/// 点深度 = 入口栈深 + 全部实参槽宽，帧引擎抬升兜底。
 ///
 /// 安全门：类版本 ≥ 53（Java 9，StringConcatFactory 入场线）；窗内任何
 /// 成员（含 NEW 头）锚定存活标签即拒收——分支目标进入链体在擦除后语义
