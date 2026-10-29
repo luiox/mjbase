@@ -206,10 +206,13 @@ mjbase::spi::PreservedAnalyses DeadSideEffectFreeCallRemover::run(mjbase::spi::M
     (void)mam;
     CodeDom& dom = scope.code.dom;
     if (dom.order().empty()) return mjbase::spi::PreservedAnalyses::all();
-    // handler 入口值无定义边，含异常表的方法负向结论不可靠，整件跳过
-    // （精细化挂账）。
-    if (!scope.code.exc.empty()) return mjbase::spi::PreservedAnalyses::all();
-
+    // 异常表不再整件跳过（原「handler 入口值无定义边」挂账的精细化）：
+    // 弹值消费只发生在正常流——异常抛出点栈清空，handler 入口帧由帧引擎
+    // 合成为 [exceptionRef]，exceptionRef 无指令定义，以它为种子的窗口在
+    // closeChain 处不可入链（负向结论不受异常表影响）。链区间的异常表
+    // 语义由两道门保证：区间标签门（try 端点/handler 入口锚定在 pop 或
+    // 非头链成员即拒收窗口）+ 应用面 eraseBatch 前置校验（成员被 exc
+    // 边界锚定 = 链头形态，整组在任何变更之前拒绝，组级原子无半删）。
     const jbc::analysis::MethodSig sig{
         (scope.access & mjbase::hierarchy::kAccStatic) != 0, scope.desc};
     const MethodDefUse du =
@@ -337,19 +340,21 @@ mjbase::spi::PreservedAnalyses DeadSideEffectFreeCallRemover::run(mjbase::spi::M
 
     if (removals.empty()) return mjbase::spi::PreservedAnalyses::all();
 
-    // 应用：组内按顺序删除（fallthrough 重定向链式后移）；任一步失败
-    // 停止后续（防御路径——链成员可达且有消费后继）。
-    bool      modified = false;
+    // 应用：组级原子 eraseBatch——前置全量校验（成员被异常表边界锚定、
+    // 批内末位无顺序后继均整组 StillUsed，失败发生在任何变更之前），
+    // 校验过单趟重建（批内成员的跳转引用改锚到其后第一条批外存活指令，
+    // 链头入跳=链+pop 净零栈效应，直落等价）。被拒窗口保持原样，其余
+    // 窗口继续应用。
+    bool modified = false;
     jbc::ir::CodeEditor editor(scope.code);
     for (const std::vector<InsnId>& group : removals) {
-        for (const InsnId id : group) {
-            if (editor.erase(id, jbc::ir::CodeEditor::ErasePolicy::kRetargetToFallthrough)
-                    .is_err()) {
-                return modified ? mjbase::spi::PreservedAnalyses::none()
-                                : mjbase::spi::PreservedAnalyses::all();
-            }
-            modified = true;
+        if (editor
+                .eraseBatch(group,
+                            jbc::ir::CodeEditor::ErasePolicy::kRetargetToFallthrough)
+                .is_err()) {
+            continue;
         }
+        modified = true;
     }
     return modified ? mjbase::spi::PreservedAnalyses::none()
                     : mjbase::spi::PreservedAnalyses::all();
