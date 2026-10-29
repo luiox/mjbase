@@ -22,8 +22,7 @@
 /// 推理）；「哪些指令形态算状态装载/常量折叠步/状态写入」是**形态表**
 /// （构造期可注入的数据，默认表只是保守首版）。新变体 = 加表行或调规格，
 /// 不改引擎；若某混淆器家族的形态表膨胀到自成体系，形态表整体外移到
-/// 配方层，引擎留在本仓。已知挂账的变体类：混合操作数链（部分折叠步
-/// 常量在左、部分在右）。
+/// 配方层，引擎留在本仓。
 ///
 /// ## 相对状态更新（s += D 分发形态）
 ///
@@ -54,10 +53,12 @@
 /// 扁平化混淆器把方法的真实功能块拆散成平级块，用状态机串联：
 ///
 /// - 状态变量 `s`（int 局部）：各功能块尾部写常量状态后 `goto D`；
-/// - 分发块 `D`（单汇合块）：`iload s`（或 `iload s; ldc C; iadd/isub/ixor`
-///   单步常量偏移形态）收尾于 lookupswitch/tableswitch，按 `fold(s)` 派发到
-///   功能块入口；镜像变体的操作数序相反（`ldc C; iload s; …; binop` 常量
-///   列在装载之下，`fold(s) = C op s` 型），引擎按整链一致识别两形态；
+/// - 分发块 `D`（单汇合块）：`iload s` 混常量折叠步收尾于
+///   lookupswitch/tableswitch，按 `fold(s)` 派发到功能块入口。操作数序
+///   通用化：链上推值（常量与装载，装载恰一）任意排布——常量全在右
+///   （`iload s; ldc C; binop`）、全在左（`ldc C; iload s; …; binop`
+///   镜像）与混合操作数链（装载居中）同族识别，语义由推值栈模拟统一
+///   求值；
 /// - 功能块尾再写下一状态回到 D——CFG 成环，反编译器只能渲染成
 ///   `while(true) + switch` 状态机形态。
 ///
@@ -132,9 +133,10 @@ public:
                                           const std::vector<jbc::ir::InsnId>& order,
                                           ca::usize w, ca::i32& k)>;
 
-    /// 分发操作数折叠规格：`iload s` 之后至多 maxSteps 个
-    /// `intConst C; binop∈binops` 折叠步（iload 在前；反向
-    /// `ldc C; iload s; …` 不在默认面）。
+    /// 分发操作数折叠规格：自 switch 向上至多 maxSteps 个
+    /// `binop∈binops`，再向下 |binops|+1 个推值（intConst 或 `iload s`
+    /// 恰一）——常量全在右、全在左（镜像）与混合操作数链（装载居中）
+    /// 由推值栈模拟统一识别。
     struct DispatchSpec
     {
         ca::u8                     maxSteps = 1;
