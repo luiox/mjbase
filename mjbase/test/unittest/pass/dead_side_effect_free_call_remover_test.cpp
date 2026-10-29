@@ -1,6 +1,7 @@
 // DeadSideEffectFreeCallRemover：白名单无副作用调用 + 纯计算链被 pop
 // 丢弃时整链删除——直弃/隔运算/长整尾链、无调用纯链不动、非白名单调用
-// 不动、外部消费逐出、区间门（外来指令/内部标签）、异常表跳过、幂等。
+// 不动、外部消费逐出、区间门（外来指令/内部标签）、异常表逐窗口面
+// （try 外/try 内删除、边界锚 pop/链头拒收）、幂等。
 #include <gtest/gtest.h>
 
 #include <vector>
@@ -157,8 +158,89 @@ TEST(DeadSideEffectFreeCallRemoverTest, interiorLabelBlocksRange)
     EXPECT_EQ(ops[3], Op::INVOKESTATIC);
 }
 
-// ── 含异常表的方法整件跳过（handler 入口值无定义边）──
-TEST(DeadSideEffectFreeCallRemoverTest, excTableSkips)
+// ── 异常表方法：链在保护区之外 → 整删，异常表保持原样 ──
+// （bindHere 锚「最近一条已追加指令」，边界先后于指令追加而绑定。）
+TEST(DeadSideEffectFreeCallRemoverTest, excChainOutsideTryRemoved)
+{
+    DomFixture fx("t/F", "m", "()V", 6, 1, [&](Body& b) {
+        jbc::ir::LabelId start = b.label();
+        jbc::ir::LabelId end   = b.label();
+        jbc::ir::LabelId hnd   = b.label();
+        b.invokeStatic("java/lang/System", "nanoTime", "()J");
+        b.pop2();
+        b.iconst_1();
+        b.bindHere(start);
+        b.pop();
+        b.vreturn();
+        b.bindHere(end);
+        b.pop();
+        b.bindHere(hnd);
+        b.vreturn();
+        b.tryCatch(start, end, hnd, 0);
+    });
+    const auto pa = fx.run(mjbase::pass::DeadSideEffectFreeCallRemover{});
+    EXPECT_TRUE(pa.changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 5u);
+    EXPECT_EQ(ops[0], Op::ICONST_1);
+    ASSERT_EQ(fx.unit().exc.size(), 1u);
+}
+
+// ── 异常表方法：链在保护区内、try 端点锚在删除面之外的存活指令 → 整删 ──
+TEST(DeadSideEffectFreeCallRemoverTest, excChainInsideTryRemoved)
+{
+    DomFixture fx("t/F", "m", "()V", 6, 1, [&](Body& b) {
+        jbc::ir::LabelId start = b.label();
+        jbc::ir::LabelId end   = b.label();
+        jbc::ir::LabelId hnd   = b.label();
+        b.iconst_1();
+        b.bindHere(start);
+        b.pop();
+        b.invokeStatic("java/lang/System", "nanoTime", "()J");
+        b.pop2();
+        b.vreturn();
+        b.bindHere(end);
+        b.pop();
+        b.bindHere(hnd);
+        b.vreturn();
+        b.tryCatch(start, end, hnd, 0);
+    });
+    const auto pa = fx.run(mjbase::pass::DeadSideEffectFreeCallRemover{});
+    EXPECT_TRUE(pa.changed());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 5u);
+    EXPECT_EQ(ops[0], Op::ICONST_1);
+    ASSERT_EQ(fx.unit().exc.size(), 1u);
+}
+
+// ── 异常表边界锚定在 pop（try 起点即链尾）→ 区间标签门拒收 ──
+TEST(DeadSideEffectFreeCallRemoverTest, excBoundaryOnPopKept)
+{
+    DomFixture fx("t/F", "m", "()V", 6, 1, [&](Body& b) {
+        jbc::ir::LabelId start = b.label();
+        jbc::ir::LabelId end   = b.label();
+        jbc::ir::LabelId hnd   = b.label();
+        b.invokeStatic("java/lang/System", "nanoTime", "()J");
+        b.pop2();
+        b.bindHere(start);
+        b.iconst_1();
+        b.vreturn();
+        b.bindHere(end);
+        b.pop();
+        b.bindHere(hnd);
+        b.vreturn();
+        b.tryCatch(start, end, hnd, 0);
+    });
+    const auto pa = fx.run(mjbase::pass::DeadSideEffectFreeCallRemover{});
+    EXPECT_TRUE(pa.areAllPreserved());
+    const std::vector<Op> ops = opsOf(fx);
+    ASSERT_EQ(ops.size(), 6u);
+    EXPECT_EQ(ops[0], Op::INVOKESTATIC);
+}
+
+// ── 异常表边界锚定在链头 → 应用面 eraseBatch 前置校验整组拒绝（组级
+//    原子，无半删）──
+TEST(DeadSideEffectFreeCallRemoverTest, excBoundaryOnChainHeadKept)
 {
     DomFixture fx("t/F", "m", "()V", 6, 1, [&](Body& b) {
         jbc::ir::LabelId start = b.label();
@@ -167,9 +249,8 @@ TEST(DeadSideEffectFreeCallRemoverTest, excTableSkips)
         b.invokeStatic("java/lang/System", "nanoTime", "()J");
         b.bindHere(start);
         b.pop2();
-        b.bindHere(end);
         b.vreturn();
-        // handler 体（弹 throwable 后返回）。
+        b.bindHere(end);
         b.pop();
         b.bindHere(hnd);
         b.vreturn();
