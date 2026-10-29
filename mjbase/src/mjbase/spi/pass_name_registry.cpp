@@ -41,6 +41,7 @@
 #include "mjbase/pass/dead_local_store_remover.hpp"
 #include "mjbase/pass/dead_side_effect_free_call_remover.hpp"
 #include "mjbase/pass/string_concat_indirector.hpp"
+#include "mjbase/pass/uncontended_monitor_eliminator.hpp"
 #include "mjbase/pass/redundant_store_eliminater.hpp"
 #include "mjbase/pass/store_load_relay_eliminator.hpp"
 #include "mjbase/pass/ref_copy_propagator.hpp"
@@ -371,6 +372,11 @@ PassNameRegistry makeDefaultRegistry()
         "StringConcatIndirector",
         [] { return std::make_unique<mjbase::pass::StringConcatIndirector>(); },
         "Rewrite straight-line StringBuilder append chains into invokedynamic makeConcatWithConstants."));
+    // P1 批：方法内受限监视器对摘除（junk synchronized 无害化）。
+    seed(reg.registerMethodPass(
+        "UncontendedMonitorEliminater",
+        [] { return std::make_unique<mjbase::pass::UncontendedMonitorEliminater>(); },
+        "Remove confined monitor enter/exit pairs whose object never escapes the method."));
     // opt pass 波次（帧溯源面批次）：store 定义零使用边的死写降级。
     seed(reg.registerMethodPass(
         "RedundantStoreEliminater",

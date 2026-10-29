@@ -793,5 +793,21 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   1 JVM 真跑门（javac --release 8 编译 SB 链样本，v52 门负证 + 抬 major
   过门折叠，变换前后真机执行 stdout 逐字节一致且走 StringConcatFactory
   bootstrap）。全量 2017 绿（2014 过 + 3 既有跳过）。
+- [x] UncontendedMonitorEliminater（P1 批次件，新增件）：方法内受限监视
+  器对整组摘除——混淆器注入的 junk synchronized 块无害化。识别形逐指令
+  相邻：[NEW X; DUP; X.<init>()V; ASTORE L] … [ALOAD L; MONITORENTER]
+  … [ALOAD L; MONITOREXIT]，整组 8 指令 eraseBatch 组级原子摘除。组按
+  定义圈定而非按槽位（ASTORE 定义的 Local 使用边恰 2 且都是监控接收
+  者、读点到达定义恰为该唯一定义、use 全集恰为两读两监控）——同一槽
+  位被多组先后复用时各组独立成组逐一摘除。安全门全有全无 fail-closed：
+  <init> 须 ()V（带实参形态的实参指令在窗外，擦除后栈失衡拒收，带实参
+  精化挂账）；组成员或 enter..exit 区间内部锚定存活标签（分支/异常表）
+  整组拒收（跳入体内绕过 enter 的路径原类触发 IMSE，摘除即语义变化）；
+  监控点栈定义边须全部汇于本 ASTORE；方法参数接收者（def = Parameter）
+  天然失配；analyzeDefUse 失败/截断整方法放弃。语义论证：对象身份不出
+  方法，锁状态对他线程不可观测，单线程 monitor 簿记（重入计数/持锁态）
+  亦不可观测；NEW 非空无 NPE。maxStack/maxLocals 不变。9 单测（junk 摘
+  除/参数接收者拒收/逃逸读拒收/体内标签拒收/带参 init 拒收/不成对拒收/
+  同槽两组双摘/幂等写回/注册面），全量 2023 绿（2023 过 + 3 既有跳过）。
 - 旧 matcher 与 tmatcher 的合并裁决（集成期）。
 - 层次图 `.ihc` 序列化：暂不迁，出现真实消费方再按 libjbc 会话模型重设计。
