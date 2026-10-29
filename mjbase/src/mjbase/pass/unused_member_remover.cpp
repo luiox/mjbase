@@ -291,7 +291,7 @@ mjbase::reference::GlobalReachability buildRetainedClosure(
 {
     auto&             index            = am.getResult<mjbase::reference::ReferenceIndexAnalysis>(container);
     auto&             callGraph        = am.getResult<mjbase::reference::CallGraphAnalysis>(container);
-    auto&             resolvedCallGraph = am.getResult<mjbase::asm_classpath::ResolvedCallGraphAnalysis>(container);
+    auto&             resolvedCallGraph = am.getResult<mjbase::reference::ResolvedCallGraphAnalysis>(container);
 
     mjbase::reference::GlobalReachabilityOptions options;
     options.callExpansion = mjbase::reference::GlobalReachabilityCallExpansion::Resolved;
@@ -389,7 +389,7 @@ mjbase::spi::PreservedAnalyses UnusedClassRemover::run(mjbase::model::ResourceCo
 
     auto& index             = am.getResult<mjbase::reference::ReferenceIndexAnalysis>(container);
     auto& callGraph         = am.getResult<mjbase::reference::CallGraphAnalysis>(container);
-    auto& resolvedCallGraph = am.getResult<mjbase::asm_classpath::ResolvedCallGraphAnalysis>(container);
+    auto& resolvedCallGraph = am.getResult<mjbase::reference::ResolvedCallGraphAnalysis>(container);
 
     mjbase::reference::GlobalReachabilityOptions options;
     options.callExpansion = mjbase::reference::GlobalReachabilityCallExpansion::Resolved;

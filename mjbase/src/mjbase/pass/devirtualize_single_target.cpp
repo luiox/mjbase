@@ -15,7 +15,7 @@
 #include "jbc/ir/units.hpp"
 #include "libca/core/tag_cast.hpp"
 
-#include "mjbase/asm/classpath/resolved_call_graph.hpp"
+#include "mjbase/reference/resolved_call_graph.hpp"
 #include "mjbase/hierarchy/class_hierarchy.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/pass/method_rewrite_util.hpp"
@@ -70,12 +70,12 @@ bool isDevirtualizableOpcode(ca::i32 opcode) noexcept
 
 /// 站点边收集：与该引用同坐标（insnIndex + opcode + 编码目标）的全部 CHA 边。
 /// 返回 nullptr 表示非唯一（0 或 ≥2 条）——唯一目标证明的直接判据。
-const mjbase::asm_classpath::ResolvedCallEdge* singleSiteEdge(
-    const mjbase::asm_classpath::ResolvedCallGraph& graph, const MethodReference& ref)
+const mjbase::reference::ResolvedCallEdge* singleSiteEdge(
+    const mjbase::reference::ResolvedCallGraph& graph, const MethodReference& ref)
 {
     const auto& edges =
         graph.edgesFrom(ref.site.sourceClass, ref.site.sourceMethod, ref.site.sourceDesc);
-    const mjbase::asm_classpath::ResolvedCallEdge* found = nullptr;
+    const mjbase::reference::ResolvedCallEdge* found = nullptr;
     ca::usize                                      count = 0;
     for (const auto& edge : edges) {
         if (edge.site.insnIndex != ref.site.insnIndex || edge.site.opcode != ref.site.opcode) {
@@ -96,7 +96,7 @@ const mjbase::asm_classpath::ResolvedCallEdge* singleSiteEdge(
 /// 阶段一：分析面规划。逐引用过分析门，产出按类分组的站点集合。
 /// 门语义见 pass 头注「改写与放弃清单」；任何一门不过即放弃该站点。
 std::vector<PlannedClass> planSites(const mjbase::reference::ReferenceIndex&      index,
-                                    const mjbase::asm_classpath::ResolvedCallGraph& graph,
+                                    const mjbase::reference::ResolvedCallGraph& graph,
                                     const mjbase::hierarchy::ClassHierarchy&        ch)
 {
     std::unordered_map<std::string_view, ca::usize> byName;
@@ -248,8 +248,8 @@ mjbase::spi::PreservedAnalyses DevirtualizeSingleTarget::run(
     mjbase::model::ResourceContainer& container, mjbase::spi::GlobalAnalysisManager& am)
 {
     auto&     index  = am.getResult<mjbase::reference::ReferenceIndexAnalysis>(container);
-    auto&     graph  = am.getResult<mjbase::asm_classpath::ResolvedCallGraphAnalysis>(container);
-    auto&     bundle = am.getResult<mjbase::asm_classpath::HierarchyBundleAnalysis>(container);
+    auto&     graph  = am.getResult<mjbase::reference::ResolvedCallGraphAnalysis>(container);
+    auto&     bundle = am.getResult<mjbase::reference::HierarchyBundleAnalysis>(container);
     const mjbase::hierarchy::ClassHierarchy& ch = bundle->classHierarchy();
 
     std::vector<PlannedClass> planned = planSites(index, graph, ch);

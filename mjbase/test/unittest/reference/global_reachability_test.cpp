@@ -322,8 +322,8 @@ TEST(MjReachabilityTest, resolvedAnalysisExpandsVirtualOverrideTargets)
     GlobalAnalysisManager    gam(arena);
     gam.registerAnalysis<mjbase::reference::ReferenceIndexAnalysis>();
     gam.registerAnalysis<mjbase::reference::CallGraphAnalysis>();
-    gam.registerAnalysis<mjbase::asm_classpath::HierarchyBundleAnalysis>();
-    gam.registerAnalysis<mjbase::asm_classpath::ResolvedCallGraphAnalysis>();
+    gam.registerAnalysis<mjbase::reference::HierarchyBundleAnalysis>();
+    gam.registerAnalysis<mjbase::reference::ResolvedCallGraphAnalysis>();
     gam.registerAnalysis<mjbase::reference::GlobalReachabilityAnalysis>();
     gam.registerAnalysis<mjbase::reference::ResolvedGlobalReachabilityAnalysis>();
 

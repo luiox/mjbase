@@ -127,7 +127,7 @@ struct CodeUnit;
 class ChangeSet;
 }   // namespace jbc::ir
 
-namespace mjbase::analysis {
+namespace mjbase::asm_analyzer {
 class AliasAnalysis;
 }   // namespace mjbase::analysis
 
@@ -490,7 +490,7 @@ public:
 
 private:
     void indexSession(jbc::ir::ClassSession& session,
-                      const mjbase::analysis::AliasAnalysis* aliases);
+                      const mjbase::asm_analyzer::AliasAnalysis* aliases);
     /// @brief 类级事实面：类声明 + 超/接口 + 类级元数据类型引用（§35.4 补丁面）。
     void indexClassHeader(jbc::ir::ClassSession&  session,
                           std::string_view        className,
@@ -514,12 +514,12 @@ private:
                         std::string_view                       methodName,
                         std::string_view                       methodDesc,
                         std::string_view                       className,
-                        const mjbase::analysis::AliasAnalysis* aliases);
+                        const mjbase::asm_analyzer::AliasAnalysis* aliases);
     void indexMethodBody(jbc::ir::ClassSession&           session,
                          const jbc::ir::CodeUnit&         code,
                          std::string_view                 className,
                          const jbc::ir::MethodUnit&       method,
-                         const mjbase::analysis::AliasAnalysis* aliases);
+                         const mjbase::asm_analyzer::AliasAnalysis* aliases);
     /// @brief 摘除一个方法成员的全部事实：声明 + 以 (类, 成员) 为 source 的引用。
     void dropMethodFacts(std::string_view className, std::string_view name,
                          std::string_view desc);

@@ -12,7 +12,7 @@
 ///   同族，链式反射 forName→getMethod→invoke 需要多轮）。
 /// - 合并 fail-closed：冲突值折损 Unknown（经 mergeAliasValues 的别名格判定，
 ///   相等反射值在控制流合并点存活）。
-/// - 消费 alias 契约：形参/this/字段返回传播经 mjbase::analysis::AliasAnalysis
+/// - 消费 alias 契约：形参/this/字段返回传播经 mjbase::asm_analyzer::AliasAnalysis
 ///   查询（param:/this:/field:/class:/string: 身份，文本内容寻址）。
 ///
 /// 消费方：reference_index（反射执行事实的接收者快照）与
@@ -33,7 +33,7 @@
 #include "jbc/core/opcode.hpp"
 #include "jbc/ir/units.hpp"
 
-namespace mjbase::analysis {
+namespace mjbase::asm_analyzer {
 class AliasAnalysis;
 }   // namespace mjbase::analysis
 
@@ -155,7 +155,7 @@ struct ReflectionQueryContext
     std::string_view                      name;       ///< 所属方法（alias 查询键）
     std::string_view                      desc;       ///< 所属方法描述符
     bool                                  isStatic = false;
-    const mjbase::analysis::AliasAnalysis* aliases  = nullptr;
+    const mjbase::asm_analyzer::AliasAnalysis* aliases  = nullptr;
 };
 
 /// @brief 计算方法内反射数据流快照（域引擎 + 迭代探测-注入 + FrameQuery 收口）。

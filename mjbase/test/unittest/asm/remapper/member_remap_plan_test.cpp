@@ -24,7 +24,7 @@
 #include "jbc/ir/units.hpp"
 #include "jbc/type/signature.hpp"
 
-#include "mjbase/analysis/alias_analysis.hpp"
+#include "mjbase/asm/analyzer/alias_analysis.hpp"
 #include "mjbase/asm/remapper/mapping_remapper.hpp"
 #include "mjbase/asm/remapper/member_remap_plan.hpp"
 #include "mjbase/asm/remapper/member_remapper.hpp"

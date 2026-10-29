@@ -10,7 +10,7 @@
 #include <unordered_set>
 #include <utility>
 
-#include "mjbase/analysis/alias_analysis.hpp"
+#include "mjbase/asm/analyzer/alias_analysis.hpp"
 #include "mjbase/asm/remapper/resource_remapper.hpp"
 #include "mjbase/mapping/identifier_util.hpp"
 
@@ -319,7 +319,7 @@ RenamerRunResult RenamerEngine::run(mjbase::model::ResourceContainer&   containe
         auto batch = std::move(stream).unwrap();
         for (auto& proposal : batch) {
             if (proposal.source.empty()) {
-                proposal.source = mjbase::analysis::aliasInterned(provider->name());
+                proposal.source = mjbase::asm_analyzer::aliasInterned(provider->name());
             }
             proposals.push_back(std::move(proposal));
         }
@@ -790,10 +790,10 @@ RenamerRunResult RenamerEngine::run(mjbase::model::ResourceContainer&   containe
                                const std::string& newName, bool fromClosure) {
         const auto& proposal = all[idx];
         return AcceptedChange{kind,
-                              mjbase::analysis::aliasInterned(owner),
-                              mjbase::analysis::aliasInterned(oldName),
-                              mjbase::analysis::aliasInterned(desc),
-                              mjbase::analysis::aliasInterned(newName),
+                              mjbase::asm_analyzer::aliasInterned(owner),
+                              mjbase::asm_analyzer::aliasInterned(oldName),
+                              mjbase::asm_analyzer::aliasInterned(desc),
+                              mjbase::asm_analyzer::aliasInterned(newName),
                               proposal.source,
                               proposal.confidence,
                               fromClosure,

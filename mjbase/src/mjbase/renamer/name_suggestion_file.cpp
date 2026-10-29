@@ -12,12 +12,12 @@
 #include "libca/json/json_value.hpp"
 #include "libca/json/json_writer.hpp"
 
-#include "mjbase/analysis/alias_analysis.hpp"
+#include "mjbase/asm/analyzer/alias_analysis.hpp"
 
 namespace mjbase::renamer {
 namespace {
 
-using analysis::aliasInterned;
+using asm_analyzer::aliasInterned;
 
 ca::str::Utf8StringRef refOf(const char* text)
 {
@@ -330,7 +330,7 @@ ca::core::Result<NameSuggestionFile, SuggestionFileError> parseDocument(
     }
 
     NameSuggestionFile file;
-    file.source = analysis::aliasInterned(viewOf(source->as_string()));
+    file.source = asm_analyzer::aliasInterned(viewOf(source->as_string()));
 
     ca::usize index = 0;
     for (const auto& proposalValue : proposals->as_array()) {
@@ -417,10 +417,10 @@ ca::core::Result<NameSuggestionFile, SuggestionFileError> parseDocument(
             confidenceValue,
             std::string_view{});   // source 留空：由 provider 回填文件顶层 source
         if (rationaleValue.unwrap() != nullptr) {
-            proposal.rationale = analysis::aliasInterned(viewOf(rationaleValue.unwrap()->as_string()));
+            proposal.rationale = asm_analyzer::aliasInterned(viewOf(rationaleValue.unwrap()->as_string()));
         }
         if (evidenceValue.unwrap() != nullptr) {
-            proposal.evidence = analysis::aliasInterned(viewOf(evidenceValue.unwrap()->as_string()));
+            proposal.evidence = asm_analyzer::aliasInterned(viewOf(evidenceValue.unwrap()->as_string()));
         }
         file.proposals.push_back(std::move(proposal));
         ++index;
@@ -578,7 +578,7 @@ FileSuggestionProvider::FileSuggestionProvider(NameSuggestionFile file)
 std::string_view FileSuggestionProvider::name() const
 {
     // "suggestion-file:<source>"（进程级驻留；同一 source 恒等视图）。
-    return analysis::aliasInterned("suggestion-file:" + std::string(file_.source));
+    return asm_analyzer::aliasInterned("suggestion-file:" + std::string(file_.source));
 }
 
 ca::core::Result<std::vector<NameProposal>, std::string> FileSuggestionProvider::propose(

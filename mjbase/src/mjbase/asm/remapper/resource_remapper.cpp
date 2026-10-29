@@ -9,7 +9,7 @@
 #include "jbc/core/writer.hpp"
 #include "jbc/ir/units.hpp"
 
-#include "mjbase/analysis/alias_analysis.hpp"
+#include "mjbase/asm/analyzer/alias_analysis.hpp"
 #include "mjbase/jar/manifest.hpp"
 #include "mjbase/jasm/classfile_utf8.hpp"
 #include "mjbase/model/resource_model.hpp"
@@ -409,8 +409,8 @@ Result<bool, RemapError> applyResourceRemapPlan(model::ResourceContainer& contai
 
     // 反射别名闭包只在反射字符串面开启时构建（消费面只有
     // 反射轨道，此处惰性化是纯性能口径，结果语义不变）。
-    mjbase::analysis::AliasAnalysis aliases;
-    const analysis::AliasAnalysis*  aliasesPtr = nullptr;
+    mjbase::asm_analyzer::AliasAnalysis aliases;
+    const asm_analyzer::AliasAnalysis*  aliasesPtr = nullptr;
     if (policy.reflectionStrings) {
         aliases.buildReflectionClosure(container);
         aliasesPtr = &aliases;

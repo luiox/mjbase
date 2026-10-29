@@ -14,21 +14,21 @@
 
 #include "jbc/core/opcode.hpp"
 
-#include "class_bytes_builder.hpp"
-#include "mjbase/analysis/alias_analysis.hpp"
+#include "analysis/class_bytes_builder.hpp"
+#include "mjbase/asm/analyzer/alias_analysis.hpp"
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_model.hpp"
 
 using jbc::core::Op;
-using mjbase::analysis::AliasAnalysis;
-using mjbase::analysis::AliasFrame;
-using mjbase::analysis::AliasMethodSummary;
-using mjbase::analysis::AliasValue;
-using mjbase::analysis::AliasValueKind;
-using mjbase::analysis::aliasInterned;
-using mjbase::analysis::aliasMemberKey;
-using mjbase::analysis::mergeAliasFrames;
-using mjbase::analysis::mergeAliasValues;
+using mjbase::asm_analyzer::AliasAnalysis;
+using mjbase::asm_analyzer::AliasFrame;
+using mjbase::asm_analyzer::AliasMethodSummary;
+using mjbase::asm_analyzer::AliasValue;
+using mjbase::asm_analyzer::AliasValueKind;
+using mjbase::asm_analyzer::aliasInterned;
+using mjbase::asm_analyzer::aliasMemberKey;
+using mjbase::asm_analyzer::mergeAliasFrames;
+using mjbase::asm_analyzer::mergeAliasValues;
 using mjbase::analysis::test_support::Bytes;
 using mjbase::analysis::test_support::ClassBytesBuilder;
 using mjbase::analysis::test_support::CodeEmit;

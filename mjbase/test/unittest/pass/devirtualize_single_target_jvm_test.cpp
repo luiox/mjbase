@@ -13,7 +13,7 @@
 
 #include "libca/core/tag_cast.hpp"
 
-#include "mjbase/asm/classpath/resolved_call_graph.hpp"
+#include "mjbase/reference/resolved_call_graph.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/pass/devirtualize_single_target.hpp"
 #include "mjbase/reference/global_reachability.hpp"
@@ -105,8 +105,8 @@ void registerAnalyses(mjbase::spi::GlobalAnalysisManager& gam)
 {
     gam.registerAnalysis<mjbase::reference::ReferenceIndexAnalysis>();
     gam.registerAnalysis<mjbase::reference::CallGraphAnalysis>();
-    gam.registerAnalysis<mjbase::asm_classpath::HierarchyBundleAnalysis>();
-    gam.registerAnalysis<mjbase::asm_classpath::ResolvedCallGraphAnalysis>();
+    gam.registerAnalysis<mjbase::reference::HierarchyBundleAnalysis>();
+    gam.registerAnalysis<mjbase::reference::ResolvedCallGraphAnalysis>();
 }
 
 constexpr const char* kClassNames[] = {"Main", "Runner", "Runner2", "Counter", "Helper"};

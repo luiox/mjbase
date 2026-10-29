@@ -5,7 +5,7 @@
 /// token）。
 ///
 /// - 成员键走跨类身份契约："owner\x1fname\x1fdesc" 拼接串键换
-///   mjbase::analysis::aliasMemberKey 建的 MemberKey（进程级内容寻址驻留，
+///   mjbase::asm_analyzer::aliasMemberKey 建的 MemberKey（进程级内容寻址驻留，
 ///   等值即内容等值）；类键用表私有 KeyPool 驻留 id。不发明跨模块字符串键。
 /// - 字符串面按 mjbase 约定改 std::string_view 借用视图（表私有 KeyPool
 ///   驻留，寿命 = 表对象寿命）；渲染产物（printReadable 拼接）是值返回。

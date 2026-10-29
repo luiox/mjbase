@@ -10,7 +10,7 @@
 #include "jbc/core/cp_resolve.hpp"
 #include "jbc/core/opcode.hpp"
 
-#include "mjbase/analysis/alias_analysis.hpp"
+#include "mjbase/asm/analyzer/alias_analysis.hpp"
 #include "mjbase/jasm/classfile_utf8.hpp"
 #include "mjbase/reference/reflection_interpreter.hpp"
 
@@ -1134,7 +1134,7 @@ bool setLdcString(ClassSession& session, CodeUnit& code, InsnId id, std::string_
 /// 直线回溯最近的字符串 LDC（CodeDom 无栈帧视图，最近串即实参产点近似）。
 bool remapReflectionNames(const RemapCtx& ctx, CodeUnit& code, std::string_view className,
                           std::string_view methodName, std::string_view methodDesc,
-                          bool isStatic, const analysis::AliasAnalysis* aliases)
+                          bool isStatic, const asm_analyzer::AliasAnalysis* aliases)
 {
     bool changed = false;
 
@@ -1386,7 +1386,7 @@ Result<bool, RemapError> remapMethodBody(const RemapCtx& ctx, ca::usize methodId
                                          std::string_view methodName,
                                          std::string_view methodDesc, bool isStatic,
                                          const RemapPolicy&             policy,
-                                         const analysis::AliasAnalysis* aliases)
+                                         const asm_analyzer::AliasAnalysis* aliases)
 {
     const bool needBytecode = policy.bytecode;
     const bool needReflect  = policy.reflectionStrings;
@@ -1491,7 +1491,7 @@ RemapPolicy RemapPolicy::all()
 Result<bool, RemapError> applyMemberRemapPlan(jbc::ir::ClassSession&      session,
                                               const MemberRemapPlan&      plan,
                                               const RemapPolicy&          policy,
-                                              const analysis::AliasAnalysis* aliases)
+                                              const asm_analyzer::AliasAnalysis* aliases)
 {
     if (plan.empty()) return Ok(false);
     ClassFile&   cf = session.backing();

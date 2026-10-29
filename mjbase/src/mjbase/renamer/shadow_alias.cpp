@@ -10,7 +10,7 @@
 #include "jhasm/util/escape_util.hpp"
 #include "libca/crypto/random.hpp"
 
-#include "mjbase/analysis/alias_analysis.hpp"
+#include "mjbase/asm/analyzer/alias_analysis.hpp"
 #include "mjbase/analysis/class_scan.hpp"
 #include "mjbase/hierarchy/summary.hpp"
 #include "mjbase/mapping/identifier_util.hpp"
@@ -18,8 +18,8 @@
 namespace mjbase::renamer {
 namespace {
 
-using analysis::aliasInterned;
-using analysis::aliasMemberKey;
+using asm_analyzer::aliasInterned;
+using asm_analyzer::aliasMemberKey;
 
 std::string toStd(std::string_view value)
 {

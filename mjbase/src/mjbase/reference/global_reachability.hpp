@@ -34,7 +34,7 @@
 #include "libca/core/datatype.hpp"
 
 #include "mjbase/asm/classpath/call_graph.hpp"
-#include "mjbase/asm/classpath/resolved_call_graph.hpp"
+#include "resolved_call_graph.hpp"
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/reference/reflection_binding_analyzer.hpp"
 #include "mjbase/reference/reference_index.hpp"
@@ -141,7 +141,7 @@ public:
     /// `resolvedCallGraph` edges instead of exact direct edges. Other closure
     /// rules are identical to the direct build overload.
     void build(const ReferenceIndex& index, const mjbase::asm_classpath::CallGraph& callGraph,
-               const mjbase::asm_classpath::ResolvedCallGraph& resolvedCallGraph,
+               const mjbase::reference::ResolvedCallGraph& resolvedCallGraph,
                const GlobalReachabilityOptions&                options = {});
 
     /// @brief Remove all reachable sets and snapshots.
@@ -187,7 +187,7 @@ public:
 private:
     void buildInternal(const ReferenceIndex& index,
                        const mjbase::asm_classpath::CallGraph& callGraph,
-                       const mjbase::asm_classpath::ResolvedCallGraph* resolvedCallGraph,
+                       const mjbase::reference::ResolvedCallGraph* resolvedCallGraph,
                        const GlobalReachabilityOptions& options);
 
     bool markClass(std::string_view owner);
@@ -243,7 +243,7 @@ struct ResolvedGlobalReachabilityAnalysis
     {
         return inv.invalidate<ReferenceIndexAnalysis>(container, pa) ||
                inv.invalidate<CallGraphAnalysis>(container, pa) ||
-               inv.invalidate<mjbase::asm_classpath::ResolvedCallGraphAnalysis>(container, pa);
+               inv.invalidate<mjbase::reference::ResolvedCallGraphAnalysis>(container, pa);
     }
 };
 
@@ -286,7 +286,7 @@ struct ReflectionWeaveReport
 /// `GlobalReachability` 的 resolved 扩展模式读取 `edgesFrom`，织入后反射边与
 /// 静态 CHA 边同路参与可达闭包；不改变两个既有设施任何既有接口语义。
 ReflectionWeaveReport weaveReflectionBindings(
-    mjbase::asm_classpath::ResolvedCallGraph& graph, const ReferenceIndex& index,
+    mjbase::reference::ResolvedCallGraph& graph, const ReferenceIndex& index,
     const std::vector<ReflectionBinding>& bindings);
 
 }   // namespace mjbase::reference
