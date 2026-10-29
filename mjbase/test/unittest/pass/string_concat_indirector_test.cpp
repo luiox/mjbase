@@ -1,6 +1,6 @@
 // StringConcatIndirector：StringBuilder 拼接链 indy 化简——javac 9+ 形态
-// 折叠、无参链、多窗 BSM 同形复用、计算实参/窗内标签/异类 NEW/版本门拒收、
-// 幂等与写回、注册面。
+// 折叠、无参链、多窗 BSM 同形复用、计算实参链/单指令混合正面、栈操作
+// 实参/窗内标签/异类 NEW/版本门拒收、幂等与写回、注册面。
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -209,19 +209,87 @@ TEST(StringConcatIndirectorTest, twinChainsShareBsm)
     EXPECT_EQ(bsm->entries.size(), 1u);
 }
 
-// ── 计算形实参（两指令产出）不认领 → 整窗拒收 ──
-TEST(StringConcatIndirectorTest, computedArgKept)
+// ── 计算形实参（纯链产出）随窗改写，链指令保留 ──
+TEST(StringConcatIndirectorTest, computedArgChainRewritten)
 {
     IndyFixture fx(53, 2, [&](Body& b) {
         buildChainHead(b, true, "a");
-        b.iconst_1();
+        b.op(Op::ILOAD_1);
         b.iconst_2();
+        b.imul();
+        buildAppend(b, "(I)Ljava/lang/StringBuilder;");
+        buildToString(b);
+    });
+    EXPECT_TRUE(fx.run().changed());
+    const std::vector<Op> ops = opsOfFx(fx);
+    // NEW 位 INDY + init 串 LDC 保留 + 链三指令 + areturn（erase 面
+    // NEW/DUP/INIT/append/toString 全消）。
+    ASSERT_EQ(ops.size(), 6u);
+    EXPECT_EQ(ops[0], Op::LDC);
+    EXPECT_EQ(ops[1], Op::ILOAD_1);
+    EXPECT_EQ(ops[2], Op::ICONST_2);
+    EXPECT_EQ(ops[3], Op::IMUL);
+    EXPECT_EQ(ops[4], Op::INVOKEDYNAMIC);   // INDY 落 toString 位
+}
+
+// ── 长链实参（long 加法）随窗改写，槽宽按形参 J 计 ──
+TEST(StringConcatIndirectorTest, computedLongArgRewritten)
+{
+    IndyFixture fx(53, 3, [&](Body& b) {
+        buildChainHead(b, true, "a");
+        b.op(Op::LLOAD_1);
+        b.op(Op::LCONST_1);
+        b.op(Op::LADD);
+        buildAppend(b, "(J)Ljava/lang/StringBuilder;");
+        buildToString(b);
+    });
+    EXPECT_TRUE(fx.run().changed());
+    const std::vector<Op> ops = opsOfFx(fx);
+    ASSERT_EQ(ops.size(), 6u);
+    EXPECT_EQ(ops[0], Op::LDC);
+    EXPECT_EQ(ops[1], Op::LLOAD_1);
+    EXPECT_EQ(ops[2], Op::LCONST_1);
+    EXPECT_EQ(ops[3], Op::LADD);
+    EXPECT_EQ(ops[4], Op::INVOKEDYNAMIC);
+}
+
+// ── 单指令实参 + 计算链实参混合两 append 均改写 ──
+TEST(StringConcatIndirectorTest, mixedSingleAndChainArgsRewritten)
+{
+    IndyFixture fx(53, 2, [&](Body& b) {
+        buildChainHead(b, true, "a");
+        b.ldcString("x");
+        buildAppend(b, "(Ljava/lang/String;)Ljava/lang/StringBuilder;");
+        b.op(Op::ILOAD_1);
+        b.iconst_1();
         b.iadd();
         buildAppend(b, "(I)Ljava/lang/StringBuilder;");
         buildToString(b);
     });
+    EXPECT_TRUE(fx.run().changed());
+    const std::vector<Op> ops = opsOfFx(fx);
+    // INDY + init 串 LDC + 实参 ldc + 链三指令 + areturn。
+    ASSERT_EQ(ops.size(), 7u);
+    EXPECT_EQ(ops[0], Op::LDC);
+    EXPECT_EQ(ops[1], Op::LDC);
+    EXPECT_EQ(ops[2], Op::ILOAD_1);
+    EXPECT_EQ(ops[3], Op::ICONST_1);
+    EXPECT_EQ(ops[4], Op::IADD);
+    EXPECT_EQ(ops[5], Op::INVOKEDYNAMIC);
+}
+
+// ── 栈操作实参（dup 族）不入链 → 整窗拒收 ──
+TEST(StringConcatIndirectorTest, stackOpArgKept)
+{
+    IndyFixture fx(53, 2, [&](Body& b) {
+        buildChainHead(b, true, "a");
+        b.op(Op::ILOAD_1);
+        b.dup();
+        b.pop();
+        buildAppend(b, "(I)Ljava/lang/StringBuilder;");
+        buildToString(b);
+    });
     EXPECT_TRUE(fx.run().areAllPreserved());
-    ASSERT_EQ(opsOfFx(fx).size(), 10u);
 }
 
 // ── 窗内标签锚定（分支目标进入链体）→ 拒收 ──
