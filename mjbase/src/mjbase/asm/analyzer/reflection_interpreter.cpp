@@ -1,4 +1,4 @@
-#include "mjbase/reference/reflection_interpreter.hpp"
+#include "mjbase/asm/analyzer/reflection_interpreter.hpp"
 
 #include <string>
 #include <vector>
@@ -9,7 +9,7 @@
 #include "mjbase/analysis/cp_refs.hpp"
 #include "mjbase/asm/analyzer/frame_query.hpp"
 
-namespace mjbase::reference {
+namespace mjbase::asm_analyzer {
 
 using jbc::core::Op;
 using jbc::core::Shape;
@@ -775,4 +775,4 @@ ReflectionSnapshot snapshotReflectionFacts(const ReflectionQueryContext& ctx)
     return ReflectionSnapshot{};   // 注入不收敛：保守 fail-open
 }
 
-}   // namespace mjbase::reference
+}   // namespace mjbase::asm_analyzer

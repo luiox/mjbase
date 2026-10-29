@@ -16,7 +16,7 @@
 #include "mjbase/analysis/class_scan.hpp"
 #include "mjbase/analysis/cp_refs.hpp"
 #include "mjbase/hierarchy/summary.hpp"
-#include "mjbase/reference/reflection_interpreter.hpp"
+#include "mjbase/asm/analyzer/reflection_interpreter.hpp"
 
 namespace mjbase::reference {
 
@@ -28,6 +28,14 @@ using jbc::ir::SymbolId;
 using ConstSem    = jbc::ir::ClassSession::ConstSem;
 using MemberRefSem = mjbase::analysis::MemberRefSem;
 using mjbase::asm_analyzer::aliasInterned;
+using mjbase::asm_analyzer::ReflectionExecutionTarget;
+using mjbase::asm_analyzer::ReflectionQueryContext;
+using mjbase::asm_analyzer::ReflectionSnapshot;
+using mjbase::asm_analyzer::ReflectionValue;
+using mjbase::asm_analyzer::normalizeClassName;
+using mjbase::asm_analyzer::reflectionArgumentDescriptor;
+using mjbase::asm_analyzer::resolveReflectionExecution;
+using mjbase::asm_analyzer::snapshotReflectionFacts;
 using mjbase::analysis::resolveClassName;
 using mjbase::analysis::resolveMemberRef;
 

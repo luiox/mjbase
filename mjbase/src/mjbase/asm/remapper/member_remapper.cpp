@@ -12,7 +12,7 @@
 
 #include "mjbase/asm/analyzer/alias_analysis.hpp"
 #include "mjbase/jasm/classfile_utf8.hpp"
-#include "mjbase/reference/reflection_interpreter.hpp"
+#include "mjbase/asm/analyzer/reflection_interpreter.hpp"
 
 namespace mjbase::asm_remapper {
 namespace {
@@ -1166,7 +1166,7 @@ bool remapReflectionNames(const RemapCtx& ctx, CodeUnit& code, std::string_view 
                 }
                 else if (c.kind == ClassSession::ConstSem::Kind::Class) {
                     const std::string decoded          = cpToUtf8(c.str);
-                    const std::string_view tracking    = reference::classLiteralTrackingName(decoded);
+                    const std::string_view tracking    = asm_analyzer::classLiteralTrackingName(decoded);
                     if (!tracking.empty() && (!hasOwner || !hasLastString)) {
                         reflectionOwner.assign(tracking);
                         hasOwner      = true;
@@ -1226,7 +1226,7 @@ bool remapReflectionNames(const RemapCtx& ctx, CodeUnit& code, std::string_view 
 
     // —— 数据流轨道（alias 快照；fail-open：引擎拒斥时保留线性轨道成果）——
     if (aliases == nullptr) return changed;
-    reference::ReflectionQueryContext query;
+    asm_analyzer::ReflectionQueryContext query;
     query.code     = &code;
     query.cp       = &ctx.cf.cp;
     query.owner    = className;
@@ -1234,7 +1234,7 @@ bool remapReflectionNames(const RemapCtx& ctx, CodeUnit& code, std::string_view 
     query.desc     = methodDesc;
     query.isStatic = isStatic;
     query.aliases  = aliases;
-    const reference::ReflectionSnapshot snapshot = reference::snapshotReflectionFacts(query);
+    const asm_analyzer::ReflectionSnapshot snapshot = asm_analyzer::snapshotReflectionFacts(query);
     if (!snapshot.ok) return changed;
 
     for (ca::usize pos = 0; pos < order.size(); ++pos) {
@@ -1247,15 +1247,15 @@ bool remapReflectionNames(const RemapCtx& ctx, CodeUnit& code, std::string_view 
         if (!methodLookup && !fieldLookup) continue;
         const auto it = snapshot.receivers.find(static_cast<ca::u32>(pos));
         if (it == snapshot.receivers.end()) continue;
-        reference::ReflectionValue receiver = it->second;
+        asm_analyzer::ReflectionValue receiver = it->second;
         if (const auto* alias = aliases->reflectionReceiverOf(
                 className, methodName, methodDesc, static_cast<ca::i32>(pos))) {
             if (alias->isKnown() && alias->identity.rfind("class:", 0) == 0) {
-                receiver.kind  = reference::ReflectionValue::Kind::Class;
+                receiver.kind  = asm_analyzer::ReflectionValue::Kind::Class;
                 receiver.owner = alias->identity.substr(6);
             }
         }
-        if (receiver.kind != reference::ReflectionValue::Kind::Class) continue;
+        if (receiver.kind != asm_analyzer::ReflectionValue::Kind::Class) continue;
 
         for (ca::usize cursor = pos; cursor-- > 0;) {
             const Insn* cand = code.dom.peek(order[cursor]);

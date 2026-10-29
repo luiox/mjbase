@@ -1,4 +1,5 @@
 #include "mjbase/reference/reflection_binding_analyzer.hpp"
+#include "mjbase/asm/analyzer/reflection_interpreter.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -14,7 +15,6 @@
 #include "mjbase/analysis/cp_refs.hpp"
 #include "mjbase/asm/analyzer/frame_query.hpp"
 #include "mjbase/hierarchy/summary.hpp"
-#include "mjbase/reference/reflection_interpreter.hpp"
 
 namespace mjbase::reference {
 
@@ -27,6 +27,9 @@ using ConstSem     = jbc::ir::ClassSession::ConstSem;
 using MemberRefSem = mjbase::analysis::MemberRefSem;
 using mjbase::analysis::resolveClassName;
 using mjbase::analysis::resolveMemberRef;
+using mjbase::asm_analyzer::intConstantOf;
+using mjbase::asm_analyzer::normalizeClassName;
+using mjbase::asm_analyzer::regionHasIncomingBranches;
 
 namespace {
 
