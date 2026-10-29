@@ -893,3 +893,31 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   ClassBytesBuilder 标签装配），pop2/swap 落点深度与返回栈深不再依赖
   汇编器宽放——不可验证栈形（如裸 `装载;pop2`）不再作为夹具。stack 套
   件 19 绿，全量 1973 用例 1970 绿（+3 既有跳过）。
+- [ ] workspace 重组（资源容器 + 分析项目两面对）：WorkspaceBase 单
+  class 66 个虚方法绑死四族职责——资源装载（openJar/openClass/supporting
+  容器角色挂载）、只读分析查询（search ×5/xref ×3/层次/字节码/摘要/jasm）、
+  编辑台账（undo/redo/savepoint/ledger 落盘/导出）、高级操作（remap/
+  rename/pipeline/workflow/repair）；容器本体 model::ResourceContainer 被
+  私有成员封死，消费方无法自带容器实现、无法自定义分析组合，dex/apk 新
+  容器形态无插入位。目标形：**资源容器服务**（装载/角色挂载/资源读写/
+  字节级编辑台账/导出，验证门外置为可插拔）+ **分析项目会话**（外部挂到
+  容器上、不拥有它，消费方自定义绑定哪些分析面：层次/引用图/搜索索引/
+  管线），既有 project::AnalysisProject 是持久文档层（工程 JSON）继续
+  充当持久半边。mjt 消费面实测 66 虚方法全量触达（revision 68 处、
+  classInfo 24 处、undo 20 处、flushLedger 9 处…，JarWorkspace 继承
+  WorkspaceBase），迁移必须 facade 过渡零破坏。dex/apk = 只新增容器适
+  配器，分析面按容器能力协商，不再动 workspace 单体。
+- [ ] spi⇄pass 解环（实现问题裁决）：环只在 spi/pass_name_registry.cpp
+  与 spi/pass_registry.cpp 两文件——名字登记/默认注册表实现 include 具
+  体 pass 面。按「spi 纯接口、组合根出接口目录」收口：默认注册表与
+  registerBuiltinPipelines bootstrap 搬出 spi（pass 侧或独立装配单元），
+  spi 余下零依 pass；消费面（workspace/cli/plugin/pack.hpp/测试群）改
+  include。
+- [ ] asm⇄analysis⇄reference 解环（设计问题裁决）：三角环收敛在错位
+  文件——asm/classpath/resolved_call_graph 与 asm/remapper/{member,
+  resource}_remapper 伸手 reference/analysis（消费可达性/别名图，非字节
+  码原语）；analysis/alias_analysis.cpp 反手 asm；reference 侧 4 文件依
+  analysis。按「模块独立、经适配器交互、绝大多数零依赖、个别单向」收
+  口：remapper 的可达性需求收窄为注入接口（调用方经适配器喂 reference
+  实现），resolved_call_graph 归 reference 面，alias_analysis 的 asm
+  依赖查实单向化或收窄为注入接口。
