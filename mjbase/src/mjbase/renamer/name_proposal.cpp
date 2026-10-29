@@ -1,6 +1,6 @@
 #include "name_proposal.hpp"
 
-#include "mjbase/analysis/alias_analysis.hpp"
+#include "mjbase/asm/analyzer/alias_analysis.hpp"
 
 namespace mjbase::renamer {
 
@@ -9,7 +9,7 @@ namespace {
 /// 构造入口统一经进程级别名池驻留（内容寻址；等值即内容等值）。
 std::string_view interned(std::string_view value)
 {
-    return analysis::aliasInterned(value);
+    return asm_analyzer::aliasInterned(value);
 }
 
 }   // namespace

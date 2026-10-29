@@ -35,7 +35,7 @@
 #include "mjbase/keys.hpp"
 #include "mjbase/model/resource_container.hpp"
 
-namespace mjbase::analysis {
+namespace mjbase::asm_analyzer {
 
 /// @brief 保守 points-to 值类别。
 ///
@@ -360,7 +360,7 @@ private:
                        PairViewHash>                           arrayValues_;
     std::unordered_map<std::pair<std::string_view, std::string_view>, AliasValue,
                        PairViewHash>                           containerValues_;
-    AndersenPointsToSolver                                     andersen_;
+    mjbase::analysis::AndersenPointsToSolver                                     andersen_;
     ca::usize                                                  convergenceRounds_ = 0;
 
     /// 绑定键解析域：固定点期间指向上一轮快照（Jacobi 轮内只读上一轮）。
@@ -369,4 +369,4 @@ private:
     bool suspendAndersenIndexing_ = false;
 };
 
-}   // namespace mjbase::analysis
+}   // namespace mjbase::asm_analyzer

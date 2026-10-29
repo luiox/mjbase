@@ -12,7 +12,7 @@
 
 #include "libca/core/tag_cast.hpp"
 
-#include "mjbase/analysis/alias_analysis.hpp"
+#include "mjbase/asm/analyzer/alias_analysis.hpp"
 #include "mjbase/analysis/class_scan.hpp"
 #include "mjbase/analysis/cp_refs.hpp"
 #include "mjbase/hierarchy/summary.hpp"
@@ -27,7 +27,7 @@ using jbc::core::Op;
 using jbc::ir::SymbolId;
 using ConstSem    = jbc::ir::ClassSession::ConstSem;
 using MemberRefSem = mjbase::analysis::MemberRefSem;
-using mjbase::analysis::aliasInterned;
+using mjbase::asm_analyzer::aliasInterned;
 using mjbase::analysis::resolveClassName;
 using mjbase::analysis::resolveMemberRef;
 
@@ -361,7 +361,7 @@ void ReferenceIndex::build(const mjbase::model::ResourceContainer& container)
     clear();
     // alias 消费（文本契约）：共享别名摘要按 (owner,name,desc) 文本查询，
     // "class:X" 接收者身份按驻留视图消费（见头注键契约）。
-    mjbase::analysis::AliasAnalysis aliases;
+    mjbase::asm_analyzer::AliasAnalysis aliases;
     aliases.build(container);
 
     const auto scanned = mjbase::analysis::scanClassResources(container);
@@ -658,7 +658,7 @@ void ReferenceIndex::indexFieldUnit(jbc::ir::ClassSession& session,
 }
 
 void ReferenceIndex::indexSession(jbc::ir::ClassSession&      session,
-                                  const mjbase::analysis::AliasAnalysis* aliases)
+                                  const mjbase::asm_analyzer::AliasAnalysis* aliases)
 {
     const jbc::ir::ClassUnit&  unit = session.unit();
     const jbc::ir::SymbolPool& syms = unit.symbols();
@@ -795,7 +795,7 @@ void ReferenceIndex::indexOneMethod(jbc::ir::ClassSession&                 sessi
                                     std::string_view                       methodName,
                                     std::string_view                       methodDesc,
                                     std::string_view                       className,
-                                    const mjbase::analysis::AliasAnalysis* aliases)
+                                    const mjbase::asm_analyzer::AliasAnalysis* aliases)
 {
     jbc::ir::ClassUnit& unit = session.unit();
     const ca::usize     idx  = unit.findMethod(methodName, methodDesc);
@@ -818,7 +818,7 @@ void ReferenceIndex::indexMethodBody(jbc::ir::ClassSession&                sessi
                                      const jbc::ir::CodeUnit&              code,
                                      std::string_view                      className,
                                      const jbc::ir::MethodUnit&            method,
-                                     const mjbase::analysis::AliasAnalysis* aliases)
+                                     const mjbase::asm_analyzer::AliasAnalysis* aliases)
 {
     const jbc::core::ConstantPool& cp    = session.backing().cp;
     const auto&                    order = code.dom.order();

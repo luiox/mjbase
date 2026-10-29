@@ -61,7 +61,7 @@
 
 #include "libca/core/datatype.hpp"
 
-#include "mjbase/asm/classpath/resolved_call_graph.hpp"
+#include "resolved_call_graph.hpp"
 #include "mjbase/reference/global_reachability.hpp"
 #include "mjbase/reference/keep_rule.hpp"
 #include "mjbase/reference/reference_index.hpp"
@@ -110,7 +110,7 @@ void applyKeepRoots(const KeepRootSpec& spec, const ReferenceIndex& index,
 /// @param rtaGraph RTA 构建产物（须经 buildRta 构建；CHA 图集合为空即无产物）
 /// @param index    声明事实来源（声明类判定）
 /// @param options  目标选项；既有根保留，本面产物追加
-void applyRtaInstantiatedRoots(const mjbase::asm_classpath::ResolvedCallGraph& rtaGraph,
+void applyRtaInstantiatedRoots(const mjbase::reference::ResolvedCallGraph& rtaGraph,
                                const ReferenceIndex& index,
                                GlobalReachabilityOptions& options);
 

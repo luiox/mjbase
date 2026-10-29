@@ -22,7 +22,7 @@
 #include "jbc/core/reader.hpp"
 #include "libca/core/tag_cast.hpp"
 
-#include "mjbase/asm/classpath/resolved_call_graph.hpp"
+#include "mjbase/reference/resolved_call_graph.hpp"
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/pass/devirtualize_single_target.hpp"
@@ -153,8 +153,8 @@ mjbase::spi::PreservedAnalyses runDevirtualize(mjbase::model::ResourceContainer&
     mjbase::spi::GlobalAnalysisManager gam(arena);
     gam.registerAnalysis<mjbase::reference::ReferenceIndexAnalysis>();
     gam.registerAnalysis<mjbase::reference::CallGraphAnalysis>();
-    gam.registerAnalysis<mjbase::asm_classpath::HierarchyBundleAnalysis>();
-    gam.registerAnalysis<mjbase::asm_classpath::ResolvedCallGraphAnalysis>();
+    gam.registerAnalysis<mjbase::reference::HierarchyBundleAnalysis>();
+    gam.registerAnalysis<mjbase::reference::ResolvedCallGraphAnalysis>();
     mjbase::pass::DevirtualizeSingleTarget pass;
     return pass.run(container, gam);
 }

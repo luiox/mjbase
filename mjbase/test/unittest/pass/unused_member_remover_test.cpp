@@ -25,7 +25,7 @@
 #include "libca/core/tag_cast.hpp"
 
 #include "mjbase/asm/classpath/call_graph.hpp"
-#include "mjbase/asm/classpath/resolved_call_graph.hpp"
+#include "mjbase/reference/resolved_call_graph.hpp"
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/pass/unused_member_remover.hpp"
@@ -485,8 +485,8 @@ void registerReachabilityAnalyses(mjbase::spi::GlobalAnalysisManager& gam)
 {
     gam.registerAnalysis<mjbase::reference::ReferenceIndexAnalysis>();
     gam.registerAnalysis<mjbase::reference::CallGraphAnalysis>();
-    gam.registerAnalysis<mjbase::asm_classpath::HierarchyBundleAnalysis>();
-    gam.registerAnalysis<mjbase::asm_classpath::ResolvedCallGraphAnalysis>();
+    gam.registerAnalysis<mjbase::reference::HierarchyBundleAnalysis>();
+    gam.registerAnalysis<mjbase::reference::ResolvedCallGraphAnalysis>();
     gam.registerAnalysis<mjbase::reference::GlobalReachabilityAnalysis>();
     gam.registerAnalysis<mjbase::reference::ResolvedGlobalReachabilityAnalysis>();
 }

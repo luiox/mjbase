@@ -88,7 +88,7 @@
 #include "mjbase/hierarchy/method_hierarchy.hpp"
 #include "mjbase/keys.hpp"
 #include "mjbase/model/resource_container.hpp"
-#include "mjbase/reference/reference_index.hpp"
+#include "reference_index.hpp"
 #include "mjbase/spi/pass_pipeline.hpp"
 
 namespace jbc::ir {
@@ -96,12 +96,15 @@ class ClassSession;
 }   // namespace jbc::ir
 
 namespace mjbase::asm_classpath {
+class CallGraph;
+}   // namespace mjbase::asm_classpath
+
+
+namespace mjbase::reference {
 
 // GAM/PA 别名（mjbase::spi 真身；包装面在模块内统一裸名使用）。
 using mjbase::spi::GlobalAnalysisManager;
 using mjbase::spi::PreservedAnalyses;
-
-class CallGraph;
 
 /// @brief Dispatch category used when expanding one encoded call site.
 ///
@@ -181,7 +184,7 @@ private:
 
 /// @brief Hierarchy-aware method connectivity view.
 ///
-/// This graph is layered above the direct `CallGraph`. It does not change direct
+/// This graph is layered above the direct `mjbase::asm_classpath::CallGraph`. It does not change direct
 /// graph semantics; instead it reads `ReferenceIndex` call sites and expands
 /// `invokevirtual` / `invokeinterface` targets through `MethodHierarchy`
 /// override families. Missing or external targets degrade to the original
@@ -191,10 +194,10 @@ class ResolvedCallGraph
 public:
     /// @brief Rebuild resolved edges from direct references and hierarchy data.
     ///
-    /// The direct `CallGraph` parameter is currently unused and kept in the
+    /// The direct `mjbase::asm_classpath::CallGraph` parameter is currently unused and kept in the
     /// signature so future policies can choose whether to retain external direct
     /// nodes（与旧版 (void)callGraph 同口径）。
-    void build(const mjbase::reference::ReferenceIndex& index, const CallGraph& callGraph,
+    void build(const mjbase::reference::ReferenceIndex& index, const mjbase::asm_classpath::CallGraph& callGraph,
                const HierarchyBundle& hierarchy);
 
     /// @brief Rebuild as an RTA (rapid type analysis) graph.
@@ -210,7 +213,7 @@ public:
     /// contributes zero edges. Missing/external virtual targets degrade to the
     /// encoded target exactly like the CHA build. 扩展规则全文见文件头
     /// 「扩展规则（RTA 档）」；语义与旧栈当前实现对齐。
-    void buildRta(const mjbase::reference::ReferenceIndex& index, const CallGraph& callGraph,
+    void buildRta(const mjbase::reference::ReferenceIndex& index, const mjbase::asm_classpath::CallGraph& callGraph,
                   const HierarchyBundle& hierarchy, const RtaOptions& options);
 
     /// @brief Remove every edge and lookup table.
@@ -314,7 +317,7 @@ struct HierarchyBundleAnalysis
     }
 };
 
-}   // namespace mjbase::asm_classpath
+}   // namespace mjbase::reference
 
 /// @brief Global analysis wrapper for `ResolvedCallGraph`.
 // 跨模块包装类型：真身在 mjbase::reference（CallGraphAnalysis 停泊在
@@ -326,7 +329,7 @@ struct ReferenceIndexAnalysis;
 struct CallGraphAnalysis;
 }   // namespace mjbase::reference
 
-namespace mjbase::asm_classpath {
+namespace mjbase::reference {
 
 using mjbase::reference::ReferenceIndexAnalysis;
 using mjbase::reference::CallGraphAnalysis;
@@ -337,7 +340,7 @@ struct ResolvedCallGraphAnalysis
 
     Result run(mjbase::model::ResourceContainer& container, GlobalAnalysisManager& gam);
 
-    /// 依赖 ReferenceIndex / CallGraph / 层次束：任一被失效则本图连锁失效。
+    /// 依赖 ReferenceIndex / mjbase::asm_classpath::CallGraph / 层次束：任一被失效则本图连锁失效。
     static bool dependencyInvalidated(mjbase::model::ResourceContainer& container,
                                       const PreservedAnalyses& pa,
                                       GlobalAnalysisManager::Invalidator& inv)
@@ -361,7 +364,7 @@ struct RtaCallGraphAnalysis
 
     Result run(mjbase::model::ResourceContainer& container, GlobalAnalysisManager& gam);
 
-    /// 依赖与 CHA 档同源：ReferenceIndex / CallGraph / 层次束任一失效即连锁。
+    /// 依赖与 CHA 档同源：ReferenceIndex / mjbase::asm_classpath::CallGraph / 层次束任一失效即连锁。
     static bool dependencyInvalidated(mjbase::model::ResourceContainer& container,
                                       const PreservedAnalyses& pa,
                                       GlobalAnalysisManager::Invalidator& inv)
@@ -372,4 +375,4 @@ struct RtaCallGraphAnalysis
     }
 };
 
-}   // namespace mjbase::asm_classpath
+}   // namespace mjbase::reference

@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "mjbase/asm/classpath/call_graph.hpp"
-#include "mjbase/asm/classpath/resolved_call_graph.hpp"
+#include "mjbase/reference/resolved_call_graph.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/reference/global_reachability.hpp"
 #include "mjbase/reference/keep_roots.hpp"
@@ -118,10 +118,10 @@ TEST(MjResolvedCallGraphRtaJvm, rtaProfileKeepsNarrowedEdgesOnRealClasses)
     ASSERT_TRUE(built.is_ok());
     mjbase::asm_classpath::CallGraph callGraph = std::move(built).unwrap();
 
-    auto hierarchy = mjbase::asm_classpath::HierarchyBundle::build(container);
+    auto hierarchy = mjbase::reference::HierarchyBundle::build(container);
 
-    mjbase::asm_classpath::ResolvedCallGraph rtaGraph;
-    mjbase::asm_classpath::RtaOptions        options;
+    mjbase::reference::ResolvedCallGraph rtaGraph;
+    mjbase::reference::RtaOptions        options;
     rtaGraph.buildRta(index, callGraph, *hierarchy, options);
 
     const std::string mainDesc = "([Ljava/lang/String;)V";
@@ -150,7 +150,7 @@ TEST(MjResolvedCallGraphRtaJvm, rtaProfileKeepsNarrowedEdgesOnRealClasses)
     EXPECT_EQ(reachOptions.rootClasses[1], "hb/jvm/rta/Impl");
 
     // ── 7. CHA 对照：同一站点 CHA 展开出 Base.run（RTA 收窄的真实差异）──
-    mjbase::asm_classpath::ResolvedCallGraph chaGraph;
+    mjbase::reference::ResolvedCallGraph chaGraph;
     chaGraph.build(index, callGraph, *hierarchy);
     EXPECT_TRUE(chaGraph.hasResolvedEdge("hb/jvm/rta/Main", "main", mainDesc,
                                          "hb/jvm/rta/Base", "run", "()V"));

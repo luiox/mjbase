@@ -97,7 +97,7 @@ void applyKeepRoots(const KeepRootSpec& spec, const ReferenceIndex& index,
     }
 }
 
-void applyRtaInstantiatedRoots(const mjbase::asm_classpath::ResolvedCallGraph& rtaGraph,
+void applyRtaInstantiatedRoots(const mjbase::reference::ResolvedCallGraph& rtaGraph,
                                const ReferenceIndex& index,
                                GlobalReachabilityOptions& options)
 {

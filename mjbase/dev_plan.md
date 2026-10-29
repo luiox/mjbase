@@ -907,17 +907,17 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   classInfo 24 处、undo 20 处、flushLedger 9 处…，JarWorkspace 继承
   WorkspaceBase），迁移必须 facade 过渡零破坏。dex/apk = 只新增容器适
   配器，分析面按容器能力协商，不再动 workspace 单体。
-- [ ] spi⇄pass 解环（实现问题裁决）：环只在 spi/pass_name_registry.cpp
-  与 spi/pass_registry.cpp 两文件——名字登记/默认注册表实现 include 具
-  体 pass 面。按「spi 纯接口、组合根出接口目录」收口：默认注册表与
-  registerBuiltinPipelines bootstrap 搬出 spi（pass 侧或独立装配单元），
-  spi 余下零依 pass；消费面（workspace/cli/plugin/pack.hpp/测试群）改
-  include。
-- [ ] asm⇄analysis⇄reference 解环（设计问题裁决）：三角环收敛在错位
-  文件——asm/classpath/resolved_call_graph 与 asm/remapper/{member,
-  resource}_remapper 伸手 reference/analysis（消费可达性/别名图，非字节
-  码原语）；analysis/alias_analysis.cpp 反手 asm；reference 侧 4 文件依
-  analysis。按「模块独立、经适配器交互、绝大多数零依赖、个别单向」收
-  口：remapper 的可达性需求收窄为注入接口（调用方经适配器喂 reference
-  实现），resolved_call_graph 归 reference 面，alias_analysis 的 asm
-  依赖查实单向化或收窄为注入接口。
+- [x] spi⇄pass 解环：环只在 spi/pass_name_registry.cpp 与
+  spi/pass_registry.cpp 两 .cpp 的组合根（种子段 52 个 pass 头 + 内置
+  管线段 11 个 pass 头）。整段迁 pass/default_pass_registry.cpp 与
+  pass/builtin_pipelines.cpp，接口声明留在 spi 原位——消费面 include
+  与符号链接零改动。spi/*.cpp 对 mjbase/pass/* 的 include 计数 = 0。
+- [x] asm⇄analysis⇄reference 解环：两处归位 + 依赖方向回正——
+  ①resolved_call_graph（含 RTA 包装）整迁 reference/（它零依 asm 面，
+  纯分析组合件住错地），ns asm_classpath→reference，RCG 的 CallGraph
+  依赖保持 asm_classpath 前向声明引用；②alias_analysis 整迁
+  asm/analyzer/（frame_query 变同模块，ns analysis→asm_analyzer），其对
+  andersen/class_scan/cp_refs 的消费转为 asm⇒analysis 单向；③remapper
+  对 reflection_interpreter 的反射改写面消费保留为 asm⇒reference 单向。
+  终态零环：analysis⇏asm、spi⇏pass，全部跨模块边单向
+  （asm⇒{analysis,reference}、reference⇒asm、pass⇒spi）。

@@ -1,4 +1,4 @@
-#include "mjbase/asm/classpath/resolved_call_graph.hpp"
+#include "resolved_call_graph.hpp"
 
 #include <cassert>
 #include <optional>
@@ -9,12 +9,12 @@
 
 #include "mjbase/analysis/class_scan.hpp"
 #include "mjbase/hierarchy/summary.hpp"
-#include "mjbase/reference/entry_points.hpp"
-#include "mjbase/reference/global_reachability.hpp"
-#include "mjbase/reference/reference_index_analysis.hpp"
+#include "entry_points.hpp"
+#include "global_reachability.hpp"
+#include "reference_index_analysis.hpp"
 #include "mjbase/spi/pass_pipeline.hpp"
 
-namespace mjbase::asm_classpath {
+namespace mjbase::reference {
 
 using mjbase::reference::MethodRefKey;
 using mjbase::reference::MethodReferenceKind;
@@ -155,7 +155,7 @@ void ResolvedCallGraph::appendEdge(const ResolvedCallEdge& edge)
 }
 
 void ResolvedCallGraph::build(const mjbase::reference::ReferenceIndex& index,
-                              const CallGraph& callGraph, const HierarchyBundle& hierarchy)
+                              const mjbase::asm_classpath::CallGraph& callGraph, const HierarchyBundle& hierarchy)
 {
     (void)callGraph;
     clear();
@@ -235,7 +235,7 @@ void ResolvedCallGraph::build(const mjbase::reference::ReferenceIndex& index,
 //    可行 dispatch 集过滤后逐目标出边（expanded 标记与 CHA 同口径），不可达
 //    方法的边整体缺席。
 void ResolvedCallGraph::buildRta(const mjbase::reference::ReferenceIndex& index,
-                                 const CallGraph& callGraph, const HierarchyBundle& hierarchy,
+                                 const mjbase::asm_classpath::CallGraph& callGraph, const HierarchyBundle& hierarchy,
                                  const RtaOptions& options)
 {
     (void)callGraph;
@@ -723,4 +723,4 @@ RtaCallGraphAnalysis::Result RtaCallGraphAnalysis::run(
     return graph;
 }
 
-}   // namespace mjbase::asm_classpath
+}   // namespace mjbase::reference

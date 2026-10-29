@@ -20,7 +20,7 @@
 
 #include "reference/class_bytes_builder.hpp"
 #include "mjbase/asm/classpath/call_graph.hpp"
-#include "mjbase/asm/classpath/resolved_call_graph.hpp"
+#include "mjbase/reference/resolved_call_graph.hpp"
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/reference/global_reachability.hpp"
@@ -31,10 +31,10 @@
 using jbc::core::Op;
 using mjbase::asm_classpath::CallGraph;
 using mjbase::asm_classpath::CallGraphBuilder;
-using mjbase::asm_classpath::HierarchyBundle;
-using mjbase::asm_classpath::ResolvedCallEdge;
-using mjbase::asm_classpath::ResolvedCallGraph;
-using mjbase::asm_classpath::RtaOptions;
+using mjbase::reference::HierarchyBundle;
+using mjbase::reference::ResolvedCallEdge;
+using mjbase::reference::ResolvedCallGraph;
+using mjbase::reference::RtaOptions;
 using mjbase::model::ClassResource;
 using mjbase::model::ResourceContainer;
 using mjbase::reference::MethodRefKey;
@@ -691,12 +691,12 @@ TEST(MjResolvedCallGraphRtaTest, gamWrappersKeepChaAndRtaProfilesCoexist)
     mjbase::spi::GlobalAnalysisManager gam(arena);
     gam.registerAnalysis<mjbase::reference::ReferenceIndexAnalysis>();
     gam.registerAnalysis<mjbase::reference::CallGraphAnalysis>();
-    gam.registerAnalysis<mjbase::asm_classpath::HierarchyBundleAnalysis>();
-    gam.registerAnalysis<mjbase::asm_classpath::ResolvedCallGraphAnalysis>();
-    gam.registerAnalysis<mjbase::asm_classpath::RtaCallGraphAnalysis>();
+    gam.registerAnalysis<mjbase::reference::HierarchyBundleAnalysis>();
+    gam.registerAnalysis<mjbase::reference::ResolvedCallGraphAnalysis>();
+    gam.registerAnalysis<mjbase::reference::RtaCallGraphAnalysis>();
 
-    auto& cha = gam.getResult<mjbase::asm_classpath::ResolvedCallGraphAnalysis>(fx.container());
-    auto& rta = gam.getResult<mjbase::asm_classpath::RtaCallGraphAnalysis>(fx.container());
+    auto& cha = gam.getResult<mjbase::reference::ResolvedCallGraphAnalysis>(fx.container());
+    auto& rta = gam.getResult<mjbase::reference::RtaCallGraphAnalysis>(fx.container());
 
     EXPECT_EQ(cha.rtaInstantiatedCount(), 0u);
     // CHA 物化全部索引引用：main 三条（<init> + Base.run/Child.run）+ 三个

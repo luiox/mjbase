@@ -20,7 +20,7 @@
 
 #include "class_bytes_builder.hpp"
 #include "mjbase/asm/classpath/call_graph.hpp"
-#include "mjbase/asm/classpath/resolved_call_graph.hpp"
+#include "mjbase/reference/resolved_call_graph.hpp"
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/reference/global_reachability.hpp"
@@ -30,9 +30,9 @@
 using jbc::core::Op;
 using mjbase::asm_classpath::CallGraph;
 using mjbase::asm_classpath::CallGraphBuilder;
-using mjbase::asm_classpath::HierarchyBundle;
-using mjbase::asm_classpath::ResolvedCallGraph;
-using mjbase::asm_classpath::RtaOptions;
+using mjbase::reference::HierarchyBundle;
+using mjbase::reference::ResolvedCallGraph;
+using mjbase::reference::RtaOptions;
 using mjbase::model::ClassResource;
 using mjbase::model::ResourceContainer;
 using mjbase::reference::GlobalReachability;

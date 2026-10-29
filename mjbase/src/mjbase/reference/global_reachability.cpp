@@ -8,9 +8,9 @@ namespace mjbase::reference {
 
 using mjbase::asm_classpath::CallGraph;
 using mjbase::asm_classpath::CallGraphBuilder;
-using mjbase::asm_classpath::ResolvedCallEdge;
-using mjbase::asm_classpath::ResolvedCallGraph;
-using mjbase::asm_classpath::ResolvedCallKind;
+using mjbase::reference::ResolvedCallEdge;
+using mjbase::reference::ResolvedCallGraph;
+using mjbase::reference::ResolvedCallKind;
 
 namespace {
 
@@ -324,7 +324,7 @@ ResolvedGlobalReachabilityAnalysis::Result ResolvedGlobalReachabilityAnalysis::r
 {
     auto& index             = gam.getResult<ReferenceIndexAnalysis>(container);
     auto& callGraph         = gam.getResult<CallGraphAnalysis>(container);
-    auto& resolvedCallGraph = gam.getResult<mjbase::asm_classpath::ResolvedCallGraphAnalysis>(container);
+    auto& resolvedCallGraph = gam.getResult<mjbase::reference::ResolvedCallGraphAnalysis>(container);
 
     GlobalReachabilityOptions options;
     options.callExpansion = GlobalReachabilityCallExpansion::Resolved;

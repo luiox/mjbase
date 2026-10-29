@@ -5,7 +5,7 @@
 
 #include "jbc/analysis/frame.hpp"
 
-#include "mjbase/analysis/alias_analysis.hpp"
+#include "mjbase/asm/analyzer/alias_analysis.hpp"
 #include "mjbase/analysis/cp_refs.hpp"
 #include "mjbase/asm/analyzer/frame_query.hpp"
 
@@ -14,11 +14,11 @@ namespace mjbase::reference {
 using jbc::core::Op;
 using jbc::core::Shape;
 using jbc::analysis::VKind;
-using mjbase::analysis::AliasAnalysis;
-using mjbase::analysis::AliasValue;
+using mjbase::asm_analyzer::AliasAnalysis;
+using mjbase::asm_analyzer::AliasValue;
 using mjbase::analysis::MemberRefSem;
-using mjbase::analysis::aliasInterned;
-using mjbase::analysis::mergeAliasValues;
+using mjbase::asm_analyzer::aliasInterned;
+using mjbase::asm_analyzer::mergeAliasValues;
 using mjbase::analysis::resolveClassName;
 using mjbase::analysis::resolveMemberRef;
 

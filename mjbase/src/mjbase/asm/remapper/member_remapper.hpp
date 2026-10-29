@@ -41,7 +41,7 @@
 
 #include "mjbase/asm/remapper/member_remap_plan.hpp"
 
-namespace mjbase::analysis {
+namespace mjbase::asm_analyzer {
 class AliasAnalysis;
 }   // namespace mjbase::analysis
 
@@ -108,7 +108,7 @@ std::string toInternalReflectionName(std::string_view value);
 Result<bool, RemapError> applyMemberRemapPlan(jbc::ir::ClassSession&      session,
                                               const MemberRemapPlan&      plan,
                                               const RemapPolicy&          policy,
-                                              const analysis::AliasAnalysis* aliases);
+                                              const asm_analyzer::AliasAnalysis* aliases);
 
 /// @brief 同上，默认 bytecodeOnly 面。
 Result<bool, RemapError> applyMemberRemapPlan(jbc::ir::ClassSession& session,

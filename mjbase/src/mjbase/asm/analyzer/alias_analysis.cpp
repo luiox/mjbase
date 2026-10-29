@@ -1,4 +1,4 @@
-#include "mjbase/analysis/alias_analysis.hpp"
+#include "alias_analysis.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -8,13 +8,13 @@
 #include "jbc/analysis/frame.hpp"
 #include "jbc/core/opcode.hpp"
 
-#include "mjbase/asm/analyzer/frame_query.hpp"
+#include "frame_query.hpp"
 
-#include "class_scan.hpp"
-#include "cp_refs.hpp"
+#include "mjbase/analysis/class_scan.hpp"
+#include "mjbase/analysis/cp_refs.hpp"
 #include "mjbase/hierarchy/summary.hpp"
 
-namespace mjbase::analysis {
+namespace mjbase::asm_analyzer {
 
 using mjbase::hierarchy::kAccStatic;
 
@@ -316,7 +316,7 @@ bool isInvokeKind(Op op)
 }
 
 /// 逐方法构建上下文（collectCodeUnits 就地升格；无代码/升格失败 = code 为空）。
-void buildMethodContexts(const std::vector<ScannedClass>&                  classes,
+void buildMethodContexts(const std::vector<mjbase::analysis::ScannedClass>&                  classes,
                          std::vector<std::unique_ptr<AliasMethodContext>>& out)
 {
     for (const auto& clazz : classes) {
@@ -533,7 +533,7 @@ std::optional<AliasMethodSummary> summarizeLinear(const AliasMethodContext& ctx,
         }
         case Op::GETSTATIC:
         {
-            MemberRefSem ref;
+            mjbase::analysis::MemberRefSem ref;
             if (!resolveMemberRef(cp, in->cp, ref)) break;
             const AliasValue* prior = previous != nullptr
                                           ? previous->fieldValueOf(ref.owner, ref.name, ref.desc)
@@ -551,7 +551,7 @@ std::optional<AliasMethodSummary> summarizeLinear(const AliasMethodContext& ctx,
         case Op::GETFIELD:
         {
             const AliasValue receiver = walk.popAlias();
-            MemberRefSem ref;
+            mjbase::analysis::MemberRefSem ref;
             if (!resolveMemberRef(cp, in->cp, ref)) break;
             const MemberKey field = aliasMemberKey(ref.owner, ref.name, ref.desc);
             const auto      local = walk.instanceFields.find(LinearWalk::fieldKey(receiver, field));
@@ -575,7 +575,7 @@ std::optional<AliasMethodSummary> summarizeLinear(const AliasMethodContext& ctx,
         {
             const AliasValue value    = walk.popAlias();
             const AliasValue receiver = walk.popAlias();
-            MemberRefSem ref;
+            mjbase::analysis::MemberRefSem ref;
             if (!resolveMemberRef(cp, in->cp, ref)) break;
             const MemberKey field = aliasMemberKey(ref.owner, ref.name, ref.desc);
             if (receiver.isKnown()) {
@@ -587,7 +587,7 @@ std::optional<AliasMethodSummary> summarizeLinear(const AliasMethodContext& ctx,
         case Op::PUTSTATIC:
         {
             const AliasValue value = walk.popAlias();
-            MemberRefSem ref;
+            mjbase::analysis::MemberRefSem ref;
             if (!resolveMemberRef(cp, in->cp, ref)) break;
             walk.summary.fieldWrites.push_back(
                 {aliasMemberKey(ref.owner, ref.name, ref.desc), AliasValue::unknown(), value, true});
@@ -649,7 +649,7 @@ std::optional<AliasMethodSummary> summarizeLinear(const AliasMethodContext& ctx,
         case Op::INVOKESTATIC:
         case Op::INVOKEINTERFACE:
         {
-            MemberRefSem ref;
+            mjbase::analysis::MemberRefSem ref;
             if (!resolveMemberRef(cp, in->cp, ref)) break;
             if (ref.desc.empty() || ref.desc.front() != '(') {
                 // 描述符非 '(' 开头：调用点畸形，整个方法无摘要。
@@ -945,7 +945,7 @@ public:
         }
         case Op::GETSTATIC:
         {
-            MemberRefSem ref;
+            mjbase::analysis::MemberRefSem ref;
             if (!resolveMemberRef(cp, in.cp, ref)) return AliasValue::unknown(width);
             const AliasValue* prior = env_.previous != nullptr
                                           ? env_.previous->fieldValueOf(ref.owner, ref.name, ref.desc)
@@ -962,7 +962,7 @@ public:
         }
         case Op::GETFIELD:
         {
-            MemberRefSem ref;
+            mjbase::analysis::MemberRefSem ref;
             if (!resolveMemberRef(cp, in.cp, ref)) return AliasValue::unknown(width);
             return valueForType(ref.desc,
                                 "field:" + std::string(ref.owner) + "." + std::string(ref.name) +
@@ -976,7 +976,7 @@ public:
         {
             // 操作数无关部分：callee 返回值为具体身份时直接按返回类型成值；
             // param:/this: 替换与未知返回的 points-to 保持依赖注入表。
-            MemberRefSem ref;
+            mjbase::analysis::MemberRefSem ref;
             if (!resolveMemberRef(cp, in.cp, ref)) return AliasValue::unknown(width);
             const AliasMethodSummary* callee =
                 env_.previous != nullptr
@@ -1096,7 +1096,7 @@ ControlFlowAliasFacts analyzeControlFlowFacts(const AliasMethodContext& ctx,
             if (in->op == Op::GETFIELD) {
                 const AliasValue* receiver = probeQuery.stackFromTop(id, 0);
                 if (receiver == nullptr || previous == nullptr) continue;
-                MemberRefSem ref;
+                mjbase::analysis::MemberRefSem ref;
                 if (!resolveMemberRef(ctx.cp(), in->cp, ref)) continue;
                 const auto prior =
                     previous->resolvedFieldValueOf(*receiver, ref.owner, ref.name, ref.desc);
@@ -1107,7 +1107,7 @@ ControlFlowAliasFacts analyzeControlFlowFacts(const AliasMethodContext& ctx,
                 if (operand != nullptr) injected.emplace(id.slot, *operand);
             }
             else if (isInvokeKind(in->op)) {
-                MemberRefSem ref;
+                mjbase::analysis::MemberRefSem ref;
                 if (!resolveMemberRef(ctx.cp(), in->cp, ref)) continue;
                 const AliasMethodSummary* callee =
                     previous != nullptr ? previous->summaryOf(ref.owner, ref.name, ref.desc)
@@ -1158,7 +1158,7 @@ ControlFlowAliasFacts analyzeControlFlowFacts(const AliasMethodContext& ctx,
             const AliasValue* value    = frames.stackFromTop(id, 0);
             const AliasValue* receiver = frames.stackFromTop(id, 1);
             if (value == nullptr || receiver == nullptr) continue;
-            MemberRefSem ref;
+            mjbase::analysis::MemberRefSem ref;
             if (!resolveMemberRef(ctx.cp(), in->cp, ref)) continue;
             result.fieldWrites.push_back({aliasMemberKey(ref.owner, ref.name, ref.desc), *receiver,
                                           *value, false});
@@ -1166,7 +1166,7 @@ ControlFlowAliasFacts analyzeControlFlowFacts(const AliasMethodContext& ctx,
         else if (in->op == Op::PUTSTATIC) {
             const AliasValue* value = frames.stackFromTop(id, 0);
             if (value == nullptr) continue;
-            MemberRefSem ref;
+            mjbase::analysis::MemberRefSem ref;
             if (!resolveMemberRef(ctx.cp(), in->cp, ref)) continue;
             result.fieldWrites.push_back(
                 {aliasMemberKey(ref.owner, ref.name, ref.desc), AliasValue::unknown(), *value, true});
@@ -1179,7 +1179,7 @@ ControlFlowAliasFacts analyzeControlFlowFacts(const AliasMethodContext& ctx,
             sawReturn = true;
         }
         else if (isInvokeKind(in->op) && previous != nullptr) {
-            MemberRefSem ref;
+            mjbase::analysis::MemberRefSem ref;
             if (!resolveMemberRef(ctx.cp(), in->cp, ref)) continue;
             const auto* callee = previous->summaryOf(ref.owner, ref.name, ref.desc);
             if (callee == nullptr) continue;
@@ -1258,14 +1258,14 @@ std::optional<AliasMethodSummary> summarizeMethod(const AliasMethodContext& ctx,
 /// @brief 约束值：节点句柄 + 槽宽（cat2 布局需要）。
 struct ConstraintNode
 {
-    AndersenPointsToSolver::NameId node  = 0;
+    mjbase::analysis::AndersenPointsToSolver::NameId node  = 0;
     ca::u8                         slots = 1;
 };
 
 class AndersenConstraintDomain final : public jbc::analysis::IValueDomain<ConstraintNode>
 {
 public:
-    AndersenConstraintDomain(AndersenPointsToSolver& solver, const AliasMethodContext& ctx)
+    AndersenConstraintDomain(mjbase::analysis::AndersenPointsToSolver& solver, const AliasMethodContext& ctx)
         : solver_(solver)
         , ctx_(ctx)
         , method_(ctx.methodKey)
@@ -1278,8 +1278,8 @@ public:
         if (lhs.node == 0) return rhs;
         if (rhs.node == 0) return lhs;
         if (lhs.node == rhs.node) return lhs;
-        std::vector<AndersenPointsToSolver::NameId> sources;
-        const auto appendSources = [&](AndersenPointsToSolver::NameId node) {
+        std::vector<mjbase::analysis::AndersenPointsToSolver::NameId> sources;
+        const auto appendSources = [&](mjbase::analysis::AndersenPointsToSolver::NameId node) {
             const auto found = mergeSources_.find(node);
             if (found == mergeSources_.end()) {
                 sources.push_back(node);
@@ -1334,7 +1334,7 @@ public:
             return ConstraintNode{node, width};
         }
         if (in.op == Op::GETSTATIC) {
-            MemberRefSem ref;
+            mjbase::analysis::MemberRefSem ref;
             if (resolveMemberRef(cp, in.cp, ref)) {
                 return ConstraintNode{staticField(ref), width};
             }
@@ -1392,60 +1392,60 @@ public:
 
     /// GETFIELD：addLoad(temp, receiverNode, fieldName)。
     void addGetFieldEdge(const jbc::ir::Insn& in, jbc::ir::InsnId at,
-                         AndersenPointsToSolver::NameId receiverNode)
+                         mjbase::analysis::AndersenPointsToSolver::NameId receiverNode)
     {
         if (receiverNode == 0) return;
-        MemberRefSem ref;
+        mjbase::analysis::MemberRefSem ref;
         if (!resolveMemberRef(ctx_.cp(), in.cp, ref)) return;
         solver_.addLoad(temporary(at), receiverNode, fieldName(ref));
     }
 
     /// CHECKCAST：透传 = 结果临时节点 ← 操作数节点的 copy 边（约束语义等价）。
-    void addCheckCastEdge(jbc::ir::InsnId at, AndersenPointsToSolver::NameId operandNode)
+    void addCheckCastEdge(jbc::ir::InsnId at, mjbase::analysis::AndersenPointsToSolver::NameId operandNode)
     {
         if (operandNode == 0) return;
         solver_.addCopy(temporary(at), operandNode);
     }
 
     /// PUTFIELD：addStore(receiverNode, fieldName, valueNode)。
-    void addPutFieldEdge(const jbc::ir::Insn& in, AndersenPointsToSolver::NameId receiverNode,
-                         AndersenPointsToSolver::NameId valueNode)
+    void addPutFieldEdge(const jbc::ir::Insn& in, mjbase::analysis::AndersenPointsToSolver::NameId receiverNode,
+                         mjbase::analysis::AndersenPointsToSolver::NameId valueNode)
     {
         if (receiverNode == 0 || valueNode == 0) return;
-        MemberRefSem ref;
+        mjbase::analysis::MemberRefSem ref;
         if (!resolveMemberRef(ctx_.cp(), in.cp, ref)) return;
         solver_.addStore(receiverNode, fieldName(ref), valueNode);
     }
 
     /// PUTSTATIC：addCopy(staticField, valueNode)。
-    void addPutStaticEdge(const jbc::ir::Insn& in, AndersenPointsToSolver::NameId valueNode)
+    void addPutStaticEdge(const jbc::ir::Insn& in, mjbase::analysis::AndersenPointsToSolver::NameId valueNode)
     {
         if (valueNode == 0) return;
-        MemberRefSem ref;
+        mjbase::analysis::MemberRefSem ref;
         if (!resolveMemberRef(ctx_.cp(), in.cp, ref)) return;
         solver_.addCopy(staticField(ref), valueNode);
     }
 
     /// AASTORE：addStore(arrayNode, "[]", valueNode)。
-    void addArrayStoreEdge(AndersenPointsToSolver::NameId arrayNode,
-                           AndersenPointsToSolver::NameId valueNode)
+    void addArrayStoreEdge(mjbase::analysis::AndersenPointsToSolver::NameId arrayNode,
+                           mjbase::analysis::AndersenPointsToSolver::NameId valueNode)
     {
         if (arrayNode == 0 || valueNode == 0) return;
         solver_.addStore(arrayNode, arrayElementFieldId(), valueNode);
     }
 
     /// ARETURN：addCopy(returnNode, valueNode)。
-    void addReturnEdge(AndersenPointsToSolver::NameId valueNode)
+    void addReturnEdge(mjbase::analysis::AndersenPointsToSolver::NameId valueNode)
     {
         if (valueNode == 0) return;
         solver_.addCopy(returnNodeId(), valueNode);
     }
 
     /// invoke：receiver/args → callee 形参节点 copy 边（返回边已在 newValue 建）。
-    void addInvokeEdges(const jbc::ir::Insn& in, AndersenPointsToSolver::NameId receiverNode,
-                        const std::vector<AndersenPointsToSolver::NameId>& argumentNodes)
+    void addInvokeEdges(const jbc::ir::Insn& in, mjbase::analysis::AndersenPointsToSolver::NameId receiverNode,
+                        const std::vector<mjbase::analysis::AndersenPointsToSolver::NameId>& argumentNodes)
     {
-        MemberRefSem ref;
+        mjbase::analysis::MemberRefSem ref;
         if (!resolveMemberRef(ctx_.cp(), in.cp, ref)) return;
         const std::string calleeKey =
             std::string(ref.owner) + "\n" + std::string(ref.name) + "\n" + std::string(ref.desc);
@@ -1460,48 +1460,48 @@ public:
     }
 
 private:
-    AndersenPointsToSolver::NameId temporary(jbc::ir::InsnId at)
+    mjbase::analysis::AndersenPointsToSolver::NameId temporary(jbc::ir::InsnId at)
     {
         return solver_.internIndexed(method_ + "\ninsn:", static_cast<ca::i64>(orderPos(at)));
     }
 
-    AndersenPointsToSolver::NameId thisNodeId()
+    mjbase::analysis::AndersenPointsToSolver::NameId thisNodeId()
     {
         if (thisNodeId_ == 0) thisNodeId_ = solver_.intern(method_ + "\nthis") + 1;
         return thisNodeId_ - 1;
     }
 
-    AndersenPointsToSolver::NameId returnNodeId()
+    mjbase::analysis::AndersenPointsToSolver::NameId returnNodeId()
     {
         if (returnNodeId_ == 0) returnNodeId_ = solver_.intern(method_ + "\nreturn") + 1;
         return returnNodeId_ - 1;
     }
 
-    AndersenPointsToSolver::NameId calleeThisId(const std::string& calleeKey)
+    mjbase::analysis::AndersenPointsToSolver::NameId calleeThisId(const std::string& calleeKey)
     {
         return solver_.intern(calleeKey + "\nthis");
     }
 
-    AndersenPointsToSolver::NameId calleeParamId(const std::string& calleeKey, ca::usize index)
+    mjbase::analysis::AndersenPointsToSolver::NameId calleeParamId(const std::string& calleeKey, ca::usize index)
     {
         return solver_.internIndexed(calleeKey + "\nparam:", static_cast<ca::i64>(index));
     }
 
-    AndersenPointsToSolver::NameId fieldName(const MemberRefSem& ref)
+    mjbase::analysis::AndersenPointsToSolver::NameId fieldName(const mjbase::analysis::MemberRefSem& ref)
     {
         std::string scratch;
         scratch.assign(ref.owner).append(1, '.').append(ref.name).append(1, ':').append(ref.desc);
         return solver_.intern(scratch);
     }
 
-    AndersenPointsToSolver::NameId staticField(const MemberRefSem& ref)
+    mjbase::analysis::AndersenPointsToSolver::NameId staticField(const mjbase::analysis::MemberRefSem& ref)
     {
         std::string scratch;
         scratch.assign("static-field\n").append(ref.owner).append(1, '.').append(ref.name).append(1, ':').append(ref.desc);
         return solver_.intern(scratch);
     }
 
-    AndersenPointsToSolver::NameId arrayElementFieldId()
+    mjbase::analysis::AndersenPointsToSolver::NameId arrayElementFieldId()
     {
         if (arrayElementFieldId_ == 0) arrayElementFieldId_ = solver_.intern("[]") + 1;
         return arrayElementFieldId_ - 1;
@@ -1513,19 +1513,19 @@ private:
         return it != ctx_.posOf.end() ? it->second : 0;
     }
 
-    AndersenPointsToSolver&       solver_;
+    mjbase::analysis::AndersenPointsToSolver&       solver_;
     const AliasMethodContext&     ctx_;
     std::string                   method_;
-    AndersenPointsToSolver::NameId thisNodeId_          = 0;
-    AndersenPointsToSolver::NameId returnNodeId_        = 0;
-    AndersenPointsToSolver::NameId arrayElementFieldId_ = 0;
-    std::unordered_map<AndersenPointsToSolver::NameId, std::vector<AndersenPointsToSolver::NameId>>
+    mjbase::analysis::AndersenPointsToSolver::NameId thisNodeId_          = 0;
+    mjbase::analysis::AndersenPointsToSolver::NameId returnNodeId_        = 0;
+    mjbase::analysis::AndersenPointsToSolver::NameId arrayElementFieldId_ = 0;
+    std::unordered_map<mjbase::analysis::AndersenPointsToSolver::NameId, std::vector<mjbase::analysis::AndersenPointsToSolver::NameId>>
         mergeSources_;
 };
 
 /// 逐方法抽约束 + 一次 solve。
 void indexAndersenBytecode(const std::vector<std::unique_ptr<AliasMethodContext>>& ctxs,
-                           AndersenPointsToSolver&                                 solver)
+                           mjbase::analysis::AndersenPointsToSolver&                                 solver)
 {
     for (const auto& ctx : ctxs) {
         if (ctx->code == nullptr || ctx->malformed) continue;
@@ -1572,7 +1572,7 @@ void indexAndersenBytecode(const std::vector<std::unique_ptr<AliasMethodContext>
                 if (value != nullptr) dom.addReturnEdge(value->node);
             }
             else if (isInvokeKind(in->op)) {
-                MemberRefSem ref;
+                mjbase::analysis::MemberRefSem ref;
                 if (!resolveMemberRef(ctx->cp(), in->cp, ref)) continue;
                 const auto     argTypes = paramTypes(ref.desc);
                 const bool     isStatic = in->op == Op::INVOKESTATIC;
@@ -1583,7 +1583,7 @@ void indexAndersenBytecode(const std::vector<std::unique_ptr<AliasMethodContext>
                 }
                 const ConstraintNode* receiver =
                     isStatic ? nullptr : frames.stackFromTop(id, static_cast<ca::u32>(required - 1));
-                std::vector<AndersenPointsToSolver::NameId> argumentNodes(argTypes.size(), 0);
+                std::vector<mjbase::analysis::AndersenPointsToSolver::NameId> argumentNodes(argTypes.size(), 0);
                 for (ca::usize i = 0; i < argTypes.size(); ++i) {
                     const ConstraintNode* arg =
                         frames.stackFromTop(id, static_cast<ca::u32>(required - 1 - offset - i));
@@ -1722,7 +1722,7 @@ std::vector<const AliasMethodContext*> selectReflectionClosure(
             for (const auto& id : u.dom.order()) {
                 const jbc::ir::Insn* in = u.dom.peek(id);
                 if (in == nullptr) continue;
-                MemberRefSem ref;
+                mjbase::analysis::MemberRefSem ref;
                 if (isInvokeKind(in->op) && resolveMemberRef(ctx->cp(), in->cp, ref)) {
                     if (isReflectionLookup(ref.owner, ref.name)) seed = true;   // R1
                     targets.push_back(ref.owner);
@@ -1779,7 +1779,7 @@ void AliasAnalysis::clear()
 void AliasAnalysis::build(const mjbase::model::ResourceContainer& container)
 {
     clear();
-    auto classes = scanClassResources(container);
+    auto classes = mjbase::analysis::scanClassResources(container);
     std::vector<std::unique_ptr<AliasMethodContext>> ctxs;
     buildMethodContexts(classes, ctxs);
 
@@ -1795,7 +1795,7 @@ void AliasAnalysis::build(const mjbase::model::ResourceContainer& container)
 void AliasAnalysis::buildReflectionClosure(const mjbase::model::ResourceContainer& container)
 {
     clear();
-    auto classes = scanClassResources(container);
+    auto classes = mjbase::analysis::scanClassResources(container);
     std::vector<std::unique_ptr<AliasMethodContext>> ctxs;
     buildMethodContexts(classes, ctxs);
 
@@ -2095,7 +2095,7 @@ void AliasAnalysis::indexAndersenSummary(const AliasMethodSummary& summary)
         }
         return andersen_.intern(method + "\nvalue\n" + std::string(identity));
     };
-    const auto constrainValue = [&](AndersenPointsToSolver::NameId target,
+    const auto constrainValue = [&](mjbase::analysis::AndersenPointsToSolver::NameId target,
                                     const AliasValue&             value) {
         if (!value.isKnown() && value.pointsTo.empty()) return;
         const auto& identity = value.identity;
@@ -2296,4 +2296,4 @@ const AliasValue* AliasAnalysis::reflectionReceiverOf(std::string_view owner,
     return nullptr;
 }
 
-}   // namespace mjbase::analysis
+}   // namespace mjbase::asm_analyzer
