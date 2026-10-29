@@ -90,7 +90,6 @@ target("mjbase")
     add_files("src/mjbase/mapping/**.cpp")
     add_files("src/mjbase/model/**.cpp")
     add_files("src/mjbase/project/**.cpp")
-    add_files("src/mjbase/consumer/**.cpp")
     -- 批 2：asm 指令工程域（零内依赖的六个子目录）+ hierarchy（只依赖 keys）。
     -- asm/classpath 只收 call_graph：resolved_call_graph 语义上属 reference
     -- （module-map 第五批），留在批 3 与 analysis/reference 一同落仓，
@@ -161,7 +160,6 @@ target("mjbase_unittest")
     add_files("test/unittest/mapping/*_test.cpp")
     add_files("test/unittest/model/*_test.cpp")
     add_files("test/unittest/project/*_test.cpp")
-    add_files("test/unittest/consumer/*_test.cpp")
     -- 批 2：与上面 src 的 asm 子目录、hierarchy 一一对应。
     add_files("test/unittest/asm/analyzer/*_test.cpp")
     add_files("test/unittest/asm/cfg/*_test.cpp")

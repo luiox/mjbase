@@ -734,8 +734,11 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   member_remapper 两处换装 + cp_refs.hpp 转发头（mjbase PR #74；
   行为收紧：kind 域外从「误走方法分支」变「跳过」，readClass 读闸下
   畸形类不可达，remapper 侧污染接缝真红→绿用例钉死）。
-- E 系消费者对接（module-map 第八批）：[x] E3 类字节供给面 + 骨架扫描面
-  （consumer/class_source + consumer/summary_scanner，14 用例全绿）；
+- E 系消费者对接（module-map 第八批）：[x→退役] E3 类字节供给面 + 骨架扫描面
+  （consumer/class_source + consumer/summary_scanner，14 用例全绿；
+  2026-10-29 退役：全仓零消费方——mjt 从未 include，唯一消费面是自测；
+  按仓规「没有消费方的模块不进仓」整体移除，IClassSource 协议待真实
+  消费方出现时按需求重建）；
   [x] E2 ChangeSet 消费方接线（2026-10-14，libjbc design §35）：ReferenceIndex
   `applyChangeSet` 按 ChangeSet 局部重建（方法粒度精确补丁 + 字段/类级事实面
   重扫），`PassPipelineOptions::changeSink` 在 GlobalToClassPassAdaptor 类级
