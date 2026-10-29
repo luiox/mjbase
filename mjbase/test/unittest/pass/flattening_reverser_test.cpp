@@ -672,12 +672,12 @@ TEST(FlatteningReverserTest, mirroredXorResolves)
     EXPECT_EQ(gotoTargetPositions(fx), (std::set<ca::i64>{nthPos(fx, Op::ICONST_1, 0)}));
 }
 
-// ── 混合操作数链拒收：内层镜像（C1 在左）+ 外层正常（C2 在右）→ 整族不动 ──
-TEST(FlatteningReverserTest, mixedOperandChainRejected)
+// ── 混合操作数链（装载居中）：[ldc C1; iload s; ISUB; ldc C2; IADD; switch]
+//    → v = (C1 - K) + C2，内外操作数侧不同族识别 ──
+TEST(FlatteningReverserTest, mixedOperandChainResolves)
 {
-    // [ldc C1; iload s; ISUB; ldc C2; IADD; switch]：形态 A 解析在 iload 处
-    // 被 ldc C2 隔断失配，形态 B 要求 binop 链紧贴 iload 也失配 → 拒收
-    // （混合链挂账）。
+    // K = 1、C1 = 2（ISUB 左操作数）、C2 = 3（IADD 右操作数）
+    // → v = (2 - 1) + 3 = 4 命中 key 4 → A 块。
     DomFixture fx("t/F", "m", "(I)I", 4, 4, [&](Body& b) {
         LabelId dL = b.label();
         LabelId aL = b.label();
@@ -694,10 +694,40 @@ TEST(FlatteningReverserTest, mixedOperandChainRejected)
         b.bindHere(xL);
         b.ireturn();
     });
-    const auto before = opsOf(fx);
-    const auto pa     = fx.run(mjbase::pass::FlatteningReverser{});
-    EXPECT_TRUE(pa.areAllPreserved());
-    EXPECT_EQ(opsOf(fx), before);
+    // 默认规格 maxSteps=1 截两步链；注入 maxSteps=2（形态表扩展面）。
+    const auto pa = fx.run(mjbase::pass::FlatteningReverser(
+        mjbase::pass::FlatteningReverser::defaultPredForms(),
+        mjbase::pass::FlatteningReverser::DispatchSpec{2, {Op::IADD, Op::ISUB, Op::IXOR}}));
+    EXPECT_TRUE(pa.changed());
+    EXPECT_EQ(gotoTargetPositions(fx), (std::set<ca::i64>{nthPos(fx, Op::ICONST_1, 0)}));
+}
+
+// ── 双常量夹装载混合链：[C2; iload s; ISUB; C1; IXOR; switch]
+//    → v = (C2 - K) ^ C1，装载居中、两侧步操作数侧不同 ──
+TEST(FlatteningReverserTest, mixedSandwichXorResolves)
+{
+    // K = 7、C2 = 13（ISUB 左）、C1 = 2（IXOR 右）→ v = (13 - 7) ^ 2 = 4。
+    DomFixture fx("t/F", "m", "(I)I", 4, 4, [&](Body& b) {
+        LabelId dL = b.label();
+        LabelId aL = b.label();
+        LabelId xL = b.label();
+        b.ldcInt(7).istore(1).branch(Op::GOTO, dL);
+        b.ldcInt(13);
+        b.bindHere(dL);
+        b.iload(1).op(Op::ISUB).ldcInt(2).op(Op::IXOR);
+        b.lookupSwitch(xL, {4}, {aL});
+        b.iconst_1();
+        b.bindHere(aL);
+        b.ireturn();
+        b.iconst_0();
+        b.bindHere(xL);
+        b.ireturn();
+    });
+    const auto pa = fx.run(mjbase::pass::FlatteningReverser(
+        mjbase::pass::FlatteningReverser::defaultPredForms(),
+        mjbase::pass::FlatteningReverser::DispatchSpec{2, {Op::IADD, Op::ISUB, Op::IXOR}}));
+    EXPECT_TRUE(pa.changed());
+    EXPECT_EQ(gotoTargetPositions(fx), (std::set<ca::i64>{nthPos(fx, Op::ICONST_1, 0)}));
 }
 
 // ── 注册面 ──
