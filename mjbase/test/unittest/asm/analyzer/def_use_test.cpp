@@ -406,7 +406,7 @@ TEST(MjAsmAnalyzerTest, DefUseExceptionHandlerInheritsThrowSiteLocals)
     EXPECT_TRUE(reads[1]->defs.contains(DefId::instruction(store)));
 }
 
-TEST(MjAsmAnalyzerTest, DefUseDeadTryRangeHandlerUnreachable)
+TEST(MjAsmAnalyzerTest, DefUseDeadTryRangeHandlerConservativeSeed)
 {
     ClassBytesBuilder b("DeadTry");
     MethodSpec dead = method("run", "()I", 1, 3, [](CodeEmit& e) {
@@ -430,13 +430,18 @@ TEST(MjAsmAnalyzerTest, DefUseDeadTryRangeHandlerUnreachable)
     Fixture fx(bytes);
     const CodeUnit* code = fx.code("run");
     ASSERT_NE(code, nullptr);
+    const InsnId store = code->dom.order()[1];
 
     MethodDefUse u = mjbase::asm_analyzer::analyzeDefUse(
         fx.cp(), *code, MethodSig{true, "()I"});
     ASSERT_TRUE(u.ok());
 
-    // try 范围内没有可抛指令：handler 不可达，只有正常路径读 local1。
-    EXPECT_EQ(u.readsOfLocal(1).size(), 1u);
+    // libjbc 0.4.22 起精确档异常边发射域放宽到范围内可达指令（JVM 保守
+    // 口径）：范围内无可抛指令也不再剪 handler——其 local1 读保留，定义
+    // 归 try 前的 store（入口 in-state 即抛出点帧）。
+    const auto reads = u.readsOfLocal(1);
+    ASSERT_EQ(reads.size(), 2u);
+    EXPECT_TRUE(reads[1]->defs.contains(DefId::instruction(store)));
 }
 
 // ---------------------------------------------------------------------------
