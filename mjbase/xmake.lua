@@ -5,30 +5,8 @@
 -- 迁移期约定：源文件与测试文件走 glob 收编（多 agent 并行落文件），
 -- 模块稳定后按仓惯例转显式清单。
 
--- i18n 生成头回源：libca.i18n.embed-lang 将 .lang 文案编译为
--- i18n_mjbase_translations.generated.hpp（落于构建树 .gens），公开头
--- i18n.hpp 同目录直引。包导出只捕源树（add_headerfiles("src/(mjbase/**)")），
--- 故构建后把生成件按内容判等同步回 src/mjbase/，供安装面捕获；内容
--- 未变不落盘，避免 mtime 抖动触发消费方重编级联。
-rule("mjbase.i18n_src_sync")
-    after_build(function (target)
-        import("core.project.config")
-        local name = "i18n_mjbase_translations.generated.hpp"
-        local gens = os.files(path.join(config.builddir(), "**", name))
-        if not gens or #gens == 0 then
-            raise("mjbase.i18n_src_sync: 构建树内未找到 " .. name)
-        end
-        local dst = path.join(os.scriptdir(), "src", "mjbase", name)
-        local data = io.readfile(gens[1])
-        if data ~= (os.isfile(dst) and io.readfile(dst) or nil) then
-            io.writefile(dst, data)
-            print("  > mjbase.i18n_src_sync: 同步 %s 至 src/mjbase/", name)
-        end
-    end)
-
 target("mjbase")
     set_kind("static")
-    add_rules("mjbase.i18n_src_sync")
 
     -- plugin 构建戳：git 提交哈希编译期注入 build_stamp.h（仅
     -- src/mjbase/plugin/build_stamp.cpp 消费），plugin 同源门据此在装配期
@@ -112,15 +90,12 @@ target("mjbase")
     add_files("src/mjbase/pass/**.cpp")
     add_files("src/mjbase/plugin/**.cpp")
     add_files("src/mjbase/asm/remapper/**.cpp")
-    -- 批 4：mjt 与 mjt-py 的直接消费面——renamer、jasm、log、cli。
-    -- （workspace 已整体退役移交下游，jasm 仍留本批供 cli/验证面消费；
-    -- cli 只收源码（文案表 .lang 的规则在上方始终保留）。）
+    -- 批 4：mjt 与 mjt-py 的直接消费面——renamer、jasm、log。
+    -- （workspace/cli 均已退役：workspace 引擎移交下游 mjt，cli 解析轮由
+    -- libca ca::opt 承担、OutputSink 移交 mjt。）
     add_files("src/mjbase/renamer/**.cpp")
     add_files("src/mjbase/jasm/**.cpp")
-    add_files("src/mjbase/cli/*.cpp")
     -- cli 的 ArgParser 文案单源表（i18n_setup 静态注册，public include 供下游覆盖）。
-    -- 批 1 不含 cli 源码，但 i18n.hpp 依赖其生成头，故规则始终保留。
-    add_files("src/mjbase/cli/translations/*.lang", {rules = "libca.i18n.embed-lang"})
     -- 导出捕获含 mjbase/ 前缀（src/(mjbase/**)）：安装根下保留 mjbase/ 子树，
     -- 消费方 #include "mjbase/keys.hpp" 等伞头/模块头统一解析（同 libjbytecode
     -- src/(jbytecode/*.hpp) 口径）。
@@ -178,15 +153,13 @@ target("mjbase_unittest")
     -- golden 对拍子目录（旧栈 baseline 字节/指纹对拍机器，pass-golden-pipeline.md）。
     add_files("test/unittest/pass/golden/*_test.cpp")
     add_files("test/unittest/asm/remapper/*_test.cpp")
-    -- 批 4：与上面 src 的 renamer/jasm/log/cli 一一对应（workspace 测试随模块退役）。
+    -- 批 4：与上面 src 的 renamer/jasm/log 一一对应（workspace/cli 测试随模块退役）。
     add_files("test/unittest/renamer/*_test.cpp")
     add_files("test/unittest/jasm/*_test.cpp")
     add_files("test/unittest/log/*_test.cpp")
-    add_files("test/unittest/cli/*_test.cpp")
     -- 第 5 批（孤儿测试救回）：keys/i18n/util 伞头与叶子件，
     -- 与 src 的 keys.hpp/i18n.hpp/util 一一对应（B3-A 波次测试面，副本删除前收容）。
     add_files("test/unittest/keys/*_test.cpp")
-    add_files("test/unittest/i18n/*_test.cpp")
     add_files("test/unittest/util/*_test.cpp")
     add_includedirs("src")
     -- 共享测试夹具目录（test/unittest/shared/）：跨模块单测共用的头文件面，
