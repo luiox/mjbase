@@ -145,7 +145,7 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   helper（Float/Double 位图、Integer/Long 解析）折叠（mbase 原实现即
   cast/helper 折叠面，非 checkcast 消除）。
   → 已落地（#25，8b98945）。
-- [ ] ConsJumpOptimizer / ConstantSwitchFolder / ConstantStateMachineEliminator
+- [x] ConsJumpOptimizer / ConstantSwitchFolder / ConstantStateMachineEliminator
   （628 行）：常量分支/switch/状态机折叠，依赖 asm/evaluator（已迁）。
   → ConsJumpOptimizer 已落地（首件，scope:method）：常量装载 + 常量条件跳转
     相邻窗口折叠——单槽 [int 常量; IFEQ..IFLE]、空窗 [ACONST_NULL;
@@ -181,7 +181,7 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     /RedundantLoadVal 联合不动点已证，见 pop_unused 端到端）。旧栈遇任意
     try-catch 全局弃置，新栈按标签粒度入边守卫，覆盖面只宽不窄。独立成件
     与引擎重叠，违反件职责单一。ConsJump 三件套至此收口。
-- [ ] RedundantJumpRemover / GotoRearranger / ContinuousLabelMerger
+- [x] RedundantJumpRemover / GotoRearranger / ContinuousLabelMerger
   （449 行）：label 布局族——新载体无标签节点，逐件载体重论证（部分可能
   结构性吸收或改形为边界句柄重排），未论证前不迁。
   → RedundantJumpRemover 已落地（首件，scope:method）：目标落在顺序后继
@@ -209,7 +209,7 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     环形拒动），帧面与 RedundantJumpRemover 同口径 Strict 重算兜底。
     13 单测全经生产管线真链验证。标签布局族首件已落地，
     族内分析至此收口。
-- [ ] UnreachableInsnRemover 家族（dead_code_remover.cpp 1594 行内非 NopRemover
+- [x] UnreachableInsnRemover 家族（dead_code_remover.cpp 1594 行内非 NopRemover
   部分，切片迁移）：帧可达性证明删不可达指令。NopRemover 已由方法级四件批收口。
   → 首件已落地（结构级 UnreachableInsnRemover，scope:method）：帧引擎 BestEffort
     reachability 一次性判死；锚异常表标签的不可达指令保守保留（不重锚边界，
@@ -708,7 +708,7 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   record 组件注解清空 + SpecificAnnotationRemover 参数注解槽内过滤
   （Raw 面 JVMS 4.7.20 布局条目摘除）。普查砍单：家族 method 级八件为
   scope:method，归 C 方法级组；unused_member_remover 已由批 A 收口，不重迁。
-  - [ ] pass 余量：libjbc 侧挂账已全部解除（2026-10-28 台账校准）——
+  - [x] pass 余量：libjbc 侧挂账已全部解除（2026-10-28 台账校准）——
     成员增删 addMethod/addField（A3/A4）、整类构建 makeSession(NewClassSeed)
     （A5）、结构化泛型/TypeAnnotation 读写面 ir/sig_attr.hpp +
     ir/type_annotation_attr.hpp（B1/B2）均已在 libjbc 落地（units.hpp/
