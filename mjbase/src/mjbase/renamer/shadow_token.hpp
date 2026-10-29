@@ -12,8 +12,7 @@
 ///             ambiguous-member，各自带固定修复动作；缺 sidecar 时任何引用
 ///             形状 → 硬报错（missing-sidecar），不静默回落裸名。
 ///
-/// 边界：Name/Descriptor 槽已实现；JasmBody 分支未接线（传入即 fail-loud，
-/// 不做文法）。实修：查表命中面一律按值/optional 交付——
+/// 边界：Name/Descriptor/JasmBody 槽已实现。实修：查表命中面一律按值/optional 交付——
 /// findClassByHandle 返回指向 findByShadowName 临时 vector 内部的指针（悬垂
 /// UB，mjt 仓 9e72e9f 已修），本移植自始不带该形状。
 #pragma once
@@ -36,7 +35,7 @@ enum class ShadowSlotPosition
     /// 方法/字段描述符：词法走查 L…; 完整段，类型位展开（泛型签名
     /// fail-loud，Sig 属性 v2 另批）。
     Descriptor,
-    /// JASM body 指令操作数中的内部名/描述符。未接线。
+    /// JASM body 指令操作数（引用型）：类名 / owner.name 复合 + 尾随描述符。
     JasmBody,
 };
 
@@ -150,7 +149,7 @@ struct ShadowSlotResult
 /// - 缺 sidecar（空表）+ 引用形状（ClassRef/MemberRef/Malformed）→
 ///   MissingSidecar 硬报错，不静默回落裸名。
 /// - Descriptor 位置：走 resolveShadowDescriptor（见下）。
-/// - JasmBody 位置：未接线，fail-loud（MalformedHandle + 指引），防意外提前使用。
+/// - JasmBody 位置：走 resolveShadowJasmBody（见下）。
 ShadowSlotResult resolveShadowSlot(const ShadowAliasTable& table,
                                    const std::string&      input,
                                    const ShadowSlotQuery&  query = {});
@@ -173,6 +172,28 @@ ShadowSlotResult resolveShadowSlot(const ShadowAliasTable& table,
 /// descriptor/kind 不承载（类型位没有成员 desc 语义）。
 ShadowSlotResult resolveShadowDescriptor(const ShadowAliasTable& table,
                                          const std::string&      input);
+
+/// @brief JasmBody 槽（§3 位置三分之操作数行）：引用型指令操作数展开。
+///
+/// 输入 = 单条指令的引用型操作数（助记符之后；iinc/数字等非引用操作数由
+/// 调用方不分派本槽）。文法（对齐 rewriteJasmForDisplay 的显示形态）：
+///
+/// - 尾随描述符切分：以 ")" 结尾 → 取最后一个 " (" 之前的引用部 + 括号内
+///   方法描述符；否则取最后一个空格之后的字段描述符；无空格 = 纯引用部
+///   （类操作数 new/checkcast/instanceof/anewarray/ldc 类常量）；
+/// - 引用部：整体 ClassRef → 类内部名；整体 MemberRef → `rawOwner.rawName`
+///   复合；`OWNER.RAWNAME` 复合（OWNER = ClassRef 或裸内部名）→ owner 展开/
+///   恒等；纯裸名 → 恒等直通（显示文本的 shadow 名如 `Class_1.m_1` 不含
+///   `\${` 形状，按 Raw 零漂移直通——shadow→raw 的通路是回显工具，不在本槽）；
+///   形状冲突（owner 不同的嵌套 MemberRef 等）→ MalformedHandle；
+/// - 描述符部：经 resolveShadowDescriptor 展开（类 handle 可内嵌）；
+/// - query.verifyRaw/query.member/query.descHint 在本槽不适用（raw 零漂移：
+///   java/lang/System.out 等表外目标恒等放行）。
+///
+/// 结果：raw = 替换后的完整操作数；fromHandle = 发生过 ≥1 次展开；
+/// descriptor/kind 不承载。
+ShadowSlotResult resolveShadowJasmBody(const ShadowAliasTable& table,
+                                       const std::string&      input);
 
 /// @brief 引用句柄（ClassRef/MemberRef）全量核验 → 命中条目（Ref 分支的条目面，
 ///        供回显工具 handle→条目反查；与 resolveShadowSlot 的 Ref 分支同判同错）。

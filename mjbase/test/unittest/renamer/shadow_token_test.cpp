@@ -24,7 +24,8 @@ namespace {
 
 /// 手工表（全部自造名/号）：
 ///   Class_1 = a/b/Alpha（token 11111111），方法 m_1 = fly ()V（token 22222222），
-///   字段 f_1 = weight I（token 33333333）；Class_2 = a/b/Beta（token 44444444）。
+///   字段 f_1 = weight I（token 33333333）；Class_2 = a/b/Beta（token 44444444），
+///   方法 m_2 = hunt (I)V（token 55555555）。
 ShadowAliasTable makeTable()
 {
     ShadowAliasTable table;
@@ -32,6 +33,7 @@ ShadowAliasTable makeTable()
     table.addMethod("a/b/Alpha", "()V", "fly", "m_1", "22222222");
     table.addField("a/b/Alpha", "I", "weight", "f_1", "33333333");
     table.addClass("a/b/Beta", "Class_2", "44444444");
+    table.addMethod("a/b/Beta", "(I)V", "hunt", "m_2", "55555555");
     return table;
 }
 
@@ -213,11 +215,13 @@ TEST(MjShadowTokenTest, NonNamePositionsDispatch)
     EXPECT_EQ(ShadowSlotError::MalformedHandle, desc.error);
     EXPECT_EQ(std::string::npos, text(desc).find("does not accept shadow references"));
 
-    // JasmBody 仍未接线：fail-loud（MalformedHandle + 指引）。
+    // JasmBody 已接线：裸 handle（类操作数位）按 ClassRef 展开，不再是
+    // 「未接线」占位拒绝。
     query.position = ShadowSlotPosition::JasmBody;
     const auto jasm = resolveShadowSlot(makeTable(), kClassRef, query);
-    EXPECT_EQ(ShadowSlotError::MalformedHandle, jasm.error);
-    EXPECT_NE(std::string::npos, text(jasm).find("does not accept shadow references"));
+    EXPECT_EQ(ShadowSlotError::None, jasm.error);
+    EXPECT_EQ(jasm.raw, "a/b/Alpha");
+    EXPECT_TRUE(jasm.fromHandle);
 }
 
 // ───────────────────────── §6 错误四分类（Ref 面） ─────────────────────────
@@ -344,7 +348,7 @@ TEST(MjShadowTokenTest, StringConstantTextNeverClassifiesAsReference)
 TEST(MjShadowTokenTest, HandleIssuanceCoversClassAndMemberEntries)
 {
     const auto table = makeTable();
-    ASSERT_EQ(4U, table.size());
+    ASSERT_EQ(5U, table.size());
     std::string classHandle;
     std::string memberHandle;
     for (const auto& entry : table.entries()) {
@@ -352,7 +356,7 @@ TEST(MjShadowTokenTest, HandleIssuanceCoversClassAndMemberEntries)
         if (entry.kind == ShadowKind::Class && entry.rawName == "a/b/Alpha") {
             classHandle = handle;
         }
-        if (entry.kind == ShadowKind::Method) {
+        if (entry.kind == ShadowKind::Method && entry.rawName == "fly") {
             memberHandle = handle;
             EXPECT_EQ("${Class_1.11111111.m_1.22222222}", handle);
         }
@@ -521,6 +525,141 @@ TEST(MjShadowTokenTest, DescriptorEscapedLiteralKeepsLiteralBraces)
     ASSERT_EQ(r.error, ShadowSlotError::None) << text(r);
     EXPECT_EQ(r.raw, "(L${a/b/Weird};)V");
     EXPECT_FALSE(r.fromHandle);
+}
+
+
+// ── JasmBody 槽（A 批 A2：引用型操作数展开）──────────────────────
+
+namespace {
+
+/// JasmBody 槽快捷入口。
+ShadowSlotResult resolveJasm(const ShadowAliasTable& table, const std::string& input)
+{
+    ShadowSlotQuery query;
+    query.position = ShadowSlotPosition::JasmBody;
+    return resolveShadowSlot(table, input, query);
+}
+
+}   // namespace
+
+TEST(MjShadowTokenTest, JasmBodyRawOperandsIdentityZeroDrift)
+{
+    const auto table = makeTable();
+    // 显示文本的 shadow 名（Class_1.m_1，无 ${ 形状）按 Raw 零漂移直通——
+    // shadow→raw 的通路是回显工具，不在本槽。
+    const auto r1 = resolveJasm(table, "java/lang/System.out Ljava/io/PrintStream;");
+    ASSERT_EQ(r1.error, ShadowSlotError::None) << text(r1);
+    EXPECT_EQ(r1.raw, "java/lang/System.out Ljava/io/PrintStream;");
+    EXPECT_FALSE(r1.fromHandle);
+
+    const auto r2 = resolveJasm(table, "Alpha.run ()V");
+    ASSERT_EQ(r2.error, ShadowSlotError::None) << text(r2);
+    EXPECT_EQ(r2.raw, "Alpha.run ()V");
+
+    const auto r3 = resolveJasm(table, "a/b/Alpha");
+    ASSERT_EQ(r3.error, ShadowSlotError::None) << text(r3);
+    EXPECT_EQ(r3.raw, "a/b/Alpha");
+}
+
+TEST(MjShadowTokenTest, JasmBodyClassHandleOperandExpands)
+{
+    const auto table = makeTable();
+    // 类操作数（new/checkcast/ldc 类常量位）：整体 ClassRef。
+    const auto r = resolveJasm(table, kClassRef);
+    ASSERT_EQ(r.error, ShadowSlotError::None) << text(r);
+    EXPECT_EQ(r.raw, "a/b/Alpha");
+    EXPECT_TRUE(r.fromHandle);
+}
+
+TEST(MjShadowTokenTest, JasmBodyMemberHandleWithMethodDescExpands)
+{
+    const auto table = makeTable();
+    // 整体 MemberRef + 方法描述符：复合 rawOwner.rawName + desc 直通。
+    const auto r = resolveJasm(table, std::string(kMemberRef) + " ()V");
+    ASSERT_EQ(r.error, ShadowSlotError::None) << text(r);
+    EXPECT_EQ(r.raw, "a/b/Alpha.fly ()V");
+    EXPECT_TRUE(r.fromHandle);
+}
+
+TEST(MjShadowTokenTest, JasmBodyOwnerHandleCompositeExpands)
+{
+    const auto table = makeTable();
+    // owner = ClassRef handle + 裸成员名 + 字段描述符。
+    const auto r = resolveJasm(table, std::string(kClassRef) + ".weight I");
+    ASSERT_EQ(r.error, ShadowSlotError::None) << text(r);
+    EXPECT_EQ(r.raw, "a/b/Alpha.weight I");
+    EXPECT_TRUE(r.fromHandle);
+}
+
+TEST(MjShadowTokenTest, JasmBodyDescHandlesExpandViaDescriptorSlot)
+{
+    const auto table = makeTable();
+    // 裸 owner.name + 描述符内嵌类 handle：desc 走 Descriptor 槽。
+    const auto r = resolveJasm(table, "a/b/Alpha.run (L" + std::string(kClassRef) + ";)V");
+    ASSERT_EQ(r.error, ShadowSlotError::None) << text(r);
+    EXPECT_EQ(r.raw, "a/b/Alpha.run (La/b/Alpha;)V");
+    EXPECT_TRUE(r.fromHandle);
+}
+
+TEST(MjShadowTokenTest, JasmBodyMemberHandleOwnerMismatchFailsLoud)
+{
+    const auto table = makeTable();
+    // owner handle + 嵌套异 owner 的 MemberRef handle：owner 不自洽 → fail-loud。
+    const auto r =
+        resolveJasm(table, "${Class_1.11111111}.${Class_2.44444444.m_2.55555555} ()V");
+    EXPECT_EQ(r.error, ShadowSlotError::MalformedHandle);
+}
+
+TEST(MjShadowTokenTest, JasmBodyOwnerHandleWithMemberHandleExpands)
+{
+    const auto table = makeTable();
+    // owner handle + 同 owner 嵌套 MemberRef handle：自洽 → 展开。
+    const auto r =
+        resolveJasm(table, std::string(kClassRef) + "." + std::string(kMemberRef) + " ()V");
+    ASSERT_EQ(r.error, ShadowSlotError::None) << text(r);
+    EXPECT_EQ(r.raw, "a/b/Alpha.fly ()V");
+    EXPECT_TRUE(r.fromHandle);
+}
+
+TEST(MjShadowTokenTest, JasmBodyRawOwnerWithMemberHandleExpands)
+{
+    const auto table = makeTable();
+    // 裸 raw owner + 嵌套 MemberRef handle（Raw 复合路径）。
+    const auto r = resolveJasm(table, "a/b/Alpha." + std::string(kMemberRef) + " ()V");
+    ASSERT_EQ(r.error, ShadowSlotError::None) << text(r);
+    EXPECT_EQ(r.raw, "a/b/Alpha.fly ()V");
+    EXPECT_TRUE(r.fromHandle);
+}
+
+TEST(MjShadowTokenTest, JasmBodyMissingSidecarHardFails)
+{
+    const ShadowAliasTable empty;
+    const auto r = resolveJasm(empty, std::string(kMemberRef) + " ()V");
+    EXPECT_EQ(r.error, ShadowSlotError::MissingSidecar);
+}
+
+TEST(MjShadowTokenTest, JasmBodyUnknownHandlePropagates)
+{
+    const auto table = makeTable();
+    const auto r = resolveJasm(table, "${Class_1.deadbeef}.fly ()V");
+    EXPECT_EQ(r.error, ShadowSlotError::UnknownHandle);
+}
+
+TEST(MjShadowTokenTest, JasmBodyGrammarGarbageFailsLoud)
+{
+    const auto table = makeTable();
+    // 以 ')' 结尾但无 ' (' 组。
+    EXPECT_EQ(resolveJasm(table, "A.f)").error, ShadowSlotError::MalformedHandle);
+    // owner handle 残缺（无 '}' 收口）。
+    EXPECT_EQ(resolveJasm(table, "${Class_1.fly ()V").error, ShadowSlotError::MalformedHandle);
+    // 段内 Malformed 引用。
+    EXPECT_EQ(resolveJasm(table, "${x}.fly ()V").error, ShadowSlotError::MalformedHandle);
+    // 描述符文法垃圾（走 Descriptor 槽 fail-loud）。
+    EXPECT_EQ(resolveJasm(table, "A.f (I)VX").error, ShadowSlotError::MalformedHandle);
+    // 空串恒等。
+    const auto r = resolveJasm(table, "");
+    ASSERT_EQ(r.error, ShadowSlotError::None);
+    EXPECT_EQ(r.raw, "");
 }
 
 }   // namespace mjbase::renamer

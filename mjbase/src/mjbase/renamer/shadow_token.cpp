@@ -307,14 +307,10 @@ ShadowSlotResult resolveShadowSlot(const ShadowAliasTable& table,
     if (query.position == ShadowSlotPosition::Descriptor) {
         return resolveShadowDescriptor(table, input);
     }
-    if (query.position != ShadowSlotPosition::Name) {
-        // 未接线分支占位：jasm body 标识槽文法未接，fail-loud 防意外提前使用；
-        // 后续扩展在本收口内替换本分支，不开新入口。
-        return failure(ShadowSlotError::MalformedHandle,
-                       std::string("jasm-body") +
-                           " slot does not accept shadow references yet (planned); "
-                           "pass the raw form for now");
+    if (query.position == ShadowSlotPosition::JasmBody) {
+        return resolveShadowJasmBody(table, input);
     }
+    // 其余位置：Name（缺省）；无未接线分支。
 
     const auto parts = parseShadowRef(input);
     switch (parts.form) {
@@ -489,6 +485,172 @@ ShadowSlotResult resolveShadowDescriptor(const ShadowAliasTable& table,
     }
     result.error      = ShadowSlotError::None;
     result.raw        = std::move(out);
+    result.fromHandle = expansions > 0;
+    return result;
+}
+
+
+ShadowSlotResult resolveShadowJasmBody(const ShadowAliasTable& table,
+                                       const std::string&      input)
+{
+    ShadowSlotResult result;
+    if (input.empty()) {
+        result.raw  = input;
+        result.error = ShadowSlotError::None;
+        return result;
+    }
+
+    // ── 尾随描述符切分 ──
+    std::string refPart;
+    std::string descPart;      // 括号内（方法）或尾 token（字段）；空 = 无
+    std::string separator;     // 引用部与描述符之间的原样分隔（" (" / " "）
+    bool        hasDesc = false;
+    if (input.back() == ')') {
+        const auto paren = input.rfind(" (");
+        if (paren == std::string::npos || paren + 2 >= input.size() - 1) {
+            return failure(ShadowSlotError::MalformedHandle,
+                           "operand '" + brief(input) +
+                               "' ends with ')' but has no ' (desc)' group");
+        }
+        refPart   = input.substr(0, paren);
+        descPart  = input.substr(paren + 2, input.size() - paren - 3);
+        separator = " (";
+        hasDesc   = true;
+    }
+    else {
+        const auto space = input.rfind(' ');
+        if (space != std::string::npos && space + 1 < input.size()) {
+            refPart   = input.substr(0, space);
+            descPart  = input.substr(space + 1);
+            separator = " ";
+            hasDesc   = true;
+        }
+        else {
+            refPart = input;
+        }
+    }
+
+    // ── 引用部解析 ──
+    // 产物：resolvedRef（替换后引用部）；expansions 计数。
+    // 分派序：整体 parseShadowRef（ClassRef/MemberRef/EscapedLiteral 直达）；
+    // Malformed 且带 '${' 前缀 → 复合拆分（首个 '}' 前 = owner handle，余部
+    // ".name"）；其余 Raw（owner.name 复合或纯裸名零漂移直通）。
+    std::string resolvedRef;
+    ca::usize   expansions = 0;
+
+    // name 段：裸名直通；嵌套 MemberRef handle 展开并核验与 raw owner 自洽。
+    // 失败时已填 result，返回 false。
+    const auto resolveNamePart = [&](const std::string& namePart,
+                                     const std::string& rawOwner,
+                                     std::string&       out) -> bool {
+        if (namePart.rfind("${", 0) != 0) {
+            out = namePart;
+            return true;
+        }
+        if (parseShadowRef(namePart).form != ShadowRefForm::MemberRef) {
+            result = failure(ShadowSlotError::MalformedHandle,
+                             "malformed member handle in jasm operand: " +
+                                 quoted(namePart));
+            return false;
+        }
+        ShadowSlotResult entryResult;
+        const auto       entry = resolveShadowHandleEntry(table, namePart, entryResult);
+        if (!entry.has_value()) {
+            result = std::move(entryResult);
+            return false;
+        }
+        if (entry->owner != rawOwner) {
+            result = failure(ShadowSlotError::MalformedHandle,
+                             "member handle owner " + brief(entry->owner) +
+                                 " conflicts with operand owner " + brief(rawOwner));
+            return false;
+        }
+        out = entry->rawName;
+        ++expansions;
+        return true;
+    };
+
+    const auto parts = parseShadowRef(refPart);
+    if (parts.form == ShadowRefForm::ClassRef) {
+        ShadowSlotResult entryResult;
+        const auto       entry = resolveShadowHandleEntry(table, refPart, entryResult);
+        if (!entry.has_value()) return entryResult;
+        resolvedRef = entry->rawName;
+        ++expansions;
+    }
+    else if (parts.form == ShadowRefForm::MemberRef) {
+        // 整体成员句柄：展开为 rawOwner.rawName 复合。
+        ShadowSlotResult entryResult;
+        const auto       entry = resolveShadowHandleEntry(table, refPart, entryResult);
+        if (!entry.has_value()) return entryResult;
+        resolvedRef = std::string(entry->owner) + "." + std::string(entry->rawName);
+        ++expansions;
+    }
+    else if (parts.form == ShadowRefForm::EscapedLiteral) {
+        resolvedRef = parts.literal;
+    }
+    else if (parts.form == ShadowRefForm::Malformed && refPart.rfind("${", 0) == 0) {
+        // 复合拆分：首个 '}' 前为 owner handle（须 ClassRef 形状）；表查询
+        // 错误原样直传——unknown-handle 不得被复合语境吞成 malformed。
+        const auto close = refPart.find('}');
+        if (close == std::string::npos) {
+            return failure(ShadowSlotError::MalformedHandle,
+                           "malformed reference " + quoted(refPart) +
+                               " in jasm operand (no closing brace)");
+        }
+        const auto handlePart = refPart.substr(0, close + 1);
+        const auto rest       = refPart.substr(close + 1);
+        if (rest.empty() || rest[0] != '.') {
+            return failure(ShadowSlotError::MalformedHandle,
+                           "malformed reference " + quoted(refPart) +
+                               " in jasm operand (expected .name after handle)");
+        }
+        if (parseShadowRef(handlePart).form != ShadowRefForm::ClassRef) {
+            return failure(ShadowSlotError::MalformedHandle,
+                           "malformed owner handle " + quoted(handlePart) +
+                               " in jasm operand");
+        }
+        ShadowSlotResult ownerResult;
+        const auto       ownerEntry =
+            resolveShadowHandleEntry(table, handlePart, ownerResult);
+        if (!ownerEntry.has_value()) return ownerResult;
+        const std::string rawOwner(ownerEntry->rawName);
+        std::string       resolvedName;
+        if (!resolveNamePart(rest.substr(1), rawOwner, resolvedName)) return result;
+        resolvedRef = rawOwner + "." + resolvedName;
+        ++expansions;
+    }
+    else if (parts.form == ShadowRefForm::Malformed) {
+        return failure(ShadowSlotError::MalformedHandle,
+                       "malformed reference " + quoted(refPart) + " in jasm operand");
+    }
+    else {
+        // Raw：复合 owner.name（name 可嵌 MemberRef handle）或纯裸名。
+        const auto dot = refPart.find('.');
+        if (dot == std::string::npos) {
+            resolvedRef = refPart;   // 类操作数裸名：零漂移直通
+        }
+        else {
+            const auto ownerPart = refPart.substr(0, dot);
+            const auto namePart  = refPart.substr(dot + 1);
+            std::string resolvedName;
+            if (!resolveNamePart(namePart, ownerPart, resolvedName)) return result;
+            resolvedRef = ownerPart + "." + resolvedName;
+        }
+    }
+
+    // ── 描述符部展开 ──
+    std::string resolvedDesc;
+    if (hasDesc) {
+        const auto descResult = resolveShadowDescriptor(table, descPart);
+        if (descResult.error != ShadowSlotError::None) return descResult;
+        resolvedDesc = descResult.raw;
+        if (descResult.fromHandle) ++expansions;
+    }
+
+    result.error      = ShadowSlotError::None;
+    result.raw        = resolvedRef + separator + (hasDesc ? resolvedDesc : "") +
+                 (separator == " (" ? ")" : "");
     result.fromHandle = expansions > 0;
     return result;
 }
