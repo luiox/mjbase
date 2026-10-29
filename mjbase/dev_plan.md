@@ -876,5 +876,20 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   从重写后字节读出，按 JVM 环绕与算术移位语义重放发射序列，对照原始
   体闭式语义（u32 wrap 乘 / 向零取整除）；差分求值语料待 libjsim 落
   包后回归其一致性套件。全量 2013 用例 2010 绿（+3 既有跳过）。
-- 旧 matcher 与 tmatcher 的合并裁决（集成期）。
 - 层次图 `.ihc` 序列化：暂不迁，出现真实消费方再按 libjbc 会话模型重设计。
+- [x] 旧 matcher 退役、StackOperationSimplifier 迁 tmatcher 载体（合并裁
+  决兑现）：asm/matcher 全族 15 文件（pattern_matcher / match_step /
+  mini_dsl 三层）与两套件删除，唯一产品消费方 stack_operation 改为
+  ReplaceRule 组合子 + InsnPlanner 计划面——31 条规则（10 消除 + 21 改
+  写）迭代到不动点，计划自右向左落盘，执行期纪律门（首条豁免）按窗口
+  粒度拒收锚定窗。偏离申报：①胜出纪律「规则注册序优先 + 窗内倒序首
+  中」→「位置优先 + Longest 不重叠」，修复 `[装载;装载;pop2]` 上短窗
+  抢吃留死装载（栈面 +1）缺陷，双装载整组消费翻正面用例钉死；②旧表
+  `[dup_x1;swap]=>[dup]` 栈面不等价，整条退役（`[a,b]` 上 LHS 终形
+  `[b,b,a]` 顶为 a、RHS 终形 `[a,b,b]` 顶为 b，非死值尾部可观测，旧夹
+  具 return 死值尾遮蔽差异），`dup_x1` 面保留 sound 的双装载两窗；③异
+  常表锚定窗从整方法保守终止改为窗口粒度跳过（原挂账兑现）；④套件夹
+  具全量换可验证字节码 jasm 文本汇编（iconst/lconst 专用形，异常表面
+  ClassBytesBuilder 标签装配），pop2/swap 落点深度与返回栈深不再依赖
+  汇编器宽放——不可验证栈形（如裸 `装载;pop2`）不再作为夹具。stack 套
+  件 19 绿，全量 1973 用例 1970 绿（+3 既有跳过）。
