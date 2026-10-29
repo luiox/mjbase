@@ -809,5 +809,15 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   亦不可观测；NEW 非空无 NPE。maxStack/maxLocals 不变。9 单测（junk 摘
   除/参数接收者拒收/逃逸读拒收/体内标签拒收/带参 init 拒收/不成对拒收/
   同槽两组双摘/幂等写回/注册面），全量 2023 绿（2023 过 + 3 既有跳过）。
+- [x] UncontendedMonitorEliminater 带参 <init> 精化（收口上条挂账）：
+  识别形放宽 [NEW; DUP; (ARG)*; INVOKESPECIAL X.<init>(...)V; ASTORE
+  L]——实参游程逐条认领无副作用指令、可整组擦除（ICONST/BIPUSH/
+  SIPUSH/FCONST/DCONST 常量推入、ACONST_NULL、LDC/LDC2_W 非 condy
+  （bootstrap 可抛不认领）、局部装载族含紧凑形；ALOAD 引用装载无类型
+  约束可认领）；游程首个不认领指令须为本类 <init>（desc 不限），否则
+  整头拒收——调用/字段访问/分配/dup 形/iinc 实参擦除即语义变化
+  fail-closed。实参入组统一过标签锚定门与组级原子 eraseBatch（擦除面
+  只降栈深，maxStack 不抬即安全）。3 单测新增（副作用实参拒收/常量双
+  实参摘除/装载实参摘除），全量 2025 绿（2025 过 + 3 既有跳过）。
 - 旧 matcher 与 tmatcher 的合并裁决（集成期）。
 - 层次图 `.ihc` 序列化：暂不迁，出现真实消费方再按 libjbc 会话模型重设计。
