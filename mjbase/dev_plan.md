@@ -768,5 +768,30 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   default）直线供源扫描到首个状态写点，入口锚取不被案表供源的唯一绝对
   写点，沿 fold(s) → 案表 → 供源写点追踪定值，环闭合即停；同写点双值
   （路径敏感）、迹终端点、多入口锚拒收。FR 挂账余项收敛为混合操作数链。
+- [x] StringConcatIndirector（P1 批首件，新增件）：java/lang/StringBuilder
+  构造 + append 链 + toString 的直线形态改写单条 invokedynamic
+  StringConcatFactory.makeConcatWithConstants（javac 9+ 拼接规范形）。
+  窗识别逐指令相邻：NEW(SB); DUP; (LDC String)?; INVOKESPECIAL <init>
+  (()V|(Ljava/lang/String;)V); (ARG; INVOKEVIRTUAL append(恰一参))+;
+  INVOKEVIRTUAL toString——INDY 落位在 toString 位（栈机按序执行，实参
+  指令保留原位先压栈，new/dup/init/append 面经 eraseBatch 组级原子整擦
+  后栈序恰好成立；INDY 落 NEW 位是栈序反的）。实参认领面 v1 fail-closed：
+  每 append 实参须为恰一条自描述型单指令（ICONST 族/BIPUSH/SIPUSH/
+  LDC-Int→I、LCONST 族/LDC2_W→J、FCONST 族→F、DCONST 族→D、LDC
+  String/Class/MethodType/MethodHandle→对应引用型、ACONST_NULL→Object、
+  原始型局部装载→自述型；ALOAD/计算形/condy 不认领，整窗拒收）——帧
+  面计算形实参挂账。安全门：类版本 ≥53（StringConcatFactory 入场线）；
+  窗内任何成员（擦除面 + 实参位）锚定存活标签（分支/异常表）整窗拒收；
+  异类 NEW（StringBuffer）不动。BSM 条目经 appendBootstrapMethod 同形
+  复用（配方 = ×N 全实参槽位形态，常量嵌入属后续精化）；indy CP
+  条目走底层池面 addInvokeDynamic（session.internDynamic 是 condy tag 17
+  语义，v53 类 JVM 拒载——indy 是 tag 18）。maxes 面：改写后窗体最深点
+  = 窗口入口栈深 + 全部实参槽宽（帧引擎 BestEffort 一次；javac 可给出
+  比 SB 新形更小的 maxStack 且管线不重算，不抬终类 VerifyError 栈溢出
+  ——真跑钉死）。9 单测（javac 形折叠/无参链/同形两窗 BSM 复用/计算实
+  参拒收/窗内标签拒收/异类 NEW 不动/版本门不动/幂等写回/注册面）+
+  1 JVM 真跑门（javac --release 8 编译 SB 链样本，v52 门负证 + 抬 major
+  过门折叠，变换前后真机执行 stdout 逐字节一致且走 StringConcatFactory
+  bootstrap）。全量 2017 绿（2014 过 + 3 既有跳过）。
 - 旧 matcher 与 tmatcher 的合并裁决（集成期）。
 - 层次图 `.ihc` 序列化：暂不迁，出现真实消费方再按 libjbc 会话模型重设计。
