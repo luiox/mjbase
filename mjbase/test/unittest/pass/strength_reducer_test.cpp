@@ -1,10 +1,11 @@
 // StrengthReducer：2^k 乘除强度削减（imul/lmul→shl；idiv/ldiv→dup+符号
-// 修正序列）+ 保守停止 + 负被除数差分求值矩阵 + 幂等 + maxStack 抬升 +
+// 修正序列）+ 保守停止 + 负被除数差分矩阵 + 幂等 + maxStack 抬升 +
 // A1 帧链接线（resolver 注入 → SMT 再生被读侧接受）。
 //
-// 语义面用 asm_evaluator 做差分验证：同一入参分别求值原始方法体与重写后
-// 方法体，结果必须逐位一致（int 全矩阵；long 的 k=1 形态 LCONST_1 mask 无
-// LDC2_W，可求值，对照 C++ 向零取整参考值）。
+// 差分面：asm_evaluator 已摘除（libjsim 接位，未落包前不引测试依赖），
+// 矩阵验证改为「发射形状逐操作数读取 + C++ 位精确模拟」——k/mask/符号
+// 移位量全部从重写后字节读出，按 JVM i32/i64 环绕与算术移位语义在 C++
+// 侧重放发射序列，对照原始体的闭式语义（wrap 乘 / 向零取整除）。
 #include <gtest/gtest.h>
 
 #include <limits>
@@ -14,7 +15,6 @@
 #include "jbc/analysis/smt_read.hpp"
 #include "jbc/core/opcode.hpp"
 
-#include "mjbase/asm/evaluator/evaluator.hpp"
 #include "mjbase/hierarchy/class_hierarchy.hpp"
 #include "mjbase/keys.hpp"
 #include "mjbase/pass/strength_reducer.hpp"
@@ -28,9 +28,6 @@ using namespace mjbase::test;
 using jbc::core::Op;
 
 namespace {
-
-using mjbase::asm_evaluator::MethodSig;
-using mjbase::asm_evaluator::Value;
 
 /// 字节片段拼接（测试组装用）。
 Bytes cat(Bytes a, Bytes b)
@@ -104,28 +101,62 @@ ca::i64 ldcLongValueOf(const Inspection& ins, const jbc::ir::Insn* in)
     return c.num;
 }
 
-/// 求值静态 (I)I 方法体（入参 x）；失败返回 false（out 无效）。
-bool evalIntBody(const Inspection& ins, ca::i32 x, ca::i32& out)
+// ── 发射序列模拟助手（位精确，JVM i32/i64 语义）──
+
+/// JVM i32 乘法：u32 环绕。
+ca::i32 wrapMul(ca::i32 a, ca::i32 b)
 {
-    const auto sig = MethodSig::parse("(I)I", true);
-    if (sig.is_err()) return false;
-    const auto r = mjbase::asm_evaluator::evaluate(ins.cu->dom, sig.unwrap(),
-                                                  std::vector<Value>{Value::ofI32(x)});
-    if (r.is_err()) return false;
-    out = r.unwrap().value.i32;
-    return true;
+    return static_cast<ca::i32>(static_cast<ca::u32>(a) * static_cast<ca::u32>(b));
 }
 
-/// 求值静态 (J)J 方法体（入参 x）；失败返回 false（out 无效）。
-bool evalLongBody(const Inspection& ins, ca::i64 x, ca::i64& out)
+/// JVM ISHL：u32 环绕左移。
+ca::i32 wrapShl(ca::i32 v, ca::i32 n)
 {
-    const auto sig = MethodSig::parse("(J)J", true);
-    if (sig.is_err()) return false;
-    const auto r = mjbase::asm_evaluator::evaluate(ins.cu->dom, sig.unwrap(),
-                                                  std::vector<Value>{Value::ofI64(x)});
-    if (r.is_err()) return false;
-    out = r.unwrap().value.i64;
-    return true;
+    return static_cast<ca::i32>(static_cast<ca::u32>(v) << n);
+}
+
+/// 符号修正除法序列重放：(x + ((x >>s signShift) & mask)) >> k。
+/// 负值的 >> 即算术右移（JVM ISHR/LSHR 语义，主流编译器一致）。
+template<typename T>
+T signCorrectedDiv(T x, ca::i32 signShift, T mask, ca::i32 k)
+{
+    return (x + ((x >> signShift) & mask)) >> k;
+}
+
+/// 重写体发射的 int 操作数读出：ICONST_1..5 / BIPUSH / SIPUSH / LDC。
+bool emittedIntConstOf(const Inspection& ins, ca::usize idx, ca::i32& out)
+{
+    const jbc::ir::Insn* in = ins.cu->dom.peek(ins.cu->dom.order()[idx]);
+    if (in == nullptr) return false;
+    if (in->op >= Op::ICONST_1 && in->op <= Op::ICONST_5) {
+        out = static_cast<ca::i32>(in->op) - static_cast<ca::i32>(Op::ICONST_0);
+        return true;
+    }
+    if (in->op == Op::BIPUSH || in->op == Op::SIPUSH) {
+        out = in->a;
+        return true;
+    }
+    if (in->op == Op::LDC) {
+        out = ldcIntValueOf(ins, in);
+        return true;
+    }
+    return false;
+}
+
+/// 重写体发射的 long 操作数读出：LCONST_1 / LDC2_W。
+bool emittedLongConstOf(const Inspection& ins, ca::usize idx, ca::i64& out)
+{
+    const jbc::ir::Insn* in = ins.cu->dom.peek(ins.cu->dom.order()[idx]);
+    if (in == nullptr) return false;
+    if (in->op == Op::LCONST_1) {
+        out = 1;
+        return true;
+    }
+    if (in->op == Op::LDC2_W) {
+        out = ldcLongValueOf(ins, in);
+        return true;
+    }
+    return false;
 }
 
 constexpr ca::i32 kIntMin = (std::numeric_limits<ca::i32>::min)();
@@ -197,13 +228,17 @@ TEST(StrengthReducerTest, imulRewritePreservesSemantics)
         const Bytes       in = intMethodOn(b, cat(pushInt(1 << k), {0x68}));
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed()) << "k=" << k;
-        const Inspection before = inspect(in);
-        const Inspection after  = inspect(r.out);
+        const Inspection after = inspect(r.out);
+        // 发射形状：ILOAD_0; BIPUSH k; ISHL; IRETURN —— k 逐位读出重放。
+        ASSERT_EQ(opsOf(after),
+                  (std::vector<Op>{Op::ILOAD_0, Op::BIPUSH, Op::ISHL, Op::IRETURN}))
+            << "k=" << k;
+        ca::i32 emittedK = 0;
+        ASSERT_TRUE(emittedIntConstOf(after, 1, emittedK)) << "k=" << k;
+        ASSERT_EQ(emittedK, k) << "k=" << k;
         for (const ca::i32 x : xs) {
-            ca::i32 want = 0;
-            ca::i32 got  = 0;
-            ASSERT_TRUE(evalIntBody(before, x, want)) << "k=" << k << " x=" << x;
-            ASSERT_TRUE(evalIntBody(after, x, got)) << "k=" << k << " x=" << x;
+            const ca::i32 want = wrapMul(x, 1 << k);   // 原始体 pushInt(1<<k); IMUL
+            const ca::i32 got  = wrapShl(x, emittedK); // 重写体 ILOAD_0;BIPUSH;ISHL
             EXPECT_EQ(got, want) << "k=" << k << " x=" << x;
         }
     }
@@ -342,13 +377,22 @@ TEST(StrengthReducerTest, idivRewritePreservesSemantics)
         const Bytes       in = intMethodOn(b, cat(pushInt(1 << k), {0x6c}));
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed()) << "k=" << k;
-        const Inspection before = inspect(in);
-        const Inspection after  = inspect(r.out);
+        const Inspection after = inspect(r.out);
+        // 发射形状（形状套件逐槽钉死）：ILOAD_0;DUP;BIPUSH 31;ISHR;MASK;
+        // IAND;IADD;BIPUSH k;ISHR;IRETURN —— mask/k/符号移位量逐位读出重放。
+        ASSERT_EQ(opsOf(after).size(), 10u) << "k=" << k;
+        ca::i32 signShift = 0;
+        ca::i32 emittedK  = 0;
+        ca::i32 mask      = 0;
+        ASSERT_TRUE(emittedIntConstOf(after, 2, signShift)) << "k=" << k;
+        ASSERT_TRUE(emittedIntConstOf(after, 4, mask)) << "k=" << k;
+        ASSERT_TRUE(emittedIntConstOf(after, 7, emittedK)) << "k=" << k;
+        ASSERT_EQ(signShift, 31) << "k=" << k;
+        ASSERT_EQ(emittedK, k) << "k=" << k;
+        ASSERT_EQ(mask, (1 << k) - 1) << "k=" << k;
         for (const ca::i32 x : xs) {
-            ca::i32 want = 0;
-            ca::i32 got  = 0;
-            ASSERT_TRUE(evalIntBody(before, x, want)) << "k=" << k << " x=" << x;
-            ASSERT_TRUE(evalIntBody(after, x, got)) << "k=" << k << " x=" << x;
+            const ca::i32 want = x / (1 << k);   // 原始体 IDIV：向零取整
+            const ca::i32 got  = signCorrectedDiv(x, signShift, mask, emittedK);
             EXPECT_EQ(got, want) << "k=" << k << " x=" << x;
         }
     }
@@ -411,11 +455,22 @@ TEST(StrengthReducerTest, ldivRewrittenSequenceComputesJavaDivision)
     ASSERT_TRUE(r.pa.changed());
 
     const Inspection after = inspect(r.out);
-    const ca::i64    xs[]  = {kLongMin, kLongMin / 2, -8, -7, -1, 0, 1, 7, 8, kLongMax};
+    // 发射形状（形状套件逐槽钉死）：LLOAD_0;DUP2;BIPUSH 63;LSHR;MASK;
+    // LAND;LADD;BIPUSH k;LSHR;LRETURN —— mask/k/符号移位量逐位读出重放。
+    ASSERT_EQ(opsOf(after).size(), 10u);
+    ca::i32 signShift = 0;
+    ca::i32 emittedK  = 0;
+    ca::i64 mask      = 0;
+    ASSERT_TRUE(emittedIntConstOf(after, 2, signShift));
+    ASSERT_TRUE(emittedLongConstOf(after, 4, mask));
+    ASSERT_TRUE(emittedIntConstOf(after, 7, emittedK));
+    ASSERT_EQ(signShift, 63);
+    ASSERT_EQ(emittedK, 1);
+    ASSERT_EQ(mask, 1);
+    const ca::i64 xs[] = {kLongMin, kLongMin / 2, -8, -7, -1, 0, 1, 7, 8, kLongMax};
     for (const ca::i64 x : xs) {
-        ca::i64 got = 0;
-        ASSERT_TRUE(evalLongBody(after, x, got)) << "x=" << x;
-        EXPECT_EQ(got, x / 2) << "x=" << x;   // C++11 整数除法即向零取整
+        const ca::i64 got = signCorrectedDiv(x, signShift, mask, emittedK);
+        EXPECT_EQ(got, x / 2) << "x=" << x;   // C++ 整数除法即向零取整
     }
 }
 
