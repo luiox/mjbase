@@ -919,3 +919,8 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   对 reflection_interpreter 的反射改写面消费保留为 asm⇒reference 单向。
   终态零环：analysis⇏asm、spi⇏pass，全部跨模块边单向
   （asm⇒{analysis,reference}、reference⇒asm、pass⇒spi）。
+  → 补记（2026-10-29，reflection-interpreter 归位）：上句申报与事实不
+  符——asm⇒reference 与 reference⇒asm 并存即模块环。reflection_interpreter
+  本就是体级分析件（只吃 analysis/cp_refs + asm/analyzer 面），整迁
+  asm/analyzer/（ns reference→asm_analyzer），member_remapper 消费转模
+  块内。终态真零环：asm⇏reference，唯一方向 reference⇒asm。

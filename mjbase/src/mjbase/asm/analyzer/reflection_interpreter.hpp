@@ -35,9 +35,9 @@
 
 namespace mjbase::asm_analyzer {
 class AliasAnalysis;
-}   // namespace mjbase::analysis
+}   // namespace mjbase::asm_analyzer
 
-namespace mjbase::reference {
+namespace mjbase::asm_analyzer {
 
 /// @brief 类名归一化：`(Lfoo/Bar;)V` 描述符形态与点分名统一为 internal name。
 ///
@@ -161,4 +161,4 @@ struct ReflectionQueryContext
 /// @brief 计算方法内反射数据流快照（域引擎 + 迭代探测-注入 + FrameQuery 收口）。
 ReflectionSnapshot snapshotReflectionFacts(const ReflectionQueryContext& ctx);
 
-}   // namespace mjbase::reference
+}   // namespace mjbase::asm_analyzer
