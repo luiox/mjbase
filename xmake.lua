@@ -105,7 +105,7 @@ add_requires("libgarena 0.0.3")
 add_requires("libjclassfile 0.0.2")
 add_requires("libjstd 0.0.1")
 add_requires("libjdk_finder 0.1.0")
-add_requires("libjhasm 0.3.2")
+add_requires("libjhasm 0.3.3")
 -- 嵌套 libca 全路径钉定，缺一条就多一个实例。
 add_requireconfs("libjbc.libca",                         {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjstr.libca",                        {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
