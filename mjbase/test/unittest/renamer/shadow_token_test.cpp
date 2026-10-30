@@ -715,4 +715,71 @@ TEST(MjShadowTokenTest, JasmBodyMidSegmentBracesFailLoud)
     EXPECT_FALSE(escaped.fromHandle);
 }
 
+// ── §4 补钉：中段 guard × 合法嵌套形态矩阵 + owner 内点形状钉扎 ──────
+
+TEST(MjShadowTokenTest, JasmBodyCompositeOperandMatrix)
+{
+    const auto table = makeTable();
+    const std::string cr  = kClassRef;    // ${Class_1.11111111}
+    const std::string mr  = kMemberRef;   // ${Class_1.11111111.m_1.22222222}
+    const std::string fmr = "${Class_1.11111111.f_1.33333333}";
+    struct Case
+    {
+        std::string in;
+        bool        legal;
+        std::string raw;
+    };
+    const Case cases[] = {
+        // 合法：raw owner + 嵌套成员句柄（方法/字段 × 带/不带描述符）。
+        {"a/b/Alpha." + mr + " ()V", true, "a/b/Alpha.fly ()V"},
+        {"a/b/Alpha." + mr, true, "a/b/Alpha.fly"},
+        {"a/b/Alpha." + fmr + " I", true, "a/b/Alpha.weight I"},
+        {"a/b/Alpha." + fmr, true, "a/b/Alpha.weight"},
+        // 合法：句柄 owner 复合与描述符内嵌句柄（多类型段/数组段）。
+        {cr + "." + mr + " ()V", true, "a/b/Alpha.fly ()V"},
+        {"a/b/Alpha.fly (L" + cr + ";L${Class_2.44444444};)V", true,
+         "a/b/Alpha.fly (La/b/Alpha;La/b/Beta;)V"},
+        {"a/b/Alpha.weight [L" + cr + ";", true, "a/b/Alpha.weight [La/b/Alpha;"},
+        // 合法：显示文本 shadow 复合名（无 ${ 形状）零漂移直通。
+        {"Class_1.m_1 ()V", true, "Class_1.m_1 ()V"},
+        {"Class_1.m_1", true, "Class_1.m_1"},
+        // 非法：owner 中段混入花括号（调用方笔误，fail-loud）。
+        {"a/b/Al${pha.fly ()V", false, ""},
+    };
+    for (const auto& c : cases) {
+        const auto r = resolveJasm(table, c.in);
+        if (c.legal) {
+            EXPECT_EQ(r.error, ShadowSlotError::None) << c.in << " -> " << text(r);
+            if (r.error == ShadowSlotError::None) EXPECT_EQ(r.raw, c.raw) << c.in;
+        }
+        else {
+            EXPECT_EQ(r.error, ShadowSlotError::MalformedHandle) << c.in << " -> " << text(r);
+        }
+    }
+}
+
+TEST(MjShadowTokenTest, JasmBodyDottedOwnerWithNestedHandleFailsLoud)
+{
+    const auto table = makeTable();
+    // owner 段内含 '.' 的复合名（显示形 owner + 嵌套成员句柄）：JasmBody
+    // 槽契约的 OWNER 是裸内部名（'/' 分包，不含 '.'）——按首个 '.' 分段后
+    // 嵌套句柄落于 name 段中段，中段 guard fail-loud；即使改在 ".${" 边界
+    // 分段，dotted owner 与句柄 owner（表内内部名形）也不自洽，仍 fail-loud。
+    // 两条路同为响亮报错，本测试钉住现行 guard 语义（消息带 $$ 转义指引）。
+    const std::string mr  = kMemberRef;
+    const std::string fmr = "${Class_1.11111111.f_1.33333333}";
+    const std::string inputs[] = {
+        "a.b.Alpha." + mr + " ()V",
+        "a.b.Alpha." + mr,
+        "a.b.Alpha." + fmr + " I",
+    };
+    for (const auto& in : inputs) {
+        const auto r = resolveJasm(table, in);
+        EXPECT_EQ(r.error, ShadowSlotError::MalformedHandle) << in << " -> " << text(r);
+        if (r.error == ShadowSlotError::MalformedHandle) {
+            EXPECT_NE(std::string::npos, text(r).find("brace characters")) << in;
+        }
+    }
+}
+
 }   // namespace mjbase::renamer
