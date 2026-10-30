@@ -4,15 +4,22 @@
 
 #include <vector>
 
+#include "jbc/analysis/domain.hpp"
+#include "jbc/analysis/frame.hpp"
 #include "jbc/core/opcode.hpp"
 
 #include "mjbase/pass/cons_jump_optimizer.hpp"
+#include "mjbase/pass/constant_folder.hpp"
+#include "mjbase/pass/fix_pattern_simplifier.hpp"
+#include "mjbase/pass/nop_remover.hpp"
+#include "mjbase/pass/redundant_load_val_eliminator.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
 
 #include "method_pass_test_util.hpp"
 
 using namespace mjbase::test;
 using jbc::core::Op;
+namespace jan = jbc::analysis;
 
 namespace {
 
@@ -181,4 +188,50 @@ TEST(ConsJumpOptimizerTest, registeredByName)
     auto created = mjbase::spi::defaultPassRegistry().createMethodPass("ConsJumpOptimizer");
     ASSERT_TRUE(created.is_ok());
     EXPECT_NE(std::move(created).unwrap(), nullptr);
+}
+
+// ── 布尔物化菱形 + 外部 goto 直指条件跳转：阶段清理 pass 集零改动（守护
+// 回归钉）。形态（javac `a == null || a.length == 0` 同构）：
+//   ifnull L2 / aload arraylength ifne L0 / iconst_1 goto L1 /
+//   L0: iconst_0 / L1: ifeq L3 / L2: iconst_1 goto L4 / L3: iconst_0 /
+//   L4: ireturn
+// L1 的内部锚（外部 goto 的目标标签落在条件跳转上）是本 pass 拒折窗口
+// 的判据；若守护被弱化，恒真折叠会把外部跳边重定向到物化常量之前，制
+// 造汇合点入边栈形不一致（弹空边 vs 携值边）。此测试钉：pass 序列跑完
+// 字节逐位不变，且 Strict 帧数据流对结果 ok。
+TEST(ConsJumpOptimizerTest, booleanDiamondWithGotoIntoConditionUnchanged)
+{
+    const Bytes in = oneMethodI("([Ljava/lang/Object;)Z", {
+        0x2a,               // 0  aload_0
+        0xc6, 0x00, 0x10,   // 1  ifnull -> 17（空栈边进 L2）
+        0x2a,               // 4  aload_0
+        0xbe,               // 5  arraylength
+        0x9a, 0x00, 0x07,   // 6  ifne -> 13
+        0x04,               // 9  iconst_1
+        0xa7, 0x00, 0x04,   // 10 goto -> 14（携值边直指条件跳转）
+        0x03,               // 13 iconst_0（L0）
+        0x99, 0x00, 0x07,   // 14 ifeq -> 21（L1，窗口内部锚）
+        0x04,               // 17 iconst_1（L2）
+        0xa7, 0x00, 0x04,   // 18 goto -> 22
+        0x03,               // 21 iconst_0（L3）
+        0xac,               // 22 ireturn（L4）
+    });
+    const MethodPassRun r =
+        runMethodPass(in, mjbase::pass::ConsJumpOptimizer{}, mjbase::pass::ConstantFolder{},
+                      mjbase::pass::FixPatternSimplifier{}, mjbase::pass::NopRemover{},
+                      mjbase::pass::RedundantLoadValEliminator{});
+    EXPECT_TRUE(r.pa.areAllPreserved());   // 全集拒折/无匹配：方法零改动
+    EXPECT_EQ(r.out, in);
+
+    // Strict 帧数据流对（未被改动的）合法菱形 ok——守护不破不坏帧。
+    auto              ins = inspect(r.out);
+    jan::ShapeResolver resolver;
+    jan::FrameEngine   fe(ins.session->backing().cp, resolver, jan::FramePolicy::Strict);
+    jan::MethodSig     sig;
+    sig.isStatic  = true;
+    sig.name      = "m";
+    sig.desc      = "([Ljava/lang/Object;)Z";
+    sig.thisClass = "t/C";
+    const auto sum = fe.compute(*ins.cu, sig);
+    EXPECT_TRUE(sum.ok) << jan::to_string(sum.fail);
 }
