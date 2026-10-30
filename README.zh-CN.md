@@ -14,7 +14,7 @@ xmake f -p windows          # Linux 用 -p linux
 xmake build mjbase
 ```
 
-依赖来自 [luiox-repo](https://github.com/luiox/luiox-repo) 与 xrepo：libca、libjbc、libjzip、libjstr、libgarena、libjclassfile、libjstd、libjhasm、libjblw、libjbytecode（仅 JASM 文本面的链接层传递依赖）、libarchive、zlib。
+依赖来自 [luiox-repo](https://github.com/luiox/luiox-repo) 与 xrepo：libca、libjbc、libjzip、libjstr、libgarena、libjclassfile、libjstd、libjhasm、libjblw、libjbytecode（仅 JASM 文本面的链接层传递依赖）、zlib。
 
 ### 测试
 

@@ -30,7 +30,7 @@
 | 模块 | 状态 | 来源（mbase） | 迁移范围 | 说明 |
 |---|---|---|---|---|
 | jar | ✅ | jar | jar_reader/jar_writer/manifest/jar_util + dos_time_util（随迁叶） | manifest 保序字节级输出契约保留；throw 改 Result<_,JarError> |
-| model | ✅ | model | resource_model/container/io/helper | libarchive 后端保留（tar/xz/gz/zst 语义不丢）；throw 改 ModelError 枚举；路径统一 u8path |
+| model | ✅ | model | resource_model/container/io/helper | 解包面不随迁（mjbase 全家零调用方，能力随需求下沉消费方）；throw 改 ModelError 枚举；路径统一 u8path |
 | mapping | ✅ | mapping | 全 16 文件（7 格式注册表 + TinyV2 + shadow-alias + identifier_*） | 格式输出字节级等价（怪异行为原样）；invalid_mapping_exception 删除改 MappingError |
 | project | ✅ | project | analysis_project（schema v1）+ project_store（事务/锁/恢复） | 契约值原封（schema/kind 串/sha256 形状/engine 自述串/锁语义）；平台分支照搬 |
 
