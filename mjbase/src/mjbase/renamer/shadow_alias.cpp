@@ -732,6 +732,123 @@ ca::usize pruneShadowAliases(const mjbase::model::ResourceContainer& container,
     return removed;
 }
 
+ca::usize rebindShadowRawNames(ShadowAliasTable&                 table,
+                               const std::vector<RawRenameSpec>& renames)
+{
+    // Owned 工作副本 + 三张增量索引（裸串键，一次性构建）：
+    // - classRaw：类条目 raw → 下标（类改名定位）；
+    // - memberKey：owner\x1fdesc\x1fraw → 下标（成员改名定位 + 撞键预检）——
+    //   与表的成员唯一性同口径（kind 无关：同 (owner,raw,desc) 跨 field/method
+    //   视为同符号，addField/addMethod 互相拒绝），键含 kind 会让跨 kind 撞键
+    //   预检漏判、重建期 add 失败丢条目；
+    // - byOwner：owner → 下标集（类改名的 owner 级联）。
+    // 规格序应用；每次命中即改写副本并同步重键，撞键预检查的是已应用前序
+    // 规格后的最新状态（先到者优先）。
+    struct WorkEntry
+    {
+        ShadowKind  kind;
+        std::string owner;
+        std::string desc;
+        std::string raw;
+        std::string shadow;
+        std::string token8;
+    };
+    std::vector<WorkEntry> work;
+    work.reserve(table.size());
+    std::unordered_map<std::string, ca::usize>              classRaw;
+    std::unordered_map<std::string, ca::usize>              memberKey;
+    std::unordered_map<std::string, std::vector<ca::usize>> byOwner;
+    const auto keyOf = [](const WorkEntry& entry) {
+        return entry.owner + '\x1f' + entry.desc + '\x1f' + entry.raw;
+    };
+    for (const auto& entry : table.entries()) {
+        const ca::usize index = work.size();
+        work.push_back({entry.kind, toStd(entry.owner), toStd(entry.desc), toStd(entry.rawName),
+                        toStd(entry.shadowName), toStd(entry.token8)});
+        if (entry.kind == ShadowKind::Class) {
+            classRaw.emplace(work.back().raw, index);
+        }
+        else {
+            memberKey.emplace(keyOf(work.back()), index);
+        }
+        byOwner[work.back().owner].push_back(index);
+    }
+
+    // 成员撞键预检：目标身份 (owner, desc, raw) 是否已有条目（kind 无关）。
+    const auto memberTaken = [&](const std::string& owner, const std::string& desc,
+                                 const std::string& raw) {
+        return memberKey.find(owner + '\x1f' + desc + '\x1f' + raw) != memberKey.end();
+    };
+
+    ca::usize rebound = 0;
+    for (const auto& spec : renames) {
+        if (spec.newName.empty() || spec.oldName.empty()) continue;
+        if (spec.kind == ShadowKind::Class) {
+            // 类改名：类条目存在、目标 raw 未占用、且 owner 级联不产生成员
+            // 撞键（新 owner 名下已有同 (kind, desc, raw) 的其它类成员）——
+            // 任一不满足整规格跳过（先到者优先）。
+            const auto classIt = classRaw.find(spec.oldName);
+            if (classIt == classRaw.end()) continue;
+            if (classRaw.find(spec.newName) != classRaw.end()) continue;
+            const auto ownerIt = byOwner.find(spec.oldName);
+            if (ownerIt != byOwner.end()) {
+                bool cascadeCollision = false;
+                for (const ca::usize index : ownerIt->second) {
+                    if (work[index].kind == ShadowKind::Class) continue;
+                    if (memberTaken(spec.newName, work[index].desc, work[index].raw)) {
+                        cascadeCollision = true;
+                        break;
+                    }
+                }
+                if (cascadeCollision) continue;
+            }
+            // 应用：类条目 raw 改写 + owner 级联 + 索引重键。
+            const ca::usize classIndex = classIt->second;
+            classRaw.erase(classIt);
+            classRaw.emplace(spec.newName, classIndex);
+            work[classIndex].raw = spec.newName;
+            if (ownerIt != byOwner.end()) {
+                for (const ca::usize index : ownerIt->second) {
+                    if (work[index].kind == ShadowKind::Class) continue;
+                    memberKey.erase(keyOf(work[index]));
+                    work[index].owner = spec.newName;
+                    memberKey.emplace(keyOf(work[index]), index);
+                }
+            }
+            ++rebound;
+            continue;
+        }
+
+        // 成员改名：owner/desc/oldName 精确匹配；目标身份未占用才改写。
+        const auto key = spec.owner + '\x1f' + spec.desc + '\x1f' + spec.oldName;
+        const auto it = memberKey.find(key);
+        if (it == memberKey.end()) continue;
+        if (memberTaken(spec.owner, spec.desc, spec.newName)) continue;
+        memberKey.erase(it);
+        work[it->second].raw = spec.newName;
+        memberKey.emplace(keyOf(work[it->second]), it->second);
+        ++rebound;
+    }
+
+    if (rebound == 0) return 0;
+
+    // 原地重建（与 prune 同规：clear() 使旧视图失效；前置撞键预检保证
+    // 重加零失败，add 返回 false 属不可能状态，防御性跳过）。
+    table.clear();
+    for (const auto& entry : work) {
+        switch (entry.kind) {
+        case ShadowKind::Class: table.addClass(entry.raw, entry.shadow, entry.token8); break;
+        case ShadowKind::Field:
+            table.addField(entry.owner, entry.desc, entry.raw, entry.shadow, entry.token8);
+            break;
+        case ShadowKind::Method:
+            table.addMethod(entry.owner, entry.desc, entry.raw, entry.shadow, entry.token8);
+            break;
+        }
+    }
+    return rebound;
+}
+
 // ─────────────────────────── jasm 显示层改写 ───────────────────────────
 
 std::string rewriteJasmForDisplay(std::string_view jasmText, const ShadowAliasTable& table,

@@ -238,6 +238,36 @@ ca::core::Result<ca::usize, std::string> assignMethodShadowBatch(
 ca::usize pruneShadowAliases(const mjbase::model::ResourceContainer& container,
                              ShadowAliasTable&                       table);
 
+/// @brief 真名变更规格（rename 落盘后的表同步输入）。
+struct RawRenameSpec
+{
+    /// class 条目 = 类改名；成员条目 = 成员改名（匹配与撞键按表契约口径，
+    /// kind 不参与身份——同 (owner, raw, desc) 跨 field/method 不能共存）。
+    ShadowKind  kind    = ShadowKind::Class;
+    std::string owner   = {};  ///< 成员条目必填；class 条目留空
+    std::string desc    = {};  ///< 成员条目必填；class 条目留空
+    std::string oldName = {};  ///< class 条目 = 旧内部名；成员条目 = 旧真名
+    std::string newName = {};  ///< 新内部名 / 新真名
+};
+
+/// @brief rename 后 shadow 表同步：按身份键重定位既有条目的 raw 面。
+///
+/// 语义（显示身份跨 rename 连续——shadow 名与 token8 一律不变，重命名不改
+/// 别名、不换号）：
+/// - 处理序 = 规格序；class 改名建议先于其成员改名（成员规格的 owner 填
+///   class 改名后的新内部名）；
+/// - class 规格：rawName == oldName 的类条目 → rawName = newName；以其为
+///   owner 的全部成员条目 owner 连带改写（级联）；
+/// - 成员规格：(owner, desc, rawName) 精确匹配 → rawName = newName；
+/// - 未命中规格原样跳过（不改表不报错——rename 面与表登记面允许失配，
+///   过期残留交 pruneShadowAliases 容错）；
+/// - 撞键（newName 已有同身份条目）：跳过该规格并计数，先到者优先；
+/// - 重建全部索引（视图寿命语义不变：仍 = 本表寿命）。
+///
+/// @return 实际重绑定的条目数（含级联 owner 改写不计；撞键跳过不计）。
+ca::usize rebindShadowRawNames(ShadowAliasTable&                table,
+                               const std::vector<RawRenameSpec>& renames);
+
 /// @brief jasm 文本显示层 shadow 改写（#1072 显示层；输出不再是可回编译 jasm）。
 ///
 /// 整 token 替换：class 条目按转义后内部名全 jar 范围替换（含描述符内

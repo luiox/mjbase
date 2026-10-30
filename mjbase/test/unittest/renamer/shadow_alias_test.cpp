@@ -808,4 +808,155 @@ TEST(MjShadowAliasTableTest, batchAssignAppliesAndValidatesTransactionally)
     EXPECT_EQ("foo$2", toStd(table.methodShadow("A", "foo", "(Ljava/lang/String;)V")));
 }
 
+// ─────────────────── rename 后表同步（rebindShadowRawNames） ───────────────────
+
+namespace {
+
+/// 手工表（rebind 与容器无关，直配身份面）：
+///   A（token aaaaaaaa）：m()V=Method_1/bbbbbbbb、f I=Field_1/cccccccc；
+///   B（token dddddddd）：n()V=Method_2/eeeeeeee。
+ShadowAliasTable rebindTable()
+{
+    ShadowAliasTable table;
+    table.addClass("A", "Class_1", "aaaaaaaa");
+    table.addMethod("A", "()V", "m", "Method_1", "bbbbbbbb");
+    table.addField("A", "I", "f", "Field_1", "cccccccc");
+    table.addClass("B", "Class_2", "dddddddd");
+    table.addMethod("B", "()V", "n", "Method_2", "eeeeeeee");
+    return table;
+}
+
+}   // namespace
+
+TEST(MjShadowAliasTableTest, rebindClassRenameCascadesOwnerAndKeepsIdentity)
+{
+    ShadowAliasTable table = rebindTable();
+    const auto rebound = rebindShadowRawNames(table, {RawRenameSpec{ShadowKind::Class, {}, {}, "A", "C"}});
+    EXPECT_EQ(1U, rebound);
+    // shadow 身份连续：新 raw 命中原 shadow/token；旧 raw 失配。
+    EXPECT_EQ("Class_1", toStd(table.classShadow("C")));
+    EXPECT_EQ(nullptr, table.classEntry("A"));
+    // owner 级联：成员条目 owner 跟随类改名，shadow/token 不变。
+    EXPECT_EQ("Method_1", toStd(table.methodShadow("C", "m", "()V")));
+    EXPECT_EQ("Field_1", toStd(table.fieldShadow("C", "f", "I")));
+    EXPECT_TRUE(table.methodShadow("A", "m", "()V").empty());
+    for (const auto& entry : table.entries()) {
+        if (entry.kind == ShadowKind::Class && entry.rawName == "C")
+            EXPECT_EQ("aaaaaaaa", toStd(entry.token8));
+        if (entry.kind == ShadowKind::Method && entry.owner == "C")
+            EXPECT_EQ("bbbbbbbb", toStd(entry.token8));
+    }
+    // 同表其它类（B）不受牵连。
+    EXPECT_EQ("Class_2", toStd(table.classShadow("B")));
+    EXPECT_EQ("Method_2", toStd(table.methodShadow("B", "n", "()V")));
+}
+
+TEST(MjShadowAliasTableTest, rebindMemberRenameMatchesExactIdentity)
+{
+    ShadowAliasTable table = rebindTable();
+    const auto rebound =
+        rebindShadowRawNames(table, {RawRenameSpec{ShadowKind::Method, "A", "()V", "m", "renamed"}});
+    EXPECT_EQ(1U, rebound);
+    EXPECT_EQ("Method_1", toStd(table.methodShadow("A", "renamed", "()V")));
+    EXPECT_TRUE(table.methodShadow("A", "m", "()V").empty());
+    // desc 参与身份：同名字面异 desc 的规格不命中（无重建、表零变化）。
+    ShadowAliasTable untouched = rebindTable();
+    EXPECT_EQ(0U, rebindShadowRawNames(
+                      untouched, {RawRenameSpec{ShadowKind::Method, "A", "(J)V", "m", "renamed"}}));
+    EXPECT_EQ("Method_1", toStd(untouched.methodShadow("A", "m", "()V")));
+}
+
+TEST(MjShadowAliasTableTest, rebindUnknownSpecsAreNoOp)
+{
+    ShadowAliasTable table = rebindTable();
+    const auto       size  = table.size();
+    EXPECT_EQ(0U, rebindShadowRawNames(table,
+                                       {RawRenameSpec{ShadowKind::Class, {}, {}, "X", "Y"},
+                                        RawRenameSpec{ShadowKind::Method, "A", "()V", "ghost", "any"},
+                                        RawRenameSpec{ShadowKind::Class, {}, {}, "A", ""}}));
+    EXPECT_EQ(size, table.size());
+    EXPECT_EQ("Class_1", toStd(table.classShadow("A")));
+}
+
+TEST(MjShadowAliasTableTest, rebindCollisionsSkipSpecFirstWins)
+{
+    // 跨 owner 同名不撞（身份含 owner）：B.n()V → m 正常落地。
+    ShadowAliasTable crossOwner = rebindTable();
+    EXPECT_EQ(1U, rebindShadowRawNames(crossOwner,
+                                       {RawRenameSpec{ShadowKind::Method, "B", "()V", "n", "m"}}));
+    EXPECT_EQ("Method_2", toStd(crossOwner.methodShadow("B", "m", "()V")));
+    // 同 owner 撞键：目标身份已有条目 → 规格跳过（先到者优先）。
+    ShadowAliasTable table = rebindTable();
+    table.addMethod("A", "()V", "m2", "Method_3", "ffffffff");
+    EXPECT_EQ(0U, rebindShadowRawNames(table,
+                                       {RawRenameSpec{ShadowKind::Method, "A", "()V", "m2", "m"}}));
+    EXPECT_EQ("Method_1", toStd(table.methodShadow("A", "m", "()V")));
+    EXPECT_EQ("Method_3", toStd(table.methodShadow("A", "m2", "()V")));
+    // 类撞键：A → B（B 已登记）→ 跳过。
+    EXPECT_EQ(0U, rebindShadowRawNames(table, {RawRenameSpec{ShadowKind::Class, {}, {}, "A", "B"}}));
+    EXPECT_EQ("Class_1", toStd(table.classShadow("A")));
+}
+
+TEST(MjShadowAliasTableTest, rebindClassCascadeCollisionSkipsWholeSpec)
+{
+    // 级联撞键：A 的成员迁往 C 后与 C 既有成员 (desc, raw) 相同 → 整规格
+    // 跳过（类与成员都不动）。
+    ShadowAliasTable table = rebindTable();
+    table.addClass("C", "Class_3", "66666666");
+    table.addMethod("C", "()V", "m", "Method_9", "77777777");
+    EXPECT_EQ(0U, rebindShadowRawNames(table, {RawRenameSpec{ShadowKind::Class, {}, {}, "A", "C"}}));
+    EXPECT_EQ("Class_1", toStd(table.classShadow("A")));
+    EXPECT_EQ("Method_1", toStd(table.methodShadow("A", "m", "()V")));
+    EXPECT_EQ("Method_9", toStd(table.methodShadow("C", "m", "()V")));
+}
+
+TEST(MjShadowAliasTableTest, rebindSpecOrderClassBeforeMembers)
+{
+    // 契约序：class 改名先于成员改名（成员规格 owner 填新名）。
+    ShadowAliasTable table    = rebindTable();
+    const auto       rebound = rebindShadowRawNames(
+        table,
+        {RawRenameSpec{ShadowKind::Class, {}, {}, "A", "C"},
+         RawRenameSpec{ShadowKind::Method, "C", "()V", "m", "fly"}});
+    EXPECT_EQ(2U, rebound);
+    EXPECT_EQ("Method_1", toStd(table.methodShadow("C", "fly", "()V")));
+}
+
+TEST(MjShadowAliasTableTest, rebindFieldRenameKeepsTokenAndMappingRoundtrip)
+{
+    ShadowAliasTable table = rebindTable();
+    // field 规格：改名后 shadow/token 原样（显示身份连续）。
+    const auto rebound = rebindShadowRawNames(
+        table, {RawRenameSpec{ShadowKind::Field, "A", "I", "f", "renamedF"}});
+    EXPECT_EQ(1U, rebound);
+    EXPECT_EQ("Field_1", toStd(table.fieldShadow("A", "renamedF", "I")));
+    EXPECT_TRUE(table.fieldShadow("A", "f", "I").empty());
+    for (const auto& entry : table.entries()) {
+        if (entry.kind == ShadowKind::Field && entry.rawName == "renamedF")
+            EXPECT_EQ("cccccccc", toStd(entry.token8));
+    }
+
+    // sidecar 重落盘通路（toMapping 枢纽）：往返后新 raw 面保真。
+    const auto back = ShadowAliasTable::fromMapping(table.toMapping());
+    EXPECT_EQ("Field_1", toStd(back.fieldShadow("A", "renamedF", "I")));
+    EXPECT_EQ("Class_1", toStd(back.classShadow("A")));
+    EXPECT_EQ("Method_1", toStd(back.methodShadow("A", "m", "()V")));
+}
+
+TEST(MjShadowAliasTableTest, rebindCrossKindCollisionSkipsAndKeepsEntry)
+{
+    // 跨 kind 撞键按表契约同口径（身份 kind 无关）：field 改名目标与既有
+    // method 的 (owner, desc, raw) 相同 → 整规格跳过，绝不静默丢条目。
+    ShadowAliasTable table;
+    table.addClass("A", "Class_1", "aaaaaaaa");
+    table.addMethod("A", "I", "dup", "Method_1", "bbbbbbbb");   // method 占位 (A,I,dup)
+    table.addField("A", "I", "other", "Field_1", "cccccccc");
+    const auto size = table.size();
+    EXPECT_EQ(0U, rebindShadowRawNames(
+                      table, {RawRenameSpec{ShadowKind::Field, "A", "I", "other", "dup"}}));
+    EXPECT_EQ(size, table.size());
+    EXPECT_EQ("Method_1", toStd(table.methodShadow("A", "dup", "I")));
+    EXPECT_EQ("Field_1", toStd(table.fieldShadow("A", "other", "I")));
+}
+
 }   // namespace mjbase::renamer
