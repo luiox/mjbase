@@ -662,4 +662,57 @@ TEST(MjShadowTokenTest, JasmBodyGrammarGarbageFailsLoud)
     EXPECT_EQ(r.raw, "");
 }
 
+// ── §4 中段裁定（${ 不在段首：不展开、不静默）────────────────────
+
+TEST(MjShadowTokenTest, MidSegmentBracesInDescriptorFailLoud)
+{
+    const auto table = makeTable();
+    // 类型段中段的 ${（非段首）：二进制名不含花括号 → malformed-handle，
+    // 不静默替换成含 ${ 字面的「合法描述符」。
+    const auto r = resolveDesc(table, "(Lfoo${Class_1.11111111};)V");
+    EXPECT_EQ(r.error, ShadowSlotError::MalformedHandle);
+    EXPECT_NE(std::string::npos, text(r).find("brace characters"));
+
+    // 孤立花括号同判（同一文法违约，不只盯 ${ 二字面）。
+    EXPECT_EQ(resolveDesc(table, "(Lfo{o};)V").error, ShadowSlotError::MalformedHandle);
+
+    // $${ 显式转义保留字面（调用方自证意图，不属中段违约）。
+    const auto escaped = resolveDesc(table, "(L$${a/b/Weird};)V");
+    ASSERT_EQ(escaped.error, ShadowSlotError::None) << text(escaped);
+    EXPECT_EQ(escaped.raw, "(L${a/b/Weird};)V");
+}
+
+TEST(MjShadowTokenTest, NameSlotMidSegmentStaysRawZeroDrift)
+{
+    const auto table = makeTable();
+    // name 槽整串二选一（§3）：${ 不在串首 → 整串 Raw（无中段扫描），
+    // 解析层不展开、不判 malformed；响亮路径只来自核表位（verifyRaw）：
+    // 默认查询核表 → raw-not-found；直通位（verifyRaw=false）恒等回显。
+    const auto checked = resolve(table, "foo${Class_1.11111111}");
+    EXPECT_EQ(checked.error, ShadowSlotError::RawNotFound);
+
+    ShadowSlotQuery passthrough;
+    passthrough.verifyRaw = false;
+    const auto echoed = resolveShadowSlot(table, "foo${Class_1.11111111}", passthrough);
+    ASSERT_EQ(echoed.error, ShadowSlotError::None) << text(echoed);
+    EXPECT_EQ(echoed.raw, "foo${Class_1.11111111}");
+    EXPECT_FALSE(echoed.fromHandle);
+}
+
+TEST(MjShadowTokenTest, JasmBodyMidSegmentBracesFailLoud)
+{
+    const auto table = makeTable();
+    // 裸引用部中段的 ${ → malformed-handle（同 Descriptor 槽类型段）。
+    EXPECT_EQ(resolveJasm(table, "foo${Class_1.11111111}.fly ()V").error,
+              ShadowSlotError::MalformedHandle);
+    EXPECT_EQ(resolveJasm(table, "foo${Class_1.11111111}").error,
+              ShadowSlotError::MalformedHandle);
+
+    // $${ 显式转义 → 字面直通（剥 $ 后原样回显，零漂移）。
+    const auto escaped = resolveJasm(table, "$${a/b/Weird}.fly ()V");
+    ASSERT_EQ(escaped.error, ShadowSlotError::None) << text(escaped);
+    EXPECT_EQ(escaped.raw, "${a/b/Weird}.fly ()V");
+    EXPECT_FALSE(escaped.fromHandle);
+}
+
 }   // namespace mjbase::renamer
