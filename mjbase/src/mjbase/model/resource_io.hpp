@@ -1,13 +1,13 @@
 /// @file        resource_io.hpp
-/// @brief       资源导入导出：接口 + Jar/Class 导入导出器 + libarchive 解压工具。
+/// @brief       资源导入导出：接口 + Jar/Class 导入导出器。
 ///
 /// 有意重设计：
 /// - 错误：mbase 以 throw std::runtime_error 报错，本模块全部改 ModelResult<T>
 ///   值语义，抛点消息文本 → 错误码的映射见各函数注释（码表见 ModelError）；
 /// - jar 依赖换 mjbase::jar（错误走 Result<void, JarError>）——
 ///   JarError 经 toModelError 归一为本模块错误码；
-/// - 压缩包解包后端保留 libarchive（zip/tar/tar.xz/tar.gz/tar.zst 语义不丢），
-///   include "archive.h" 照旧（xmake 已给 mjbase 接好 add_packages("libarchive")）。
+/// - 压缩包解包面不随模块迁移：mjbase 全家零调用方，解包能力随需求
+///   下沉消费方（mj2x 有下载后解压场景）。
 #pragma once
 
 #include <functional>
@@ -124,26 +124,6 @@ public:
 
 private:
     ca::str::Utf8String path_;
-};
-
-// ── 压缩包工具 ────────────────────────────────────────────────
-
-/// @brief 压缩包解压工具（ZIP / tar / tar.xz / tar.gz / tar.zst 等）。
-class ZipUtil
-{
-public:
-    /// @brief 自动识别格式并解压到目标目录。
-    ///
-    /// 错误码：Io（目标目录创建失败/条目写出失败）、NotFound（归档文件不存在）、
-    /// UnsupportedFormat（格式/过滤器嗅探失败）、BadEntry（条目头或数据读取失败）、
-    /// PathEscape（条目路径逃逸目标目录，zip-slip 防线）。
-    static ModelResult<void> extract(std::string_view archivePath, std::string_view targetDir);
-    /// @brief 解压 ZIP 文件（委托 extract）。
-    static ModelResult<void> unzip(std::string_view zipPath, std::string_view targetDir);
-    /// @brief 解压压缩包中指定的单个文件（条目名需与归档内 pathname 完全匹配）。
-    ///        未命中条目报 NotFound。
-    static ModelResult<void> extractFile(std::string_view path, std::string_view file,
-                                         std::string_view destination);
 };
 
 }   // namespace mjbase::model

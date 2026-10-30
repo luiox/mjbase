@@ -24,7 +24,7 @@ xmake build mjbase
 Dependencies come from [luiox-repo](https://github.com/luiox/luiox-repo) and
 xrepo: libca, libjbc, libjzip, libjstr, libgarena, libjclassfile, libjstd,
 libjhasm, libjblw, libjbytecode (link-level transitive dependency of the JASM
-text layer only), libarchive, zlib.
+text layer only), zlib.
 
 ### Tests
 

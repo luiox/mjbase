@@ -76,11 +76,6 @@ if has_config("with_tests") then
     add_requires("gtest")
 end
 
--- libarchive：model 的资源解包后端（tar/xz/gz/zst）。
--- 本地覆盖包（xmake/repo/packages/l/libarchive/xmake.lua）规避官方包在
--- Linux 漏传 POSIX_REGEX_LIB=NONE 导致的编译失败。
-add_repositories("mjbase-repo xmake/repo")
-add_requires("libarchive 3.8.8", {configs = {openssl3 = false}})
 add_requires("zlib")
 
 -- 中心包仓直连包（无仓内副本、无 phony 垫片，消费点直接 add_packages）。

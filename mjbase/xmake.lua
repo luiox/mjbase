@@ -40,8 +40,8 @@ target("mjbase")
         target:add("includedirs", dir)
     end)
 
-    -- jar/model/mapping/project 批次新增：zip 读写（libjzip）、资源解包后端
-    -- （libarchive，与 mbase 同源）、fs/json/crypto（mapping 与 project 直迁）。
+    -- jar/model/mapping/project 批次新增：zip 读写（libjzip）、fs/json/crypto
+    -- （mapping 与 project 直迁）。
     -- B3-A 批次新增：Java 整数语义（libjstd，expr_value）与日志/i18n 门面
     -- （libca_log，log_init/triple）。libjstd/libca_i18n 为 headeronly，无链接产物。
     -- F 线清洗批新增：libjclassfile（敌意输入前置清洗级，§3.0 裁决；deps_gate
@@ -56,7 +56,6 @@ target("mjbase")
     -- 其回引才能落到其后扫描的 libjbc（MSVC 多遍扫描不敏感，linux 红根因）。
     add_packages("libjhasm", "libjbc", "libjzip", "libca", "libjstd",
                  "libjclassfile", "libjstr", {public = true})
-    add_packages("libarchive")
     -- 迁移切片：按批次收编模块（消费方驱动，逐批验证；忌整库一次搬运）。
     -- 见 doc_ai/module-map.md 的依赖图——批 1 只收零环的叶子与容器层，
     -- 字符串口径（util/mapping/jar 的标识符与路径面）在这一批定死。
@@ -106,9 +105,6 @@ target("mjbase")
     if is_plat("windows") then
         add_cxflags("/utf-8", {tools = "cl"})
         add_links("bcrypt")
-        -- xmllite：libarchive 静态库内含 xar 格式读取（依赖 CreateXmlReader），
-        -- 链接 mjbase 的可执行需解析该符号。public 传递给下游（同 mbase）。
-        add_syslinks("xmllite", {public = true})
     end
 
 -- gtest 面随 with_tests 门控：默认配置不定义本 target、不拉 gtest。
