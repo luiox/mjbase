@@ -389,6 +389,19 @@ ShadowSlotResult resolveShadowDescriptor(const ShadowAliasTable& table,
             const auto parts = parseShadowRef(content);
             switch (parts.form) {
             case ShadowRefForm::Raw:
+                // 类型段中段的 `${`（非段首）：二进制名文法不含花括号，
+                // 未标记的引用形状混入类型名 = 调用方笔误 → fail-loud，
+                // 不静默替换（EscapedLiteral 显式转义另案，保留字面）。
+                if (content.find('{') != std::string::npos ||
+                    content.find('}') != std::string::npos) {
+                    result = failure(ShadowSlotError::MalformedHandle,
+                                     "internal name segment " + quoted(content) +
+                                         " in descriptor " + quoted(input) +
+                                         " contains brace characters (unmarked "
+                                         "reference mid-segment); place the handle "
+                                         "at the segment start or escape with $$");
+                    return false;
+                }
                 out += 'L';
                 out += content;
                 out += ';';
@@ -626,13 +639,41 @@ ShadowSlotResult resolveShadowJasmBody(const ShadowAliasTable& table,
     }
     else {
         // Raw：复合 owner.name（name 可嵌 MemberRef handle）或纯裸名。
+        // 花括号裁定按段进行：段首 ${ 走句柄路径，其余位置的花括号 =
+        // 未标记引用中段，fail-loud（同 Descriptor 槽类型段；显示文本的
+        // shadow 复合名不含 ${ 形状，零漂移不受损）。
+        const auto bracesIn = [](const std::string& segment) {
+            return segment.find('{') != std::string::npos ||
+                   segment.find('}') != std::string::npos;
+        };
         const auto dot = refPart.find('.');
         if (dot == std::string::npos) {
+            if (bracesIn(refPart)) {
+                return failure(ShadowSlotError::MalformedHandle,
+                               "raw reference " + quoted(refPart) +
+                                   " in jasm operand contains brace characters "
+                                   "(unmarked reference mid-segment); place the "
+                                   "handle at the segment start or escape with $$");
+            }
             resolvedRef = refPart;   // 类操作数裸名：零漂移直通
         }
         else {
             const auto ownerPart = refPart.substr(0, dot);
             const auto namePart  = refPart.substr(dot + 1);
+            if (ownerPart.rfind("${", 0) != 0 && bracesIn(ownerPart)) {
+                return failure(ShadowSlotError::MalformedHandle,
+                               "raw owner " + quoted(ownerPart) +
+                                   " in jasm operand contains brace characters "
+                                   "(unmarked reference mid-segment); place the "
+                                   "handle at the segment start or escape with $$");
+            }
+            if (bracesIn(namePart) && namePart.rfind("${", 0) != 0) {
+                return failure(ShadowSlotError::MalformedHandle,
+                               "raw member name " + quoted(namePart) +
+                                   " in jasm operand contains brace characters "
+                                   "(unmarked reference mid-segment); place the "
+                                   "handle at the segment start or escape with $$");
+            }
             std::string resolvedName;
             if (!resolveNamePart(namePart, ownerPart, resolvedName)) return result;
             resolvedRef = ownerPart + "." + resolvedName;

@@ -98,14 +98,19 @@ LUIOX_LIBCA_MODULES = "core,crypto,str,fs,env,io,json,net,http,process,opt,threa
 -- 其嵌套 libca 由定义内的 add_deps 钉到上面的单源版本，故两处必须同一字面量。
 includes("xmake/packages/libjbc.lua")
 add_requires("libca " .. LUIOX_LIBCA_VERSION, {configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requires("libjbc 0.4.23")
+-- libjbc 上界对齐 libjhasm 沙箱：libjhasm 0.3.3 自带内联 libjbc 定义只到
+-- 0.4.22（其自身钉定版），包沙箱按内联定义解析，顶层 0.4.23 会被合并进
+-- 沙箱需求后查无映射（version 当 ref 直取 → clone 失败）。0.4.23 为上游
+-- 仓库清理/测试收编批，消费面无功能差异；待 libjhasm 发内联含 0.4.23 的
+-- 版本后再同步上移。
+add_requires("libjbc 0.4.22")
 add_requires("libjstr 0.0.3")
 add_requires("libjzip 0.0.3")
 add_requires("libgarena 0.0.3")
 add_requires("libjclassfile 0.0.2")
 add_requires("libjstd 0.0.1")
 add_requires("libjdk_finder 0.1.0")
-add_requires("libjhasm 0.3.2")
+add_requires("libjhasm 0.3.3")
 -- 嵌套 libca 全路径钉定，缺一条就多一个实例。
 add_requireconfs("libjbc.libca",                         {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjstr.libca",                        {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
@@ -116,6 +121,9 @@ add_requireconfs("libjclassfile.libjstr.libca",          {version = LUIOX_LIBCA_
 add_requireconfs("libjstd.libca",                        {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjdk_finder.libca",                  {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjhasm.libca",                       {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
+-- libjhasm 后端分支 dep（on_load 动态加挂）显式钉定：与顶层同一 (版本, 配置)
+-- 归并单实例，且防沙箱内解析漂移到内联定义外的版本。
+add_requireconfs("libjhasm.libjbc",                      {version = "0.4.22"})
 -- i18n/resources 构建规则内嵌（.lang add_files 规则，包安装产物不带规则）。
 includes("xmake/libca_rules.lua")
 
