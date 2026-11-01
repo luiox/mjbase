@@ -8,6 +8,7 @@
 #include "libca/core/result.hpp"
 #include "libca/str/utf8_string.hpp"
 
+#include "mjbase/project/class_kind.hpp"
 #include "mjbase/project/mask_types.hpp"
 
 namespace mjbase::project {
@@ -34,6 +35,12 @@ namespace mjbase::project {
 ///   priority 有序、先匹配先生效、hit_count 复盘），meta 存项目信任级别
 ///   （default_action 翻转开关）。规则匹配与判定在 `mask_evaluator`（纯
 ///   函数面、无 IO），本层只做规则配置的数据面与命中记账。
+///
+/// - 普查投影层（#121 §5 B4）：census 是库上的只读 SELECT 投影（#39 类
+///   普查事实面 + 容器形态汇总面），不反向定义存储、不重新扫描容器。
+///   形态判定核心（entry_shape 路径 facet、class_kind 类形态）是纯字节
+///   码域知识，随本层落 mjbase；导出渲染（TSV、转义、版本化表头）由上
+///   层工具出口负责。
 ///
 /// 批量写入口（`ensureInput` / `ingestEntries` / `ingestClasses` /
 /// `replaceReferences` / `setRenames`）都走单事务 + 预编译语句复用；任一行
@@ -210,7 +217,9 @@ struct DbEntryInput
     ca::str::Utf8String kind;         ///< 形态类别（class/manifest/resource/...，开放文本）
     ca::i64             size = 0;     ///< 条目字节数
     ca::str::Utf8String sha256;       ///< 内容锚：精确字节的 SHA-256，64 位小写 hex
-    bool                regular = true; ///< 常规条目旗标（形态判定由登记方定义）
+    bool                regular = true; ///< 常规条目旗标；登记方通常取
+                                        ///< entry_shape.hpp 的 isRegularEntryPath
+                                        ///< （B1 最小口径的公共面，#121 B4 上提）
 };
 
 /// @brief 已登记的 jar 条目事实（查询输出；墓碑行同样返回）。
@@ -234,6 +243,65 @@ struct DbEntryIngestStats
     ca::usize reused      = 0; ///< 锚命中且本就活跃（仅刷新元数据）的条目数
     ca::usize resurrected = 0; ///< 锚命中墓碑行、原地复活的条目数（entry_id 不变）
     ca::usize tombstoned  = 0; ///< 本次标记为消失的既有活跃条目数
+};
+
+//-- 普查投影层（census，#121 §5 B4） ------------------------------------------
+
+/// @brief 类普查投影行（`censusClasses` 输出；#39 class_census 的库侧事实面）。
+///
+/// 除 `kind` 外全是库内编码事实；`kind` 是投影层派生（classifyClassKind，
+/// access + super 现算，不存储）。行序 = internal_name 升序（SQL BINARY
+/// 字节序，跨平台确定）。
+struct DbClassCensusRow
+{
+    ca::str::Utf8String internalName;
+    ca::i32             access = 0;
+    ca::str::Utf8String superName;
+    DbClassKind         kind = DbClassKind::Class; ///< 投影层派生形态
+    ca::i64             ifaceCount        = 0;     ///< classfile 声明序接口数
+    ca::i64             methodCount       = 0;
+    ca::i64             fieldCount        = 0;
+    ca::i64             nativeMethodCount = 0;     ///< ACC_NATIVE 方法数
+    ca::i64             entryId  = 0;              ///< 类条目身份
+    ca::i64             byteSize = 0;              ///< 条目字节大小（条目 size 列）
+    bool                entryRegular = true;       ///< 条目 regular 登记旗标（事实列；
+                                                   ///< 登记方通常取 isRegularEntryPath）
+};
+
+/// @brief 计数分布行（facet 稳定名 + 计数；census 汇总面通用行）。
+struct DbCensusFacetCount
+{
+    ca::str::Utf8String facet;
+    ca::i64             count = 0;
+};
+
+/// @brief 容器普查投影（`censusContainer` 输出；条目形态分布 + 分析事实计数）。
+///
+/// 条目面统计活跃行（墓碑行只计总数）；路径形态 facet 由 entry_shape 判定
+/// 器在投影层现算（#121 B4 钩子：entries.kind 登记语义不变，细化切面走
+/// 投影层）。类/成员/引用计数只统计关联本输入活跃条目的类。
+struct DbContainerCensus
+{
+    ca::i64             inputId = 0;
+    ca::str::Utf8String path;      ///< 输入容器身份（登记 path）
+    ca::i64             size = 0;  ///< 登记的容器规模
+    ca::str::Utf8String sha256;    ///< 容器内容锚
+
+    ca::i64 entriesActive     = 0; ///< 活跃条目数
+    ca::i64 entriesTombstoned = 0; ///< 墓碑条目数
+    ca::i64 entriesRegular    = 0; ///< 活跃 ∧ regular 登记旗标（事实列）
+    ca::i64 entriesIrregular  = 0; ///< 活跃 ∧ 非登记常规
+    /// @brief entries.kind 存储值分布（facet 名升序；只含计数非零项）。
+    std::vector<DbCensusFacetCount> entryKinds;
+    /// @brief 路径形态 facet 分布（entry_shape 投影层现算，与登记旗标独立；
+    ///        登记方取 isRegularEntryPath 时两者一致。声明序；只含非零项）。
+    std::vector<DbCensusFacetCount> entryShapes;
+
+    ca::i64 classes       = 0; ///< 关联本输入活跃条目的类数
+    ca::i64 methods       = 0;
+    ca::i64 fields        = 0;
+    ca::i64 nativeMethods = 0; ///< ACC_NATIVE 方法数
+    ca::i64 references    = 0; ///< 源类属本输入的引用行数
 };
 
 /// @brief 待写入的遮蔽规则（`replaceMaskRules` 输入；#121 §4.3）。
@@ -398,6 +466,25 @@ public:
     /// @brief 指定输入的全部条目（含墓碑行），按 path 升序。
     ///        输入不存在返回 `Invalid`；未登记条目返回空表。
     ca::Result<std::vector<DbEntryInfo>, AnalysisDbError> listEntries(ca::i64 inputId) const;
+
+    //-- 普查投影层（census，#121 §5 B4） ------------------------------------
+
+    /// @brief 类普查投影：一行一类（#39 class_census 事实面）。
+    ///
+    /// 纯 SELECT 投影：类事实 JOIN 所属条目（byte_size / 形态旗标）+ 接口
+    /// 与成员计数聚合，`ORDER BY internal_name`（BINARY 字节序，确定性）。
+    /// 只统计关联 @p inputId 活跃条目的类——条目墓碑表示类已不在当前容器
+    /// 内容，未关联条目的类（entry_id 为空）不属于任何输入的普查面。
+    /// 输入不存在、连接未打开 → `Invalid`；只读连接可用。
+    ca::Result<std::vector<DbClassCensusRow>, AnalysisDbError> censusClasses(
+        ca::i64 inputId) const;
+
+    /// @brief 容器普查投影：条目形态分布 + 类/成员/引用计数（汇总面）。
+    ///
+    /// 路径形态 facet 由 entry_shape 判定器现算（#121 B4 钩子：不改
+    /// entries.kind 登记语义）；facet 分布只含计数非零项。输入不存在、
+    /// 连接未打开 → `Invalid`；只读连接可用。
+    ca::Result<DbContainerCensus, AnalysisDbError> censusContainer(ca::i64 inputId) const;
 
     //-- 出口遮蔽层（mask_rules / 信任级别，schema v4） --------------------
 
