@@ -8,6 +8,8 @@
 #include "libca/core/result.hpp"
 #include "libca/str/utf8_string.hpp"
 
+#include "mjbase/project/mask_types.hpp"
+
 namespace mjbase::project {
 
 /// @file analysis_db.hpp
@@ -28,6 +30,11 @@ namespace mjbase::project {
 ///   id（消失后重现的条目原地复活），未命中新建 id，消失条目打墓碑不删行。
 ///   `classes.entry_id` 记录类字节来自哪个条目。
 ///
+/// - 出口遮蔽层（schema v4）：`mask_rules` 存出口遮蔽规则（#121 §4.3，
+///   priority 有序、先匹配先生效、hit_count 复盘），meta 存项目信任级别
+///   （default_action 翻转开关）。规则匹配与判定在 `mask_evaluator`（纯
+///   函数面、无 IO），本层只做规则配置的数据面与命中记账。
+///
 /// 批量写入口（`ensureInput` / `ingestEntries` / `ingestClasses` /
 /// `replaceReferences` / `setRenames`）都走单事务 + 预编译语句复用；任一行
 /// 失败整批回滚，不留半截事实。
@@ -42,10 +49,11 @@ namespace mjbase::project {
 /// @brief 当前 schema 版本（`PRAGMA user_version`）。不识别的版本拒绝打开
 ///        （包括旧版本：不提供自动迁移，旧库由上层显式重建）。
 ///
-/// v3：新增 `inputs` / `entries` 条目身份表与 `classes.entry_id` 外键。
-/// v2：classes 增加 super/access/version，新增 interfaces 与 refs 表，
+/// v4：新增 mask_rules 遮蔽规则表与 meta 信任级别键（出口遮蔽层，
+/// #121 §4.3）。v3：新增 `inputs` / `entries` 条目身份表与 `classes.entry_id`
+/// 外键。v2：classes 增加 super/access/version，新增 interfaces 与 refs 表，
 /// members 增加 access。v1 未发布，版本号仅用于识别本分支早期的临时库。
-inline constexpr ca::u32 kAnalysisDbSchemaVersion = 3;
+inline constexpr ca::u32 kAnalysisDbSchemaVersion = 4;
 
 /// @brief SQLite 数据库头里的应用标识（ASCII "MJDB"）。
 inline constexpr ca::u32 kAnalysisDbApplicationId = 0x4D4A4442u;
@@ -228,6 +236,38 @@ struct DbEntryIngestStats
     ca::usize tombstoned  = 0; ///< 本次标记为消失的既有活跃条目数
 };
 
+/// @brief 待写入的遮蔽规则（`replaceMaskRules` 输入；#121 §4.3）。
+///
+/// 规则是出口遮蔽的项目级配置：priority 数字越小越先匹配，先匹配先生效；
+/// pattern 为正则字面量（引擎纪律见 mask_regex_engine.hpp，写入时校验
+/// 编译性）；note 为人工备注，随行透传不参与匹配。
+struct DbMaskRuleInput
+{
+    ca::i32             priority = 0;
+    ca::str::Utf8String pattern;
+    MaskAction          action = MaskAction::Mask;
+    ca::str::Utf8String note;
+};
+
+/// @brief 已登记的遮蔽规则（`listMaskRules` 输出，(priority, rule_id) 升序）。
+struct DbMaskRule
+{
+    ca::i64             ruleId   = 0;
+    ca::i32             priority = 0;
+    ca::str::Utf8String pattern;
+    MaskAction          action   = MaskAction::Mask;
+    ca::str::Utf8String note;
+    ca::i64             hitCount = 0; ///< 命中计数（含被 suspect 压制的 allow 命中）
+};
+
+/// @brief 一次遮蔽规则整体替换（`replaceMaskRules`）的计数。
+struct DbMaskRuleReplaceStats
+{
+    ca::usize total   = 0; ///< 本批规则数（= 新分配 rule_id 数）
+    ca::usize created = 0; ///< 新分配 rule_id 的规则数
+    ca::usize retired = 0; ///< 被替换掉的既有规则行数（hit 计数随行清零）
+};
+
 /// @brief 分析数据库连接（单文件、单连接、非线程安全）。
 class AnalysisDb
 {
@@ -358,6 +398,37 @@ public:
     /// @brief 指定输入的全部条目（含墓碑行），按 path 升序。
     ///        输入不存在返回 `Invalid`；未登记条目返回空表。
     ca::Result<std::vector<DbEntryInfo>, AnalysisDbError> listEntries(ca::i64 inputId) const;
+
+    //-- 出口遮蔽层（mask_rules / 信任级别，schema v4） --------------------
+
+    /// @brief 原子替换全部遮蔽规则（单事务；#121 §4.3）。
+    ///
+    /// 整体替换语义：既有行（连同 hit_count 计数）删除后按输入序插入，新
+    /// rule_id 单调分配；空输入 = 清空规则面。规则匹配数据面的求值器
+    /// （MaskEvaluator::build）同源校验：条数超 kMaximumMaskRules、pattern
+    /// 空/含 NUL/超 kMaximumMaskPatternBytes/编译失败 → `Invalid`，整批不
+    /// 写库——数据面不存编译不了的模式，求值器装载失败只剩实现缺陷一种
+    /// 来源。
+    ca::Result<DbMaskRuleReplaceStats, AnalysisDbError> replaceMaskRules(
+        std::vector<DbMaskRuleInput> rules);
+
+    /// @brief 全部遮蔽规则，按 (priority, rule_id) 升序（求值器同序）。
+    ca::Result<std::vector<DbMaskRule>, AnalysisDbError> listMaskRules() const;
+
+    /// @brief 设置项目信任级别（meta 键 `mask_trust_level`；default_action
+    ///        的翻转开关，见 MaskTrustLevel）。重复设置同值幂等。
+    ca::Result<void, AnalysisDbError> setMaskTrustLevel(MaskTrustLevel level);
+
+    /// @brief 项目信任级别；未设置（键缺省）按 `Trusted`。
+    ca::Result<MaskTrustLevel, AnalysisDbError> maskTrustLevel() const;
+
+    /// @brief 批量累加规则命中计数（单事务；#121 §4.3 hit_count 复盘面）。
+    ///
+    /// 输入按出现次数逐 id `hit_count + 1`（出口按行记账：一次查询命中同
+    /// 一规则的多条文本各计一次）；未知 rule_id 静默跳过（规则替换与出口
+    /// 记账并发的正常窗口，命中记账是尽力而为的审计面，不因竞态失败）。
+    /// 空输入为空操作。
+    ca::Result<void, AnalysisDbError> recordMaskRuleHits(const std::vector<ca::i64>& ruleIds);
 
     //-- 分析事实层（类/成员/继承/直接引用） ------------------------------
 
