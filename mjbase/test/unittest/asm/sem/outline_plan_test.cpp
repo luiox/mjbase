@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+#include "jbc/analysis/frame.hpp"
+#include "jbc/analysis/smt_build.hpp"
 #include "jbc/jbc.hpp"
 
 #include "mjbase/asm/sem/outline_plan.hpp"
@@ -63,22 +65,25 @@ MethodSpec pickSpec()
     return m;
 }
 
-/// 含写局部臂的样本：B 臂（istore 1 后再读）命中 RegionWritesLocal。
+/// 含写局部臂的样本：B 臂写 t（槽 3），汇合块读 t → 出口后仍活跃
+/// （判据 3 A3 口径：写回集 = 被写 ∩ 出口后活跃 非空 → 拒绝）。
 MethodSpec writeLocalSpec()
 {
     MethodSpec m;
     m.name      = "pick";
-    m.desc      = "(IIZ)I";
-    m.maxStack  = 2;
+    m.desc      = "(IIIZ)I";
+    m.maxStack  = 3;
     m.maxLocals = 4;
     m.emit      = [](CodeEmit& e) {
         const std::size_t elseArm = e.newLabel();   /// 0
         const std::size_t join    = e.newLabel();   /// 1
+        e.op(Op::ICONST_0);             /// t = 0（两路汇合前初始化，帧可合并）
+        e.varInsn(Op::ISTORE, 3);
         e.varInsn(Op::ILOAD, 2);
         e.branch(Op::IFEQ, elseArm);
-        e.varInsn(Op::ILOAD, 0);        /// B：写局部 1（判据 3 A2 收紧拒绝）
-        e.varInsn(Op::ISTORE, 1);
-        e.varInsn(Op::ILOAD, 1);
+        e.varInsn(Op::ILOAD, 0);        /// B：t = a（出口后 join 仍读 t → 拒）
+        e.varInsn(Op::ISTORE, 3);
+        e.varInsn(Op::ILOAD, 3);
         e.op(Op::ICONST_1);
         e.op(Op::IADD);
         e.branch(Op::GOTO, join);
@@ -86,8 +91,127 @@ MethodSpec writeLocalSpec()
         e.op(Op::ICONST_5);             /// C：纯净臂（goto 出口，可 outline 对照）
         e.branch(Op::GOTO, join);
         e.bindLabel(join);
+        e.varInsn(Op::ILOAD, 3);        /// 读 t → B 臂的写出口后仍活跃
+        e.op(Op::IADD);
+        e.op(Op::IRETURN);
+    };
+    return m;
+}
+
+/// 死写臂样本：B 臂写 t 但汇合块不再读 → 写回集为空，判据 3 放开接受
+/// （A2 同形态被「区域不写局部」整体拒绝）。
+MethodSpec deadWriteSpec()
+{
+    MethodSpec m;
+    m.name      = "pick";
+    m.desc      = "(IIIZ)I";
+    m.maxStack  = 3;
+    m.maxLocals = 4;
+    m.emit      = [](CodeEmit& e) {
+        const std::size_t elseArm = e.newLabel();   /// 0
+        const std::size_t join    = e.newLabel();   /// 1
+        e.op(Op::ICONST_0);
+        e.varInsn(Op::ISTORE, 3);       /// t = 0
+        e.varInsn(Op::ILOAD, 2);
+        e.branch(Op::IFEQ, elseArm);
+        e.varInsn(Op::ILOAD, 0);        /// B：t = a；a+1 为出口栈顶（返回值）
+        e.varInsn(Op::ISTORE, 3);
+        e.varInsn(Op::ILOAD, 3);
+        e.op(Op::ICONST_1);
+        e.op(Op::IADD);
+        e.branch(Op::GOTO, join);
+        e.bindLabel(elseArm);
+        e.op(Op::ICONST_5);             /// C：纯净臂
+        e.branch(Op::GOTO, join);
+        e.bindLabel(join);
+        e.op(Op::ICONST_0);             /// 不读 t → B 的写出口后不活跃
+        e.op(Op::IADD);
+        e.op(Op::IRETURN);
+    };
+    return m;
+}
+
+/// 恒被重写样本：B 臂先写后读 t（读的到达定义全在区域内）→ t 不进参数集，
+/// 参数集为空（copy-set 最小化的 def-use 剔除档）。
+MethodSpec readTrimSpec()
+{
+    MethodSpec m;
+    m.name      = "pick";
+    m.desc      = "(IZ)I";
+    m.maxStack  = 3;
+    m.maxLocals = 4;
+    m.emit      = [](CodeEmit& e) {
+        const std::size_t elseArm = e.newLabel();   /// 0
+        const std::size_t join    = e.newLabel();   /// 1
+        e.varInsn(Op::ILOAD, 1);
+        e.branch(Op::IFEQ, elseArm);
+        e.op(Op::BIPUSH);
+        e.u8(7);
+        e.varInsn(Op::ISTORE, 3);       /// t = 7（区域内定义）
+        e.varInsn(Op::ILOAD, 3);        /// 读 t：到达定义 = 区域内 istore → 剔除
+        e.op(Op::ICONST_1);
+        e.op(Op::IADD);
+        e.branch(Op::GOTO, join);
+        e.bindLabel(elseArm);
+        e.op(Op::ICONST_5);
+        e.branch(Op::GOTO, join);
+        e.bindLabel(join);
         e.op(Op::ICONST_0);
         e.op(Op::IADD);
+        e.op(Op::IRETURN);
+    };
+    return m;
+}
+
+/// dup_x1 + pop ≡ SWAP 跨切点样本（#115 §3.4 实测档）：出口 [b, a] 与入口
+/// [a, b] 前缀失配 → ExitShapeImpure（tier-3 结构性拒绝，A2 已拒）。
+MethodSpec swapCrossSpec()
+{
+    MethodSpec m;
+    m.name      = "pick";
+    m.desc      = "(III)I";
+    m.maxStack  = 4;
+    m.maxLocals = 3;
+    m.emit      = [](CodeEmit& e) {
+        const std::size_t join = e.newLabel();
+        e.varInsn(Op::ILOAD, 0);        /// [a]
+        e.varInsn(Op::ILOAD, 1);        /// [a, b]
+        e.varInsn(Op::ILOAD, 2);        /// [a, b, f]
+        e.branch(Op::IFEQ, join);       /// 弹 f：两臂均携 [a, b]
+        e.op(Op::DUP_X1);               /// B：[a, b] → [b, a, b]
+        e.op(Op::POP);                  /// [b, a]
+        e.branch(Op::GOTO, join);
+        e.bindLabel(join);
+        e.op(Op::ISUB);                 /// B 臂 b-a；C 臂 a-b
+        e.op(Op::IRETURN);
+    };
+    return m;
+}
+
+/// goto 入边 + 局部参数样本（#115 §3.3 实测缺陷 DupNorm.sum 形态）：区域
+/// 头标签 = B 臂 goto 目标（分支入边），区域内读 B 臂写入的槽 2 —— A2 的
+/// 装载被入边绕过（VerifyError），A3 修复后 JVM 真跑对拍。
+MethodSpec gotoEntryLocalParamSpec()
+{
+    MethodSpec m;
+    m.name      = "pick";
+    m.desc      = "(III)I";
+    m.maxStack  = 3;
+    m.maxLocals = 3;
+    m.emit      = [](CodeEmit& e) {
+        const std::size_t join  = e.newLabel();   /// 0：汇合（ifeq 直达）
+        const std::size_t regHead = e.newLabel(); /// 1：区域头（B 臂 goto 直达）
+        e.varInsn(Op::ILOAD, 0);        /// [a]
+        e.varInsn(Op::ILOAD, 1);        /// [a, b]
+        e.varInsn(Op::ILOAD, 2);        /// [a, b, f]
+        e.branch(Op::IFEQ, join);       /// C 路：直达 join（携 [a, b]）
+        e.varInsn(Op::ISTORE, 2);       /// B 臂：t2 = b（槽 2 复用为临时）
+        e.branch(Op::GOTO, regHead);    /// → 区域头
+        e.bindLabel(regHead);
+        e.varInsn(Op::ILOAD, 2);        /// 区域成员：[a] → [a, t2]（槽 2 入参）
+        e.branch(Op::GOTO, join);       /// 出口 goto
+        e.bindLabel(join);
+        e.op(Op::IADD);                 /// 两路汇合：a + b
         e.op(Op::IRETURN);
     };
     return m;
@@ -484,7 +608,40 @@ TEST(MjAsmSemOutlinePlanTest, LvtRowCrossingCutRejected)
     EXPECT_EQ(planned.unwrap_err(), OutlineError::LvtRowCrossesCut);
 }
 
-/// 判据 3（A2 收紧）：区域写局部槽 → 拒绝；同方法的纯净臂仍可识别（对照）。
+/// LVT 越切点宽松档（#115 §6 决策点 3）：applier 显式开关下裁剪（父表
+/// 删除、记 lvtDrops），不再 fail-closed。
+TEST(MjAsmSemOutlinePlanTest, LvtCrossCutLooseModeDropsRow)
+{
+    ClassBytesBuilder b("T");
+    PlanContext       ctx(b.assemble({pickSpec()}));
+    const RegionCandidate* arm = thenArmOf(ctx);
+    ASSERT_NE(arm, nullptr);
+
+    const ca::u32 armPc = regionFirstPc(ctx, *arm);
+
+    jbc::core::ClassFile& cf = ctx.fixture.session->backing();
+    attachRows(*ctx.fixture.session, ctx.fixture.session->unit().findMethodId("pick"), {},
+               {{0u, armPc + 1u, cf.cp.addUtf8("x"), cf.cp.addUtf8("I"), 1u}});
+
+    OutlineRequest req = requestOf(ctx, *arm);
+    req.allowLvtCrossCut = true;
+    auto planned = mjbase::asm_sem::planOutline(req);
+    ASSERT_TRUE(planned.is_ok());
+    OutlinePlan plan = std::move(planned).unwrap();
+    ASSERT_EQ(plan.lvtDrops.size(), 1u);
+    EXPECT_EQ(plan.lvtDrops[0].slot, 1u);
+    EXPECT_TRUE(plan.lvtMoves.empty());
+    ASSERT_TRUE(plan.apply(*ctx.fixture.session, ctx.resolver).is_ok());
+
+    /// 父表：越切点行已删除（唯一 LVT 行消失）。
+    const auto parentRows = lvtRowsOf(*ctx.fixture.session,
+                                      ctx.fixture.session->unit().findMethodId("pick"),
+                                      false);
+    EXPECT_TRUE(parentRows.empty());
+}
+
+/// 判据 3（A3 口径）：被写槽出口后仍活跃 → RegionWritesLocal；
+/// 同方法的纯净臂仍可识别（对照）。
 TEST(MjAsmSemOutlinePlanTest, RegionWritesLocalRejected)
 {
     ClassBytesBuilder b("T");
@@ -506,8 +663,86 @@ TEST(MjAsmSemOutlinePlanTest, RegionWritesLocalRejected)
     EXPECT_TRUE(accepted);
 }
 
-/// 边界 DUP（判据 2 + §3.4 半径）：出口栈顶为入口值复制 → RetNotProduced。
-TEST(MjAsmSemOutlinePlanTest, BoundaryDupRejected)
+/// 判据 3 放开（A3 + LivenessView）：被写槽出口后不再被读（写回集为空）
+/// → 接受；写槽不进参数集但入重编号表，N 体显式重槽。
+TEST(MjAsmSemOutlinePlanTest, RegionWritesDeadLocalAccepted)
+{
+    ClassBytesBuilder b("T");
+    PlanContext       ctx(b.assemble({deadWriteSpec()}));
+
+    const RegionCandidate* writeArm = nullptr;
+    for (const RegionCandidate& c : ctx.candidates) {
+        const mjbase::asm_cfg::BasicBlock* blk = ctx.view.cfg().block(c.members[0]);
+        for (const jbc::ir::InsnId id : blk->insns) {
+            const jbc::ir::Insn* in = ctx.unit->dom.peek(id);
+            if (in != nullptr && in->op == Op::ISTORE && in->a == 3) {
+                writeArm = &c;
+            }
+        }
+    }
+    ASSERT_NE(writeArm, nullptr);
+
+    auto planned = mjbase::asm_sem::planOutline(requestOf(ctx, *writeArm));
+    ASSERT_TRUE(planned.is_ok()) << mjbase::asm_sem::to_string(planned.unwrap_err());
+    OutlinePlan plan = std::move(planned).unwrap();
+
+    /// 参数 = 读集 {a=槽 0}（t 槽写后不传）；t 为区域内自足槽排参数后。
+    EXPECT_EQ(std::string_view(plan.newDesc), "(I)I");
+    ASSERT_EQ(plan.params.size(), 1u);
+    EXPECT_EQ(plan.params[0].kind, mjbase::asm_sem::SlotCopy::Kind::Local);
+    EXPECT_EQ(plan.params[0].oldLocal, 0u);
+    ASSERT_EQ(plan.locals.size(), 2u);
+    EXPECT_EQ(plan.locals[0].oldSlot, 0u);
+    EXPECT_EQ(plan.locals[0].newSlot, 0u);
+    EXPECT_EQ(plan.locals[1].oldSlot, 3u);
+    EXPECT_EQ(plan.locals[1].newSlot, 1u);
+    /// 体：iload 0; istore 1; iload 1; iconst_1; iadd（t 重映射为显式槽 1）。
+    ASSERT_EQ(plan.body.size(), 5u);
+    EXPECT_EQ(plan.body[1].op, Op::ISTORE);
+    EXPECT_EQ(plan.body[1].a, 1);
+    EXPECT_EQ(plan.body[2].op, Op::ILOAD);
+    EXPECT_EQ(plan.body[2].a, 1);
+    EXPECT_TRUE(plan.validate().is_ok());
+}
+
+/// copy-set 最小化（def-use 恒等搬运剔除）：先写后读槽的到达定义全在区域
+/// 内 → 不传参；参数集为空（描述符 ()I）。
+TEST(MjAsmSemOutlinePlanTest, ReadAfterWriteTrimsParam)
+{
+    ClassBytesBuilder b("T");
+    PlanContext       ctx(b.assemble({readTrimSpec()}));
+
+    const RegionCandidate* writeArm = nullptr;
+    for (const RegionCandidate& c : ctx.candidates) {
+        const mjbase::asm_cfg::BasicBlock* blk = ctx.view.cfg().block(c.members[0]);
+        for (const jbc::ir::InsnId id : blk->insns) {
+            const jbc::ir::Insn* in = ctx.unit->dom.peek(id);
+            if (in != nullptr && in->op == Op::ISTORE && in->a == 3) {
+                writeArm = &c;
+            }
+        }
+    }
+    ASSERT_NE(writeArm, nullptr);
+
+    auto planned = mjbase::asm_sem::planOutline(requestOf(ctx, *writeArm));
+    ASSERT_TRUE(planned.is_ok()) << mjbase::asm_sem::to_string(planned.unwrap_err());
+    OutlinePlan plan = std::move(planned).unwrap();
+
+    EXPECT_EQ(std::string_view(plan.newDesc), "()I");   /// 无任何入参
+    EXPECT_TRUE(plan.params.empty());
+    ASSERT_EQ(plan.locals.size(), 1u);
+    EXPECT_EQ(plan.locals[0].oldSlot, 3u);
+    EXPECT_EQ(plan.locals[0].newSlot, 0u);
+    /// 体：bipush 7; istore 0; iload 0; iconst_1; iadd。
+    ASSERT_EQ(plan.body.size(), 5u);
+    EXPECT_EQ(plan.body[1].op, Op::ISTORE);
+    EXPECT_EQ(plan.body[1].a, 0);
+    EXPECT_TRUE(plan.validate().is_ok());
+}
+
+/// 边界 DUP（§3.4 落临时档，A3）：出口栈顶 = 区域末条 DUP 对入口栈顶原值
+/// 的复制 → 原值升格 Stack 入参 + retIsEntryCopy（调用点 DUP 复位）。
+TEST(MjAsmSemOutlinePlanTest, BoundaryDupEntryCopyAccepted)
 {
     ClassBytesBuilder b("T");
     MethodSpec        m = boundaryDupSpec();
@@ -516,8 +751,66 @@ TEST(MjAsmSemOutlinePlanTest, BoundaryDupRejected)
     ASSERT_EQ(ctx.candidates.size(), 1u);
 
     auto planned = mjbase::asm_sem::planOutline(requestOf(ctx, ctx.candidates[0]));
+    ASSERT_TRUE(planned.is_ok());
+    OutlinePlan plan = std::move(planned).unwrap();
+
+    EXPECT_TRUE(plan.retIsEntryCopy);
+    EXPECT_EQ(std::string_view(plan.newDesc), "(I)I");   /// 原值升格入参 + int 返回
+    ASSERT_EQ(plan.params.size(), 1u);
+    EXPECT_EQ(plan.params[0].kind, mjbase::asm_sem::SlotCopy::Kind::Stack);
+    EXPECT_EQ(plan.params[0].fromTop, 0u);
+    EXPECT_EQ(std::string_view(plan.params[0].desc), "I");
+    /// N 体：栈参前导装载（描述符槽位落局部，体从栈消费需先装载）+ DUP 产出。
+    ASSERT_EQ(plan.body.size(), 2u);
+    EXPECT_EQ(plan.body[0].op, Op::ILOAD);
+    EXPECT_EQ(plan.body[0].a, 0u);
+    EXPECT_EQ(plan.body[1].op, Op::DUP);
+    EXPECT_TRUE(plan.validate().is_ok());
+
+    auto applied = plan.apply(*ctx.fixture.session, ctx.resolver);
+    ASSERT_TRUE(applied.is_ok()) << mjbase::asm_sem::to_string(applied.unwrap_err());
+    const mjbase::asm_sem::OutlineOutcome out = std::move(applied).unwrap();
+
+    /// 调用点序：DUP（复位）→ invokestatic → 转发 goto。
+    const std::vector<jbc::ir::InsnId>& order = ctx.unit->dom.order();
+    ca::usize callIdx = order.size();
+    for (ca::usize i = 0; i < order.size(); ++i) {
+        if (order[i].slot == out.callInsn.slot) {
+            callIdx = i;
+        }
+    }
+    ASSERT_LT(callIdx, order.size());
+    ASSERT_GE(callIdx, 1u);
+    const jbc::ir::Insn* dupAtCall = ctx.unit->dom.peek(order[callIdx - 1]);
+    const jbc::ir::Insn* callInsn  = ctx.unit->dom.peek(order[callIdx]);
+    ASSERT_NE(dupAtCall, nullptr);
+    ASSERT_NE(callInsn, nullptr);
+    EXPECT_EQ(dupAtCall->op, Op::DUP);
+    EXPECT_EQ(callInsn->op, Op::INVOKESTATIC);
+}
+
+/// §3.4 tier-3（结构性拒绝）：dup_x1 + pop ≡ SWAP 跨切点，出口 [b, a] 与
+/// 入口 [a, b] 前缀失配 → ExitShapeImpure（调用表达不了换位）。
+TEST(MjAsmSemOutlinePlanTest, DupX1SwapCrossingRejected)
+{
+    ClassBytesBuilder b("T");
+    PlanContext       ctx(b.assemble({swapCrossSpec()}));
+
+    const RegionCandidate* swapArm = nullptr;
+    for (const RegionCandidate& c : ctx.candidates) {
+        const mjbase::asm_cfg::BasicBlock* blk = ctx.view.cfg().block(c.members[0]);
+        for (const jbc::ir::InsnId id : blk->insns) {
+            const jbc::ir::Insn* in = ctx.unit->dom.peek(id);
+            if (in != nullptr && in->op == Op::DUP_X1) {
+                swapArm = &c;
+            }
+        }
+    }
+    ASSERT_NE(swapArm, nullptr);
+
+    auto planned = mjbase::asm_sem::planOutline(requestOf(ctx, *swapArm));
     ASSERT_TRUE(planned.is_err());
-    EXPECT_EQ(planned.unwrap_err(), OutlineError::RetNotProduced);
+    EXPECT_EQ(planned.unwrap_err(), OutlineError::ExitShapeImpure);
 }
 
 /// v1 出口形态：fallthrough 出口（末条非 goto）→ LastInsnNotGoto。
@@ -774,9 +1067,9 @@ TEST(MjAsmSemOutlinePlanTest, JvmGateBehaviorPreserved)
         }
         lastErr = planned.unwrap_err();
     }
-    ASSERT_TRUE(plannedAny) << to_string(lastErr);
+    ASSERT_TRUE(plannedAny) << mjbase::asm_sem::to_string(lastErr);
     auto applied = plan.apply(*session, resolver);
-    ASSERT_TRUE(applied.is_ok()) << to_string(applied.unwrap_err());
+    ASSERT_TRUE(applied.is_ok()) << mjbase::asm_sem::to_string(applied.unwrap_err());
 
     auto written = jbc::core::writeClass(session->backing());
     ASSERT_TRUE(written.is_ok());
@@ -801,4 +1094,194 @@ TEST(MjAsmSemOutlinePlanTest, JvmGateBehaviorPreserved)
     EXPECT_EQ(afterOut, "106\n107\n");
     EXPECT_EQ(afterOut, beforeOut);
     fs::remove_all(scratch, ec);
+}
+
+/// builder 语料补 SMT：类版本 ≥50 且含分支目标时 JVM 校验要求栈映射表
+/// （javac 产物自带而 builder 语料不带；与 apply 步骤 5 同一流水再生）。
+/// 仅用于前后对拍的对照组字节——变换会话仍从裸语料起步，apply 全表再生
+/// 不与既有 SMT 叠挂。
+Bytes withStackMaps(const Bytes& in)
+{
+    auto made = jbc::ir::makeSessionFromBytes(
+        jbc::core::ByteView{in.data(), in.size()});
+    EXPECT_TRUE(made.is_ok());
+    if (made.is_err()) {
+        return in;
+    }
+    auto                   session = std::move(made).unwrap();
+    jbc::ir::ClassSession& sess    = *session;
+    const jbc::ir::ClassUnit& cu   = sess.unit();
+    if ((cu.version >> 16) < 50u) {
+        return in;
+    }
+    const std::string_view thisClass = cu.symbols().str(cu.thisClass);
+    auto visits = jbc::ir::collectCodeUnits(sess);
+    for (const jbc::ir::CodeVisit& v : visits) {
+        if (v.kind != jbc::ir::CodeVisit::Kind::Ok) {
+            continue;
+        }
+        const jbc::ir::MethodId mid = sess.unit().methods[v.methodIdx].id;
+        if (jbc::ir::lowerMethod(sess, mid).is_err()) {
+            ADD_FAILURE() << "withStackMaps: lower 失败";
+            continue;
+        }
+        jbc::ir::CodeUnit* unit = v.unit.get();
+        jbc::analysis::ShapeResolver resolver;
+        jbc::analysis::MethodSig     sig;
+        sig.isStatic  = true;   /// builder 语料方法恒 static
+        sig.desc      = cu.symbols().str(sess.unit().method(mid)->desc);
+        sig.name      = cu.symbols().str(sess.unit().method(mid)->name);
+        sig.thisClass = thisClass;
+        jbc::analysis::FrameEngine engine(sess.backing().cp, resolver,
+                                          jbc::analysis::FramePolicy::Strict);
+        std::vector<jbc::analysis::FrameAt> frames;
+        const jbc::analysis::FrameSummary   summary =
+            engine.compute(*unit, sig, frames);
+        EXPECT_TRUE(summary.ok) << sig.name;
+        if (!summary.ok) {
+            continue;
+        }
+        if (jbc::ir::lowerMethod(sess, mid).is_err()) {
+            ADD_FAILURE() << "withStackMaps: 二次 lower 失败";
+            continue;
+        }
+        auto smt = jbc::analysis::buildStackMapTable(sess, *unit, frames);
+        EXPECT_TRUE(smt.is_ok());
+        if (smt.is_err()) {
+            continue;
+        }
+        auto result = std::move(smt).unwrap();
+        if (!result.needed) {
+            continue;
+        }
+        jbc::core::ClassFile& cf   = sess.backing();
+        jbc::core::AttrSlot*  code = nullptr;
+        for (jbc::core::AttrSlot& slot : cf.methods[sess.unit().method(mid)->backingIndex].attrs) {
+            if (cf.cp.utf8Equals(slot.nameCp, "Code")) {
+                code = &slot;
+                break;
+            }
+        }
+        if (code == nullptr) {
+            ADD_FAILURE() << "withStackMaps: Code 缺失";
+            continue;
+        }
+        auto body = cf.decodeAttr(*code);
+        if (body.is_err()) {
+            ADD_FAILURE() << "withStackMaps: Code 解码失败";
+            continue;
+        }
+        static_cast<jbc::core::CodeAttr*>(body.unwrap())
+            ->attrs.push_back(jbc::core::AttrSlot::makeNew(
+                sess.internUtf8("StackMapTable"),
+                std::unique_ptr<jbc::core::AttrBody>(std::move(result.attr))));
+        (void)code->mutate();
+    }
+    auto written = jbc::core::writeClass(sess.backing());
+    EXPECT_TRUE(written.is_ok());
+    if (written.is_err()) {
+        return in;
+    }
+    return std::move(written).unwrap();
+}
+
+/// JVM 真跑门公共体：plan（首个可识别候选）→ apply → 写回 → java 前后对拍。
+/// 期望输出由用例断言；planOutline 全拒时 ADD_FAILURE。
+void runJvmGate(const MethodSpec& spec, const jbc::analysis::MethodSig& gateSig,
+                const std::string& runnerBody, const std::string& expectOut)
+{
+    static const auto tc = test::jdk::probeJdk();
+    if (!tc.available) {
+        GTEST_SKIP() << "JDK 不可用: " << tc.reason;
+    }
+
+    ClassBytesBuilder b("T");
+    Bytes             raw      = b.assemble({spec});
+    Bytes             original = withStackMaps(raw);   /// 对照组补 SMT（builder 语料不带）
+
+    auto made = jbc::ir::makeSessionFromBytes(
+        jbc::core::ByteView{raw.data(), raw.size()});
+    ASSERT_TRUE(made.is_ok());
+    auto session = std::move(made).unwrap();
+    auto visits  = jbc::ir::collectCodeUnits(*session);
+    jbc::ir::CodeUnit* pick = nullptr;
+    jbc::ir::MethodId  pickId{};
+    for (const jbc::ir::CodeVisit& v : visits) {
+        if (v.kind != jbc::ir::CodeVisit::Kind::Ok) {
+            continue;
+        }
+        const jbc::ir::MethodUnit& mu = session->unit().methods[v.methodIdx];
+        if (session->unit().symbols().str(mu.name) == "pick") {
+            pick   = v.unit.get();
+            pickId = mu.id;
+        }
+    }
+    ASSERT_NE(pick, nullptr);
+
+    auto builtView = mjbase::asm_sem::RegionView::build(*pick);
+    ASSERT_TRUE(builtView.is_ok());
+    mjbase::asm_sem::RegionView view = std::move(builtView).unwrap();
+    const std::vector<mjbase::asm_sem::RegionCandidate> candidates = view.candidates();
+
+    jbc::analysis::ShapeResolver resolver;
+    OutlinePlan plan;
+    bool        plannedAny = false;
+    mjbase::asm_sem::OutlineError lastErr = mjbase::asm_sem::OutlineError::Ok;
+    for (ca::usize ci = 0; ci < candidates.size(); ++ci) {
+        auto planned = mjbase::asm_sem::planOutline(
+            OutlineRequest{*session, pickId, gateSig, resolver, view, candidates[ci], 1});
+        if (planned.is_ok()) {
+            plan = std::move(planned).unwrap();
+            plannedAny = true;
+            break;
+        }
+        lastErr = planned.unwrap_err();
+        ADD_FAILURE() << "cand[" << ci << "] " << mjbase::asm_sem::to_string(lastErr);
+    }
+    ASSERT_TRUE(plannedAny) << mjbase::asm_sem::to_string(lastErr);
+    auto applied = plan.apply(*session, resolver);
+    ASSERT_TRUE(applied.is_ok()) << mjbase::asm_sem::to_string(applied.unwrap_err());
+
+    auto written = jbc::core::writeClass(session->backing());
+    ASSERT_TRUE(written.is_ok());
+    const Bytes outlined = std::move(written).unwrap();
+
+    test::jdk::RunnerSpec before;
+    before.classes    = {{"T", original}};
+    before.runnerBody = runnerBody;
+    std::string beforeOut;
+    ASSERT_TRUE(test::jdk::runRunnerChecked(tc, before, &beforeOut));
+
+    test::jdk::RunnerSpec after;
+    after.classes    = {{"T", outlined}};
+    after.runnerBody = runnerBody;
+    std::string afterOut;
+    ASSERT_TRUE(test::jdk::runRunnerChecked(tc, after, &afterOut));
+
+    EXPECT_EQ(afterOut, expectOut);
+    EXPECT_EQ(afterOut, beforeOut);   /// -Xverify:all 全程验证 + 行为逐字一致
+}
+
+/// JVM 真跑门（A2 缺陷修复）：goto 入边 + 局部参数——A2 的装载被入边绕过
+/// （VerifyError Inconsistent stack height），A3 标签锚定首条装载后真跑一致。
+TEST(MjAsmSemOutlinePlanTest, JvmGateGotoEntryLocalParams)
+{
+    const MethodSpec spec = gotoEntryLocalParamSpec();
+    runJvmGate(spec, sigOf(true, "(III)I", "pick", "T"),
+               "System.out.println(T.pick(3, 4, 0));"
+               "System.out.println(T.pick(3, 4, 1));",
+               "7\n7\n");
+}
+
+/// JVM 真跑门（§3.4 tier-2）：边界 DUP 出口切点——原值升格入参 + 调用点
+/// DUP 复位，真跑行为与拆分前逐字一致。
+TEST(MjAsmSemOutlinePlanTest, JvmGateBoundaryDupEntryCopy)
+{
+    MethodSpec spec = boundaryDupSpec();
+    spec.name = "pick";
+    runJvmGate(spec, sigOf(true, "(I)I", "pick", "T"),
+               "System.out.println(T.pick(0));"    /// ifeq taken 臂（不经区域）
+               "System.out.println(T.pick(3));"    /// 直落臂（经区域 DUP 出口）
+               "System.out.println(T.pick(9));",
+               "0\n3\n9\n");
 }

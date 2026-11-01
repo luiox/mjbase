@@ -22,6 +22,7 @@
 
 #include "mjbase/asm/insn/insn_op.hpp"
 #include "mjbase/asm/sem/frame_view.hpp"
+#include "mjbase/asm/sem/liveness_view.hpp"
 #include "mjbase/asm/sem/slot_provenance.hpp"
 
 namespace mjbase::asm_sem {
@@ -152,6 +153,12 @@ ca::u32 gotoByteSize(Op op) noexcept
     return op == Op::GOTO_W ? 5u : 3u;
 }
 
+/// 局部槽宽（区域写集槽位排布用：L/D 族占 2 槽）。
+ca::u32 localOpSlotWidth(Op op) noexcept
+{
+    return (op == Op::LLOAD || op == Op::DLOAD || op == Op::LSTORE || op == Op::DSTORE) ? 2u : 1u;
+}
+
 /// 方法名 → 命名简单段（<init>/<clinit> 的 '<' '>' 不可入新方法名，
 /// JVMS 4.6 保留形态）。
 std::string simpleMethodName(std::string_view name) noexcept
@@ -231,7 +238,7 @@ const char* to_string(OutlineError e) noexcept
     case OutlineError::RetNullUnsupported: return "null return unsupported (v1)";
     case OutlineError::RetTypeUnknown: return "return type unknown";
     case OutlineError::LocalTypeMissing: return "local type unresolvable";
-    case OutlineError::RegionWritesLocal: return "region writes locals (v1 closed)";
+    case OutlineError::RegionWritesLocal: return "written local live after exit";
     case OutlineError::InternalBranch: return "internal branch in region";
     case OutlineError::LvtRowCrossesCut: return "local variable row crosses cut";
     case OutlineError::UnsupportedAttr: return "code-anchored attribute unsupported";
@@ -437,19 +444,76 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
         p.desc    = plan.arena.intern(std::string_view(desc.unwrap()));
         plan.params.push_back(std::move(p));
     }
+    const ca::usize stackParamCount = plan.params.size();   /// 栈参数段长（§3.4
+                                                            /// 升格插位用）
 
-    // ---- 判据 3（A2 收紧）：区域写局部槽整体拒绝；读到的槽入参化 ----
+    // ---- 判据 3（A3 随 LivenessView 放开）：写回集 = 被写 ∩ 出口后活跃
+    //      须为空；读集剔除「恒被重写」槽（读的到达定义全在区域内）----
+    auto builtLive = LivenessView::build(*unit);
+    if (builtLive.is_err()) {
+        return Err(OutlineError::FrameFailed);   /// CFG 不可算：活跃事实缺失
+    }
+    const LivenessView live = std::move(builtLive).unwrap();
+
     std::set<ca::u32> readLocals;
+    std::set<ca::u32> writtenLocals;
+    std::unordered_map<ca::u32, ca::u32> slotWidth;   /// 写集槽宽（cat2 占 2）
     for (const mjbase::asm_analyzer::LocalAccess& access : prov.localAccesses()) {
         if (memberSlots.count(access.insn.slot) == 0u) {
             continue;
         }
+        const jbc::ir::Insn* accessInsn = unit->dom.peek(access.insn);
         if (access.kind == mjbase::asm_analyzer::LocalAccess::Kind::Write) {
+            writtenLocals.insert(access.local);
+            if (accessInsn != nullptr) {
+                ca::u32& w = slotWidth[access.local];
+                w = std::max(w, localOpSlotWidth(accessInsn->op));
+            }
+        } else {
+            readLocals.insert(access.local);
+        }
+    }
+    for (const ca::u32 slot : writtenLocals) {
+        if (live.localLiveAfter(exitGoto, slot)) {
+            /// 写回集非空：被写槽出口后仍被读，需多值返回通道（§6 决策点 1
+            /// 维持拒绝）。
             return Err(OutlineError::RegionWritesLocal);
         }
-        readLocals.insert(access.local);
     }
+    /// 读集剔除（def-use 恒等搬运判据）：某槽在区域内的全部读访问的到达
+    /// 定义都落在区域内（先写后读，入口值不可达）→ 不进参数集；到达集
+    /// 溢出时负向结论不可信，保守保留参数。
+    std::set<ca::u32> paramLocals;
     for (const ca::u32 slot : readLocals) {
+        bool entryReaches = false;
+        for (const mjbase::asm_analyzer::LocalAccess& access : prov.localAccesses()) {
+            if (access.local != slot
+                || access.kind != mjbase::asm_analyzer::LocalAccess::Kind::Read
+                || memberSlots.count(access.insn.slot) == 0u) {
+                continue;
+            }
+            if (access.defs.truncated()) {
+                entryReaches = true;
+                break;
+            }
+            for (ca::u32 di = 0; di < access.defs.size(); ++di) {
+                const mjbase::asm_analyzer::DefId d = access.defs.at(di);
+                if (d.kind == mjbase::asm_analyzer::DefId::Kind::Parameter
+                    || (d.kind == mjbase::asm_analyzer::DefId::Kind::Instruction
+                        && memberSlots.count(d.id) == 0u)) {
+                    entryReaches = true;
+                    break;
+                }
+            }
+            if (entryReaches) {
+                break;
+            }
+        }
+        if (entryReaches) {
+            paramLocals.insert(slot);
+        }
+    }
+    for (const ca::u32 slot : paramLocals) {
         const jbc::analysis::VType* v = frames.localAt(entryInsn, slot);
         if (v == nullptr) {
             return Err(OutlineError::LocalTypeMissing);
@@ -504,8 +568,48 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
         }
         produced = fromReadLocal && !onEntryStack;
     }
+    if (!produced && retDefs.size() == 1u && !retDefs.truncated() && prefix >= 1u
+        && prefix == dIn && flat.size() >= 2u) {
+        /// §3.4 落临时档（A3，tier-2）：出口栈顶 = 区域末条 DUP/DUP2（cat2
+        /// 形态）对入口栈顶原值的复制——「一条 def 占多槽」跨出口切点。原值
+        /// 升格 Stack 入参（公共前缀收缩 1 值），调用点 DUP 复位：副本作
+        /// 实参、原值留栈下、返回值落顶插回原位，N 体零改写。dup_x1/SWAP
+        /// 族跨切点（复制落栈中段）出口形状结构性不可表达，维持拒绝。
+        const jbc::ir::InsnId tailId  = flat[flat.size() - 2u];
+        const jbc::ir::Insn* tailInsn = unit->dom.peek(tailId);
+        if (tailInsn != nullptr && (tailInsn->op == Op::DUP || tailInsn->op == Op::DUP2)) {
+            const mjbase::asm_analyzer::DefSet entryTopDefs = prov.stackDefsAt(entryInsn, 0);
+            bool copiedByTail = false;
+            for (const mjbase::asm_analyzer::DefUseEdge* e : prov.usesOf(retDefs.at(0))) {
+                if (e->use.slot == tailId.slot
+                    && e->slot == mjbase::asm_analyzer::DefUseSlot::Stack
+                    && e->index == 0u) {
+                    copiedByTail = true;
+                    break;
+                }
+            }
+            if (copiedByTail && entryTopDefs == retDefs) {
+                const jbc::analysis::VType* srcv = frames.stackFromTop(entryInsn, 0);
+                if (srcv != nullptr) {
+                    auto srcDesc =
+                        descOf(*srcv, OutlineError::UninitCrossing, OutlineError::RetTypeUnknown);
+                    if (srcDesc.is_err()) {
+                        return Err(srcDesc.unwrap_err());
+                    }
+                    SlotCopy p;
+                    p.kind    = SlotCopy::Kind::Stack;
+                    p.fromTop = 0;
+                    p.desc    = plan.arena.intern(std::string_view(srcDesc.unwrap()));
+                    plan.params.insert(plan.params.begin() + static_cast<ca::usize>(stackParamCount),
+                                       std::move(p));
+                    plan.retIsEntryCopy = true;
+                    produced            = true;
+                }
+            }
+        }
+    }
     if (!produced) {
-        return Err(OutlineError::RetNotProduced);   /// 边界 DUP 复制值形态
+        return Err(OutlineError::RetNotProduced);   /// 边界 DUP 复制值形态（tier-3）
     }
     auto retDesc = descOf(*retv, OutlineError::UninitCrossing, OutlineError::RetTypeUnknown);
     if (retDesc.is_err()) {
@@ -523,6 +627,27 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
             plan.locals.push_back(LocalRemap{p.oldLocal, p.newSlot});
         }
     }
+    /// 区域内自足槽（先写后读/恒被重写/纯写，不传参）：排参数区之后，宽度
+    /// 按区域写指令的 cat2 形态（N 内 store 占 2 槽）。
+    for (const ca::u32 slot : writtenLocals) {
+        bool mapped = false;
+        for (const LocalRemap& r : plan.locals) {
+            if (r.oldSlot == slot) {
+                mapped = true;
+                break;
+            }
+        }
+        if (mapped) {
+            continue;
+        }
+        ca::u32 w = 1;
+        const auto wit = slotWidth.find(slot);
+        if (wit != slotWidth.end()) {
+            w = std::max(w, wit->second);
+        }
+        plan.locals.push_back(LocalRemap{slot, slotCursor});
+        slotCursor += w;
+    }
 
     plan.hasRet   = true;
     plan.ret.kind    = SlotCopy::Kind::Stack;
@@ -532,6 +657,18 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
     // ---- 方法体值快照：程序序拷贝，局部操作数按重编号表改写为显式形态；
     //      出口 goto 与块间 goto glue 剥离，其余控制转移 fail-closed ----
     std::vector<ca::i32> orderToBody(order.size(), -1);
+    /// 栈切片参数序幕：descriptor 参数落在 N 的局部槽，而区域体从栈上消费
+    /// 它们（S_in）——先按参数序（自下而上）显式装载，区域体入口栈形与
+    /// 原入口切面一致（#115 §3.3 步骤 3 的 Stack 参数承载面）。
+    for (const SlotCopy& p : plan.params) {
+        if (p.kind != SlotCopy::Kind::Stack) {
+            continue;
+        }
+        jbc::ir::Insn load;
+        load.op = loadOpOf(familyOfDesc(std::string_view(p.desc)[0]));
+        load.a  = static_cast<ca::i32>(p.newSlot);
+        plan.body.push_back(load);
+    }
     for (ca::usize p = 0; p < flat.size(); ++p) {
         const jbc::ir::Insn* in = unit->dom.peek(flat[p]);
         if (in == nullptr) {
@@ -625,16 +762,28 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
             for (const jbc::core::LocalVariableTableAttr::Row& row : lvt->rows) {
                 const ca::u32 rowEnd = row.startPc + row.length;
                 /// 端点口径：两端点均存活（区域外）→ 父表保留（lower 按
-                /// fail-closed 终点规则重定向，A2 区域不写局部，行语义保持
-                /// 诚实——javac 全方法参数行即此形态）；两端点均在区域内 →
-                /// 迁 N 重锚定；恰一端点落入区域（真越切点）→ fail-closed。
+                /// fail-closed 终点规则重定向，行语义保持诚实——javac 全方法
+                /// 参数行即此形态）；两端点均在区域内 → 迁 N 重锚定；恰一
+                /// 端点落入区域（真越切点）→ 默认 fail-closed，宽松开关下
+                /// 裁剪（父表删除、记 lvtDrops 诊断；#115 §6 决策点 3）。
                 const bool startIn = row.startPc >= firstPc && row.startPc < regionEndPc;
                 const bool endIn   = rowEnd > firstPc && rowEnd <= regionEndPc;
                 if (!startIn && !endIn) {
                     continue;
                 }
                 if (!startIn || !endIn) {
-                    return Err(OutlineError::LvtRowCrossesCut);   /// 越切点 fail-closed
+                    if (!req.allowLvtCrossCut) {
+                        return Err(OutlineError::LvtRowCrossesCut);   /// 越切点 fail-closed
+                    }
+                    LvtRowDrop drop;
+                    drop.startPc   = row.startPc;
+                    drop.length    = row.length;
+                    drop.nameCp    = row.nameCp;
+                    drop.descCp    = row.descCp;
+                    drop.typeTable = (kind == NestedKind::Lvtt);
+                    drop.slot      = row.slot;
+                    plan.lvtDrops.push_back(drop);
+                    continue;
                 }
                 LvtRowMove move;
                 move.startPc  = row.startPc;
@@ -652,7 +801,8 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
                     }
                 }
                 if (!slotMapped) {
-                    /// 行槽不在区域读集内（区域内声明却未被读）：v1 fail-closed。                    return Err(OutlineError::LvtRowCrossesCut);
+                    /// 行槽不在区域读写集内（槽未入重编号表）：fail-closed。
+                    return Err(OutlineError::LvtRowCrossesCut);
                 }
                 plan.lvtMoves.push_back(move);
             }
@@ -664,7 +814,8 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
         bool anchored = false;
         for (ca::usize i = 0; i < memberIdx.size(); ++i) {
             if (raw[memberIdx[i]].pc == move.startPc) {
-                if (orderToBody[memberIdx[i]] < 0) {                    return Err(OutlineError::LvtRowCrossesCut);
+                if (orderToBody[memberIdx[i]] < 0) {
+                    return Err(OutlineError::LvtRowCrossesCut);
                 }
                 move.bodyIndex = static_cast<ca::u32>(orderToBody[memberIdx[i]]);
                 anchored       = true;
@@ -679,7 +830,8 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
         bool anchored = false;
         for (ca::usize i = 0; i < memberIdx.size(); ++i) {
             if (raw[memberIdx[i]].pc == move.startPc) {
-                if (orderToBody[memberIdx[i]] < 0) {                    return Err(OutlineError::LvtRowCrossesCut);
+                if (orderToBody[memberIdx[i]] < 0) {
+                    return Err(OutlineError::LvtRowCrossesCut);
                 }
                 move.bodyIndex = static_cast<ca::u32>(orderToBody[memberIdx[i]]);
                 anchored       = true;
@@ -749,20 +901,22 @@ Result<void, OutlineError> OutlinePlan::validate() const
             return Err(OutlineError::MalformedPlan);
         }
     }
+    /// 体局部操作数的合法槽位 = 参数槽（栈切片序幕装载 + 局部入参）∪
+    /// 区域自足槽（重编号表）。
+    std::set<ca::u32> bodySlots;
+    for (const SlotCopy& p : params) {
+        bodySlots.insert(p.newSlot);
+    }
+    for (const LocalRemap& r : locals) {
+        bodySlots.insert(r.newSlot);
+    }
     for (const jbc::ir::Insn& in : body) {
         if (isControlTransfer(in.op)) {
             return Err(OutlineError::MalformedPlan);
         }
         if (asm_insn::isLoad(in.op) || asm_insn::isStore(in.op) || in.op == Op::IINC) {
-            bool mapped = false;
-            for (const LocalRemap& r : locals) {
-                /// 体载荷已是重映射后的新槽（planOutline 构建期改写）。
-                if (r.newSlot == static_cast<ca::u32>(in.a)) {
-                    mapped = true;
-                    break;
-                }
-            }
-            if (!mapped) {
+            /// 体载荷已是重映射后的新槽（planOutline 构建期改写）。
+            if (bodySlots.count(static_cast<ca::u32>(in.a)) == 0u) {
                 return Err(OutlineError::MalformedPlan);
             }
         }
@@ -817,7 +971,15 @@ Result<OutlineOutcome, OutlineError> OutlinePlan::apply(jbc::ir::ClassSession& s
     seed.access    = newAccess;
     seed.withCode  = true;
     seed.maxStack  = 2;
-    seed.maxLocals = static_cast<ca::u16>(paramSlots == 0u ? 1u : paramSlots);
+    {
+        /// 种子 maxLocals：参数区 + 区域自足槽（含 cat2 高半槽余量；最终由
+        /// applyComputedMaxes 收口）。
+        ca::u32 nLocals = paramSlots == 0u ? 1u : paramSlots;
+        for (const LocalRemap& r : locals) {
+            nLocals = std::max(nLocals, r.newSlot + 2u);
+        }
+        seed.maxLocals = static_cast<ca::u16>(nLocals);
+    }
     auto opened    = jbc::ir::MethodEditor::open(session, seed);
     if (opened.is_err()) {
         const jbc::ir::MethodBuildError e = opened.unwrap_err();
@@ -849,7 +1011,15 @@ Result<OutlineOutcome, OutlineError> OutlinePlan::apply(jbc::ir::ClassSession& s
     }
     unit = mu->code.get();
 
-    // ---- 步骤 2：调用点替换（局部入参装载 + invokestatic + 转发 goto）----
+    // ---- 步骤 2：调用点替换（边界 DUP 复位 + 局部入参装载 + invokestatic
+    //      + 转发 goto）----
+    //
+    // 入边口径（A3 修复）：goto 入边形态下参数装载块必须随入边走——标签
+    // 锚定首条装载（或 retIsEntryCopy 的 DUP），分支入边与 fallthrough 都
+    // 先过装载再达调用点。A2 把标签重锚到 invokestatic、装载落在标签之前，
+    // 入边绕过装载 → JVM VerifyError「Inconsistent stack height」（#115
+    // §3.3 实测缺陷，DupNorm 语料复现）。insertAtLabel 语义（标签恒指新
+    // 插入指令、插入点在标签边界）下按执行序逆序逐条插入，终序 = 参数序。
     const ca::u32 callCp = session.internMethodRef(
         thisClass, std::string_view(newName), std::string_view(newDesc));
     jbc::ir::Insn call;
@@ -858,30 +1028,76 @@ Result<OutlineOutcome, OutlineError> OutlinePlan::apply(jbc::ir::ClassSession& s
 
     jbc::ir::CodeEditor ed{*unit};
     jbc::ir::InsnId     callId = jbc::ir::kNoInsn;
-    if (unit->dom.validLabel(entryLabel)) {
-        /// 分支入边形态：入边标签重锚到调用点，保证 invokestatic 先于区域体。
-        auto ins = ed.insertAtLabel(entryLabel, call);
-        if (ins.is_err()) {
-            return Err(OutlineError::EditFailed);
+    bool anyLocalParams = false;
+    for (const SlotCopy& p : params) {
+        if (p.kind == SlotCopy::Kind::Local) {
+            anyLocalParams = true;
+            break;
         }
-        callId = ins.unwrap();
+    }
+    const bool emitEntryDup = retIsEntryCopy && !body.empty()
+                              && (body.back().op == jbc::core::Op::DUP
+                                  || body.back().op == jbc::core::Op::DUP2);
+    if (unit->dom.validLabel(entryLabel)) {
+        /// 逆序插装载：每条落标签边界、标签重锚到新指令 → 终序 l1..lm。
+        if (anyLocalParams) {
+            for (auto it = params.rbegin(); it != params.rend(); ++it) {
+                if (it->kind != SlotCopy::Kind::Local) {
+                    continue;
+                }
+                jbc::ir::Insn load;
+                load.op = loadOpOf(familyOfDesc(std::string_view(it->desc)[0]));
+                load.a  = static_cast<ca::i32>(it->oldLocal);
+                if (ed.insertAtLabel(entryLabel, load).is_err()) {
+                    return Err(OutlineError::EditFailed);
+                }
+            }
+        }
+        if (emitEntryDup) {
+            /// §3.4 tier-2：DUP 复制入口栈顶（副本作实参、原值留栈下）。
+            jbc::ir::Insn dupInsn;
+            dupInsn.op = body.back().op;
+            if (ed.insertAtLabel(entryLabel, dupInsn).is_err()) {
+                return Err(OutlineError::EditFailed);
+            }
+        }
+        if (anyLocalParams || emitEntryDup) {
+            auto ins = ed.insertBefore(entryInsn, call);
+            if (ins.is_err()) {
+                return Err(OutlineError::EditFailed);
+            }
+            callId = ins.unwrap();
+        } else {
+            auto ins = ed.insertAtLabel(entryLabel, call);
+            if (ins.is_err()) {
+                return Err(OutlineError::EditFailed);
+            }
+            callId = ins.unwrap();
+        }
     } else {
+        if (emitEntryDup) {
+            jbc::ir::Insn dupInsn;
+            dupInsn.op = body.back().op;
+            if (ed.insertBefore(entryInsn, dupInsn).is_err()) {
+                return Err(OutlineError::EditFailed);
+            }
+        }
+        for (const SlotCopy& p : params) {
+            if (p.kind != SlotCopy::Kind::Local) {
+                continue;   /// 栈切片参数已恰好在栈上（S_in 自底向上 = 参数序）
+            }
+            jbc::ir::Insn load;
+            load.op = loadOpOf(familyOfDesc(std::string_view(p.desc)[0]));
+            load.a  = static_cast<ca::i32>(p.oldLocal);
+            if (ed.insertBefore(entryInsn, load).is_err()) {
+                return Err(OutlineError::EditFailed);
+            }
+        }
         auto ins = ed.insertBefore(entryInsn, call);
         if (ins.is_err()) {
             return Err(OutlineError::EditFailed);
         }
         callId = ins.unwrap();
-    }
-    for (const SlotCopy& p : params) {
-        if (p.kind != SlotCopy::Kind::Local) {
-            continue;   /// 栈切片参数已恰好在栈上（S_in 自底向上 = 参数序）
-        }
-        jbc::ir::Insn load;
-        load.op = loadOpOf(familyOfDesc(std::string_view(p.desc)[0]));
-        load.a  = static_cast<ca::i32>(p.oldLocal);
-        if (ed.insertBefore(callId, load).is_err()) {
-            return Err(OutlineError::EditFailed);
-        }
     }
     {
         jbc::ir::Insn fwd;
@@ -953,6 +1169,15 @@ Result<OutlineOutcome, OutlineError> OutlinePlan::apply(jbc::ir::ClassSession& s
                                                       && m.startPc == r.startPc && m.length == r.length
                                                       && m.nameCp == r.nameCp && m.descCp == r.descCp
                                                       && m.oldSlot == r.slot) {
+                                                      return true;
+                                                  }
+                                              }
+                                              for (const LvtRowDrop& d : lvtDrops) {
+                                                  /// 宽松开关裁剪的越切点行：父表删除。
+                                                  if (d.typeTable == (kind == NestedKind::Lvtt)
+                                                      && d.startPc == r.startPc && d.length == r.length
+                                                      && d.nameCp == r.nameCp && d.descCp == r.descCp
+                                                      && d.slot == r.slot) {
                                                       return true;
                                                   }
                                               }

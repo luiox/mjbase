@@ -9,22 +9,27 @@
 /// FrameView/SlotProvenanceView/RegionView 完成），落地在 apply（走 libjbc
 /// 会话，错误 Result 值语义）。
 ///
-/// v1 判据口径（#115 §1.1 + §1.2 + A2 收紧，偏差见下）：
+/// v1 判据口径（#115 §1.1 + §1.2 + A2 收紧，A3 放开项见注）：
 ///   1. 直线区域（RegionCandidate.straightLine）且末条指令为指向出口锚的
 ///      goto——出口栈形取该 goto 的到达帧（区域路径独占、未经汇合点合并），
 ///      落出出口（末指令非 goto 的 fallthrough 出口）v1 不开档。
 ///   2. 栈切面干净：出口栈形 = 入口栈形（逐槽类型 + provenance 一致的公共
 ///      前缀）+ 栈顶恰 1 个新值（定义产自区域内）作为返回值。切面槽
 ///      provenance 唯一（SlotProvenanceView.stackSlotClean，§3.4 DUP 边界
-///      半径判据；边界 DUP 复制值经「返回值须为区域内产出」拒绝）。
-///      Uninitialized/Null 值不跨切面（§3.2；Null 返回改变续延汇合类型，
-///      v1 拒绝；Null 入参安全，描述符升格 Object）。
-///   3. 区域内不写局部槽（iinc 同拒）。#115 判据 3 是「被写且出口后仍读」
-///      拒绝，需 LivenessView（S2/A3）；A2 无活跃视图，按最保守口径整体
-///      拒绝写局部区域——偏差注记见 PR。
+///      半径判据）。Uninitialized/Null 值不跨切面（§3.2；Null 返回改变
+///      续延汇合类型，v1 拒绝；Null 入参安全，描述符升格 Object）。
+///      A3 放开（§3.4 落临时档的机械化）：出口栈顶 = 区域内末条 DUP/DUP2
+///      对入口栈顶原值的复制时，原值升格 Stack 入参 + 调用点 DUP 复位
+///      （retIsEntryCopy）——返回值插回原位（原值留栈下、副本作实参、
+///      返回值落顶），N 体零改写；dup_x1 族/SWAP 跨切点仍拒（出口形状
+///      结构性不可表达，#115 §3.4 实测档）。
+///   3. 写回集为空：区域内被写 ∩ 出口后活跃 = 空（#115 §3.2）。A3 随
+///      LivenessView（S2）放开 A2 的「区域不写局部槽」保守收紧：被写槽
+///      出口后仍被读（liveAfter）才拒绝；「读了但恒被重写」的槽（读的
+///      到达定义全在区域内）不进参数集（def-use 恒等搬运剔除）。
 ///   4. 异常上下文同质且 A2 收紧为 handler 集为空：try 覆盖内的同质区域
 ///      v1 不开档（调用点须落在 try 区间内，涉及 insertAtLabel 标签重锚
-///      与异常表边界语义，A3 处理）。N 无异常表，父表零改动。
+///      与异常表边界语义，后续批处理）。N 无异常表，父表零改动。
 ///   5. jsr/ret：FrameView.hasSubroutine 拒绝。
 ///   6. 构造器 UninitThis 存活期（FrameView.hasUninitThis）拒绝。
 ///
@@ -82,7 +87,8 @@ enum class OutlineError : ca::u8 {
     LocalTypeMissing,        ///< 区域读到的局部槽在入口帧不可辨型（fail-closed）
     RegionWritesLocal,       ///< 判据 3 A2 收紧：区域内写局部槽（含 iinc）
     InternalBranch,          ///< 区域内出现非链 glue 的分支/终止（fail-closed）
-    LvtRowCrossesCut,        ///< LVT/LVTT 行越切点或槽不可映射（fail-closed）
+    LvtRowCrossesCut,        ///< LVT/LVTT 行越切点或槽不可映射（fail-closed；
+                             ///  宽松开关下改记裁剪不拒，见 OutlineRequest）
     UnsupportedAttr,         ///< 父方法携带代码锚定属性（TypeAnnotations 族）
     MalformedPlan,           ///< 处方内部不一致（validate 数据侧拒绝）
 
@@ -140,6 +146,17 @@ struct LntRowMove
     ca::u32 bodyIndex = 0; ///< N 体指令序（startPc 重锚定点）
 };
 
+/// @brief 越切点 LVT/LVTT 行的裁剪记录（宽松开关档：父表删除、不迁 N）。
+struct LvtRowDrop
+{
+    ca::u32 startPc = 0;
+    ca::u32 length  = 0;
+    ca::u32 nameCp  = 0;
+    ca::u32 descCp  = 0;
+    bool typeTable = false;
+    ca::u32 slot   = 0;
+};
+
 /// @brief outline 落地产物。
 struct OutlineOutcome
 {
@@ -167,7 +184,10 @@ public:
     /// @param resolver Strict 引用合并策略（变换后两侧帧重算/SMT 再生用）。
     /// 会话版本 < 50（无 SMT 定义）跳过再生；≥ 50 时父方法 SMT 整表再生
     /// （调用点成为新分支目标，链式重算不覆盖）。LNT/LVT 迁移行挂入 N 的
-    /// Code 嵌套属性（CP 索引同 session 直接复用）。
+    /// Code 嵌套属性（CP 索引同 session 直接复用）；宽松开关裁剪的越切点
+    /// 行（lvtDrops）自父表删除。调用点发射口径：goto 入边形态下参数装载
+    /// 块随入边走（标签锚定首条装载，A2 缺陷修复）；retIsEntryCopy 时先
+    /// DUP 复制入口栈顶（副本作实参、原值留栈下、返回值落顶插回原位）。
     ca::core::Result<OutlineOutcome, OutlineError>
     apply(jbc::ir::ClassSession& session, jbc::analysis::ITypeResolver& resolver) const;
 
@@ -181,10 +201,16 @@ public:
     std::vector<SlotCopy> params;           ///< copy-set：栈切片 + 局部入参
     bool      hasRet = false;               ///< v1 恒 true（恰 1 个新栈顶值）
     SlotCopy  ret{};                        ///< 返回值（出口栈顶 1 槽）
+    /// §3.4 落临时档（A3）：返回值 = 区域内末条 DUP/DUP2 对入口栈顶原值的
+    /// 复制。原值升格 Stack 入参（公共前缀收缩 1 值），调用点先 DUP 复制
+    /// 入口栈顶（副本作实参、原值留栈下），返回值落顶插回原位；N 体零改写。
+    bool      retIsEntryCopy = false;
 
-    std::vector<LocalRemap>   locals;       ///< 区域局部读重编号表
+    std::vector<LocalRemap>   locals;       ///< 区域局部读/写重编号表（含非入参的
+                                            ///  区域内自足槽：先写后读、恒被重写）
     std::vector<LvtRowMove>   lvtMoves;     ///< LVT/LVTT 行迁移（含 LVTT 同构行）
     std::vector<LntRowMove>   lntMoves;     ///< LNT 行迁移
+    std::vector<LvtRowDrop>   lvtDrops;     ///< 宽松开关下裁剪的越切点行（父表删）
 
     /// 区域指令体值快照（程序序；出口 goto 与链 glue 已剥离；局部操作数
     /// 已按 locals 重映射）。apply 逐条 append 后追加返回指令。
@@ -213,6 +239,10 @@ struct OutlineRequest
     const RegionView&                 view;       ///< 候选来源视图（块→指令解析）
     const RegionCandidate&            region;     ///< RegionView 候选区域
     ca::u32                           sequence;   ///< 命名序号（确定性方案）
+    /// LVT/LVTT 越切点行处置开关（#115 §6 决策点 3：validate 默认拒绝，
+    /// applier 显式宽松）。true 时越切点行裁剪（父表删除、记 lvtDrops），
+    /// 不再 Err(LvtRowCrossesCut)。LNT 行锚点恒单点，不受本开关影响。
+    bool                              allowLvtCrossCut = false;
 };
 
 /// @brief 识别：对候选区域跑 v1 全判据，通过则交付处方（会话零改动）。
