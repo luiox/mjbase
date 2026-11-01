@@ -56,6 +56,8 @@ target("mjbase")
     -- 其回引才能落到其后扫描的 libjbc（MSVC 多遍扫描不敏感，linux 红根因）。
     add_packages("libjhasm", "libjbc", "libjzip", "libca", "libjstd",
                  "libjclassfile", "libjstr", {public = true})
+    -- 分析数据库引擎：实现细节不对外暴露（analysis_db.hpp 不含 sqlite3.h）。
+    add_packages("sqlite3")
     -- 迁移切片：按批次收编模块（消费方驱动，逐批验证；忌整库一次搬运）。
     -- 见 doc_ai/module-map.md 的依赖图——批 1 只收零环的叶子与容器层，
     -- 字符串口径（util/mapping/jar 的标识符与路径面）在这一批定死。
@@ -122,7 +124,7 @@ target("mjbase_unittest")
     -- （B8 8.7，garena 无人 include、无符号消费）。
     mjbase_binary_link_closure("mjbase", "libjhasm", "libjbc", "test_helper",
                                "libjdk_finder", "libjzip",
-                               "libjclassfile", "libjstr")
+                               "libjclassfile", "libjstr", "sqlite3")
     -- 注：libjstd / libca_i18n 为 headeronly，无链接产物，不进闭包。
     add_packages("gtest")
     add_files("test/unittest/main.cpp")

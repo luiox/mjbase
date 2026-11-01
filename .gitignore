@@ -25,6 +25,7 @@ lib/
 /worktrees/
 /dist/
 /work
+*.7z
 
 ### xmake ###
 compile_commands.json
