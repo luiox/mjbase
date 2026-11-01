@@ -1224,6 +1224,55 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> runReferenceQuery(
     return ca::Ok(std::move(references));
 }
 
+/// @brief 内部名 → class_id；未登记返回 0。
+///
+/// 按源反查的两步走第一步：直接以 c.internal_name 过滤 refs 的 JOIN 形状
+/// 会让规划器为免排序选「全索引扫 refs + 逐行回表探 classes」（B6 实测
+/// rt.jar 2.3M 行 565ms）；先解析 id 再下探 refs_source_class 索引。
+ca::Result<ca::i64, AnalysisDbError> classIdByName(sqlite3*                     db,
+                                                   const ca::str::Utf8StringRef& owner)
+{
+    auto prepared = prepare(db, "SELECT class_id FROM classes WHERE internal_name=?1");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindText(db, statement.raw, 1, owner); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasRow = step(db, statement.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    if (!hasRow.unwrap()) return ca::Ok(static_cast<ca::i64>(0));
+    return ca::Ok(sqlite3_column_int64(statement.raw, 0));
+}
+
+/// @brief (owner, name, descriptor) → member_id；未登记返回 0。
+///
+/// 字段与方法同名同描述符在合法 Java 里不可能（方法描述符带括号），单行
+/// 即足；未命中走空结果（与原 JOIN 形状语义一致）。
+ca::Result<ca::i64, AnalysisDbError> memberIdByName(sqlite3*                     db,
+                                                    const ca::str::Utf8StringRef& owner,
+                                                    const ca::str::Utf8StringRef& name,
+                                                    const ca::str::Utf8StringRef& desc)
+{
+    auto prepared = prepare(
+        db, "SELECT m.member_id FROM members m JOIN classes c ON c.class_id=m.class_id "
+            "WHERE c.internal_name=?1 AND m.name=?2 AND m.descriptor=?3");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindText(db, statement.raw, 1, owner); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindText(db, statement.raw, 2, name); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindText(db, statement.raw, 3, desc); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasRow = step(db, statement.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    if (!hasRow.unwrap()) return ca::Ok(static_cast<ca::i64>(0));
+    return ca::Ok(sqlite3_column_int64(statement.raw, 0));
+}
+
 constexpr const char* kSchemaDdl[] = {
     "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID",
     // 条目身份层（v3）：inputs 以 path 为身份键；entries 以 entry_id 单调
@@ -2903,20 +2952,17 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referenc
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
     }
+    // 两步走：先解析 member_id 再下探 refs_source_member 索引（JOIN 形状
+    // 会让规划器全索引扫 refs，见 classIdByName 注）。
+    auto memberId = memberIdByName(impl_->handle, owner, name, descriptor);
+    if (memberId.is_err()) return errorOf(std::move(memberId));
+    if (memberId.unwrap() == 0) return ca::Ok(std::vector<DbReferenceRecord>());
     const std::string sql = std::string(kReferenceSelectSql) +
-                            "WHERE c.internal_name=?1 AND m.name=?2 AND m.descriptor=?3 " +
-                            kReferenceOrderSql;
-    return runReferenceQuery(impl_->handle, sql, 3,
+                            "WHERE r.source_member_id=?1 " + kReferenceOrderSql;
+    return runReferenceQuery(impl_->handle, sql, 1,
                              [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
-                                 if (auto result = bindText(impl_->handle, statement, 1, owner);
-                                     result.is_err()) {
-                                     return errorOf(std::move(result));
-                                 }
-                                 if (auto result = bindText(impl_->handle, statement, 2, name);
-                                     result.is_err()) {
-                                     return errorOf(std::move(result));
-                                 }
-                                 return bindText(impl_->handle, statement, 3, descriptor);
+                                 return bindInt(impl_->handle, statement, 1,
+                                                memberId.unwrap());
                              });
 }
 
@@ -2926,11 +2972,15 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referenc
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
     }
+    auto classId = classIdByName(impl_->handle, owner);
+    if (classId.is_err()) return errorOf(std::move(classId));
+    if (classId.unwrap() == 0) return ca::Ok(std::vector<DbReferenceRecord>());
     const std::string sql = std::string(kReferenceSelectSql) +
-                            "WHERE c.internal_name=?1 " + kReferenceOrderSql;
+                            "WHERE r.source_class_id=?1 " + kReferenceOrderSql;
     return runReferenceQuery(impl_->handle, sql, 1,
                              [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
-                                 return bindText(impl_->handle, statement, 1, owner);
+                                 return bindInt(impl_->handle, statement, 1,
+                                                classId.unwrap());
                              });
 }
 
