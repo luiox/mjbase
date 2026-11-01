@@ -19,6 +19,7 @@
 #include "mjbase/pass/enum_cast_check_remover.hpp"
 #include "mjbase/pass/constant_folder.hpp"
 #include "mjbase/pass/devirtualize_single_target.hpp"
+#include "mjbase/pass/entry_slot_swap_normalizer.hpp"
 #include "mjbase/pass/exception_trampoline_inliner.hpp"
 #include "mjbase/pass/expression_simplifier.hpp"
 #include "mjbase/pass/fix_pattern_simplifier.hpp"
@@ -27,7 +28,9 @@
 #include "mjbase/pass/identity_wrapper_inliner.hpp"
 #include "mjbase/pass/illegal_class_file_cleaner.hpp"
 #include "mjbase/pass/intrinsic_folding.hpp"
+#include "mjbase/pass/line_number_remover.hpp"
 #include "mjbase/pass/local_constant_propagation.hpp"
+#include "mjbase/pass/local_variable_annotator.hpp"
 #include "mjbase/pass/junk_code_inserter.hpp"
 #include "mjbase/pass/meta_info_remover.hpp"
 #include "mjbase/pass/nop_remover.hpp"
@@ -86,6 +89,11 @@ PassNameRegistry makeDefaultRegistry()
     seed(reg.registerGlobalPass(
         "AccessModifierTightener", [] { return std::make_unique<mjbase::pass::AccessModifierTightener>(); },
         "Tighten access modifiers to the minimum visibility that keeps references valid."));
+    // 局部变量表规范化（反编译可读性）：varN 命名 + Strict 帧类型提升。
+    seed(reg.registerGlobalPass(
+        "LocalVariableAnnotator",
+        [] { return std::make_unique<mjbase::pass::LocalVariableAnnotator>(); },
+        "Rewrite LocalVariableTable with varN names and dataflow-promoted types."));
     // A 批（方法体改写族，纯指令变换）：默认链收尾清理件 + 冗余装载消除 +
     // 字符串族化简 + 冗余空检查清除。
     seed(reg.registerMethodPass(
@@ -95,6 +103,11 @@ PassNameRegistry makeDefaultRegistry()
         "RedundantLoadValEliminator",
         [] { return std::make_unique<mjbase::pass::RedundantLoadValEliminator>(); },
         "Remove redundant load-then-store pairs on locals."));
+    // 入口参数槽交换还原：删除混淆器搬移序言并把方法体局部访问映射回原槽。
+    seed(reg.registerMethodPass(
+        "EntrySlotSwapNormalizer",
+        [] { return std::make_unique<mjbase::pass::EntrySlotSwapNormalizer>(); },
+        "Undo obfuscation entry-slot permutation prologues."));
     seed(reg.registerMethodPass(
         "CharArrToStrSimplifier", [] { return std::make_unique<mjbase::pass::CharArrToStrSimplifier>(); },
         "Rewrite char-array String construction into string constants where safe."));
@@ -409,9 +422,13 @@ PassNameRegistry makeDefaultRegistry()
     seed(reg.registerClassPass(
         "KotlinMetadataRemover", [] { return std::make_unique<mjbase::pass::KotlinMetadataRemover>(); },
         "Remove Kotlin @Metadata annotations."));
+    // 行号清理：混淆产物的 LNT 不对应真实源码，且会阻碍改写后的 pc 重定位。
+    seed(reg.registerClassPass(
+        "LineNumberRemover", [] { return std::make_unique<mjbase::pass::LineNumberRemover>(); },
+        "Remove Code-nested LineNumberTable attributes."));
     seed(reg.registerClassPass(
         "SourceInfoRemover", [] { return std::make_unique<mjbase::pass::SourceInfoRemover>(); },
-        "Remove SourceFile attributes and line number tables."));
+        "Remove SourceFile and SourceDebugExtension attributes."));
     seed(reg.registerClassPass(
         "SignatureRemover", [] { return std::make_unique<mjbase::pass::SignatureRemover>(); },
         "Remove generic Signature attributes."));
