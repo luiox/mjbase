@@ -92,6 +92,16 @@ enum class OutlineError : ca::u8 {
     UnsupportedAttr,         ///< 父方法携带代码锚定属性（TypeAnnotations 族）
     MalformedPlan,           ///< 处方内部不一致（validate 数据侧拒绝）
 
+    // ---- 识别侧（planInline，A4 merge/inline 对偶；会话零改动）----
+
+    NoInlineCandidate,       ///< 父方法无 inline 候选调用点（自动发现空）
+    NotOutlineSynthetic,     ///< 目标非 outline$ 前缀 private|static|synthetic
+    CalleeNotStraightLine,   ///< 合成方法体含返回指令以外的控制转移
+    CalleeTryCovered,        ///< 合成方法体异常表非空（outline 产物恒无）
+    CallSiteCountUnsupported,///< 合成方法类内代码域引用数 ≠ 1（单调用点口径）
+    CallSiteShapeImpure,     ///< 调用点参数/装载链/复位 DUP 形态不可辨识
+    CalleeShapeImpure,       ///< 合成方法体序幕/收尾/槽引用形态不可辨识
+
     // ---- 落地侧（apply；失败可能留下半截变换，见类注）----
 
     EditFailed,              ///< CodeDom 编辑失败（插入/删除）
