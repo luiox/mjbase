@@ -243,6 +243,13 @@ const char* to_string(OutlineError e) noexcept
     case OutlineError::LvtRowCrossesCut: return "local variable row crosses cut";
     case OutlineError::UnsupportedAttr: return "code-anchored attribute unsupported";
     case OutlineError::MalformedPlan: return "malformed plan";
+    case OutlineError::NoInlineCandidate: return "no inline candidate call site";
+    case OutlineError::NotOutlineSynthetic: return "callee not outline$ synthetic";
+    case OutlineError::CalleeNotStraightLine: return "callee body not straight-line";
+    case OutlineError::CalleeTryCovered: return "callee body has exception table";
+    case OutlineError::CallSiteCountUnsupported: return "callee call site count != 1";
+    case OutlineError::CallSiteShapeImpure: return "call site shape impure";
+    case OutlineError::CalleeShapeImpure: return "callee body shape impure";
     case OutlineError::EditFailed: return "code edit failed";
     case OutlineError::LowerFailed: return "lower failed";
     case OutlineError::MaxesFailed: return "maxes adoption failed";
