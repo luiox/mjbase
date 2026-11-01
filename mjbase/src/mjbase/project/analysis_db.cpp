@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <utility>
 
+#include "mjbase/project/mask_regex_engine.hpp"
+
 namespace mjbase::project {
 namespace {
 
@@ -1291,6 +1293,18 @@ constexpr const char* kSchemaDdl[] = {
     ") WITHOUT ROWID",
     "CREATE UNIQUE INDEX renames_token ON renames(token) WHERE token IS NOT NULL",
     "CREATE INDEX renames_new_name ON renames(new_name)",
+    // 出口遮蔽层（v4）：规则是项目级配置（整体替换、rule_id 单调分配），
+    // hit_count 是命中记账（含被 suspect 压制的 allow 命中），查询序与
+    // 求值器装载序同源：(priority, rule_id) 升序。
+    "CREATE TABLE mask_rules("
+    "  rule_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  priority INTEGER NOT NULL DEFAULT 0,"
+    "  pattern TEXT NOT NULL,"
+    "  action INTEGER NOT NULL CHECK(action IN (0,1)),"
+    "  note TEXT NOT NULL DEFAULT '',"
+    "  hit_count INTEGER NOT NULL DEFAULT 0"
+    ")",
+    "CREATE INDEX mask_rules_order ON mask_rules(priority, rule_id)",
 };
 
 }   // namespace
@@ -2254,6 +2268,219 @@ ca::Result<std::vector<DbEntryInfo>, AnalysisDbError> AnalysisDb::listEntries(
         entries.push_back(std::move(info));
     }
     return ca::Ok(std::move(entries));
+}
+
+//-- 出口遮蔽层（mask_rules / 信任级别，schema v4） --------------------------
+
+ca::Result<DbMaskRuleReplaceStats, AnalysisDbError> AnalysisDb::replaceMaskRules(
+    std::vector<DbMaskRuleInput> rules)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+    // 整批校验前置（含编译性，与求值器 MaskEvaluator::build 同源）：任何
+    // 一条非法整批不写库。
+    if (rules.size() > kMaximumMaskRules) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "mask rule count " + std::to_string(rules.size()) +
+                                     " exceeds maximum " + std::to_string(kMaximumMaskRules)));
+    }
+    for (ca::usize index = 0; index < rules.size(); ++index) {
+        const DbMaskRuleInput& rule = rules[index];
+        const std::string where = "mask rule[" + std::to_string(index) + "]";
+        if (rule.pattern.is_empty()) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid, where + ": pattern is empty"));
+        }
+        if (hasNul(rule.pattern)) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     where + ": pattern must not contain NUL"));
+        }
+        if (rule.pattern.byte_length() > kMaximumMaskPatternBytes) {
+            return ca::Err(makeError(
+                AnalysisDbErrorKind::Invalid,
+                where + ": pattern length " + std::to_string(rule.pattern.byte_length()) +
+                    " exceeds maximum " + std::to_string(kMaximumMaskPatternBytes)));
+        }
+        auto compiled = MaskRegex::compile(std::string_view(
+            reinterpret_cast<const char*>(rule.pattern.data()), rule.pattern.byte_length()));
+        if (compiled.is_err()) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     where + ": pattern failed to compile: " +
+                                         std::move(compiled).unwrap_err().message.to_std_string()));
+        }
+        if (hasNul(rule.note)) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     where + ": note must not contain NUL"));
+        }
+    }
+
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
+
+    DbMaskRuleReplaceStats stats;
+    {
+        auto prepared = prepare(impl_->handle, "SELECT COUNT(*) FROM mask_rules");
+        if (prepared.is_err()) return errorOf(std::move(prepared));
+        auto statement = std::move(prepared).unwrap();
+        auto hasRow    = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        stats.retired = hasRow.unwrap() ? sqlite3_column_int64(statement.raw, 0) : 0;
+    }
+    if (auto result = exec(impl_->handle, "DELETE FROM mask_rules"); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    auto insert = prepare(impl_->handle,
+                          "INSERT INTO mask_rules(priority, pattern, action, note) "
+                          "VALUES(?1, ?2, ?3, ?4)");
+    if (insert.is_err()) return errorOf(std::move(insert));
+    auto insertStatement = std::move(insert).unwrap();
+    for (const DbMaskRuleInput& rule : rules) {
+        // 语句批次内复用：上一轮 step 至 DONE 后必须 reset 才能重新绑定。
+        resetStatement(insertStatement);
+        if (auto result = bindInt(impl_->handle, insertStatement.raw, 1, rule.priority);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindText(impl_->handle, insertStatement.raw, 2, rule.pattern);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, insertStatement.raw, 3,
+                                  static_cast<ca::i64>(rule.action));
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindText(impl_->handle, insertStatement.raw, 4, rule.note);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto hasRow = step(impl_->handle, insertStatement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        ++stats.total;
+        ++stats.created;
+    }
+    if (auto result = txn.commit(); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    return ca::Ok(stats);
+}
+
+ca::Result<std::vector<DbMaskRule>, AnalysisDbError> AnalysisDb::listMaskRules() const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+
+    auto prepared = prepare(impl_->handle,
+                            "SELECT rule_id, priority, pattern, action, note, hit_count "
+                            "FROM mask_rules ORDER BY priority, rule_id");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+
+    std::vector<DbMaskRule> rules;
+    for (;;) {
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+        DbMaskRule rule;
+        rule.ruleId   = sqlite3_column_int64(statement.raw, 0);
+        rule.priority = sqlite3_column_int(statement.raw, 1);
+        rule.pattern  = utf8Column(statement.raw, 2);
+        rule.action   = sqlite3_column_int(statement.raw, 3) != 0 ? MaskAction::Mask
+                                                                  : MaskAction::Allow;
+        rule.note     = utf8Column(statement.raw, 4);
+        rule.hitCount = sqlite3_column_int64(statement.raw, 5);
+        rules.push_back(std::move(rule));
+    }
+    return ca::Ok(std::move(rules));
+}
+
+ca::Result<void, AnalysisDbError> AnalysisDb::setMaskTrustLevel(MaskTrustLevel level)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+
+    auto prepared = prepare(impl_->handle,
+                            "INSERT INTO meta(key, value) VALUES('mask_trust_level', ?1) "
+                            "ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    const char*    value = level == MaskTrustLevel::Untrusted ? "untrusted" : "trusted";
+    if (auto result = bindText(impl_->handle, statement.raw, 1,
+                               ca::str::Utf8StringRef::from_cstr(value));
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasRow = step(impl_->handle, statement.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    return ca::Ok();
+}
+
+ca::Result<MaskTrustLevel, AnalysisDbError> AnalysisDb::maskTrustLevel() const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+
+    auto prepared =
+        prepare(impl_->handle, "SELECT value FROM meta WHERE key='mask_trust_level'");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    auto hasRow    = step(impl_->handle, statement.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    if (!hasRow.unwrap()) return ca::Ok(MaskTrustLevel::Trusted);
+
+    const auto value = textColumn(statement.raw, 0);
+    if (value == "untrusted") return ca::Ok(MaskTrustLevel::Untrusted);
+    if (value == "trusted") return ca::Ok(MaskTrustLevel::Trusted);
+    return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                             "mask trust level marker is invalid: " + value));
+}
+
+ca::Result<void, AnalysisDbError> AnalysisDb::recordMaskRuleHits(
+    const std::vector<ca::i64>& ruleIds)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+    if (ruleIds.empty()) return ca::Ok();
+
+    // 按出现次数逐 id 累加：出口按行记账，同批重复 id 各计一次。
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
+
+    auto prepared = prepare(impl_->handle,
+                            "UPDATE mask_rules SET hit_count = hit_count + 1 "
+                            "WHERE rule_id = ?1");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    for (const ca::i64 ruleId : ruleIds) {
+        // 语句批次内复用：上一轮 step 至 DONE 后必须 reset 才能重新绑定。
+        resetStatement(statement);
+        if (auto result = bindInt(impl_->handle, statement.raw, 1, ruleId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        // 未知 rule_id 的 0 行更新静默跳过：命中记账不因规则替换竞态失败。
+    }
+    return txn.commit();
 }
 
 //-- 分析事实层（类/成员/继承/直接引用） ------------------------------------
