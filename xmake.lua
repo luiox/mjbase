@@ -78,6 +78,10 @@ end
 
 add_requires("zlib")
 
+-- sqlite3：分析数据库（project/analysis_db）的存储引擎。xrepo 官方包静态
+-- 链接，只有 analysis_db.cpp 直接使用 C API；其余模块只见类型化接口。
+add_requires("sqlite3 3.53.0", {configs = {shared = false}})
+
 -- 中心包仓直连包（无仓内副本、无 phony 垫片，消费点直接 add_packages）。
 add_repositories("luiox-repo https://github.com/luiox/luiox-repo.git")
 -- libca 版本/模块双单源：顶层与全部嵌套路径一律归并到同一 (版本, 模块集)。
