@@ -210,6 +210,25 @@ ca::Result<void, AnalysisDbError> validateToken(const ca::str::Utf8StringRef& to
     return ca::Ok();
 }
 
+ca::Result<void, AnalysisDbError> validateSha256Hex(const ca::str::Utf8StringRef& value,
+                                                    const char*                   field)
+{
+    if (value.byte_length() != 64) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 std::string(field) + " must be 64 lowercase hex characters"));
+    }
+    for (ca::usize i = 0; i < value.byte_length(); ++i) {
+        const ca::u8 c = value.byte_at(i);
+        const bool   digit = c >= '0' && c <= '9';
+        const bool   lower = c >= 'a' && c <= 'f';
+        if (!digit && !lower) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     std::string(field) + " must be 64 lowercase hex characters"));
+        }
+    }
+    return ca::Ok();
+}
+
 ca::Result<void, AnalysisDbError> validateMemberKind(DbMemberKind kind)
 {
     if (kind != DbMemberKind::Field && kind != DbMemberKind::Method) {
@@ -876,12 +895,15 @@ ca::Result<void, AnalysisDbError> bindNull(sqlite3* db, sqlite3_stmt* statement,
 ca::Result<void, AnalysisDbError> applyClassBatch(sqlite3* db,
                                                   const std::vector<DbClassInput>& classes)
 {
+    // entry_id 语义：>0 设置链接（FK 校验失败整批回滚），0 = 未指定——
+    // 已登记类保持既有链接，新登记类存 NULL。
     auto upsertClass = prepare(
         db,
-        "INSERT INTO classes(internal_name, super_name, access, version) "
-        "VALUES(?1, ?2, ?3, ?4) "
+        "INSERT INTO classes(internal_name, super_name, access, version, entry_id) "
+        "VALUES(?1, ?2, ?3, ?4, ?5) "
         "ON CONFLICT(internal_name) DO UPDATE SET "
-        "super_name=excluded.super_name, access=excluded.access, version=excluded.version");
+        "super_name=excluded.super_name, access=excluded.access, version=excluded.version, "
+        "entry_id=CASE WHEN ?5 IS NULL THEN entry_id ELSE excluded.entry_id END");
     if (upsertClass.is_err()) return errorOf(std::move(upsertClass));
     auto upsertClassStatement = std::move(upsertClass).unwrap();
 
@@ -919,6 +941,15 @@ ca::Result<void, AnalysisDbError> applyClassBatch(sqlite3* db,
             return errorOf(std::move(result));
         }
         if (auto result = bindInt(db, upsertClassStatement.raw, 4, input.version); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (input.entryId > 0) {
+            if (auto result = bindInt(db, upsertClassStatement.raw, 5, input.entryId);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+        else if (auto result = bindNull(db, upsertClassStatement.raw, 5); result.is_err()) {
             return errorOf(std::move(result));
         }
         auto done = step(db, upsertClassStatement.raw);
@@ -1129,6 +1160,7 @@ DbClassInfo readClassRow(sqlite3_stmt* statement)
     info.superName    = utf8Column(statement, 2);
     info.access       = sqlite3_column_int(statement, 3);
     info.version      = sqlite3_column_int(statement, 4);
+    info.entryId      = sqlite3_column_int64(statement, 5);
     return info;
 }
 
@@ -1192,12 +1224,34 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> runReferenceQuery(
 
 constexpr const char* kSchemaDdl[] = {
     "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID",
+    // 条目身份层（v3）：inputs 以 path 为身份键；entries 以 entry_id 单调
+    // 分配、只增不删。同 (input_id, path) 同时至多一行活跃（partial unique
+    // index），历史行靠墓碑保留。
+    "CREATE TABLE inputs("
+    "  input_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  path TEXT NOT NULL UNIQUE,"
+    "  size INTEGER NOT NULL DEFAULT 0,"
+    "  sha256 TEXT NOT NULL DEFAULT ''"
+    ")",
+    "CREATE TABLE entries("
+    "  entry_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  input_id INTEGER NOT NULL REFERENCES inputs(input_id),"
+    "  path TEXT NOT NULL,"
+    "  kind TEXT NOT NULL,"
+    "  size INTEGER NOT NULL DEFAULT 0,"
+    "  sha256 TEXT NOT NULL,"
+    "  regular INTEGER NOT NULL DEFAULT 1,"
+    "  tombstoned INTEGER NOT NULL DEFAULT 0,"
+    "  UNIQUE(input_id, path, sha256)"
+    ")",
+    "CREATE UNIQUE INDEX entries_live ON entries(input_id, path) WHERE tombstoned=0",
     "CREATE TABLE classes("
     "  class_id INTEGER PRIMARY KEY AUTOINCREMENT,"
     "  internal_name TEXT NOT NULL UNIQUE,"
     "  super_name TEXT NOT NULL DEFAULT '',"
     "  access INTEGER NOT NULL DEFAULT 0,"
-    "  version INTEGER NOT NULL DEFAULT 0"
+    "  version INTEGER NOT NULL DEFAULT 0,"
+    "  entry_id INTEGER REFERENCES entries(entry_id) ON DELETE SET NULL"
     ")",
     "CREATE TABLE interfaces("
     "  class_id INTEGER NOT NULL REFERENCES classes(class_id) ON DELETE CASCADE,"
@@ -1831,7 +1885,378 @@ ca::Result<void, AnalysisDbError> AnalysisDb::replaceRenames(
     return txn.commit();
 }
 
-//-- 分析事实层 ------------------------------------------------------------
+//-- 条目身份层（inputs / entries，schema v3） ------------------------------
+
+ca::Result<ca::i64, AnalysisDbError> AnalysisDb::ensureInput(
+    const ca::str::Utf8StringRef& path, const ca::str::Utf8StringRef& sha256, ca::i64 size)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+    if (auto result = validateRequiredText(path, "input path"); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = validateSha256Hex(sha256, "input sha256"); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (size < 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "input size must not be negative"));
+    }
+
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
+
+    {
+        // path 是身份键：重登记刷新内容锚，input_id 保持不变。
+        auto upserted = prepare(
+            impl_->handle,
+            "INSERT INTO inputs(path, size, sha256) VALUES(?1, ?2, ?3) "
+            "ON CONFLICT(path) DO UPDATE SET size=excluded.size, sha256=excluded.sha256");
+        if (upserted.is_err()) return errorOf(std::move(upserted));
+        auto statement = std::move(upserted).unwrap();
+        if (auto result = bindText(impl_->handle, statement.raw, 1, path); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw, 2, size); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindText(impl_->handle, statement.raw, 3, sha256); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto done = step(impl_->handle, statement.raw);
+        if (done.is_err()) return errorOf(std::move(done));
+    }
+
+    ca::i64 inputId = 0;
+    {
+        auto selected = prepare(impl_->handle, "SELECT input_id FROM inputs WHERE path=?1");
+        if (selected.is_err()) return errorOf(std::move(selected));
+        auto statement = std::move(selected).unwrap();
+        if (auto result = bindText(impl_->handle, statement.raw, 1, path); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Sqlite,
+                                     "input identity vanished after registration"));
+        }
+        inputId = sqlite3_column_int64(statement.raw, 0);
+    }
+
+    if (auto result = txn.commit(); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    return ca::Ok(inputId);
+}
+
+ca::Result<DbEntryIngestStats, AnalysisDbError> AnalysisDb::ingestEntries(
+    ca::i64 inputId, std::vector<DbEntryInput> entries)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+    if (inputId <= 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "input id must be positive"));
+    }
+
+    std::set<std::string> paths;
+    for (const DbEntryInput& entry : entries) {
+        if (auto result = validateRequiredText(entry.path.ref(), "entry path"); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = validateRequiredText(entry.kind.ref(), "entry kind"); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = validateSha256Hex(entry.sha256.ref(), "entry sha256");
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (entry.size < 0) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     "entry size must not be negative"));
+        }
+        if (!paths.insert(entry.path.to_std_string()).second) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     "duplicate entry path in batch: " +
+                                         entry.path.to_std_string()));
+        }
+    }
+
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
+
+    {
+        // 输入必须已登记（ensureInput 先行）；不存在整批拒绝。
+        auto selected = prepare(impl_->handle, "SELECT input_id FROM inputs WHERE input_id=?1");
+        if (selected.is_err()) return errorOf(std::move(selected));
+        auto statement = std::move(selected).unwrap();
+        if (auto result = bindInt(impl_->handle, statement.raw, 1, inputId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     "input is not registered: " + std::to_string(inputId)));
+        }
+    }
+
+    // 载入该输入全部既有行（含墓碑）；匹配/复活判定在内存做，SQL 只承担
+    // 单行写。行数 = 该输入历史条目总数，量级与单 jar 条目数相当。
+    struct ExistingRow
+    {
+        ca::i64     entryId = 0;
+        std::string path;
+        std::string sha256;
+        bool        live = false;
+    };
+    std::vector<ExistingRow> existing;
+    {
+        auto selected = prepare(
+            impl_->handle,
+            "SELECT entry_id, path, sha256, tombstoned FROM entries "
+            "WHERE input_id=?1 ORDER BY entry_id");
+        if (selected.is_err()) return errorOf(std::move(selected));
+        auto statement = std::move(selected).unwrap();
+        if (auto result = bindInt(impl_->handle, statement.raw, 1, inputId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        for (;;) {
+            auto hasRow = step(impl_->handle, statement.raw);
+            if (hasRow.is_err()) return errorOf(std::move(hasRow));
+            if (!hasRow.unwrap()) break;
+            ExistingRow row;
+            row.entryId = sqlite3_column_int64(statement.raw, 0);
+            row.path    = textColumn(statement.raw, 1);
+            row.sha256  = textColumn(statement.raw, 2);
+            row.live    = sqlite3_column_int(statement.raw, 3) == 0;
+            existing.push_back(std::move(row));
+        }
+    }
+
+    using EntryAnchor = std::pair<std::string, std::string>;   // (path, sha256)
+
+    // 本批锚集合：墓碑判定与匹配共用。
+    std::set<EntryAnchor> batchAnchors;
+    for (const DbEntryInput& entry : entries) {
+        batchAnchors.insert(EntryAnchor(entry.path.to_std_string(), entry.sha256.to_std_string()));
+    }
+
+    DbEntryIngestStats stats;
+    stats.total = entries.size();
+
+    // 阶段一：墓碑——本批未出现的既有活跃条目标记消失（只改旗标，不删行）。
+    {
+        auto markDead = prepare(impl_->handle,
+                                "UPDATE entries SET tombstoned=1 WHERE entry_id=?1");
+        if (markDead.is_err()) return errorOf(std::move(markDead));
+        auto statement = std::move(markDead).unwrap();
+        for (const ExistingRow& row : existing) {
+            if (!row.live || batchAnchors.count(EntryAnchor(row.path, row.sha256)) > 0) continue;
+            if (auto result = bindInt(impl_->handle, statement.raw, 1, row.entryId);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            auto done = step(impl_->handle, statement.raw);
+            resetStatement(statement);
+            if (done.is_err()) return errorOf(std::move(done));
+            ++stats.tombstoned;
+        }
+    }
+
+    // 阶段二：锚匹配——命中复用 id（活跃行刷新元数据，墓碑行复活），未命中
+    // 新建。同 (input, path) 至多一行活跃由 entries_live 部分唯一索引兜底。
+    std::map<EntryAnchor, std::pair<const ExistingRow*, bool>> byAnchor;
+    for (const ExistingRow& row : existing) {
+        if (row.live || batchAnchors.count(EntryAnchor(row.path, row.sha256)) > 0) {
+            byAnchor.emplace(EntryAnchor(row.path, row.sha256),
+                             std::make_pair(&row, row.live));
+        }
+    }
+
+    {
+        auto refresh = prepare(
+            impl_->handle,
+            "UPDATE entries SET kind=?2, size=?3, regular=?4, tombstoned=0 WHERE entry_id=?1");
+        if (refresh.is_err()) return errorOf(std::move(refresh));
+        auto refreshStatement = std::move(refresh).unwrap();
+
+        auto insert = prepare(
+            impl_->handle,
+            "INSERT INTO entries(input_id, path, kind, size, sha256, regular) "
+            "VALUES(?1, ?2, ?3, ?4, ?5, ?6)");
+        if (insert.is_err()) return errorOf(std::move(insert));
+        auto insertStatement = std::move(insert).unwrap();
+
+        for (const DbEntryInput& entry : entries) {
+            const EntryAnchor   anchor(entry.path.to_std_string(), entry.sha256.to_std_string());
+            const auto          found = byAnchor.find(anchor);
+            const ca::str::Utf8StringRef shaRef(entry.sha256);
+            if (found != byAnchor.end()) {
+                const ca::i64 entryId = found->second.first->entryId;
+                if (auto result = bindInt(impl_->handle, refreshStatement.raw, 1, entryId);
+                    result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+                if (auto result =
+                        bindText(impl_->handle, refreshStatement.raw, 2,
+                                 ca::str::Utf8StringRef(entry.kind));
+                    result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+                if (auto result = bindInt(impl_->handle, refreshStatement.raw, 3, entry.size);
+                    result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+                if (auto result = bindInt(impl_->handle, refreshStatement.raw, 4,
+                                          entry.regular ? 1 : 0);
+                    result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+                auto done = step(impl_->handle, refreshStatement.raw);
+                resetStatement(refreshStatement);
+                if (done.is_err()) return errorOf(std::move(done));
+
+                if (found->second.second) {
+                    ++stats.reused;
+                }
+                else {
+                    ++stats.resurrected;
+                }
+                continue;
+            }
+
+            if (auto result = bindInt(impl_->handle, insertStatement.raw, 1, inputId);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindText(impl_->handle, insertStatement.raw, 2, entry.path.ref());
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindText(impl_->handle, insertStatement.raw, 3, entry.kind.ref());
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindInt(impl_->handle, insertStatement.raw, 4, entry.size);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindText(impl_->handle, insertStatement.raw, 5, shaRef);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindInt(impl_->handle, insertStatement.raw, 6,
+                                      entry.regular ? 1 : 0);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            auto done = step(impl_->handle, insertStatement.raw);
+            resetStatement(insertStatement);
+            if (done.is_err()) return errorOf(std::move(done));
+            ++stats.created;
+        }
+    }
+
+    if (auto result = txn.commit(); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    return ca::Ok(stats);
+}
+
+ca::Result<std::vector<DbInputInfo>, AnalysisDbError> AnalysisDb::listInputs() const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+
+    auto prepared = prepare(impl_->handle,
+                            "SELECT input_id, path, size, sha256 FROM inputs ORDER BY path");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+
+    std::vector<DbInputInfo> inputs;
+    for (;;) {
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+        DbInputInfo info;
+        info.inputId = sqlite3_column_int64(statement.raw, 0);
+        info.path    = utf8Column(statement.raw, 1);
+        info.size    = sqlite3_column_int64(statement.raw, 2);
+        info.sha256  = utf8Column(statement.raw, 3);
+        inputs.push_back(std::move(info));
+    }
+    return ca::Ok(std::move(inputs));
+}
+
+ca::Result<std::vector<DbEntryInfo>, AnalysisDbError> AnalysisDb::listEntries(
+    ca::i64 inputId) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (inputId <= 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "input id must be positive"));
+    }
+
+    {
+        // 输入不存在与「已登记但无条目」区分开：前者是调用方错误。
+        auto selected = prepare(impl_->handle, "SELECT input_id FROM inputs WHERE input_id=?1");
+        if (selected.is_err()) return errorOf(std::move(selected));
+        auto statement = std::move(selected).unwrap();
+        if (auto result = bindInt(impl_->handle, statement.raw, 1, inputId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     "input is not registered: " + std::to_string(inputId)));
+        }
+    }
+
+    auto prepared = prepare(
+        impl_->handle,
+        "SELECT entry_id, input_id, path, kind, size, sha256, regular, tombstoned "
+        "FROM entries WHERE input_id=?1 ORDER BY path, entry_id");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindInt(impl_->handle, statement.raw, 1, inputId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    std::vector<DbEntryInfo> entries;
+    for (;;) {
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+        DbEntryInfo info;
+        info.entryId    = sqlite3_column_int64(statement.raw, 0);
+        info.inputId    = sqlite3_column_int64(statement.raw, 1);
+        info.path       = utf8Column(statement.raw, 2);
+        info.kind       = utf8Column(statement.raw, 3);
+        info.size       = sqlite3_column_int64(statement.raw, 4);
+        info.sha256     = utf8Column(statement.raw, 5);
+        info.regular    = sqlite3_column_int(statement.raw, 6) != 0;
+        info.tombstoned = sqlite3_column_int(statement.raw, 7) != 0;
+        entries.push_back(std::move(info));
+    }
+    return ca::Ok(std::move(entries));
+}
+
+//-- 分析事实层（类/成员/继承/直接引用） ------------------------------------
 
 ca::Result<ca::usize, AnalysisDbError> AnalysisDb::ingestClasses(
     std::vector<DbClassInput> classes)
@@ -1899,7 +2324,7 @@ ca::Result<std::optional<DbClassInfo>, AnalysisDbError> AnalysisDb::findClass(
 
     auto prepared = prepare(
         impl_->handle,
-        "SELECT class_id, internal_name, super_name, access, version "
+        "SELECT class_id, internal_name, super_name, access, version, entry_id "
         "FROM classes WHERE internal_name=?1");
     if (prepared.is_err()) return errorOf(std::move(prepared));
     auto statement = std::move(prepared).unwrap();
@@ -1939,7 +2364,7 @@ ca::Result<std::vector<DbClassInfo>, AnalysisDbError> AnalysisDb::listClasses() 
 
     auto prepared = prepare(
         impl_->handle,
-        "SELECT c.class_id, c.internal_name, c.super_name, c.access, c.version, "
+        "SELECT c.class_id, c.internal_name, c.super_name, c.access, c.version, c.entry_id, "
         "       i.interface_name "
         "FROM classes c LEFT JOIN interfaces i ON i.class_id=c.class_id "
         "ORDER BY c.internal_name, i.position");
@@ -1958,8 +2383,8 @@ ca::Result<std::vector<DbClassInfo>, AnalysisDbError> AnalysisDb::listClasses() 
             classes.push_back(readClassRow(statement.raw));
             lastId = classId;
         }
-        if (sqlite3_column_type(statement.raw, 5) != SQLITE_NULL) {
-            classes.back().interfaces.push_back(utf8Column(statement.raw, 5));
+        if (sqlite3_column_type(statement.raw, 6) != SQLITE_NULL) {
+            classes.back().interfaces.push_back(utf8Column(statement.raw, 6));
         }
     }
     return ca::Ok(std::move(classes));

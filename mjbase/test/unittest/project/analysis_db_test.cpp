@@ -1,11 +1,13 @@
 /// @file        analysis_db_test.cpp
 /// @brief       AnalysisDb 基础层：建库/重开、稳定身份上的重命名覆盖、
-///              token 约束、只读拒写、原子替换与非法输入零写入。
+///              token 约束、只读拒写、原子替换与非法输入零写入；
+///              v3 条目身份层的输入/条目登记、重导入匹配与墓碑语义。
 #include <gtest/gtest.h>
 
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -719,4 +721,383 @@ TEST(MjAnalysisDbTest, ReferenceValidationRejectsMalformedSites)
                                            "demo/Base", "x", ""));
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
               takeErrorKind(db.replaceReferences(std::move(typeWithName))));
+}
+
+//-- 条目身份层（schema v3） ------------------------------------------------
+
+namespace {
+
+/// @brief 64 位小写十六进制测试锚：单字符重复填充。
+std::string shaOf(char seed)
+{
+    return std::string(64, seed);
+}
+
+DbEntryInput entryInput(const std::string& path, const char* kind, const std::string& sha,
+                        ca::i64 size = 16, bool regular = true)
+{
+    DbEntryInput input;
+    input.path =
+        Utf8String::from_data(reinterpret_cast<const ca::u8*>(path.data()), path.size());
+    input.kind   = Utf8String::from_cstr(kind);
+    input.size   = size;
+    input.sha256 =
+        Utf8String::from_data(reinterpret_cast<const ca::u8*>(sha.data()), sha.size());
+    input.regular = regular;
+    return input;
+}
+
+}   // namespace
+
+TEST(MjAnalysisDbTest, RegistersInputsWithStablePathIdentity)
+{
+    const auto path = freshDbPath("entries_inputs");
+    auto       db   = openOrDie(path);
+
+    auto first = db.ensureInput(S("lib/app.jar"), refOf(shaOf('1')), 1234);
+    ASSERT_TRUE(first.is_ok());
+    const ca::i64 firstId = first.unwrap();
+    EXPECT_GT(firstId, 0);
+
+    // 同 path 重登记：复用 input_id，内容锚刷新。
+    auto rehashed = db.ensureInput(S("lib/app.jar"), refOf(shaOf('2')), 2048);
+    ASSERT_TRUE(rehashed.is_ok());
+    EXPECT_EQ(firstId, rehashed.unwrap());
+
+    // 不同 path 分配新 id，单调递增。
+    auto second = db.ensureInput(S("lib/other.jar"), refOf(shaOf('3')), 64);
+    ASSERT_TRUE(second.is_ok());
+    EXPECT_GT(second.unwrap(), firstId);
+
+    auto listed = db.listInputs();
+    ASSERT_TRUE(listed.is_ok());
+    auto inputs = std::move(listed).unwrap();
+    ASSERT_EQ(2U, inputs.size());
+    EXPECT_EQ("lib/app.jar", inputs[0].path.to_std_string());
+    EXPECT_EQ(firstId, inputs[0].inputId);
+    EXPECT_EQ(2048, inputs[0].size);
+    EXPECT_EQ(shaOf('2'), inputs[0].sha256.to_std_string());
+    EXPECT_EQ("lib/other.jar", inputs[1].path.to_std_string());
+
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.ensureInput(S("lib/bad.jar"), S("nothex"), 1)));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.ensureInput(S(""), refOf(shaOf('4')), 1)));
+}
+
+TEST(MjAnalysisDbTest, EntryIngestKeepsStableIdsAndTombstonesMissing)
+{
+    const auto path = freshDbPath("entries_ingest");
+    auto       db   = openOrDie(path);
+
+    auto inputId = db.ensureInput(S("lib/app.jar"), refOf(shaOf('0')), 4096);
+    ASSERT_TRUE(inputId.is_ok());
+    const ca::i64 jar = inputId.unwrap();
+
+    // 首次登记：三个条目全量新建。
+    std::vector<DbEntryInput> first;
+    first.push_back(entryInput("a/A.class", "class", shaOf('a')));
+    first.push_back(entryInput("b/B.class", "class", shaOf('b')));
+    first.push_back(entryInput("META-INF/MANIFEST.MF", "manifest", shaOf('c'), 8, false));
+    auto firstStats = db.ingestEntries(jar, std::move(first));
+    ASSERT_TRUE(firstStats.is_ok());
+    {
+        const auto stats = firstStats.unwrap();
+        EXPECT_EQ(3U, stats.total);
+        EXPECT_EQ(3U, stats.created);
+        EXPECT_EQ(0U, stats.reused);
+        EXPECT_EQ(0U, stats.resurrected);
+        EXPECT_EQ(0U, stats.tombstoned);
+    }
+
+    auto listed = db.listEntries(jar);
+    ASSERT_TRUE(listed.is_ok());
+    auto rows = std::move(listed).unwrap();
+    ASSERT_EQ(3U, rows.size());
+    ASSERT_EQ("META-INF/MANIFEST.MF", rows[0].path.to_std_string());
+    ASSERT_EQ("a/A.class", rows[1].path.to_std_string());
+    ASSERT_EQ("b/B.class", rows[2].path.to_std_string());
+    const ca::i64 entryM = rows[0].entryId;
+    const ca::i64 entryA = rows[1].entryId;
+    const ca::i64 entryB = rows[2].entryId;
+    EXPECT_GT(entryA, 0);
+    EXPECT_GT(entryB, entryA);
+    EXPECT_GT(entryM, entryB);
+    EXPECT_FALSE(rows[0].regular);
+    EXPECT_FALSE(rows[0].tombstoned);
+    EXPECT_EQ("manifest", rows[0].kind.to_std_string());
+
+    // 同内容重导入（乱序）：id 不漂，全量复用。
+    std::vector<DbEntryInput> same;
+    same.push_back(entryInput("b/B.class", "class", shaOf('b')));
+    same.push_back(entryInput("META-INF/MANIFEST.MF", "manifest", shaOf('c'), 8, false));
+    same.push_back(entryInput("a/A.class", "class", shaOf('a')));
+    auto sameStats = db.ingestEntries(jar, std::move(same));
+    ASSERT_TRUE(sameStats.is_ok());
+    {
+        const auto stats = sameStats.unwrap();
+        EXPECT_EQ(3U, stats.total);
+        EXPECT_EQ(0U, stats.created);
+        EXPECT_EQ(3U, stats.reused);
+        EXPECT_EQ(0U, stats.resurrected);
+        EXPECT_EQ(0U, stats.tombstoned);
+    }
+
+    // 二次重导入：只保留 a/A.class，其余进墓碑（不删行）。
+    std::vector<DbEntryInput> shrunk;
+    shrunk.push_back(entryInput("a/A.class", "class", shaOf('a')));
+    auto shrunkStats = db.ingestEntries(jar, std::move(shrunk));
+    ASSERT_TRUE(shrunkStats.is_ok());
+    EXPECT_EQ(2U, shrunkStats.unwrap().tombstoned);
+
+    listed = db.listEntries(jar);
+    ASSERT_TRUE(listed.is_ok());
+    rows = std::move(listed).unwrap();
+    ASSERT_EQ(3U, rows.size());
+    EXPECT_FALSE(rows[1].tombstoned);
+    EXPECT_EQ(entryA, rows[1].entryId);
+    EXPECT_TRUE(rows[0].tombstoned);
+    EXPECT_TRUE(rows[2].tombstoned);
+
+    // 消失条目重现：锚命中墓碑行，原地复活，id 不漂。
+    std::vector<DbEntryInput> revived;
+    revived.push_back(entryInput("a/A.class", "class", shaOf('a')));
+    revived.push_back(entryInput("b/B.class", "class", shaOf('b')));
+    auto revivedStats = db.ingestEntries(jar, std::move(revived));
+    ASSERT_TRUE(revivedStats.is_ok());
+    {
+        const auto stats = revivedStats.unwrap();
+        EXPECT_EQ(1U, stats.resurrected);
+        EXPECT_EQ(0U, stats.created);
+        EXPECT_EQ(1U, stats.reused);
+        EXPECT_EQ(0U, stats.tombstoned);
+    }
+
+    // 同 path 内容变化：旧行进墓碑，新内容拿新 id。
+    std::vector<DbEntryInput> mutated;
+    mutated.push_back(entryInput("a/A.class", "class", shaOf('a')));
+    mutated.push_back(entryInput("b/B.class", "class", shaOf('d')));
+    auto mutatedStats = db.ingestEntries(jar, std::move(mutated));
+    ASSERT_TRUE(mutatedStats.is_ok());
+    {
+        const auto stats = mutatedStats.unwrap();
+        EXPECT_EQ(1U, stats.created);
+        EXPECT_EQ(1U, stats.reused);
+        EXPECT_EQ(0U, stats.resurrected);
+        EXPECT_EQ(1U, stats.tombstoned);
+    }
+
+    // 内容复原：最初那条 b/B.class 再次复活——锚即身份。
+    std::vector<DbEntryInput> flippedBack;
+    flippedBack.push_back(entryInput("a/A.class", "class", shaOf('a')));
+    flippedBack.push_back(entryInput("b/B.class", "class", shaOf('b')));
+    auto flipBack = db.ingestEntries(jar, std::move(flippedBack));
+    ASSERT_TRUE(flipBack.is_ok());
+    EXPECT_EQ(1U, flipBack.unwrap().resurrected);
+
+    listed = db.listEntries(jar);
+    ASSERT_TRUE(listed.is_ok());
+    rows = std::move(listed).unwrap();
+    ASSERT_EQ(4U, rows.size());   // 行只增不删：a/A + 两条 b/B 历史 + MANIFEST
+    ca::usize liveCount = 0;
+    for (const DbEntryInfo& row : rows) {
+        if (!row.tombstoned) ++liveCount;
+        if (row.path.to_std_string() == "b/B.class" && row.sha256.to_std_string() == shaOf('b')) {
+            EXPECT_EQ(entryB, row.entryId);
+        }
+    }
+    EXPECT_EQ(2U, liveCount);
+}
+
+TEST(MjAnalysisDbTest, EntryIngestRejectsInvalidBatchWithoutWriting)
+{
+    const auto path = freshDbPath("entries_invalid");
+    auto       db   = openOrDie(path);
+
+    auto inputId = db.ensureInput(S("lib/app.jar"), refOf(shaOf('0')), 4096);
+    ASSERT_TRUE(inputId.is_ok());
+    const ca::i64 jar = inputId.unwrap();
+
+    std::vector<DbEntryInput> valid;
+    valid.push_back(entryInput("a/A.class", "class", shaOf('a')));
+    ASSERT_TRUE(db.ingestEntries(jar, std::move(valid)).is_ok());
+
+    std::vector<DbEntryInput> duplicate;
+    duplicate.push_back(entryInput("x/Dup", "resource", shaOf('b')));
+    duplicate.push_back(entryInput("x/Dup", "resource", shaOf('c')));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.ingestEntries(jar, std::move(duplicate))));
+
+    std::vector<DbEntryInput> missingSha;
+    missingSha.push_back(entryInput("x/NoSha", "resource", std::string(63, 'a')));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.ingestEntries(jar, std::move(missingSha))));
+
+    std::vector<DbEntryInput> upperSha;
+    upperSha.push_back(entryInput("x/Upper", "resource", std::string(64, 'A')));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.ingestEntries(jar, std::move(upperSha))));
+
+    std::vector<DbEntryInput> emptyKind;
+    emptyKind.push_back(entryInput("x/NoKind", "", shaOf('d')));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.ingestEntries(jar, std::move(emptyKind))));
+
+    std::vector<DbEntryInput> emptyPath;
+    emptyPath.push_back(entryInput("", "resource", shaOf('e')));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.ingestEntries(jar, std::move(emptyPath))));
+
+    std::vector<DbEntryInput> negativeSize;
+    negativeSize.push_back(entryInput("x/Neg", "resource", shaOf('f'), -1));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.ingestEntries(jar, std::move(negativeSize))));
+
+    std::vector<DbEntryInput> unknownInput;
+    unknownInput.push_back(entryInput("a/A.class", "class", shaOf('a')));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.ingestEntries(jar + 999, std::move(unknownInput))));
+
+    // 全部失败路径零写入。
+    auto listed = db.listEntries(jar);
+    ASSERT_TRUE(listed.is_ok());
+    EXPECT_EQ(1U, std::move(listed).unwrap().size());
+
+    auto unknown = db.listEntries(jar + 999);
+    ASSERT_TRUE(unknown.is_err());
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid, std::move(unknown).unwrap_err().kind);
+}
+
+TEST(MjAnalysisDbTest, ClassesLinkToEntries)
+{
+    const auto path = freshDbPath("entries_classes");
+    auto       db   = openOrDie(path);
+
+    auto inputId = db.ensureInput(S("lib/app.jar"), refOf(shaOf('0')), 4096);
+    ASSERT_TRUE(inputId.is_ok());
+    const ca::i64 jar = inputId.unwrap();
+
+    std::vector<DbEntryInput> entries;
+    entries.push_back(entryInput("demo/Base.class", "class", shaOf('a')));
+    auto stats = db.ingestEntries(jar, std::move(entries));
+    ASSERT_TRUE(stats.is_ok());
+    ASSERT_EQ(1U, stats.unwrap().created);
+
+    auto listed = db.listEntries(jar);
+    ASSERT_TRUE(listed.is_ok());
+    auto rows = std::move(listed).unwrap();
+    ASSERT_EQ(1U, rows.size());
+    const ca::i64 entryId = rows[0].entryId;
+
+    std::vector<DbClassInput> classes;
+    classes.push_back(classInput("demo/Base", "java/lang/Object"));
+    classes.back().entryId = entryId;
+    ASSERT_TRUE(db.ingestClasses(std::move(classes)).is_ok());
+
+    auto found = db.findClass(S("demo/Base"));
+    ASSERT_TRUE(found.is_ok());
+    auto base = std::move(found).unwrap();
+    ASSERT_TRUE(base.has_value());
+    EXPECT_EQ(entryId, base->entryId);
+
+    // 条目内容更新后重登记类：链接指向新条目。
+    std::vector<DbEntryInput> mutated;
+    mutated.push_back(entryInput("demo/Base.class", "class", shaOf('b')));
+    ASSERT_TRUE(db.ingestEntries(jar, std::move(mutated)).is_ok());
+    listed = db.listEntries(jar);
+    ASSERT_TRUE(listed.is_ok());
+    rows = std::move(listed).unwrap();
+    ASSERT_EQ(2U, rows.size());
+    ca::i64 newEntryId = 0;
+    for (const DbEntryInfo& row : rows) {
+        if (!row.tombstoned) newEntryId = row.entryId;
+    }
+    EXPECT_NE(newEntryId, entryId);
+
+    std::vector<DbClassInput> relinked;
+    relinked.push_back(classInput("demo/Base", "java/lang/Object"));
+    relinked.back().entryId = newEntryId;
+    ASSERT_TRUE(db.ingestClasses(std::move(relinked)).is_ok());
+    found = db.findClass(S("demo/Base"));
+    ASSERT_TRUE(found.is_ok());
+    EXPECT_EQ(newEntryId, std::move(found).unwrap()->entryId);
+
+    // entryId=0 = 未指定：既有链接保持不动。
+    std::vector<DbClassInput> unspecified;
+    unspecified.push_back(classInput("demo/Base", "java/lang/Other"));
+    ASSERT_TRUE(db.ingestClasses(std::move(unspecified)).is_ok());
+    found = db.findClass(S("demo/Base"));
+    ASSERT_TRUE(found.is_ok());
+    auto baseAgain = std::move(found).unwrap();
+    EXPECT_EQ(newEntryId, baseAgain->entryId);
+    EXPECT_EQ("java/lang/Other", baseAgain->superName.to_std_string());
+
+    // 不存在的条目 id：FK 校验整批拒绝，类事实不变。
+    std::vector<DbClassInput> dangling;
+    dangling.push_back(classInput("demo/Base", "java/lang/Object"));
+    dangling.back().entryId = newEntryId + 42;
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.ingestClasses(std::move(dangling))));
+    found = db.findClass(S("demo/Base"));
+    ASSERT_TRUE(found.is_ok());
+    EXPECT_EQ(newEntryId, std::move(found).unwrap()->entryId);
+
+    // listClasses 同样带出条目链接。
+    auto all = db.listClasses();
+    ASSERT_TRUE(all.is_ok());
+    auto classList = std::move(all).unwrap();
+    ASSERT_EQ(1U, classList.size());
+    EXPECT_EQ(newEntryId, classList[0].entryId);
+}
+
+TEST(MjAnalysisDbTest, RejectsForeignSchemaVersionDatabase)
+{
+    // 旧库 fail-loud：application_id / user_version 落在 SQLite 文件头固定
+    // 偏移（60 = user_version，68 = application_id，大端 u32）。在已保存的
+    // 库文件上就地改戳即可构造「旧版本库」，版本门必须在触碰任何表之前以
+    // Schema 错误拒绝——不提供自动迁移，旧库由上层显式重建。
+    const auto patchHeaderField = [](const std::filesystem::path& file, std::fstream::off_type offset,
+                                     ca::u32 value) {
+        std::fstream io(file, std::ios::binary | std::ios::in | std::ios::out);
+        ASSERT_TRUE(io.good()) << file.string();
+        const char bytes[4] = {static_cast<char>((value >> 24) & 0xff),
+                               static_cast<char>((value >> 16) & 0xff),
+                               static_cast<char>((value >> 8) & 0xff),
+                               static_cast<char>(value & 0xff)};
+        io.seekp(offset);
+        io.write(bytes, 4);
+        ASSERT_TRUE(io.good());
+    };
+
+    const auto v2Path = freshDbPath("entries_old_version");
+    {
+        auto db = openOrDie(v2Path);
+        ASSERT_TRUE(db.save().is_ok());
+        ASSERT_TRUE(db.close().is_ok());
+    }
+    patchHeaderField(v2Path, 60, 2);   // 上一代 schema 戳
+    {
+        auto rejected = AnalysisDb::open(refOf(v2Path.string()));
+        ASSERT_TRUE(rejected.is_err());
+        EXPECT_EQ(AnalysisDbErrorKind::Schema, std::move(rejected).unwrap_err().kind);
+        auto readOnly = AnalysisDb::open(refOf(v2Path.string()), AnalysisDbOpenMode::ReadOnly);
+        ASSERT_TRUE(readOnly.is_err());
+        EXPECT_EQ(AnalysisDbErrorKind::Schema, std::move(readOnly).unwrap_err().kind);
+    }
+    patchHeaderField(v2Path, 60, 99);   // 未知未来版本同样拒绝
+    {
+        auto rejected = AnalysisDb::open(refOf(v2Path.string()));
+        ASSERT_TRUE(rejected.is_err());
+        EXPECT_EQ(AnalysisDbErrorKind::Schema, std::move(rejected).unwrap_err().kind);
+    }
+
+    const auto foreignPath = freshDbPath("entries_foreign_app");
+    {
+        auto db = openOrDie(foreignPath);
+        ASSERT_TRUE(db.save().is_ok());
+        ASSERT_TRUE(db.close().is_ok());
+    }
+    patchHeaderField(foreignPath, 68, 0x12345678u);   // application_id 不匹配
+    auto foreign = AnalysisDb::open(refOf(foreignPath.string()));
+    ASSERT_TRUE(foreign.is_err());
+    EXPECT_EQ(AnalysisDbErrorKind::Schema, std::move(foreign).unwrap_err().kind);
 }
