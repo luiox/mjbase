@@ -152,7 +152,7 @@ ca::Result<ca::i64, AnalysisDbError> queryScalarInt(sqlite3* db, const char* sql
         return ca::Err(makeError(AnalysisDbErrorKind::Schema,
                                  std::string("query returned no row: ") + sql));
     }
-    return ca::Ok(sqlite3_column_int64(statement.raw, 0));
+    return ca::Ok(static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 0)));
 }
 
 std::string textColumn(sqlite3_stmt* statement, int index)
@@ -528,7 +528,7 @@ ca::Result<ca::i64, AnalysisDbError> ensureClass(sqlite3* db,
         return ca::Err(makeError(AnalysisDbErrorKind::Sqlite,
                                  "class identity vanished after registration"));
     }
-    return ca::Ok(sqlite3_column_int64(statement.raw, 0));
+    return ca::Ok(static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 0)));
 }
 
 ca::Result<ca::i64, AnalysisDbError> ensureMember(sqlite3* db, ca::i64 classId, DbMemberKind kind,
@@ -583,7 +583,7 @@ ca::Result<ca::i64, AnalysisDbError> ensureMember(sqlite3* db, ca::i64 classId, 
         return ca::Err(makeError(AnalysisDbErrorKind::Sqlite,
                                  "member identity vanished after registration"));
     }
-    return ca::Ok(sqlite3_column_int64(statement.raw, 0));
+    return ca::Ok(static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 0)));
 }
 
 ca::Result<void, AnalysisDbError> upsertRename(sqlite3* db, ca::i64 targetId,
