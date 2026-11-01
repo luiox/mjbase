@@ -22,9 +22,15 @@ namespace mjbase::project {
 /// - 分析事实层是原始字节码的直接编码事实：类头（super/interfaces/access）、
 ///   成员清单、指令级与 class 级直接引用。解析、重写与增量失效由上层负责，
 ///   本层只做批量入库与索引查询。
+/// - 条目身份层（schema v3）：`inputs` 登记输入容器（path 为身份键），
+///   `entries` 登记 jar 内条目（entry_id 单调分配、只增不删，内容锚 =
+///   size + sha256）。重导入按 (input_id, path, sha256) 匹配：锚命中复用
+///   id（消失后重现的条目原地复活），未命中新建 id，消失条目打墓碑不删行。
+///   `classes.entry_id` 记录类字节来自哪个条目。
 ///
-/// 批量写入口（`ingestClasses` / `replaceReferences` / `setRenames`）都走
-/// 单事务 + 预编译语句复用；任一行失败整批回滚，不留半截事实。
+/// 批量写入口（`ensureInput` / `ingestEntries` / `ingestClasses` /
+/// `replaceReferences` / `setRenames`）都走单事务 + 预编译语句复用；任一行
+/// 失败整批回滚，不留半截事实。
 ///
 /// 存储引擎是 SQLite（xrepo `sqlite3`，静态链接）。sqlite3 C API 只出现在
 /// analysis_db.cpp；本头不暴露 SQL、句柄或表结构。错误统一走
@@ -33,11 +39,13 @@ namespace mjbase::project {
 /// 线程模型：一个 `AnalysisDb` 实例持有一个连接，不是线程安全的；写由单连接
 /// 串行化。只读打开不获取写锁、不触发任何分析。
 
-/// @brief 当前 schema 版本（`PRAGMA user_version`）。不识别的版本拒绝打开。
+/// @brief 当前 schema 版本（`PRAGMA user_version`）。不识别的版本拒绝打开
+///        （包括旧版本：不提供自动迁移，旧库由上层显式重建）。
 ///
+/// v3：新增 `inputs` / `entries` 条目身份表与 `classes.entry_id` 外键。
 /// v2：classes 增加 super/access/version，新增 interfaces 与 refs 表，
 /// members 增加 access。v1 未发布，版本号仅用于识别本分支早期的临时库。
-inline constexpr ca::u32 kAnalysisDbSchemaVersion = 2;
+inline constexpr ca::u32 kAnalysisDbSchemaVersion = 3;
 
 /// @brief SQLite 数据库头里的应用标识（ASCII "MJDB"）。
 inline constexpr ca::u32 kAnalysisDbApplicationId = 0x4D4A4442u;
@@ -125,13 +133,16 @@ struct DbMemberInput
 ///
 /// 身份键是 `internalName`；`superName` 可为空（java/lang/Object 或缺失）。
 /// `interfaces` 按 classfile 声明顺序保存；`members` 只做登记/更新，不删除
-/// 库内已有成员（稳定身份只增不删）。
+/// 库内已有成员（稳定身份只增不删）。`entryId` 指向条目身份层的
+/// `entries.entry_id`（类字节所属 jar 条目）；0 表示未指定——已登记类保持
+/// 既有链接不动，新登记类存 NULL。
 struct DbClassInput
 {
     ca::str::Utf8String              internalName;
     ca::str::Utf8String              superName;
     ca::i32                          access  = 0;
     ca::i32                          version = 0;
+    ca::i64                          entryId = 0;
     std::vector<ca::str::Utf8String> interfaces;
     std::vector<DbMemberInput>       members;
 };
@@ -144,6 +155,7 @@ struct DbClassInfo
     ca::str::Utf8String              superName;
     ca::i32                          access  = 0;
     ca::i32                          version = 0;
+    ca::i64                          entryId = 0; ///< 类字节所属条目；0 = 未关联
     std::vector<ca::str::Utf8String> interfaces;
 };
 
@@ -172,6 +184,48 @@ struct DbReferenceRecord
     ca::str::Utf8String targetClass;
     ca::str::Utf8String targetName;
     ca::str::Utf8String targetDescriptor;
+};
+
+/// @brief 已登记的输入容器（查询输出）。
+struct DbInputInfo
+{
+    ca::i64             inputId = 0;
+    ca::str::Utf8String path;
+    ca::i64             size = 0;    ///< 登记方给定的容器规模
+    ca::str::Utf8String sha256;      ///< 容器内容锚（64 位小写 hex）
+};
+
+/// @brief 待登记的 jar 条目（`ingestEntries` 输入）。
+struct DbEntryInput
+{
+    ca::str::Utf8String path;         ///< 条目路径（jar 内路径，非空）
+    ca::str::Utf8String kind;         ///< 形态类别（class/manifest/resource/...，开放文本）
+    ca::i64             size = 0;     ///< 条目字节数
+    ca::str::Utf8String sha256;       ///< 内容锚：精确字节的 SHA-256，64 位小写 hex
+    bool                regular = true; ///< 常规条目旗标（形态判定由登记方定义）
+};
+
+/// @brief 已登记的 jar 条目事实（查询输出；墓碑行同样返回）。
+struct DbEntryInfo
+{
+    ca::i64             entryId = 0;
+    ca::i64             inputId = 0;
+    ca::str::Utf8String path;
+    ca::str::Utf8String kind;
+    ca::i64             size = 0;
+    ca::str::Utf8String sha256;
+    bool                regular    = true;
+    bool                tombstoned = false; ///< 墓碑：曾登记、本次重导入未出现
+};
+
+/// @brief 一次条目批量登记（`ingestEntries`）的计数。
+struct DbEntryIngestStats
+{
+    ca::usize total       = 0; ///< 本批条目数
+    ca::usize created     = 0; ///< 新分配 entry_id 的条目数
+    ca::usize reused      = 0; ///< 锚命中且本就活跃（仅刷新元数据）的条目数
+    ca::usize resurrected = 0; ///< 锚命中墓碑行、原地复活的条目数（entry_id 不变）
+    ca::usize tombstoned  = 0; ///< 本次标记为消失的既有活跃条目数
 };
 
 /// @brief 分析数据库连接（单文件、单连接、非线程安全）。
@@ -276,6 +330,34 @@ public:
     /// 输入先整体校验：重复目标、重复非空 token、非法字段一律 `Invalid`，
     /// 且不改动现有数据。身份登记（classes/members）保留，ID 不重排。
     ca::Result<void, AnalysisDbError> replaceRenames(std::vector<DbRenameRecord> records);
+
+    //-- 条目身份层（inputs / entries，schema v3） --------------------------
+
+    /// @brief 登记输入容器；身份键为 path。同 path 重登记复用 input_id 并
+    ///        刷新 size/sha256，不同 path 分配新 id（id 单调、只增不删）。
+    ///        `sha256` 必须是 64 位小写 hex，`size` 非负。
+    ca::Result<ca::i64, AnalysisDbError> ensureInput(
+        const ca::str::Utf8StringRef& path, const ca::str::Utf8StringRef& sha256, ca::i64 size);
+
+    /// @brief 批量登记一个输入的 jar 条目身份（单事务，完整集合语义）。
+    ///
+    /// - 匹配锚 = (input_id, path, sha256)：锚命中复用 entry_id——活跃行仅
+    ///   刷新 kind/size/regular 等元数据，墓碑行原地复活（id 不漂移）；锚未
+    ///   命中新建 entry_id。行只增不删，永不物理删除。
+    /// - 处理顺序先墓碑后匹配：本批未出现的该输入既有活跃条目先标记
+    ///   `tombstoned=1`，再逐条匹配/新建——同 path 内容变化必然让旧行进
+    ///   墓碑、新内容拿新 id。
+    /// - 输入不存在、批内重复 path、path/kind 为空或含 NUL、sha256 非 64 位
+    ///   小写 hex、size 为负 → `Invalid`，整批不写库。
+    ca::Result<DbEntryIngestStats, AnalysisDbError> ingestEntries(
+        ca::i64 inputId, std::vector<DbEntryInput> entries);
+
+    /// @brief 全部已登记输入容器，按 path 升序。
+    ca::Result<std::vector<DbInputInfo>, AnalysisDbError> listInputs() const;
+
+    /// @brief 指定输入的全部条目（含墓碑行），按 path 升序。
+    ///        输入不存在返回 `Invalid`；未登记条目返回空表。
+    ca::Result<std::vector<DbEntryInfo>, AnalysisDbError> listEntries(ca::i64 inputId) const;
 
     //-- 分析事实层（类/成员/继承/直接引用） ------------------------------
 
