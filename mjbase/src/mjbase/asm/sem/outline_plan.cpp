@@ -546,7 +546,9 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
         }
     }
     /// 区域内自足槽（先写后读/恒被重写/纯写，不传参）：排参数区之后，宽度
-    /// 按区域写指令的 cat2 形态（N 内 store 占 2 槽）。
+    /// 按区域写指令的 cat2 形态（N 内 store 占 2 槽）。N 槽 → 原文父槽映射
+    /// 留作盖章行来源（A5b：inline 侧 fresh 分配无法 exact 恢复的挂账面）。
+    std::unordered_map<ca::u32, ca::u32> selfOldOf;   /// N 槽 → 原文父槽
     for (const ca::u32 slot : writtenLocals) {
         bool mapped = false;
         for (const LocalRemap& r : plan.locals) {
@@ -564,6 +566,7 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
             w = std::max(w, wit->second);
         }
         plan.locals.push_back(LocalRemap{slot, slotCursor});
+        selfOldOf.emplace(slotCursor, slot);
         slotCursor += w;
     }
 
@@ -627,6 +630,24 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
     }
     if (plan.body.empty()) {
         return Err(OutlineError::NoNewTopValue);   /// 纯 goto 区域无新值可返
+    }
+
+    /// 自足槽盖章行（A5b）：按 N 体首现序记录 (nSlot, 原文父槽)。apply 落
+    /// N 的 Code 嵌套 kOutlineStampAttr 属性，planInline 消费后 exact 恢复
+    /// 原布局；无盖章时 inline 侧回落 fresh 分配（A4 口径，外来形态兼容）。
+    {
+        std::set<ca::u32> stamped;
+        for (const jbc::ir::Insn& in : plan.body) {
+            if (!asm_insn::isLoad(in.op) && !asm_insn::isStore(in.op) && in.op != Op::IINC) {
+                continue;
+            }
+            const ca::u32 nSlot = static_cast<ca::u32>(in.a);
+            const auto old = selfOldOf.find(nSlot);
+            if (old == selfOldOf.end() || !stamped.insert(nSlot).second) {
+                continue;
+            }
+            plan.selfStamps.push_back(SlotStamp{nSlot, old->second});
+        }
     }
 
     // ---- 命名：outline$<原简单名>$<序号>（确定性方案，owner 拍板前占位）----
@@ -812,6 +833,21 @@ Result<void, OutlineError> OutlinePlan::validate() const
     std::set<ca::u32> remapped;
     for (const LocalRemap& r : locals) {
         if (!remapped.insert(r.oldSlot).second) {
+            return Err(OutlineError::MalformedPlan);
+        }
+    }
+    /// 盖章行（A5b）：nSlot 唯一且每行都能对回重编号表（原文父槽 ↔ N 槽
+    /// 同源，防手拼处方漂移）。
+    std::set<ca::u32> stamped;
+    for (const SlotStamp& s : selfStamps) {
+        bool matched = false;
+        for (const LocalRemap& r : locals) {
+            if (r.oldSlot == s.parentSlot && r.newSlot == s.nSlot) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched || !stamped.insert(s.nSlot).second) {
             return Err(OutlineError::MalformedPlan);
         }
     }
@@ -1236,6 +1272,39 @@ Result<OutlineOutcome, OutlineError> OutlinePlan::apply(jbc::ir::ClassSession& s
                     std::move(lvt)));
             }
         }
+        (void)nCode->mutate();
+    }
+
+    // ---- 步骤 7b：自足槽盖章属性（A5b：RawAttr 承载 u16 计数 + (nSlot,
+    //      parentSlot) 对；未知嵌套属性 JVM 忽略、decodeAttr 兜底 RawAttr，
+    //      planInline 消费后原槽号 exact 对回）----
+    if (!selfStamps.empty()) {
+        jbc::ir::MethodUnit* nMu = cu.method(outlined);
+        if (nMu == nullptr) {
+            return Err(OutlineError::LowerFailed);
+        }
+        jbc::core::AttrSlot* nCode = findAttr(cf, cf.methods[nMu->backingIndex].attrs, "Code");
+        if (nCode == nullptr) {
+            return Err(OutlineError::LowerFailed);
+        }
+        auto nCodeBody = cf.decodeAttr(*nCode);
+        if (nCodeBody.is_err()) {
+            return Err(OutlineError::LowerFailed);
+        }
+        std::vector<ca::u8> stamp;
+        const auto pushU16 = [&stamp](ca::u32 v) {
+            stamp.push_back(static_cast<ca::u8>((v >> 8) & 0xFFu));
+            stamp.push_back(static_cast<ca::u8>(v & 0xFFu));
+        };
+        pushU16(static_cast<ca::u32>(selfStamps.size()));
+        for (const SlotStamp& s : selfStamps) {
+            pushU16(s.nSlot);
+            pushU16(s.parentSlot);
+        }
+        static_cast<jbc::core::CodeAttr*>(nCodeBody.unwrap())
+            ->attrs.push_back(jbc::core::AttrSlot::makeNew(
+                session.internUtf8(kOutlineStampAttr),
+                std::make_unique<jbc::core::RawAttr>(std::move(stamp))));
         (void)nCode->mutate();
     }
 

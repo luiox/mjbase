@@ -6,15 +6,17 @@
 /// 运行对拍（-Xverify:all）+ 帧形/指令序列规范化比较——不做字节级逐位相等
 /// （合并产物保留显式编码 aload 0 而原文可为紧凑 aload_0；字节级目标需要
 /// 编码规范化器，列为后续可选批）。规范化口径：紧凑局部形态归一显式形 +
-/// 局部槽按首次出现重编号（自足槽 fresh 分配的结构等价口径，见
-/// merge_plan.hpp 头注）+ 分支目标归一到指令序。
+/// 局部槽按首次出现重编号（A4 自足槽 fresh 的结构等价口径；A5b 盖章后自足
+/// 槽原槽号 exact 对回，见 merge_plan.hpp 头注）+ 分支目标归一到指令序。
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <iterator>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "jbc/analysis/frame.hpp"
@@ -129,7 +131,8 @@ MethodSpec boundaryDupSpec()
 }
 
 /// 自足槽样本（A3 readTrimSpec）：区域先写后读 t（到达定义全在区域内）→
-/// t 不进参数集，A4 回迁时父槽号不可恢复 → fresh 分配（规范化对齐）。
+/// t 不进参数集，A4 回迁时父槽号不可恢复 → fresh 分配（规范化对齐）；
+/// A5b 盖章后原槽号 exact 对回（无章回落 fresh 兼容外来形态）。
 MethodSpec selfSufficientSpec()
 {
     MethodSpec m;
@@ -450,6 +453,51 @@ std::vector<NormInsn> normalizedBaseline(const Bytes& raw)
     return {};
 }
 
+/// N 的 Code 嵌套盖章行（A5b 结构断言用）：kOutlineStampAttr RawAttr 解
+/// u16 计数 + (nSlot, parentSlot) 对序列。
+std::vector<std::pair<ca::u32, ca::u32>> stampRowsOf(jbc::ir::ClassSession& session,
+                                                     jbc::ir::MethodId id)
+{
+    std::vector<std::pair<ca::u32, ca::u32>> rows;
+    jbc::core::ClassFile&      cf = session.backing();
+    jbc::ir::MethodUnit*       mu = session.unit().method(id);
+    if (mu == nullptr) {
+        return rows;
+    }
+    for (jbc::core::AttrSlot& slot : cf.methods[mu->backingIndex].attrs) {
+        if (!cf.cp.utf8Equals(slot.nameCp, "Code")) {
+            continue;
+        }
+        auto code = cf.decodeAttr(slot);
+        if (code.is_err()) {
+            return rows;
+        }
+        for (jbc::core::AttrSlot& nested :
+             static_cast<jbc::core::CodeAttr*>(code.unwrap())->attrs) {
+            if (!cf.cp.utf8Equals(nested.nameCp,
+                                  mjbase::asm_sem::kOutlineStampAttr)) {
+                continue;
+            }
+            auto body = cf.decodeAttr(nested);
+            if (body.is_err()) {
+                continue;
+            }
+            const std::vector<ca::u8>& b =
+                static_cast<const jbc::core::RawAttr*>(body.unwrap())->bytes();
+            if (b.size() < 2u) {
+                continue;
+            }
+            const ca::u32 count = (static_cast<ca::u32>(b[0]) << 8) | b[1];
+            for (ca::u32 i = 0; i < count && 2u + (i + 1u) * 4u <= b.size(); ++i) {
+                rows.emplace_back(
+                    (static_cast<ca::u32>(b[2u + i * 4u]) << 8) | b[3u + i * 4u],
+                    (static_cast<ca::u32>(b[4u + i * 4u]) << 8) | b[5u + i * 4u]);
+            }
+        }
+    }
+    return rows;
+}
+
 }   // namespace
 
 /// 往返（局部参数 + 自动发现）：outline → inline 后父方法规范化序列与原文
@@ -528,13 +576,12 @@ TEST(MjAsmSemMergePlanTest, RoundtripGotoEntry)
     expectSameInsns(before, normalizedInsns(*session, pickId));
 }
 
-/// 往返（多块区域 + glue goto）：A3 outline 剥离块间 goto-to-next，inline
-/// 回迁为直落（fallthrough ≡ goto-next，规范化两侧同删）。区域 =
-/// [istore t, goto][iload t, goto]：入口栈切片 [b] 成栈参（体序幕 iload 0
-/// 承载，inline k 档剥离）；t 先写后读为自足槽——父槽号在 outline 侧重
-/// 编号表内，但 inline 只见产物（无 outline 侧盖章）→ fresh 槽分配
-/// （exact 恢复 = 未来批次）。t 槽与区域外早先装载同号（槽 2），fresh 槽
-/// 无法经首现重编号对回——断言已知合并形态而非逐位规范化对拍。
+/// 往返（多块区域 + glue goto + 自足槽盖章）：A3 outline 剥离块间
+/// goto-to-next，inline 回迁为直落（fallthrough ≡ goto-next，规范化两侧
+/// 同删）。区域 = [istore t, goto][iload t, goto]：入口栈切片 [b] 成栈参
+/// （体序幕 iload 0 承载，inline k 档剥离）；t 先写后读为自足槽——A5b
+/// outline 侧盖章 (nSlot=1, parentSlot=2)，inline 消费后原槽号 exact 对回
+/// （去 A4「fresh 槽撞对」豁免，合并产物与原文规范化逐位一致）。
 TEST(MjAsmSemMergePlanTest, RoundtripMultiBlockGlueGoto)
 {
     ClassBytesBuilder b("T");
@@ -552,6 +599,10 @@ TEST(MjAsmSemMergePlanTest, RoundtripMultiBlockGlueGoto)
         selfOld = selfOld || row.oldSlot == 2u;
     }
     EXPECT_TRUE(selfOld) << "自足槽 t（父槽 2）在重编号表内";
+    /// 盖章处方：t 在 N 内占槽 1（栈参 b 占槽 0），原文父槽 2。
+    ASSERT_EQ(plan.selfStamps.size(), 1u);
+    EXPECT_EQ(plan.selfStamps[0].nSlot, 1u);
+    EXPECT_EQ(plan.selfStamps[0].parentSlot, 2u);
     ASSERT_TRUE(plan.apply(*ctx.fixture.session, ctx.resolver).is_ok());
 
     auto inlined = mjbase::asm_sem::planInline(
@@ -560,30 +611,19 @@ TEST(MjAsmSemMergePlanTest, RoundtripMultiBlockGlueGoto)
     MergePlan merge = std::move(inlined).unwrap();
     ASSERT_EQ(merge.slotBacks.size(), 1u);
     EXPECT_TRUE(merge.slotBacks[0].selfSufficient);
-    EXPECT_EQ(merge.slotBacks[0].parentSlot, merge.freshBase) << "fresh = maxLocals";
+    EXPECT_EQ(merge.slotBacks[0].nSlot, 1u);
+    EXPECT_EQ(merge.slotBacks[0].parentSlot, 2u) << "盖章档 exact 恢复原文槽号";
     ASSERT_TRUE(merge.apply(*ctx.fixture.session, ctx.resolver).is_ok());
 
-    /// 已知合并形态：[iload0, iload1, iload2, ifeq, istoreF, iloadF, iadd,
-    /// ireturn]——glue goto 与尾 goto 均折为直落，F = fresh 槽（规范化首现
-    /// 序 = 3）；原文 t 槽 2 与栈馈装载同号，首现重编号无法对回。
-    const std::vector<NormInsn> after = normalizedInsns(*ctx.fixture.session, pickId);
-    ASSERT_EQ(after.size(), 8u);
-    ASSERT_EQ(before.size(), 8u) << "基线 goto 折叠后同长";
-    for (std::size_t i = 0; i < 4; ++i) {
-        EXPECT_EQ(after[i].op, before[i].op) << "insn[" << i << "]";
-        EXPECT_EQ(after[i].a, before[i].a) << "insn[" << i << "]";
-    }
-    EXPECT_EQ(after[4].op, static_cast<int>(Op::ISTORE));
-    EXPECT_EQ(after[5].op, static_cast<int>(Op::ILOAD));
-    EXPECT_EQ(after[4].a, after[5].a);
-    EXPECT_EQ(after[4].a, 3);
-    EXPECT_EQ(after[6].op, static_cast<int>(Op::IADD));
-    EXPECT_EQ(after[7].op, static_cast<int>(Op::IRETURN));
+    /// 合并产物与原文规范化逐位一致（glue goto 与尾 goto 均折为直落，t 槽
+    /// 原样对回——不再依赖「fresh 槽撞对原文槽号」的已知形态豁免）。
+    expectSameInsns(before, normalizedInsns(*ctx.fixture.session, pickId));
 }
 
-/// 往返（自足槽 fresh 分配）：区域内声明局部 t 的父槽号不可恢复 → fresh
-/// 槽；规范化按首次出现重编号后与原文一致。
-TEST(MjAsmSemMergePlanTest, RoundtripSelfSufficientFreshSlot)
+/// 往返（自足槽盖章 exact 恢复）：区域内声明局部 t（父槽 3）先写后读不进
+/// 参数集——A4 侧 fresh 分配无法对回，A5b outline 侧盖章后原槽号 exact 恢
+/// 复；盖章行落 N 的 Code 嵌套属性（结构断言）。
+TEST(MjAsmSemMergePlanTest, RoundtripSelfSufficientExactSlot)
 {
     ClassBytesBuilder b("T");
     Bytes             raw = b.assemble({selfSufficientSpec()});
@@ -610,7 +650,19 @@ TEST(MjAsmSemMergePlanTest, RoundtripSelfSufficientFreshSlot)
     OutlinePlan   plan = outlineWhere(planCtx, istoreArm);
     ASSERT_TRUE(plan.params.empty());
     ASSERT_EQ(plan.locals.size(), 1u);
-    ASSERT_TRUE(plan.apply(*planCtx.fixture.session, planCtx.resolver).is_ok());
+    /// 盖章处方：t 在 N 内占槽 0（无参数），原文父槽 3。
+    ASSERT_EQ(plan.selfStamps.size(), 1u);
+    EXPECT_EQ(plan.selfStamps[0].nSlot, 0u);
+    EXPECT_EQ(plan.selfStamps[0].parentSlot, 3u);
+    auto applied = plan.apply(*planCtx.fixture.session, planCtx.resolver);
+    ASSERT_TRUE(applied.is_ok());
+    const jbc::ir::MethodId outlinedId = std::move(applied).unwrap().outlined;
+
+    /// 盖章行落 N 的 Code 嵌套属性：u16 计数 + (0, 3) 对。
+    const auto stampRows = stampRowsOf(*planCtx.fixture.session, outlinedId);
+    ASSERT_EQ(stampRows.size(), 1u);
+    EXPECT_EQ(stampRows[0].first, 0u);
+    EXPECT_EQ(stampRows[0].second, 3u);
 
     auto inlined = mjbase::asm_sem::planInline(
         InlineRequest{*planCtx.fixture.session, planCtx.pickId(), planCtx.resolver, {}});
@@ -618,7 +670,80 @@ TEST(MjAsmSemMergePlanTest, RoundtripSelfSufficientFreshSlot)
     MergePlan merge = std::move(inlined).unwrap();
     ASSERT_EQ(merge.slotBacks.size(), 1u);
     EXPECT_TRUE(merge.slotBacks[0].selfSufficient);
-    EXPECT_GE(merge.slotBacks[0].parentSlot, merge.freshBase);
+    EXPECT_EQ(merge.slotBacks[0].parentSlot, 3u) << "盖章档 exact 恢复原文槽号";
+    ASSERT_TRUE(merge.apply(*planCtx.fixture.session, planCtx.resolver).is_ok());
+
+    const std::vector<NormInsn> before = normalizedBaseline(raw);
+    expectSameInsns(before, normalizedInsns(*planCtx.fixture.session, planCtx.pickId()));
+}
+
+/// 无盖章回落 fresh（A4 口径，外来 inline 形态兼容）：剥去 N 的 Code 嵌套
+/// 盖章属性后 planInline 仍可识别，自足槽回落 maxLocals 起 fresh 分配，
+/// 规范化对拍与原文一致。
+TEST(MjAsmSemMergePlanTest, StampStrippedFallsBackFresh)
+{
+    ClassBytesBuilder b("T");
+    Bytes             raw = b.assemble({selfSufficientSpec()});
+
+    InlineContext planCtx{raw};
+    auto istoreArm = [&planCtx](const RegionCandidate& c) {
+        for (const auto member : c.members) {
+            const mjbase::asm_cfg::BasicBlock* blk = planCtx.view.cfg().block(member);
+            if (blk == nullptr) {
+                continue;
+            }
+            for (const jbc::ir::InsnId iid : blk->insns) {
+                const jbc::ir::Insn* in = planCtx.unit->dom.peek(iid);
+                if (in != nullptr && in->op == Op::ISTORE && in->a == 3) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    OutlinePlan   plan = outlineWhere(planCtx, istoreArm);
+    ASSERT_EQ(plan.selfStamps.size(), 1u);
+    auto applied = plan.apply(*planCtx.fixture.session, planCtx.resolver);
+    ASSERT_TRUE(applied.is_ok());
+    const jbc::ir::MethodId outlinedId = std::move(applied).unwrap().outlined;
+
+    /// 剥章：自 N 的 Code 嵌套属性表中移除 kOutlineStampAttr（模拟外来
+    /// inline 形态——产物无盖章）。
+    {
+        jbc::core::ClassFile& cf = planCtx.fixture.session->backing();
+        jbc::ir::MethodUnit*  nMu = planCtx.fixture.session->unit().method(outlinedId);
+        ASSERT_NE(nMu, nullptr);
+        bool stripped = false;
+        for (jbc::core::AttrSlot& slot : cf.methods[nMu->backingIndex].attrs) {
+            if (!cf.cp.utf8Equals(slot.nameCp, "Code")) {
+                continue;
+            }
+            auto code = cf.decodeAttr(slot);
+            ASSERT_TRUE(code.is_ok());
+            auto* codeAttr = static_cast<jbc::core::CodeAttr*>(code.unwrap());
+            const ca::usize before = codeAttr->attrs.size();
+            codeAttr->attrs.erase(
+                std::remove_if(codeAttr->attrs.begin(), codeAttr->attrs.end(),
+                               [&](const jbc::core::AttrSlot& s) {
+                                   return cf.cp.utf8Equals(
+                                       s.nameCp, mjbase::asm_sem::kOutlineStampAttr);
+                               }),
+                codeAttr->attrs.end());
+            EXPECT_LT(codeAttr->attrs.size(), before) << "盖章属性存在";
+            (void)slot.mutate();
+            stripped = true;
+            break;
+        }
+        ASSERT_TRUE(stripped);
+    }
+
+    auto inlined = mjbase::asm_sem::planInline(
+        InlineRequest{*planCtx.fixture.session, planCtx.pickId(), planCtx.resolver, {}});
+    ASSERT_TRUE(inlined.is_ok()) << mjbase::asm_sem::to_string(inlined.unwrap_err());
+    MergePlan merge = std::move(inlined).unwrap();
+    ASSERT_EQ(merge.slotBacks.size(), 1u);
+    EXPECT_TRUE(merge.slotBacks[0].selfSufficient);
+    EXPECT_EQ(merge.slotBacks[0].parentSlot, merge.freshBase) << "无章回落 fresh";
     ASSERT_TRUE(merge.apply(*planCtx.fixture.session, planCtx.resolver).is_ok());
 
     const std::vector<NormInsn> before = normalizedBaseline(raw);

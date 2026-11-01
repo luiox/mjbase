@@ -57,8 +57,9 @@ jbc::core::AttrSlot* findAttr(jbc::core::ClassFile&              cf,
     return nullptr;
 }
 
-/// 代码锚定嵌套属性归类：LNT / LVT / LVTT / SMT 可识别，其余 fail-closed。
-enum class NestedKind : ca::u8 { Other, Lnt, Lvt, Lvtt, Smt };
+/// 代码锚定嵌套属性归类：LNT / LVT / LVTT / SMT / 盖章（A5b）可识别，
+/// 其余 fail-closed。
+enum class NestedKind : ca::u8 { Other, Lnt, Lvt, Lvtt, Smt, Stamp };
 
 NestedKind nestedKindOf(const jbc::core::ClassFile& cf, const jbc::core::AttrSlot& slot)
 {
@@ -66,7 +67,33 @@ NestedKind nestedKindOf(const jbc::core::ClassFile& cf, const jbc::core::AttrSlo
     if (cf.cp.utf8Equals(slot.nameCp, "LocalVariableTable")) return NestedKind::Lvt;
     if (cf.cp.utf8Equals(slot.nameCp, "LocalVariableTypeTable")) return NestedKind::Lvtt;
     if (cf.cp.utf8Equals(slot.nameCp, "StackMapTable")) return NestedKind::Smt;
+    if (cf.cp.utf8Equals(slot.nameCp, kOutlineStampAttr)) return NestedKind::Stamp;
     return NestedKind::Other;
+}
+
+/// 盖章体解析（A5b）：u16 计数 + (nSlot, parentSlot) 对序列（u16 大端）。
+/// 半截/超长章与重复 nSlot 均为非本设施产物，fail-closed。
+Result<std::unordered_map<ca::u32, ca::u32>, OutlineError> parseStampBody(
+    const std::vector<ca::u8>& b)
+{
+    if (b.size() < 2u) {
+        return Err(OutlineError::CalleeShapeImpure);
+    }
+    const ca::u32 count = (static_cast<ca::u32>(b[0]) << 8) | static_cast<ca::u32>(b[1]);
+    if (b.size() != 2u + count * 4u) {
+        return Err(OutlineError::CalleeShapeImpure);
+    }
+    std::unordered_map<ca::u32, ca::u32> out;
+    for (ca::u32 i = 0; i < count; ++i) {
+        const ca::u32 nSlot      = (static_cast<ca::u32>(b[2u + i * 4u]) << 8)
+                                   | static_cast<ca::u32>(b[3u + i * 4u]);
+        const ca::u32 parentSlot = (static_cast<ca::u32>(b[4u + i * 4u]) << 8)
+                                   | static_cast<ca::u32>(b[5u + i * 4u]);
+        if (!out.emplace(nSlot, parentSlot).second) {
+            return Err(OutlineError::CalleeShapeImpure);   /// 重复 nSlot
+        }
+    }
+    return Ok(std::move(out));
 }
 
 /// 帧值 → 装载/返回族（调用点参数族门的取值侧；Top/Bottom/Uninit/
@@ -308,6 +335,34 @@ Result<MergePlan, OutlineError> planInline(const InlineRequest& req)
         }
     }
 
+    /// 自足槽盖章（A5b）：N 的 Code 嵌套 kOutlineStampAttr（RawAttr）承载
+    /// outline 侧 (nSlot, parentSlot) 对，槽逆映射消费后自足槽 exact 对回；
+    /// 无章回落 fresh（下方，A4 口径，外来 inline 形态兼容）。半截/重复章
+    /// 均为非本设施产物，fail-closed。
+    std::unordered_map<ca::u32, ca::u32> stampBack;
+    {
+        auto nStampCode = cf.decodeAttr(*nCodeSlot);
+        if (nStampCode.is_err()) {
+            return Err(OutlineError::UnsupportedAttr);
+        }
+        for (jbc::core::AttrSlot& nested :
+             static_cast<jbc::core::CodeAttr*>(nStampCode.unwrap())->attrs) {
+            if (nestedKindOf(cf, nested) != NestedKind::Stamp) {
+                continue;
+            }
+            auto stampBody = cf.decodeAttr(nested);
+            if (stampBody.is_err()) {
+                return Err(OutlineError::UnsupportedAttr);
+            }
+            auto parsed = parseStampBody(
+                static_cast<const jbc::core::RawAttr*>(stampBody.unwrap())->bytes());
+            if (parsed.is_err()) {
+                return Err(parsed.unwrap_err());
+            }
+            stampBack = std::move(parsed).unwrap();
+        }
+    }
+
     const std::vector<jbc::ir::InsnId>& nOrder = nUnit->dom.order();
     if (nOrder.empty()) {
         return Err(OutlineError::CalleeShapeImpure);
@@ -500,7 +555,9 @@ Result<MergePlan, OutlineError> planInline(const InlineRequest& req)
         }
     }
 
-    // ---- 槽逆映射：参数槽（k..V-1 ← 装载链装载槽）+ 自足槽（fresh）----
+    // ---- 槽逆映射：参数槽（k..V-1 ← 装载链装载槽）+ 自足槽（盖章 exact
+    //      / 无章 fresh）。盖章表已在 N 形态判据后自 Code 嵌套属性解出
+    //      （stampBack，A5b）；无章条目回落 fresh（A4 口径）----
     plan.freshBase = unit->maxLocals;
     ca::u32 freshCursor = plan.freshBase;
     std::set<ca::u32> selfSlots;
@@ -543,15 +600,20 @@ Result<MergePlan, OutlineError> planInline(const InlineRequest& req)
     for (const ca::u32 s : selfSlots) {
         SlotBack back;
         back.nSlot          = s;
-        back.parentSlot     = freshCursor;
         back.selfSufficient = true;
-        plan.slotBacks.push_back(back);
-        ca::u32 w = 1;
-        const auto wit = selfWidth.find(s);
-        if (wit != selfWidth.end()) {
-            w = std::max(w, wit->second);
+        const auto stamped = stampBack.find(s);
+        if (stamped != stampBack.end()) {
+            back.parentSlot = stamped->second;   /// 盖章档：原槽 exact 恢复（A5b）
+        } else {
+            back.parentSlot = freshCursor;       /// 无章回落 fresh（A4 口径）
+            ca::u32 w = 1;
+            const auto wit = selfWidth.find(s);
+            if (wit != selfWidth.end()) {
+                w = std::max(w, wit->second);
+            }
+            freshCursor += w;
         }
-        freshCursor += w;
+        plan.slotBacks.push_back(back);
     }
 
     // ---- 回迁体：N 体去序幕/去返回，槽逆映射改写为父槽显式形态 ----
@@ -600,6 +662,9 @@ Result<MergePlan, OutlineError> planInline(const InlineRequest& req)
         const NestedKind kind = nestedKindOf(cf, nested);
         if (kind == NestedKind::Smt) {
             continue;   /// 随 N 删除（maxes/SMT 均为再生面）
+        }
+        if (kind == NestedKind::Stamp) {
+            continue;   /// 盖章已在槽逆映射前解出（stampBack，A5b）
         }
         if (kind == NestedKind::Other) {
             return Err(OutlineError::UnsupportedAttr);
