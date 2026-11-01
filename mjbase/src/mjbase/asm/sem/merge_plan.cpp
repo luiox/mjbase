@@ -21,6 +21,7 @@
 
 #include "mjbase/asm/insn/insn_op.hpp"
 #include "mjbase/asm/sem/frame_view.hpp"
+#include "mjbase/asm/sem/insert_prim.hpp"
 
 namespace mjbase::asm_sem {
 
@@ -31,97 +32,6 @@ using ca::core::Result;
 namespace {
 
 using jbc::core::Op;
-
-/// 描述符首字符的槽位宽（J/D = 2）。与 outline_plan.cpp 同款辅助——A4 不
-/// 抽公共头，避免本批触碰 A3 识别面（见 PR 注明的后续收口项）。
-ca::u32 descSlots(char head) noexcept
-{
-    return (head == 'J' || head == 'D') ? 2u : 1u;
-}
-
-/// 值类型族：装载/返回指令的 opcode 选择轴。
-enum class ValueFamily : ca::u8 { Int, Long, Float, Double, Ref };
-
-ValueFamily familyOfDesc(char head) noexcept
-{
-    switch (head) {
-    case 'J': return ValueFamily::Long;
-    case 'F': return ValueFamily::Float;
-    case 'D': return ValueFamily::Double;
-    case 'L':
-    case '[': return ValueFamily::Ref;
-    default:  return ValueFamily::Int;   /// I/Z/C/S/B
-    }
-}
-
-Op loadOpOf(ValueFamily f) noexcept
-{
-    switch (f) {
-    case ValueFamily::Long:   return Op::LLOAD;
-    case ValueFamily::Float:  return Op::FLOAD;
-    case ValueFamily::Double: return Op::DLOAD;
-    case ValueFamily::Ref:    return Op::ALOAD;
-    default:                  return Op::ILOAD;
-    }
-}
-
-Op returnOpOf(ValueFamily f) noexcept
-{
-    switch (f) {
-    case ValueFamily::Long:   return Op::LRETURN;
-    case ValueFamily::Float:  return Op::FRETURN;
-    case ValueFamily::Double: return Op::DRETURN;
-    case ValueFamily::Ref:    return Op::ARETURN;
-    default:                  return Op::IRETURN;
-    }
-}
-
-/// 紧凑 load/store 形态 → 显式形态（回迁体统一显式编码，a = 父槽号）。
-Op explicitLocalOp(Op op) noexcept
-{
-    const ca::u8 v = static_cast<ca::u8>(op);
-    if (v >= static_cast<ca::u8>(Op::ILOAD_0) && v <= static_cast<ca::u8>(Op::ILOAD_3)) return Op::ILOAD;
-    if (v >= static_cast<ca::u8>(Op::LLOAD_0) && v <= static_cast<ca::u8>(Op::LLOAD_3)) return Op::LLOAD;
-    if (v >= static_cast<ca::u8>(Op::FLOAD_0) && v <= static_cast<ca::u8>(Op::FLOAD_3)) return Op::FLOAD;
-    if (v >= static_cast<ca::u8>(Op::DLOAD_0) && v <= static_cast<ca::u8>(Op::DLOAD_3)) return Op::DLOAD;
-    if (v >= static_cast<ca::u8>(Op::ALOAD_0) && v <= static_cast<ca::u8>(Op::ALOAD_3)) return Op::ALOAD;
-    if (v >= static_cast<ca::u8>(Op::ISTORE_0) && v <= static_cast<ca::u8>(Op::ISTORE_3)) return Op::ISTORE;
-    if (v >= static_cast<ca::u8>(Op::LSTORE_0) && v <= static_cast<ca::u8>(Op::LSTORE_3)) return Op::LSTORE;
-    if (v >= static_cast<ca::u8>(Op::FSTORE_0) && v <= static_cast<ca::u8>(Op::FSTORE_3)) return Op::FSTORE;
-    if (v >= static_cast<ca::u8>(Op::DSTORE_0) && v <= static_cast<ca::u8>(Op::DSTORE_3)) return Op::DSTORE;
-    if (v >= static_cast<ca::u8>(Op::ASTORE_0) && v <= static_cast<ca::u8>(Op::ASTORE_3)) return Op::ASTORE;
-    return op;
-}
-
-/// 局部操作数指令的槽号（紧凑形态按 opcode 解出，与 asm/analyzer 同口径）。
-ca::u32 localOperandSlot(const jbc::ir::Insn& in) noexcept
-{
-    const ca::u8 v = static_cast<ca::u8>(in.op);
-    const bool compact = (v >= static_cast<ca::u8>(Op::ILOAD_0)
-                          && v <= static_cast<ca::u8>(Op::ALOAD_3))
-                         || (v >= static_cast<ca::u8>(Op::ISTORE_0)
-                             && v <= static_cast<ca::u8>(Op::ASTORE_3));
-    if (compact) {
-        const ca::u8 base = v <= static_cast<ca::u8>(Op::ALOAD_3)
-                                ? static_cast<ca::u8>(Op::ILOAD_0)
-                                : static_cast<ca::u8>(Op::ISTORE_0);
-        return static_cast<ca::u32>(v - base) % 4u;
-    }
-    return static_cast<ca::u32>(in.a);
-}
-
-/// 局部槽宽（自足槽 fresh 分配步进用：L/D 族占 2 槽）。
-ca::u32 localOpSlotWidth(Op op) noexcept
-{
-    return (op == Op::LLOAD || op == Op::DLOAD || op == Op::LSTORE || op == Op::DSTORE) ? 2u : 1u;
-}
-
-/// 值语义快照的控制转移族检查：回迁体内禁止一切控制转移（尾返回已剥离）。
-bool isControlTransfer(Op op) noexcept
-{
-    return asm_insn::isBranch(op) || asm_insn::isSwitch(op) || asm_insn::isReturn(op)
-           || asm_insn::isThrow(op) || op == Op::RET;
-}
 
 const jbc::core::AttrSlot* findAttr(const jbc::core::ClassFile& cf,
                                     const std::vector<jbc::core::AttrSlot>& attrs,
@@ -813,7 +723,9 @@ Result<InlineOutcome, OutlineError> MergePlan::apply(jbc::ir::ClassSession& sess
     // 标签口径与 A3 落地镜像：strip 首条（复位 DUP 或首条装载）所锚标签 =
     // outline 入口标签重锚位，回迁体按执行序逆序逐条插到标签边界，终序 =
     // body 程序序、标签重锚到回迁体首条——strip 集随之失去标签承载，可安全
-    // 删除。fallthrough 形态直插 strip 首条（或调用点）之前。
+    // 删除。fallthrough 形态直插 strip 首条（或调用点）之前。A5 机械上收
+    // insert_prim：标签重锚走 insertAnchoredAtLabel、fallthrough 走
+    // insertBeforeInsn（与 OutlinePlan::apply 步骤 2 同原语）。
     jbc::ir::CodeEditor ed{*unit};
     std::vector<jbc::ir::InsnId> rIds;
     rIds.reserve(body.size());
@@ -822,22 +734,17 @@ Result<InlineOutcome, OutlineError> MergePlan::apply(jbc::ir::ClassSession& sess
                                            : (stripLoads.empty() ? callInsn
                                                                  : stripLoads.front());
     if (unit->dom.validLabel(anchorLabel)) {
-        for (auto it = body.rbegin(); it != body.rend(); ++it) {
-            auto ins = ed.insertAtLabel(anchorLabel, *it);
-            if (ins.is_err()) {
-                return Err(OutlineError::EditFailed);
-            }
-            rIds.push_back(ins.unwrap());
+        auto anchored = insertAnchoredAtLabel(ed, anchorLabel, body);
+        if (anchored.is_err()) {
+            return Err(anchored.unwrap_err());
         }
-        std::reverse(rIds.begin(), rIds.end());
+        rIds = std::move(anchored).unwrap();
     } else {
-        for (const jbc::ir::Insn& in : body) {
-            auto ins = ed.insertBefore(anchorInsn, in);
-            if (ins.is_err()) {
-                return Err(OutlineError::EditFailed);
-            }
-            rIds.push_back(ins.unwrap());
+        auto placed = insertBeforeInsn(ed, anchorInsn, body);
+        if (placed.is_err()) {
+            return Err(placed.unwrap_err());
         }
+        rIds = std::move(placed).unwrap();
     }
 
     // ---- 步骤 2：strip 集（复位 DUP + 装载链）与调用点删除 ----

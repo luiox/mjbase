@@ -22,6 +22,7 @@
 
 #include "mjbase/asm/insn/insn_op.hpp"
 #include "mjbase/asm/sem/frame_view.hpp"
+#include "mjbase/asm/sem/insert_prim.hpp"
 #include "mjbase/asm/sem/liveness_view.hpp"
 #include "mjbase/asm/sem/slot_provenance.hpp"
 
@@ -34,12 +35,6 @@ using ca::core::Result;
 namespace {
 
 using jbc::core::Op;
-
-/// 描述符首字符的槽位宽（J/D = 2）。
-ca::u32 descSlots(char head) noexcept
-{
-    return (head == 'J' || head == 'D') ? 2u : 1u;
-}
 
 /// VType → 描述符片段。v1 边界语义：Null 升格 Object（入参安全——直线体
 /// 无汇合点，Object 比 Null 严格，不引入新的合并行为）；Uninitialized/
@@ -76,87 +71,10 @@ Result<std::string, OutlineError> descOf(const jbc::analysis::VType& v,
     }
 }
 
-/// 值类型族：装载/返回指令的 opcode 选择轴。
-enum class ValueFamily : ca::u8 { Int, Long, Float, Double, Ref };
-
-ValueFamily familyOfDesc(char head) noexcept
-{
-    switch (head) {
-    case 'J': return ValueFamily::Long;
-    case 'F': return ValueFamily::Float;
-    case 'D': return ValueFamily::Double;
-    case 'L':
-    case '[': return ValueFamily::Ref;
-    default:  return ValueFamily::Int;   /// I/Z/C/S/B
-    }
-}
-
-Op loadOpOf(ValueFamily f) noexcept
-{
-    switch (f) {
-    case ValueFamily::Long:   return Op::LLOAD;
-    case ValueFamily::Float:  return Op::FLOAD;
-    case ValueFamily::Double: return Op::DLOAD;
-    case ValueFamily::Ref:    return Op::ALOAD;
-    default:                  return Op::ILOAD;
-    }
-}
-
-Op returnOpOf(ValueFamily f) noexcept
-{
-    switch (f) {
-    case ValueFamily::Long:   return Op::LRETURN;
-    case ValueFamily::Float:  return Op::FRETURN;
-    case ValueFamily::Double: return Op::DRETURN;
-    case ValueFamily::Ref:    return Op::ARETURN;
-    default:                  return Op::IRETURN;
-    }
-}
-
-/// 紧凑 load/store 形态 → 显式形态（重编号后统一显式编码，a = 新槽号）。
-Op explicitLocalOp(Op op) noexcept
-{
-    const ca::u8 v = static_cast<ca::u8>(op);
-    if (v >= static_cast<ca::u8>(Op::ILOAD_0) && v <= static_cast<ca::u8>(Op::ILOAD_3)) return Op::ILOAD;
-    if (v >= static_cast<ca::u8>(Op::LLOAD_0) && v <= static_cast<ca::u8>(Op::LLOAD_3)) return Op::LLOAD;
-    if (v >= static_cast<ca::u8>(Op::FLOAD_0) && v <= static_cast<ca::u8>(Op::FLOAD_3)) return Op::FLOAD;
-    if (v >= static_cast<ca::u8>(Op::DLOAD_0) && v <= static_cast<ca::u8>(Op::DLOAD_3)) return Op::DLOAD;
-    if (v >= static_cast<ca::u8>(Op::ALOAD_0) && v <= static_cast<ca::u8>(Op::ALOAD_3)) return Op::ALOAD;
-    if (v >= static_cast<ca::u8>(Op::ISTORE_0) && v <= static_cast<ca::u8>(Op::ISTORE_3)) return Op::ISTORE;
-    if (v >= static_cast<ca::u8>(Op::LSTORE_0) && v <= static_cast<ca::u8>(Op::LSTORE_3)) return Op::LSTORE;
-    if (v >= static_cast<ca::u8>(Op::FSTORE_0) && v <= static_cast<ca::u8>(Op::FSTORE_3)) return Op::FSTORE;
-    if (v >= static_cast<ca::u8>(Op::DSTORE_0) && v <= static_cast<ca::u8>(Op::DSTORE_3)) return Op::DSTORE;
-    if (v >= static_cast<ca::u8>(Op::ASTORE_0) && v <= static_cast<ca::u8>(Op::ASTORE_3)) return Op::ASTORE;
-    return op;
-}
-
-/// 局部操作数指令的槽号（紧凑形态按 opcode 解出，与 asm/analyzer 同口径）。
-ca::u32 localOperandSlot(const jbc::ir::Insn& in) noexcept
-{
-    const ca::u8 v = static_cast<ca::u8>(in.op);
-    const bool compact = (v >= static_cast<ca::u8>(Op::ILOAD_0)
-                          && v <= static_cast<ca::u8>(Op::ALOAD_3))
-                         || (v >= static_cast<ca::u8>(Op::ISTORE_0)
-                             && v <= static_cast<ca::u8>(Op::ASTORE_3));
-    if (compact) {
-        const ca::u8 base = v <= static_cast<ca::u8>(Op::ALOAD_3)
-                                ? static_cast<ca::u8>(Op::ILOAD_0)
-                                : static_cast<ca::u8>(Op::ISTORE_0);
-        return static_cast<ca::u32>(v - base) % 4u;
-    }
-    return static_cast<ca::u32>(in.a);
-}
-
 /// goto 字节长（区域 pc 右端计算用；v1 出口只认 goto 形态）。
 ca::u32 gotoByteSize(Op op) noexcept
 {
     return op == Op::GOTO_W ? 5u : 3u;
-}
-
-/// 局部槽宽（区域写集槽位排布用：L/D 族占 2 槽）。
-ca::u32 localOpSlotWidth(Op op) noexcept
-{
-    return (op == Op::LLOAD || op == Op::DLOAD || op == Op::LSTORE || op == Op::DSTORE) ? 2u : 1u;
 }
 
 /// 方法名 → 命名简单段（<init>/<clinit> 的 '<' '>' 不可入新方法名，
@@ -203,13 +121,6 @@ NestedKind nestedKindOf(const jbc::core::ClassFile& cf, const jbc::core::AttrSlo
     if (cf.cp.utf8Equals(slot.nameCp, "LocalVariableTypeTable")) return NestedKind::Lvtt;
     if (cf.cp.utf8Equals(slot.nameCp, "StackMapTable")) return NestedKind::Smt;
     return NestedKind::Other;
-}
-
-/// 值语义快照的分支族检查：直线体内禁止一切控制转移（出口 goto 已剥离）。
-bool isControlTransfer(Op op) noexcept
-{
-    return asm_insn::isBranch(op) || asm_insn::isSwitch(op) || asm_insn::isReturn(op)
-           || asm_insn::isThrow(op) || op == Op::RET;
 }
 
 }   // namespace
@@ -666,14 +577,10 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
     std::vector<ca::i32> orderToBody(order.size(), -1);
     /// 栈切片参数序幕：descriptor 参数落在 N 的局部槽，而区域体从栈上消费
     /// 它们（S_in）——先按参数序（自下而上）显式装载，区域体入口栈形与
-    /// 原入口切面一致（#115 §3.3 步骤 3 的 Stack 参数承载面）。
-    for (const SlotCopy& p : plan.params) {
-        if (p.kind != SlotCopy::Kind::Stack) {
-            continue;
-        }
-        jbc::ir::Insn load;
-        load.op = loadOpOf(familyOfDesc(std::string_view(p.desc)[0]));
-        load.a  = static_cast<ca::i32>(p.newSlot);
+    /// 原入口切面一致（#115 §3.3 步骤 3 的 Stack 参数承载面；A5 前导装载
+    /// 原语 copySetLoadPreamble，描述符落局部/栈序列消费）。
+    for (jbc::ir::Insn& load :
+         copySetLoadPreamble(plan.params, SlotCopy::Kind::Stack, true)) {
         plan.body.push_back(load);
     }
     for (ca::usize p = 0; p < flat.size(); ++p) {
@@ -1025,8 +932,10 @@ Result<OutlineOutcome, OutlineError> OutlinePlan::apply(jbc::ir::ClassSession& s
     // 锚定首条装载（或 retIsEntryCopy 的 DUP），分支入边与 fallthrough 都
     // 先过装载再达调用点。A2 把标签重锚到 invokestatic、装载落在标签之前，
     // 入边绕过装载 → JVM VerifyError「Inconsistent stack height」（#115
-    // §3.3 实测缺陷，DupNorm 语料复现）。insertAtLabel 语义（标签恒指新
-    // 插入指令、插入点在标签边界）下按执行序逆序逐条插入，终序 = 参数序。
+    // §3.3 实测缺陷，DupNorm 语料复现）。A5 机械上收 insert_prim：标签重
+    // 锚走 insertAnchoredAtLabel（逆序落标签边界、标签重锚首条装载）、
+    // fallthrough 走 insertBeforeInsn；局部入参装载序列走 copySetLoad-
+    // Preamble，DUP 复位发射走 entryDupResetInsn。
     const ca::u32 callCp = session.internMethodRef(
         thisClass, std::string_view(newName), std::string_view(newDesc));
     jbc::ir::Insn call;
@@ -1035,76 +944,45 @@ Result<OutlineOutcome, OutlineError> OutlinePlan::apply(jbc::ir::ClassSession& s
 
     jbc::ir::CodeEditor ed{*unit};
     jbc::ir::InsnId     callId = jbc::ir::kNoInsn;
-    bool anyLocalParams = false;
-    for (const SlotCopy& p : params) {
-        if (p.kind == SlotCopy::Kind::Local) {
-            anyLocalParams = true;
-            break;
-        }
-    }
     const bool emitEntryDup = retIsEntryCopy && !body.empty()
                               && (body.back().op == jbc::core::Op::DUP
                                   || body.back().op == jbc::core::Op::DUP2);
+    /// 调用点 preamble（程序序）：[复位 DUP] + 局部入参装载。§3.4 tier-2：
+    /// DUP 先行复制入口栈顶（副本作实参、原值留栈下、返回值落顶插回原位）；
+    /// 栈切片参数免装载（值已在栈上，S_in 自底向上 = 参数序）。
+    std::vector<jbc::ir::Insn> preamble;
+    if (emitEntryDup) {
+        preamble.push_back(entryDupResetInsn(body.back().op));
+    }
+    for (jbc::ir::Insn& load :
+         copySetLoadPreamble(params, SlotCopy::Kind::Local, false)) {
+        preamble.push_back(load);
+    }
     if (unit->dom.validLabel(entryLabel)) {
-        /// 逆序插装载：每条落标签边界、标签重锚到新指令 → 终序 l1..lm。
-        if (anyLocalParams) {
-            for (auto it = params.rbegin(); it != params.rend(); ++it) {
-                if (it->kind != SlotCopy::Kind::Local) {
-                    continue;
-                }
-                jbc::ir::Insn load;
-                load.op = loadOpOf(familyOfDesc(std::string_view(it->desc)[0]));
-                load.a  = static_cast<ca::i32>(it->oldLocal);
-                if (ed.insertAtLabel(entryLabel, load).is_err()) {
-                    return Err(OutlineError::EditFailed);
-                }
+        if (!preamble.empty()) {
+            auto anchored = insertAnchoredAtLabel(ed, entryLabel, preamble);
+            if (anchored.is_err()) {
+                return Err(anchored.unwrap_err());
             }
-        }
-        if (emitEntryDup) {
-            /// §3.4 tier-2：DUP 复制入口栈顶（副本作实参、原值留栈下）。
-            jbc::ir::Insn dupInsn;
-            dupInsn.op = body.back().op;
-            if (ed.insertAtLabel(entryLabel, dupInsn).is_err()) {
-                return Err(OutlineError::EditFailed);
-            }
-        }
-        if (anyLocalParams || emitEntryDup) {
             auto ins = ed.insertBefore(entryInsn, call);
             if (ins.is_err()) {
                 return Err(OutlineError::EditFailed);
             }
             callId = ins.unwrap();
         } else {
-            auto ins = ed.insertAtLabel(entryLabel, call);
-            if (ins.is_err()) {
-                return Err(OutlineError::EditFailed);
+            auto anchored = insertAnchoredAtLabel(ed, entryLabel, {call});
+            if (anchored.is_err()) {
+                return Err(anchored.unwrap_err());
             }
-            callId = ins.unwrap();
+            callId = anchored.unwrap().front();
         }
     } else {
-        if (emitEntryDup) {
-            jbc::ir::Insn dupInsn;
-            dupInsn.op = body.back().op;
-            if (ed.insertBefore(entryInsn, dupInsn).is_err()) {
-                return Err(OutlineError::EditFailed);
-            }
+        preamble.push_back(call);
+        auto placed = insertBeforeInsn(ed, entryInsn, preamble);
+        if (placed.is_err()) {
+            return Err(placed.unwrap_err());
         }
-        for (const SlotCopy& p : params) {
-            if (p.kind != SlotCopy::Kind::Local) {
-                continue;   /// 栈切片参数已恰好在栈上（S_in 自底向上 = 参数序）
-            }
-            jbc::ir::Insn load;
-            load.op = loadOpOf(familyOfDesc(std::string_view(p.desc)[0]));
-            load.a  = static_cast<ca::i32>(p.oldLocal);
-            if (ed.insertBefore(entryInsn, load).is_err()) {
-                return Err(OutlineError::EditFailed);
-            }
-        }
-        auto ins = ed.insertBefore(entryInsn, call);
-        if (ins.is_err()) {
-            return Err(OutlineError::EditFailed);
-        }
-        callId = ins.unwrap();
+        callId = placed.unwrap().back();
     }
     {
         jbc::ir::Insn fwd;
