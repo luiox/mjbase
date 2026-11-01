@@ -188,7 +188,8 @@ TEST(MjAsmSemFrameViewTest, ResolverPlumbsThroughRefMerge)
     jbc::analysis::ShapeResolver shape;
     auto lenient = FrameView::build(f.cp(), *u, sigOf(true, m.desc), shape);
     ASSERT_TRUE(lenient.is_ok());
-    const VType* shapeMerged = lenient.unwrap().stackFromTop(joinPop, 0);
+    FrameView lenientView = std::move(lenient).unwrap();
+    const VType* shapeMerged = lenientView.stackFromTop(joinPop, 0);
     ASSERT_NE(shapeMerged, nullptr);
     EXPECT_EQ(shapeMerged->k, VKind::Ref);
 }
