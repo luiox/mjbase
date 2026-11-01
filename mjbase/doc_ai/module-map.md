@@ -23,6 +23,7 @@
 | asm/evaluator | ✅ | asm/evaluator | 具体求值栈机（数值子集 + 分支 + 步数熔断） | CodeDom 只读遍历 |
 | asm/classpath | ✅ | asm/classpath | 调用边提取（MemberKey 键）、可达、库类过滤、indy/MethodHandle 解析与 BSM 展开边、VarHandle 读写事实、惰性调用链枚举 + 调用树视图（简单路径/环叶/去重号/节点上限） | promote + memberOf + keys + BootstrapMethodsAttr |
 | asm/stmt | ✅ | 新设计（issue #5） | 保守结构化语句层：块级 if/while/for/do-while、语句↔指令窗口双映射、叶子整窗写回 | asm_cfg 快照 + CodeEditor insert/eraseBatch；见 doc_ai/statement-ir.md |
+| asm/sem | ✅ | 新设计（issue #115） | 语义设施层首批只读视图（A1）：FrameView（Strict 逐指令到达帧 + MethodSig 播种 + ITypeResolver 注入面 + UninitThis 探针）、SlotProvenanceView（栈/局部槽到达定义查询 + def→use 边（DUP 族按「复制槽不产定义、产使用边」补边）+ 切面槽干净判据）、RegionView（SESE 候选区域枚举：入口支配集 ∩ 出口锚后支配 + 单入口单出口过滤 + 异常同质/直线/jsr 旗标） | DomainEngine(StrictDomain/DefUseDomain) + asm_cfg 支配树 + 逆图后支配；视图为快照值语义，方法体结构变更后重建（同 asm/cfg 口径） |
 | hierarchy | ✅ | hierarchy | 类/方法/字段层次内存图、ancestors/overrides（.ihc 序列化不迁） | 会话扫描 this/super/interfaces + keys |
 
 ## 第二批（资源与映射叶子，直迁）
