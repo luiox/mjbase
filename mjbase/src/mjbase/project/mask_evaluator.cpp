@@ -44,7 +44,12 @@ ca::Result<MaskEvaluator, MaskEvaluatorError> MaskEvaluator::build(
     impl->rules.reserve(rules.size());
     for (ca::usize index = 0; index < rules.size(); ++index) {
         const MaskRuleSpec& spec = rules[index];
-        auto compiled = MaskRegex::compile(spec.pattern);
+        // pattern 先拷贝进自有存储再编译：入参是借用视图，常来自调用方
+        // 临时行表（如 listMaskRules 投影）；悬垂读入是 UB（linux 下 freed
+        // 缓冲被分配器涂改成堆指针后"可编译但永不命中"，windows 侥幸存活）。
+        // std::regex 在 compile 期自持模式拷贝，编译后不再依赖入参。
+        const std::string ownedPattern(spec.pattern.data(), spec.pattern.size());
+        auto compiled = MaskRegex::compile(ownedPattern);
         if (compiled.is_err()) {
             MaskEvaluatorError error;
             std::string message = "mask rule[" + std::to_string(index) +

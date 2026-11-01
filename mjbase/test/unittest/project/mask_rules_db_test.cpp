@@ -287,8 +287,12 @@ TEST(MjMaskRulesDbTest, EvaluatorBuildsFromDbProjection)
 
     auto rules = db.listMaskRules();
     ASSERT_TRUE(rules.is_ok());
+    // 行表落回具名量保活到 build() 之后：spec.pattern 是借用视图，指向行内
+    // Utf8String 缓冲——range-for 临时直接死亡会让视图悬垂（linux 分配器把
+    // freed 缓冲涂改成堆指针后"可编译但永不命中"，windows 侥幸存活）。
+    auto ruleRows = std::move(rules).unwrap();
     std::vector<MaskRuleSpec> specs;
-    for (const DbMaskRule& row : std::move(rules).unwrap()) {
+    for (const DbMaskRule& row : ruleRows) {
         MaskRuleSpec spec;
         spec.ruleId   = row.ruleId;
         spec.priority = row.priority;
