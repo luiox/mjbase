@@ -1241,7 +1241,7 @@ ca::Result<ca::i64, AnalysisDbError> classIdByName(sqlite3*                     
     auto hasRow = step(db, statement.raw);
     if (hasRow.is_err()) return errorOf(std::move(hasRow));
     if (!hasRow.unwrap()) return ca::Ok(static_cast<ca::i64>(0));
-    return ca::Ok(sqlite3_column_int64(statement.raw, 0));
+    return ca::Ok(static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 0)));
 }
 
 /// @brief (owner, name, descriptor) → member_id；未登记返回 0。
@@ -1270,7 +1270,7 @@ ca::Result<ca::i64, AnalysisDbError> memberIdByName(sqlite3*                    
     auto hasRow = step(db, statement.raw);
     if (hasRow.is_err()) return errorOf(std::move(hasRow));
     if (!hasRow.unwrap()) return ca::Ok(static_cast<ca::i64>(0));
-    return ca::Ok(sqlite3_column_int64(statement.raw, 0));
+    return ca::Ok(static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 0)));
 }
 
 constexpr const char* kSchemaDdl[] = {
