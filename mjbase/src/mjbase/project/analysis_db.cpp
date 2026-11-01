@@ -1283,6 +1283,9 @@ constexpr const char* kSchemaDdl[] = {
     ")",
     "CREATE INDEX refs_target ON refs(ref_kind, target_class, target_name, target_desc)",
     "CREATE INDEX refs_source_member ON refs(source_member_id)",
+    // 按源类反查（referencesFromClass）：无此索引时按 c.internal_name 驱动
+    // 只能全表扫 refs（B6 实测 rt.jar 语料 2.3M 行 565ms）。
+    "CREATE INDEX refs_source_class ON refs(source_class_id)",
     "CREATE TABLE renames("
     "  target_kind INTEGER NOT NULL CHECK(target_kind IN (0,1)),"
     "  target_id INTEGER NOT NULL,"
@@ -1370,7 +1373,19 @@ ca::Result<AnalysisDb, AnalysisDbError> AnalysisDb::open(const ca::str::Utf8Stri
         if (auto result = exec(handle, "PRAGMA journal_mode=WAL"); result.is_err()) {
             return errorOf(std::move(result));
         }
-        if (auto result = exec(handle, "PRAGMA synchronous=FULL"); result.is_err()) {
+        // NORMAL（WAL）：应用崩溃不丢已提交事务，断电最多丢最近 checkpoint
+        // 之后的提交——分析工作库的正确权衡；FULL 的每次提交 fsync 在
+        // 大批量导入场景无观测收益。
+        if (auto result = exec(handle, "PRAGMA synchronous=NORMAL"); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        // 默认 2MB page cache 在整库导入（数百万行引用、二级索引随机落页）
+        // 下持续颠簸：B6 基线 ref_ingest 占整库导入 78-84%。给到 256MB 后
+        // 索引维护基本全内存。temp_store 同理服务排序与临时 B-tree。
+        if (auto result = exec(handle, "PRAGMA cache_size=-262144"); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = exec(handle, "PRAGMA temp_store=MEMORY"); result.is_err()) {
             return errorOf(std::move(result));
         }
     }
