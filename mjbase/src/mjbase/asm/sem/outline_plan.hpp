@@ -46,6 +46,7 @@
 /// 结构变更（同 RegionView 快照纪律），apply 前做句柄探测校验。
 #pragma once
 
+#include <string_view>
 #include <vector>
 
 #include "libca/core/datatype.hpp"
@@ -134,6 +135,23 @@ struct LocalRemap
     ca::u32 newSlot = 0;
 };
 
+/// @brief 自足槽盖章属性名（N 的 Code 嵌套；JVMS 4.7.1 未知嵌套属性 JVM
+///        忽略面，decodeAttr 对未建模名兜底 RawAttr 不丢字节）。
+inline constexpr std::string_view kOutlineStampAttr = "MjOutlineStamp";
+
+/// @brief 自足槽盖章行（A5b）：N 槽 → 原文父槽，按 N 体首现序记录。
+///
+/// 区域内自足槽（先写后读/恒被重写/纯写，不进参数集）的父槽号在 inline
+/// 侧无法从产物恢复（A4 按父 maxLocals 起 fresh 分配的已知不可恢复项）：
+/// planOutline 记录、apply 落 N 的 Code 嵌套盖章属性（RawAttr 承载 u16
+/// 计数 + (nSlot, parentSlot) 对），planInline 消费后 exact 恢复原布局；
+/// 无盖章（外来 inline 形态）回落 fresh，A4 结构等价口径保底。
+struct SlotStamp
+{
+    ca::u32 nSlot      = 0;   ///< 合成方法内槽号
+    ca::u32 parentSlot = 0;   ///< 原文父方法槽号
+};
+
 /// @brief 完全落在区域内的 LVT/LVTT 行迁移安排（迁 N、槽重编号、
 ///        startPc 重锚定到 N 体指令）。
 struct LvtRowMove
@@ -195,9 +213,12 @@ public:
     /// 会话版本 < 50（无 SMT 定义）跳过再生；≥ 50 时父方法 SMT 整表再生
     /// （调用点成为新分支目标，链式重算不覆盖）。LNT/LVT 迁移行挂入 N 的
     /// Code 嵌套属性（CP 索引同 session 直接复用）；宽松开关裁剪的越切点
-    /// 行（lvtDrops）自父表删除。调用点发射口径：goto 入边形态下参数装载
-    /// 块随入边走（标签锚定首条装载，A2 缺陷修复）；retIsEntryCopy 时先
-    /// DUP 复制入口栈顶（副本作实参、原值留栈下、返回值落顶插回原位）。
+    /// 行（lvtDrops）自父表删除。自足槽盖章行（selfStamps，A5b）以
+    /// kOutlineStampAttr 嵌套属性落 N 的 Code——inline 侧消费后原槽号
+    /// exact 对回，无章回落 fresh（A4 口径）。调用点发射口径：goto 入边
+    /// 形态下参数装载块随入边走（标签锚定首条装载，A2 缺陷修复）；
+    /// retIsEntryCopy 时先 DUP 复制入口栈顶（副本作实参、原值留栈下、
+    /// 返回值落顶插回原位）。
     ca::core::Result<OutlineOutcome, OutlineError>
     apply(jbc::ir::ClassSession& session, jbc::analysis::ITypeResolver& resolver) const;
 
@@ -218,6 +239,8 @@ public:
 
     std::vector<LocalRemap>   locals;       ///< 区域局部读/写重编号表（含非入参的
                                             ///  区域内自足槽：先写后读、恒被重写）
+    std::vector<SlotStamp>    selfStamps;   ///< 自足槽盖章行（N 体首现序；apply 落
+                                            ///  N 的 Code 嵌套 kOutlineStampAttr）
     std::vector<LvtRowMove>   lvtMoves;     ///< LVT/LVTT 行迁移（含 LVTT 同构行）
     std::vector<LntRowMove>   lntMoves;     ///< LNT 行迁移
     std::vector<LvtRowDrop>   lvtDrops;     ///< 宽松开关下裁剪的越切点行（父表删）

@@ -12,8 +12,8 @@
 /// 识别口径（fail-closed，沿用 OutlineError）：
 ///   - N 形态：名字 `outline$` 前缀、访问位恰为 private|static|synthetic、
 ///     有方法体、异常表为空（outline 产物恒无）、方法级属性仅 Code、嵌套
-///     属性仅 LNT/LVT/LVTT/SMT、体直线（返回指令以外零控制转移）且末条
-///     返回指令与描述符返回类型同族。
+///     属性仅 LNT/LVT/LVTT/SMT/盖章（A5b kOutlineStampAttr）、体直线（返回
+///     指令以外零控制转移）且末条返回指令与描述符返回类型同族。
 ///   - 单调用点：N 在类内代码域的引用数恰为 1（多调用点/自引用拒绝；
 ///     反射等非代码引用面不在扫描域，#115 §3.5 单调用点口径）。
 ///   - 调用点形态：调用点无锚定标签之外的分支面（标签护栏回溯装载链）；
@@ -29,9 +29,10 @@
 /// 槽逆映射口径：参数槽（N 槽 → 父槽）取调用点装载链的装载槽（栈参边界
 /// 在「装载链 ⊆ 参数值」内可自由滑动——链上原代码装载与 N 体序幕装载互为
 /// 对偶，滑动不改变合并结果，#115 §3.5 往返实测）；区域内自足槽（先写后
-/// 读、恒被重写——不进参数集的槽）的父槽号不可从 N/调用点恢复，按父方法
-/// maxLocals 起 fresh 分配（cat2 占 2 槽），结构等价由首次出现规范化保证
-/// （见 OutlinePlan 处 A4 验收口径注）。
+/// 读、恒被重写——不进参数集的槽）消费 N 的 Code 嵌套盖章属性（A5b，
+/// kOutlineStampAttr / RawAttr 承载 (nSlot, parentSlot) 对）exact 恢复
+/// 原槽位；无盖章（外来 inline 形态）回落父方法 maxLocals 起 fresh 分配
+/// （cat2 占 2 槽），结构等价由首次出现规范化保证（A4 口径）。
 ///
 /// 红线（#115 §2.1）：plan 值语义、自持有；InsnId/LabelId 句柄为引用口径
 /// ——构建与 apply 之间会话不得发生结构变更，apply 前做句柄探测校验。
@@ -50,14 +51,16 @@
 
 namespace mjbase::asm_sem {
 
-/// @brief N 槽 → 父槽逆映射行（参数槽精确恢复；自足槽 fresh 分配）。
+/// @brief N 槽 → 父槽逆映射行（参数槽精确恢复；自足槽盖章 exact / 无章
+///        fresh）。
 struct SlotBack
 {
     ca::u32 nSlot      = 0;   ///< 合成方法内槽号
-    ca::u32 parentSlot = 0;   ///< 父方法槽号（参数槽 = 装载链装载槽；
-                              ///  自足槽 = maxLocals 起 fresh）
-    bool    selfSufficient = false;   ///< true = fresh 分配（结构比较按
-                                      ///  首次出现规范化对齐）
+    ca::u32 parentSlot = 0;   ///< 父方法槽号（参数槽 = 装载链装载槽；自足槽 =
+                              ///  盖章档原槽 exact 恢复（A5b），无章回落
+                              ///  maxLocals 起 fresh，A4 口径）
+    bool    selfSufficient = false;   ///< true = 非装载链恢复的区域内自足槽
+                                      ///  （盖章 exact 或 fresh 分配）
 };
 
 /// @brief inline 落地产物（A4 v1 零字段——产物以会话状态交付：N 已删除、

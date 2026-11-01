@@ -968,10 +968,13 @@ TEST(MjAsmSemOutlinePlanTest, JvmGateBehaviorPreserved)
 /// builder 语料补 SMT 的对照组助手已上收 sem_fixture.hpp（A4 与 outline
 /// 两个 JVM 门共用）。
 
-/// JVM 真跑门公共体：plan（首个可识别候选）→ apply → 写回 → java 前后对拍。
-/// 期望输出由用例断言；planOutline 全拒时 ADD_FAILURE。
-void runJvmGate(const MethodSpec& spec, const jbc::analysis::MethodSig& gateSig,
-                const std::string& runnerBody, const std::string& expectOut)
+/// JVM 真跑门公共体：plan（谓词过滤后首个可识别候选）→ apply → 写回 →
+/// java 前后对拍。期望输出由用例断言；planOutline 全拒时 ADD_FAILURE。
+/// 谓词入参 (候选, RegionView)——同一样本多候选时可按块成员数区分。
+template <typename Pred>
+void runJvmGateWhere(const MethodSpec& spec, const jbc::analysis::MethodSig& gateSig,
+                     const std::string& runnerBody, const std::string& expectOut,
+                     Pred pred)
 {
     static const auto tc = test::jdk::probeJdk();
     if (!tc.available) {
@@ -1011,6 +1014,9 @@ void runJvmGate(const MethodSpec& spec, const jbc::analysis::MethodSig& gateSig,
     bool        plannedAny = false;
     mjbase::asm_sem::OutlineError lastErr = mjbase::asm_sem::OutlineError::Ok;
     for (ca::usize ci = 0; ci < candidates.size(); ++ci) {
+        if (!pred(candidates[ci], view)) {
+            continue;
+        }
         auto planned = mjbase::asm_sem::planOutline(
             OutlineRequest{*session, pickId, gateSig, resolver, view, candidates[ci], 1});
         if (planned.is_ok()) {
@@ -1045,6 +1051,15 @@ void runJvmGate(const MethodSpec& spec, const jbc::analysis::MethodSig& gateSig,
     EXPECT_EQ(afterOut, beforeOut);   /// -Xverify:all 全程验证 + 行为逐字一致
 }
 
+/// JVM 真跑门公共体（首个可识别候选版）。
+void runJvmGate(const MethodSpec& spec, const jbc::analysis::MethodSig& gateSig,
+                const std::string& runnerBody, const std::string& expectOut)
+{
+    runJvmGateWhere(spec, gateSig, runnerBody, expectOut,
+                    [](const mjbase::asm_sem::RegionCandidate&,
+                       const mjbase::asm_sem::RegionView&) { return true; });
+}
+
 /// JVM 真跑门（A2 缺陷修复）：goto 入边 + 局部参数——A2 的装载被入边绕过
 /// （VerifyError Inconsistent stack height），A3 标签锚定首条装载后真跑一致。
 TEST(MjAsmSemOutlinePlanTest, JvmGateGotoEntryLocalParams)
@@ -1067,4 +1082,48 @@ TEST(MjAsmSemOutlinePlanTest, JvmGateBoundaryDupEntryCopy)
                "System.out.println(T.pick(3));"    /// 直落臂（经区域 DUP 出口）
                "System.out.println(T.pick(9));",
                "0\n3\n9\n");
+}
+
+/// JVM 真跑门（A5b 盖章）：自足槽 N 携 Code 嵌套盖章属性（kOutlineStampAttr
+/// 未建模嵌套属性）真跑——JVMS 4.7.1 忽略面 + HotSpot 实证，-Xverify:all
+/// 全程验证，行为与拆分前逐字一致。谓词钉住写臂（6 成员，含 ISTORE 3）。
+TEST(MjAsmSemOutlinePlanTest, JvmGateSelfSufficientStamp)
+{
+    MethodSpec spec;
+    spec.name      = "pick";
+    spec.desc      = "(IZ)I";
+    spec.maxStack  = 3;
+    spec.maxLocals = 4;
+    spec.emit      = [](CodeEmit& e) {
+        const std::size_t elseArm = e.newLabel();   /// 0
+        const std::size_t join    = e.newLabel();   /// 1
+        e.varInsn(Op::ILOAD, 1);
+        e.branch(Op::IFEQ, elseArm);
+        e.op(Op::BIPUSH);
+        e.u8(7);
+        e.varInsn(Op::ISTORE, 3);       /// t = 7（区域内定义，自足槽）
+        e.varInsn(Op::ILOAD, 3);
+        e.op(Op::ICONST_1);
+        e.op(Op::IADD);
+        e.branch(Op::GOTO, join);
+        e.bindLabel(elseArm);
+        e.op(Op::ICONST_5);
+        e.branch(Op::GOTO, join);
+        e.bindLabel(join);
+        e.op(Op::ICONST_0);
+        e.op(Op::IADD);
+        e.op(Op::IRETURN);
+    };
+    runJvmGateWhere(spec, sigOf(true, "(IZ)I", "pick", "T"),
+                    "System.out.println(T.pick(5, true));"
+                    "System.out.println(T.pick(5, false));",
+                    "8\n5\n",
+                    [](const mjbase::asm_sem::RegionCandidate& c,
+                       const mjbase::asm_sem::RegionView& v) {
+                        if (c.members.size() != 1u) {
+                            return false;
+                        }
+                        const mjbase::asm_cfg::BasicBlock* blk = v.cfg().block(c.members[0]);
+                        return blk != nullptr && blk->insns.size() == 6u;   /// 写臂（含自足槽写读）
+                    });
 }
