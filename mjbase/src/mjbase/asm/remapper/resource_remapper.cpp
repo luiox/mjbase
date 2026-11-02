@@ -458,8 +458,12 @@ Result<bool, RemapError> applyResourceRemapPlan(model::ResourceContainer& contai
             pending.push_back({cls, std::move(written).unwrap()});
         }
 
-        if (policy.bytecode && policy.resources &&
-            uri == std::string_view(classResourceUri(oldName))) {
+        // 类 URI 换名门 = bytecode：类改名只重写字节内 name 而不挪 URI 会产出
+        // 坏 jar（字节 this_class 指新名、路径仍挂旧名）。resources 门只管
+        // services/manifest/文本资源面，与类 URI 无关——与 morpher 侧
+        // 9507ecf39（同形门从 bytecode && resources 收敛到 bytecode）先例
+        // 同口径，mjt CLI 迁到 mjbase remapper 时不再翻挂。
+        if (policy.bytecode && uri == std::string_view(classResourceUri(oldName))) {
             const std::string newUri =
                 classResourceUri(std::string(plan.mapInternalName(oldName)));
             if (newUri != std::string(uri)) resourceRenames.emplace_back(std::string(uri), newUri);
