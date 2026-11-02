@@ -44,9 +44,10 @@ struct RenamerOptions
     /// false：计划非空时经 asm/remapper 域 applyResourceRemapPlan 就地应用。
     bool planOnly = true;
     /// 应用面门控（bytecode/reflectionStrings/annotations/signatures/resources），
-    /// planOnly=false 时生效。默认 RemapPolicy{} 只改字节码面；类资源 URI 随
-    /// 类改名移动需显式开 resources——remapper 批双门口径（bytecode+resources
-    /// 才换 URI），renamer 应用面继承。
+    /// planOnly=false 时生效。默认 RemapPolicy{} 只改字节码面，类资源 URI 随
+    /// 类改名移动——类 URI 门 = bytecode 口径（与旧栈及 morpher 9507ecf39
+    /// 先例一致；resources 门只管 services/manifest/文本资源面），renamer
+    /// 应用面继承。
     mjbase::asm_remapper::RemapPolicy policy{};
 };
 

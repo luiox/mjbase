@@ -296,7 +296,8 @@ TEST(MjRenamerPolicyMatrixTest, applyModeWithNonEmptyPlanCommitsBytecodeFace)
     // 应用面真语义：planOnly=false 且计划非空 → 经 asm/remapper 域就地应用
     // （旧「未接线 fail-loud」占位随接线废止，两态翻转的对照用例）。
     // 默认 RemapPolicy{} 只改字节码面：类字节 this_class/成员名换新，类资源
-    // URI 不随动——remapper 批双门口径（URI 随动需开 resources）。
+    // URI 随类改名移动——类 URI 门 = bytecode 口径（morpher 9507ecf39 先例；
+    // resources 门只管 services/manifest/文本资源面）。
     Fixture        fixture;
     RenamerEngine  engine;
     RenamerOptions options;
@@ -312,12 +313,12 @@ TEST(MjRenamerPolicyMatrixTest, applyModeWithNonEmptyPlanCommitsBytecodeFace)
 
     // 字节码面换新：this_class 读新名，声明成员槽读新名（槽级读回——remapper
     // 面只重指向不改写 Utf8 条目内容，字节文本扫描会误报残留）。
-    EXPECT_EQ(thisClassOf(fixture.container, "Old.class"), "New");
-    EXPECT_EQ(thisClassOf(fixture.container, "pkg/OldReflect.class"), "pkg/NewReflect");
-    EXPECT_EQ(thisClassOf(fixture.container, "OldGeneric.class"), "NewGeneric");
-    EXPECT_EQ(thisClassOf(fixture.container, "OldAnno.class"), "NewAnno");
+    EXPECT_EQ(thisClassOf(fixture.container, "New.class"), "New");
+    EXPECT_EQ(thisClassOf(fixture.container, "pkg/NewReflect.class"), "pkg/NewReflect");
+    EXPECT_EQ(thisClassOf(fixture.container, "NewGeneric.class"), "NewGeneric");
+    EXPECT_EQ(thisClassOf(fixture.container, "NewAnno.class"), "NewAnno");
     {
-        auto cf = parseClassOf(fixture.container, "Old.class");
+        auto cf = parseClassOf(fixture.container, "New.class");
         ASSERT_NE(cf, nullptr);
         const auto members = declaredMemberNamesOf(*cf);
         EXPECT_TRUE(contains(members, "newField")) << "字段改名未落地";
@@ -325,11 +326,11 @@ TEST(MjRenamerPolicyMatrixTest, applyModeWithNonEmptyPlanCommitsBytecodeFace)
         EXPECT_FALSE(contains(members, "oldField")) << "旧字段名槽残留";
         EXPECT_FALSE(contains(members, "alpha")) << "旧方法名槽残留";
     }
-    // URI 面不随动（默认 policy）：旧 URI 全部原位挂着新名字节。
-    EXPECT_NE(containerClassResource(fixture.container, "Old.class"), nullptr);
-    EXPECT_NE(containerClassResource(fixture.container, "pkg/OldReflect.class"), nullptr);
-    EXPECT_EQ(containerClassResource(fixture.container, "New.class"), nullptr);
-    EXPECT_EQ(containerClassResource(fixture.container, "pkg/NewReflect.class"), nullptr);
+    // URI 面随 bytecode 门（默认 policy）：类 URI 随类换名移动，旧 URI 移除。
+    EXPECT_NE(containerClassResource(fixture.container, "New.class"), nullptr);
+    EXPECT_NE(containerClassResource(fixture.container, "pkg/NewReflect.class"), nullptr);
+    EXPECT_EQ(containerClassResource(fixture.container, "Old.class"), nullptr);
+    EXPECT_EQ(containerClassResource(fixture.container, "pkg/OldReflect.class"), nullptr);
     // plan/record 交付面不受应用影响。
     EXPECT_EQ(result.plan.classMappings().size(), 4U);
     ASSERT_EQ(result.record.accepted().size(), 6U);

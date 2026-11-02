@@ -1642,26 +1642,83 @@ TEST(MjAsmRemapperTest, policyControlsAnnotationClassLiteralElements)
     }
 }
 
-// 旧例 12：containerRemapKeepsResourceNamesByDefault
-TEST(MjAsmRemapperTest, containerRemapKeepsResourceNamesByDefault)
+// 旧例 12：containerRemapKeepsResourceNamesByDefault——类 URI 门已对齐
+// morpher 9507ecf39 口径（类 URI 跟 bytecode 门走，不挂 resources）：改名类
+// 只重写字节内 name 而不挪路径会产出坏 jar。
+TEST(MjAsmRemapperTest, containerRemapMovesClassUriUnderBytecodeGate)
 {
     MemberRemapPlan plan;
     plan.mapClass("pkg/OldName", "pkg/NewName");
+    plan.mapClass("pkg/OldProvider", "pkg/NewProvider");
 
-    mjbase::model::ResourceContainer container;
-    addClassBytes(container, "pkg/OldName.class", buildSimpleClass("pkg/OldName"));
-    auto applied = mjbase::asm_remapper::applyResourceRemapPlan(container, plan);
-    ASSERT_FALSE(applied.is_err());
-    EXPECT_TRUE(applied.unwrap());
+    const Bytes serviceBytes  = toBytes("pkg/OldProvider\n");
+    const Bytes manifestBytes = toBytes("Manifest-Version: 1.0\r\nMain-Class: pkg.OldName\r\n\r\n");
+    auto buildContainer = [&serviceBytes, &manifestBytes] {
+        mjbase::model::ResourceContainer container;
+        addClassBytes(container, "pkg/OldName.class", buildSimpleClass("pkg/OldName"));
+        container.addResource("META-INF/services/pkg/OldName",
+                              std::make_unique<mjbase::model::UnknownResource>(
+                                  "META-INF/services/pkg/OldName", serviceBytes));
+        container.addResource(
+            mjbase::jar::JarUtil::kManifestFileName,
+            std::make_unique<mjbase::model::ManifestResource>(
+                mjbase::model::ManifestResource::fromBytes(manifestBytes)));
+        return container;
+    };
 
-    EXPECT_TRUE(container.getResource("pkg/OldName.class") != nullptr);
-    EXPECT_TRUE(container.getResource("pkg/NewName.class") == nullptr);
+    // bytecodeOnly：类字节与类 URI 随改名走；resources 档关着，services 与
+    // manifest（细分门挂 resources 总门下）都不挪。
+    {
+        auto container = buildContainer();
+        auto applied   = mjbase::asm_remapper::applyResourceRemapPlan(container, plan);
+        ASSERT_FALSE(applied.is_err());
+        EXPECT_TRUE(applied.unwrap());
 
-    auto* resource = classResourceOf(container.getResource("pkg/OldName.class"));
-    ASSERT_TRUE(resource != nullptr);
-    auto cf = parseClass(resource->get());
-    ASSERT_TRUE(cf);
-    EXPECT_EQ("pkg/NewName", classTextOf(*cf, cf->thisClass));
+        EXPECT_TRUE(container.getResource("pkg/OldName.class") == nullptr);
+        auto* moved = classResourceOf(container.getResource("pkg/NewName.class"));
+        ASSERT_TRUE(moved != nullptr);
+        auto cf = parseClass(moved->get());
+        ASSERT_TRUE(cf);
+        EXPECT_EQ("pkg/NewName", classTextOf(*cf, cf->thisClass));
+
+        auto* service =
+            unknownResourceOf(container.getResource("META-INF/services/pkg/OldName"));
+        ASSERT_TRUE(service != nullptr);
+        EXPECT_EQ(serviceBytes, service->get());
+        EXPECT_TRUE(container.getResource("META-INF/services/pkg/NewName") == nullptr);
+
+        auto* manifestResource = manifestResourceOf(
+            container.getResource(mjbase::jar::JarUtil::kManifestFileName));
+        ASSERT_TRUE(manifestResource != nullptr);
+        EXPECT_EQ("pkg.OldName", manifestText(manifestResource->get(), "Main-Class"));
+    }
+
+    // resources 档开（all()）：services URI 与 manifest 主属性一并随动；类
+    // URI 继续走 bytecode 门，与上一块同结果。
+    {
+        auto container = buildContainer();
+        auto applied =
+            mjbase::asm_remapper::applyResourceRemapPlan(container, plan, RemapPolicy::all());
+        ASSERT_FALSE(applied.is_err());
+        EXPECT_TRUE(applied.unwrap());
+
+        EXPECT_TRUE(container.getResource("pkg/OldName.class") == nullptr);
+        auto* moved = classResourceOf(container.getResource("pkg/NewName.class"));
+        ASSERT_TRUE(moved != nullptr);
+        auto cf = parseClass(moved->get());
+        ASSERT_TRUE(cf);
+        EXPECT_EQ("pkg/NewName", classTextOf(*cf, cf->thisClass));
+
+        auto* service =
+            unknownResourceOf(container.getResource("META-INF/services/pkg/NewName"));
+        ASSERT_TRUE(service != nullptr);
+        EXPECT_EQ(toBytes("pkg/NewProvider\n"), service->get());
+
+        auto* manifestResource = manifestResourceOf(
+            container.getResource(mjbase::jar::JarUtil::kManifestFileName));
+        ASSERT_TRUE(manifestResource != nullptr);
+        EXPECT_EQ("pkg.NewName", manifestText(manifestResource->get(), "Main-Class"));
+    }
 }
 
 // 旧例 13：remapsReflectionMemberAfterAliasWrapper
@@ -1994,7 +2051,9 @@ TEST(MjAsmRemapperTest, resourceRemapperKeepsAllPolicySurfacesIndependent)
         auto applied   = mjbase::asm_remapper::applyResourceRemapPlan(container, plan, p1);
         ASSERT_FALSE(applied.is_err());
         EXPECT_TRUE(applied.unwrap());
-        auto* resource = classResourceOf(container.getResource("OldOwner.class"));
+        // 类 URI 门 = bytecode：字节面改名即随类换 URI（旧 URI 移除）。
+        EXPECT_TRUE(container.getResource("OldOwner.class") == nullptr);
+        auto* resource = classResourceOf(container.getResource("NewOwner.class"));
         ASSERT_TRUE(resource != nullptr);
         auto session = openSession(resource->get());
         ASSERT_TRUE(session);
@@ -2014,7 +2073,7 @@ TEST(MjAsmRemapperTest, resourceRemapperKeepsAllPolicySurfacesIndependent)
         auto applied   = mjbase::asm_remapper::applyResourceRemapPlan(container, plan, p2);
         ASSERT_FALSE(applied.is_err());
         EXPECT_TRUE(applied.unwrap());
-        auto* resource = classResourceOf(container.getResource("OldOwner.class"));
+        auto* resource = classResourceOf(container.getResource("NewOwner.class"));
         ASSERT_TRUE(resource != nullptr);
         auto session = openSession(resource->get());
         ASSERT_TRUE(session);
@@ -2030,7 +2089,7 @@ TEST(MjAsmRemapperTest, resourceRemapperKeepsAllPolicySurfacesIndependent)
         auto applied   = mjbase::asm_remapper::applyResourceRemapPlan(container, plan, p3);
         ASSERT_FALSE(applied.is_err());
         EXPECT_TRUE(applied.unwrap());
-        auto* resource = classResourceOf(container.getResource("OldOwner.class"));
+        auto* resource = classResourceOf(container.getResource("NewOwner.class"));
         ASSERT_TRUE(resource != nullptr);
         auto cf = parseClass(resource->get());
         ASSERT_TRUE(cf);
@@ -2046,7 +2105,7 @@ TEST(MjAsmRemapperTest, resourceRemapperKeepsAllPolicySurfacesIndependent)
         auto applied   = mjbase::asm_remapper::applyResourceRemapPlan(container, plan, p4);
         ASSERT_FALSE(applied.is_err());
         EXPECT_TRUE(applied.unwrap());
-        auto* resource = classResourceOf(container.getResource("OldOwner.class"));
+        auto* resource = classResourceOf(container.getResource("NewOwner.class"));
         ASSERT_TRUE(resource != nullptr);
         auto cf = parseClass(resource->get());
         ASSERT_TRUE(cf);
