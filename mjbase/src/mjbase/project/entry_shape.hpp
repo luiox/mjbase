@@ -15,32 +15,44 @@ namespace mjbase::project {
 /// `isRegularEntryPath`（即 shape == Regular）。
 ///
 /// B1 的 regular 最小口径原是 mjt 导入桥的内部函数（#121 B4 钩子），本
-/// 头把它上提为公共面：布尔判定与 B1 逐字节一致（登记面零漂移），facet
-/// 枚举是 census 汇总面的细化切面（伪装目录、非常规命名等硬壳形态）。
+/// 头把它上提为公共面。B4 实测空格名混淆样本（全空格路径 21845 字节）
+/// 暴露最小口径空洞——空白与超长形态全部漏判 Regular——故在 B1 六项
+/// 之上补 Overlong / WhitespaceEdge 两项；判定从 B1 口径演进而来，历史
+/// 库重导入后相关条目的 regular 翻转属预期，不构成登记面漂移。
 
 /// @brief 条目路径形态 facet。
 enum class EntryPathShape : ca::u8
 {
-    Regular       = 0, ///< 常规路径形态（下列异常 facet 均未命中）
-    Empty         = 1, ///< 空路径
-    ControlChar   = 2, ///< 含控制字符或 DEL（字节 < 0x20 或 == 0x7F）
-    Backslash     = 3, ///< 含反斜杠（Windows 路径分隔符混入）
-    LeadingSlash  = 4, ///< 前导 '/'
-    EmptySegment  = 5, ///< 含空段（连续斜杠）
-    DotSegment    = 6, ///< 含 "." 或 ".." 段
-    TrailingSlash = 7, ///< 尾随 '/'（目录占位条目形态）
+    Regular        = 0,  ///< 常规路径形态（下列异常 facet 均未命中）
+    Empty          = 1,  ///< 空路径
+    ControlChar    = 2,  ///< 含控制字符或 DEL（字节 < 0x20 或 == 0x7F）
+    Backslash      = 3,  ///< 含反斜杠（Windows 路径分隔符混入）
+    LeadingSlash   = 4,  ///< 前导 '/'
+    EmptySegment   = 5,  ///< 含空段（连续斜杠）
+    DotSegment     = 6,  ///< 含 "." 或 ".." 段
+    TrailingSlash  = 7,  ///< 尾随 '/'（目录占位条目形态）
+    Overlong       = 8,  ///< 单段超 kOverlongSegmentBytes 或全路径超 kOverlongPathBytes（落盘提取不友好形态）
+    WhitespaceEdge = 9,  ///< 某段以空格开头或结尾（伪装/隐形命名；段内空格不判）
 };
+
+/// @brief Overlong 阈值：单段字节数上限（常见文件系统段长 255）。
+inline constexpr ca::usize kOverlongSegmentBytes = 255;
+
+/// @brief Overlong 阈值：全路径字节数上限（Linux PATH_MAX 4096）。
+inline constexpr ca::usize kOverlongPathBytes = 4096;
 
 /// @brief 逐 facet 形态判定，facet 取固定优先序：
 ///        Empty > ControlChar > Backslash > LeadingSlash > EmptySegment >
-///        DotSegment > TrailingSlash > Regular（一条路径命中多个 facet 时
-///        取优先序最前者；序恒定保证分布与布尔判定跨版本稳定）。
+///        DotSegment > TrailingSlash > Overlong > WhitespaceEdge >
+///        Regular（一条路径命中多个 facet 时取优先序最前者；序恒定保证
+///        分布与布尔判定跨版本稳定）。
 EntryPathShape classifyEntryPathShape(std::string_view path) noexcept;
 
 /// @brief regular 旗标判定（== classifyEntryPathShape(path) == Regular）。
 ///
 /// 口径：非空、无控制字符/DEL、无反斜杠、非前导或尾随 '/'、无空段
-/// （连续斜杠）、无 "." / ".." 段。与 B1 导入桥的最小口径逐字节一致。
+/// （连续斜杠）、无 "." / ".." 段、无超长段/路径、段首尾无空格。
+/// B1 最小口径 + B4 补充两项（见文件头说明）。
 bool isRegularEntryPath(std::string_view path) noexcept;
 
 /// @brief 形态 facet 稳定名（census 汇总面列值："regular"/"empty"/...

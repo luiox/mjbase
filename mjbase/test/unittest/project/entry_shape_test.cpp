@@ -63,7 +63,7 @@ TEST(MjEntryShapeTest, PriorityPicksHighestFacetWhenMultipleHit)
     EXPECT_EQ(EntryPathShape::LeadingSlash, shapeOf("//a.class"));
 }
 
-TEST(MjEntryShapeTest, RegularFlagMatchesB1MinimalPredicateByteForByte)
+TEST(MjEntryShapeTest, RegularFlagMatchesB1MinimalPredicatePlusB4Extensions)
 {
     // B1 最小口径（mjt 导入桥原实现，#121 B4 上提时的逐字节对照集）：
     // 非空、无控制字符/DEL、无反斜杠、非前导或尾随 '/'、无空段、无点段。
@@ -76,11 +76,60 @@ TEST(MjEntryShapeTest, RegularFlagMatchesB1MinimalPredicateByteForByte)
     EXPECT_FALSE(isRegularEntryPath("a\\b"));
     EXPECT_FALSE(isRegularEntryPath(std::string("a\x1f" "b")));
     EXPECT_FALSE(isRegularEntryPath("/"));
-    // 合法形态全放行。
+    // B4 补充（空格名混淆样本实测的空洞形态）：超长与段首尾空白。
+    EXPECT_FALSE(isRegularEntryPath(std::string(256, 'a')));
+    EXPECT_FALSE(isRegularEntryPath(std::string(300, ' ') + ".class"));
+    EXPECT_FALSE(isRegularEntryPath(" /lead-space.class"));
+    EXPECT_FALSE(isRegularEntryPath("a/trail-space.class "));
+    EXPECT_FALSE(isRegularEntryPath("a/ /b.class"));
+    // 合法形态全放行（段内空格是普通文件名形态，不判）。
     EXPECT_TRUE(isRegularEntryPath("a"));
     EXPECT_TRUE(isRegularEntryPath("a/b/c.class"));
     EXPECT_TRUE(isRegularEntryPath("a/..b"));   // 含点但不是点段
     EXPECT_TRUE(isRegularEntryPath(".../a"));   // 同上
+    EXPECT_TRUE(isRegularEntryPath("my file.class"));
+    EXPECT_TRUE(isRegularEntryPath("res/my notes.txt"));
+    EXPECT_TRUE(isRegularEntryPath(std::string(255, 'a')));
+}
+
+TEST(MjEntryShapeTest, OverlongFacetBySegmentAndPathThresholds)
+{
+    using mjbase::project::kOverlongPathBytes;
+    using mjbase::project::kOverlongSegmentBytes;
+    // 单段超限：255 放行、256 拨 Overlong（实测样本的全空格段 21845 同形态）。
+    EXPECT_EQ(EntryPathShape::Regular, shapeOf(std::string(255, 'a')));
+    EXPECT_EQ(EntryPathShape::Overlong, shapeOf(std::string(kOverlongSegmentBytes + 1, 'a')));
+    EXPECT_EQ(EntryPathShape::Overlong, shapeOf(std::string(300, ' ') + ".class"));
+    EXPECT_EQ(EntryPathShape::Overlong, shapeOf(std::string(21845, ' ')));
+    // 全路径超限而各段不超限：Linux PATH_MAX 口径（末段不带尾随斜杠）。
+    std::string longPath;
+    while (longPath.size() <= kOverlongPathBytes) longPath += "ab/";
+    longPath += "end.class";
+    EXPECT_EQ(EntryPathShape::Overlong, shapeOf(longPath));
+    // 多段深路径、总量不超限：仍 Regular。
+    EXPECT_EQ(EntryPathShape::Regular, shapeOf("a/b/c/d/e/f/g/h/i/j.class"));
+}
+
+TEST(MjEntryShapeTest, WhitespaceEdgeFacetLeadingTrailingOnly)
+{
+    // 段首/段尾空格判 WhitespaceEdge；段中空格是普通文件名形态。
+    EXPECT_EQ(EntryPathShape::WhitespaceEdge, shapeOf(" leading.class"));
+    EXPECT_EQ(EntryPathShape::WhitespaceEdge, shapeOf("a/trailing.class "));
+    EXPECT_EQ(EntryPathShape::WhitespaceEdge, shapeOf("a/ /b.class"));
+    EXPECT_EQ(EntryPathShape::WhitespaceEdge, shapeOf(" "));
+    EXPECT_EQ(EntryPathShape::Regular, shapeOf("my file.class"));
+    EXPECT_EQ(EntryPathShape::Regular, shapeOf("a/b c/d.class"));
+    EXPECT_EQ(EntryPathShape::Regular, shapeOf("a/trail .class"));   // 扩展名前的段内空格
+}
+
+TEST(MjEntryShapeTest, NewFacetsYieldToHigherPriorityOnOverlap)
+{
+    // 结构异常压过超长/空白：优先序 TrailingSlash > Overlong > WhitespaceEdge。
+    EXPECT_EQ(EntryPathShape::DotSegment, shapeOf("a/../" + std::string(300, 'b')));
+    EXPECT_EQ(EntryPathShape::TrailingSlash, shapeOf("a/" + std::string(300, 'b') + "/"));
+    // 超长压过空白：全空格超长段取 Overlong 而非 WhitespaceEdge。
+    EXPECT_EQ(EntryPathShape::Overlong, shapeOf(std::string(300, ' ') + ".class"));
+    EXPECT_EQ(EntryPathShape::WhitespaceEdge, shapeOf(" "));
 }
 
 TEST(MjEntryShapeTest, FacetNamesAreStableTokens)
@@ -94,4 +143,6 @@ TEST(MjEntryShapeTest, FacetNamesAreStableTokens)
     EXPECT_EQ("empty_segment", entryPathShapeName(EntryPathShape::EmptySegment));
     EXPECT_EQ("dot_segment", entryPathShapeName(EntryPathShape::DotSegment));
     EXPECT_EQ("trailing_slash", entryPathShapeName(EntryPathShape::TrailingSlash));
+    EXPECT_EQ("overlong", entryPathShapeName(EntryPathShape::Overlong));
+    EXPECT_EQ("whitespace_edge", entryPathShapeName(EntryPathShape::WhitespaceEdge));
 }
