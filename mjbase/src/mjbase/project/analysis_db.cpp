@@ -2819,6 +2819,82 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceReferences(
     return ca::Ok(references.size());
 }
 
+ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceReferencesFromMember(
+    ca::i64 sourceMemberId, std::vector<DbReferenceRecord> references)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+    if (auto result = validateReferences(references); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
+
+    // 切片身份先落定：取成员行（连同宿主类内部名），行内 source 字段必须与
+    // 之一致，DELETE 的 member_id 才对准要替换的切片（refs 的来源成员恒为
+    // 方法，kind=1 一并锁进查询）。
+    auto member = prepare(
+        impl_->handle,
+        "SELECT c.internal_name, m.name, m.descriptor FROM members m "
+        "JOIN classes c ON c.class_id=m.class_id WHERE m.member_id=?1 AND m.kind=1");
+    if (member.is_err()) return errorOf(std::move(member));
+    auto memberStatement = std::move(member).unwrap();
+    if (auto result = bindInt(impl_->handle, memberStatement.raw, 1, sourceMemberId);
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasMember = step(impl_->handle, memberStatement.raw);
+    if (hasMember.is_err()) return errorOf(std::move(hasMember));
+    if (!hasMember.unwrap()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "reference source member is not a registered method: " +
+                                     std::to_string(sourceMemberId)));
+    }
+    const std::string ownerClass = textColumn(memberStatement.raw, 0);
+    const std::string memberName = textColumn(memberStatement.raw, 1);
+    const std::string memberDesc = textColumn(memberStatement.raw, 2);
+    resetStatement(memberStatement);
+
+    for (const DbReferenceRecord& reference : references) {
+        const bool sameMember = reference.sourceClass.ref() == ownerClass &&
+                                reference.sourceMethod.ref() == memberName &&
+                                reference.sourceDescriptor.ref() == memberDesc;
+        if (!sameMember) {
+            return ca::Err(makeError(
+                AnalysisDbErrorKind::Invalid,
+                "reference source member does not match the replaced member: " +
+                    reference.sourceClass.to_std_string() + "." +
+                    reference.sourceMethod.to_std_string() + "(" +
+                    reference.sourceDescriptor.to_std_string() + ")"));
+        }
+    }
+
+    auto erase = prepare(impl_->handle, "DELETE FROM refs WHERE source_member_id=?1");
+    if (erase.is_err()) return errorOf(std::move(erase));
+    auto eraseStatement = std::move(erase).unwrap();
+    if (auto result = bindInt(impl_->handle, eraseStatement.raw, 1, sourceMemberId);
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto erased = step(impl_->handle, eraseStatement.raw);
+    if (erased.is_err()) return errorOf(std::move(erased));
+
+    if (auto result = applyReferenceBatch(impl_->handle, references); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = txn.commit(); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    return ca::Ok(references.size());
+}
+
 ca::Result<std::optional<DbClassInfo>, AnalysisDbError> AnalysisDb::findClass(
     const ca::str::Utf8StringRef& owner) const
 {

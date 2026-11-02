@@ -723,6 +723,175 @@ TEST(MjAnalysisDbTest, ReferenceValidationRejectsMalformedSites)
               takeErrorKind(db.replaceReferences(std::move(typeWithName))));
 }
 
+TEST(MjAnalysisDbTest, ReplaceReferencesFromMemberSwapsSliceAndLeavesOtherRows)
+{
+    const auto path = freshDbPath("refs_slice");
+    auto       db   = openOrDie(path);
+
+    std::vector<DbClassInput> inputs;
+    DbClassInput caller = classInput("demo/Caller", "java/lang/Object");
+    caller.members.push_back(methodInput("call", "()V"));
+    caller.members.push_back(methodInput("keep", "()J"));
+    caller.members.push_back(fieldInput("slot", "I"));
+    inputs.push_back(std::move(caller));
+    inputs.push_back(classInput("demo/Base", "java/lang/Object"));
+    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+
+    // 初版引用事实：call()V 两行、keep()J 两行、class 头一行。
+    std::vector<DbReferenceRecord> references;
+    references.push_back(referenceRecord("demo/Caller", "call", "()V", 3,
+                                         DbReferenceKind::Method, "demo/Base", "run", "()V"));
+    references.push_back(referenceRecord("demo/Caller", "call", "()V", 4,
+                                         DbReferenceKind::Field, "demo/Base", "counter", "I"));
+    references.push_back(referenceRecord("demo/Caller", "keep", "()J", 7,
+                                         DbReferenceKind::Type, "demo/Base", "", ""));
+    references.push_back(referenceRecord("demo/Caller", "keep", "()J", 8,
+                                         DbReferenceKind::Method, "demo/Base", "run", "()V"));
+    references.push_back(
+        referenceRecord("demo/Caller", "", "", -1, DbReferenceKind::Type, "demo/Base", "", ""));
+    ASSERT_TRUE(db.replaceReferences(std::move(references)).is_ok());
+
+    auto callMember = db.findMember(DbMemberKind::Method, S("demo/Caller"), S("call"), S("()V"));
+    ASSERT_TRUE(callMember.is_ok());
+    auto callRow = std::move(callMember).unwrap();
+    ASSERT_TRUE(callRow.has_value());
+    const ca::i64 callId = callRow->memberId;
+
+    // 切片替换：call()V 的旧引用（insn 3/4）全清，新引用（insn 30/31）全进。
+    std::vector<DbReferenceRecord> slice;
+    slice.push_back(referenceRecord("demo/Caller", "call", "()V", 30,
+                                    DbReferenceKind::Method, "demo/Base", "run", "()V"));
+    slice.push_back(referenceRecord("demo/Caller", "call", "()V", 31,
+                                    DbReferenceKind::Type, "demo/Base", "", ""));
+    auto replaced = db.replaceReferencesFromMember(callId, std::move(slice));
+    ASSERT_TRUE(replaced.is_ok());
+    EXPECT_EQ(2U, replaced.unwrap());
+
+    auto fromCall = db.referencesFromMember(S("demo/Caller"), S("call"), S("()V"));
+    ASSERT_TRUE(fromCall.is_ok());
+    auto callRefs = std::move(fromCall).unwrap();
+    ASSERT_EQ(2U, callRefs.size());
+    EXPECT_EQ(30, callRefs[0].insnIndex);
+    EXPECT_EQ(DbReferenceKind::Method, callRefs[0].kind);
+    EXPECT_EQ("demo/Base", callRefs[0].targetClass.to_std_string());
+    EXPECT_EQ("run", callRefs[0].targetName.to_std_string());
+    EXPECT_EQ(31, callRefs[1].insnIndex);
+    EXPECT_EQ(DbReferenceKind::Type, callRefs[1].kind);
+
+    // 切片语义核心验收：其他方法的引用逐行不动（行内容与行数原样）。
+    auto fromKeep = db.referencesFromMember(S("demo/Caller"), S("keep"), S("()J"));
+    ASSERT_TRUE(fromKeep.is_ok());
+    auto keepRefs = std::move(fromKeep).unwrap();
+    ASSERT_EQ(2U, keepRefs.size());
+    EXPECT_EQ(7, keepRefs[0].insnIndex);
+    EXPECT_EQ(DbReferenceKind::Type, keepRefs[0].kind);
+    EXPECT_EQ(8, keepRefs[1].insnIndex);
+    EXPECT_EQ(DbReferenceKind::Method, keepRefs[1].kind);
+
+    // class 头引用（source_member 为 NULL）同属切片之外；referencesFromClass
+    // 返回该类全部来源行（class 头 + 两个方法体 = 5），其中 insn -1 行仍在。
+    auto fromClass = db.referencesFromClass(S("demo/Caller"));
+    ASSERT_TRUE(fromClass.is_ok());
+    auto classRefs = std::move(fromClass).unwrap();
+    ASSERT_EQ(5U, classRefs.size());
+    ca::usize classLevelRows = 0;
+    for (const auto& record : classRefs) {
+        if (record.insnIndex == -1) {
+            ++classLevelRows;
+            EXPECT_TRUE(record.sourceMethod.is_empty());
+            EXPECT_EQ(DbReferenceKind::Type, record.kind);
+        }
+    }
+    EXPECT_EQ(1U, classLevelRows);
+
+    auto total = db.referenceCount();
+    ASSERT_TRUE(total.is_ok());
+    EXPECT_EQ(5U, total.unwrap());
+
+    // 空输入 = 清空该成员切片，别的行依旧不动。
+    std::vector<DbReferenceRecord> empty;
+    auto cleared = db.replaceReferencesFromMember(callId, std::move(empty));
+    ASSERT_TRUE(cleared.is_ok());
+    EXPECT_EQ(0U, cleared.unwrap());
+    fromCall = db.referencesFromMember(S("demo/Caller"), S("call"), S("()V"));
+    ASSERT_TRUE(fromCall.is_ok());
+    EXPECT_TRUE(std::move(fromCall).unwrap().empty());
+    total = db.referenceCount();
+    ASSERT_TRUE(total.is_ok());
+    EXPECT_EQ(3U, total.unwrap());
+}
+
+TEST(MjAnalysisDbTest, ReplaceReferencesFromMemberRejectsBadSliceWithoutWriting)
+{
+    const auto path = freshDbPath("refs_slice_invalid");
+    auto       db   = openOrDie(path);
+
+    std::vector<DbClassInput> inputs;
+    DbClassInput caller = classInput("demo/Caller", "java/lang/Object");
+    caller.members.push_back(methodInput("call", "()V"));
+    caller.members.push_back(methodInput("keep", "()J"));
+    caller.members.push_back(fieldInput("slot", "I"));
+    inputs.push_back(std::move(caller));
+    inputs.push_back(classInput("demo/Base", "java/lang/Object"));
+    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+
+    std::vector<DbReferenceRecord> references;
+    references.push_back(referenceRecord("demo/Caller", "call", "()V", 3,
+                                         DbReferenceKind::Method, "demo/Base", "run", "()V"));
+    ASSERT_TRUE(db.replaceReferences(std::move(references)).is_ok());
+
+    auto callMember = db.findMember(DbMemberKind::Method, S("demo/Caller"), S("call"), S("()V"));
+    ASSERT_TRUE(callMember.is_ok());
+    auto callRow = std::move(callMember).unwrap();
+    ASSERT_TRUE(callRow.has_value());
+    const ca::i64 callId = callRow->memberId;
+
+    // 不存在的 member_id：与 replaceReferences 对未登记来源一致，Invalid 且不写库。
+    std::vector<DbReferenceRecord> ghost;
+    ghost.push_back(referenceRecord("demo/Caller", "call", "()V", 9,
+                                    DbReferenceKind::Method, "demo/Base", "run", "()V"));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.replaceReferencesFromMember(424242, std::move(ghost))));
+    auto count = db.referenceCount();
+    ASSERT_TRUE(count.is_ok());
+    EXPECT_EQ(1U, count.unwrap());
+
+    // 字段不是合法引用来源：同样 Invalid。
+    auto fieldMember = db.findMember(DbMemberKind::Field, S("demo/Caller"), S("slot"), S("I"));
+    ASSERT_TRUE(fieldMember.is_ok());
+    auto fieldRow = std::move(fieldMember).unwrap();
+    ASSERT_TRUE(fieldRow.has_value());
+    std::vector<DbReferenceRecord> viaField;
+    viaField.push_back(referenceRecord("demo/Caller", "slot", "I", 0,
+                                       DbReferenceKind::Method, "demo/Base", "run", "()V"));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.replaceReferencesFromMember(fieldRow->memberId,
+                                                           std::move(viaField))));
+
+    // 行内 source 与参数成员不一致：切片身份错位，Invalid 且 call()V 切片原样。
+    std::vector<DbReferenceRecord> mismatched;
+    mismatched.push_back(referenceRecord("demo/Caller", "keep", "()J", 9,
+                                         DbReferenceKind::Method, "demo/Base", "run", "()V"));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.replaceReferencesFromMember(callId, std::move(mismatched))));
+
+    auto fromCall = db.referencesFromMember(S("demo/Caller"), S("call"), S("()V"));
+    ASSERT_TRUE(fromCall.is_ok());
+    auto callRefs = std::move(fromCall).unwrap();
+    ASSERT_EQ(1U, callRefs.size());
+    EXPECT_EQ(3, callRefs[0].insnIndex);
+
+    // class 级引用混入成员切片：形状合法但 source 与成员身份错位，同样 Invalid。
+    std::vector<DbReferenceRecord> malformed;
+    malformed.push_back(referenceRecord("demo/Caller", "", "", -1, DbReferenceKind::Type,
+                                        "demo/Base", "", ""));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.replaceReferencesFromMember(callId, std::move(malformed))));
+    count = db.referenceCount();
+    ASSERT_TRUE(count.is_ok());
+    EXPECT_EQ(1U, count.unwrap());
+}
+
 //-- 条目身份层（schema v3） ------------------------------------------------
 
 namespace {
