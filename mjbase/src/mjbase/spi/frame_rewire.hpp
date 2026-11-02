@@ -26,8 +26,15 @@ struct MethodScope;
 ///     运，摘除后由 rewireFramesAfterLower 再生；调用方须保证其后随调用，
 ///     否则方法缺帧）。
 /// - rewireFramesAfterLower（lower 后调）：A1 链消费入口。Strict 帧重算
-///   （布局已定，srcPc 即新 pc）→ applyComputedMaxes 覆盖采用 → 第二次
-///   lower 落 maxes → buildStackMapTable 再生 SMT 并挂回 Code（替换/补位）。
+///   （布局已定，srcPc 即新 pc）→ buildStackMapTable 再生 SMT 模型 →
+///   线性扫描栅栏补帧（HotSpot split verifier 对无落穿控制转移
+///   （goto/switch/return/athrow）的指令后继索帧——verify_stackmap_table
+///   的 no_control_flow 栅栏，与可达性无关；数据流目标集不含合成死块
+///   入口，栅栏位置借链中下一帧条目补帧并整链重编码，死块线性验证所需
+///   的 maxStack 余量同步抬升；状态借用对栈中性死块精确成立，其余形态
+///   本就无法过线性验证，不劣于缺帧）→ applyComputedMaxes 覆盖采用 →
+///   第二次 lower 落 maxes → 属性挂回 Code（替换/补位）。无栅栏时表
+///   原样挂回，既有产物字节不变。
 ///   版本 < 50 的类整体跳过（SMT 无定义，调用方语义 = 保持 relocation 后
 ///   现状）。Strict 不可算（含 jsr/ret）显式抛出——不伪造帧，容错档位可
 ///   据此跳过该方法。
