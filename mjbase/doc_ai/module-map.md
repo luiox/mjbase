@@ -1,8 +1,6 @@
 # mjbase 模块地图
 
-以 mbase（`../mbase/src/mbase/`，约 368 文件 / 8.8 万行）为语义来源，
-在 libjbc 底座上逐模块重写。状态：✅ 已迁 ｜ 🔨 迁移中 ｜ ⬜ 未开始 ｜
-➖ 有意不迁（理由注明）。
+以 mbase（`../mbase/src/mbase/`，约 368 文件 / 8.8 万行）为语义来源，在 libjbc 底座上逐模块重写。状态：✅ 已迁 ｜ 🔨 迁移中 ｜ ⬜ 未开始 ｜➖ 有意不迁（理由注明）。
 
 ## 地基（主线持有，模块 agent 禁改）
 
@@ -83,66 +81,14 @@
 
 ## 后续批次（未开始）
 
-- pass：试点三件（illegal_class_file_cleaner / access_modifier_tightener /
-  class_member_sorter）、方法体小批四件（nop_remover /
-  redundant_load_val_eliminator / char_arr_to_str_simplifier /
-  unused_check_cleaner，局部栈操作波次，golden 对拍收口）与控制流首件
-  （junk_code_inserter，经 PassPipelineOptions::typeResolver 帧链接线，
-  libjbc A1 首个真实消费方，自基线 + JVM 真跑验收）已按 spi 契约落成。
-  illegal cleaner 全量规则已于 F 线清洗批经 libjclassfile 前置级接通
-  （§3.0 敌意输入前置清洗级，两级流水，mjbase → libjclassfile 合法依赖边），
-  旧栈清洗规则挂账清空。剩余按实测体量分四批：A 容器级直写组（**已收口**：
-  class_renamer 经会话 remapper 面迁成；未使用成员清理家族四件
-  empty_class_remover / unused_class_remover / unused_field_remover /
-  global_unused_method_remover 经 reference 面 + libjbc DOM 成员手术迁成，
-  um 道 golden 对拍 + JVM 真跑门收口。普查砍单：meta_info_remover 家族实为
-  scope:class（AsmClassPass），归 B 类级骨架组；tool_class_combiner 随
-  libjbc §34 成员级增删/从零建类契约落地迁成（static 工具类并入宿主 +
-  供体删除 + 全容器 owner 重映射 + 分支体宿主帧再生 + 常量字段
-  ConstantValue 重建，cc 道 golden 对拍 + JVM 真跑门收口；ldc 宽常量候选
-  按 NotModeled 口径保守保留原资源——旧栈照常合并，为迁移声明的语义面
-  差异，见 golden manifest 声明类目与 pass 头注挂账）→
-  B 类级骨架组（**已收口**：meta_info_remover 家族类级 13 件
-  （MetaInfoRemover / FinalRemover / SyntheticBridgeRemover /
-  KotlinMetadataRemover / SourceInfoRemover / SignatureRemover /
-  IllegalAnnotationRemover / IllegalSignatureRemover /
-  IllegalTypeAnnotationRemover / IllegalSourceInfoRemover /
-  UnknownAttributeCleaner / IllegalAccessRemover / SpecificAnnotationRemover）
-  迁成——属性面落 backing 三层属性表（槽摘除 / 槽内过滤 / MethodParameters
-  Raw 原位改写），access 位双面落盘，Code 嵌套属性表有界破例两处
-  （MetaInfoRemover 整槽摘除 debug 表与嵌套注解槽、IllegalTypeAnnotationRemover
-  嵌套槽内过滤，父 Code 槽连带置脏）；tree 道 8 语料 golden 对拍（meta 语义
-  矩阵口径，纯标志位触发类目允许与旧栈 golden 逐字节一致）+ JVM 真跑门
-  （行为一致 + 反射按剥离后口径钉死）收口。能力差距挂账（见家族头注）
-  已收口：record 组件注解清空（typed RecordAttr 组件槽内过滤 + 父 Record
-  槽连带置脏）、SpecificAnnotationRemover 的参数注解槽内过滤（Raw 面
-  JVMS 4.7.20 布局条目摘除）。普查砍单：家族 method 级八件（LineNumberRemover /
-  LocalVariableInfoRemover / ParametersInfoRemover / ExceptionInfoRemover /
-  FrameInfoRemover / IllegalVarargsRemover / IllegalLocalVariableInfoRemover /
-  LongIndyNameOptimizer）为 scope:method，归 C 方法级组；
-  unused_member_remover 已由批 A 收口，不重迁）→
-  C 方法级指令变换组
-  （constant_propagator/dead_code_remover/method_inliner 等主力 12-15 个，
-  CodeDom+CodeEditor 载体，按局部栈操作→数据流→控制流三小波，每 pass 先抽
-  golden vector）→ D 依赖指令重编码/属性级的硬骨头（LVT 重建、stack map
-  等 4-6 个，向 libjbc 单独立项，不硬写）。
-  控制流余量挂账 libjbc A1（管线接线点已就绪，消费形态见 junk_code_inserter）。
-- crash_class_visitor / crash_method_visitor / frame_skipping_visitor：零消费方
-  且为 jbytecode visitor 形态（libjbc 禁 visitor），**有意不迁**。
+- pass：试点三件（illegal_class_file_cleaner / access_modifier_tightener / class_member_sorter）、方法体小批四件（nop_remover / redundant_load_val_eliminator / char_arr_to_str_simplifier / unused_check_cleaner，局部栈操作波次，golden 对拍收口）与控制流首件（junk_code_inserter，经 PassPipelineOptions::typeResolver 帧链接线，libjbc A1 首个真实消费方，自基线 + JVM 真跑验收）已按 spi 契约落成。illegal cleaner 全量规则已于 F 线清洗批经 libjclassfile 前置级接通（§3.0 敌意输入前置清洗级，两级流水，mjbase → libjclassfile 合法依赖边），旧栈清洗规则挂账清空。剩余按实测体量分四批：A 容器级直写组（**已收口**：class_renamer 经会话 remapper 面迁成；未使用成员清理家族四件empty_class_remover / unused_class_remover / unused_field_remover / global_unused_method_remover 经 reference 面 + libjbc DOM 成员手术迁成，um 道 golden 对拍 + JVM 真跑门收口。普查砍单：meta_info_remover 家族实为scope:class（AsmClassPass），归 B 类级骨架组；tool_class_combiner 随libjbc §34 成员级增删/从零建类契约落地迁成（static 工具类并入宿主 +供体删除 + 全容器 owner 重映射 + 分支体宿主帧再生 + 常量字段ConstantValue 重建，cc 道 golden 对拍 + JVM 真跑门收口；ldc 宽常量候选按 NotModeled 口径保守保留原资源——旧栈照常合并，为迁移声明的语义面差异，见 golden manifest 声明类目与 pass 头注挂账）→B 类级骨架组（**已收口**：meta_info_remover 家族类级 13 件（MetaInfoRemover / FinalRemover / SyntheticBridgeRemover / KotlinMetadataRemover / SourceInfoRemover / SignatureRemover / IllegalAnnotationRemover / IllegalSignatureRemover / IllegalTypeAnnotationRemover / IllegalSourceInfoRemover / UnknownAttributeCleaner / IllegalAccessRemover / SpecificAnnotationRemover）迁成——属性面落 backing 三层属性表（槽摘除 / 槽内过滤 / MethodParameters Raw 原位改写），access 位双面落盘，Code 嵌套属性表有界破例两处（MetaInfoRemover 整槽摘除 debug 表与嵌套注解槽、IllegalTypeAnnotationRemover嵌套槽内过滤，父 Code 槽连带置脏）；tree 道 8 语料 golden 对拍（meta 语义矩阵口径，纯标志位触发类目允许与旧栈 golden 逐字节一致）+ JVM 真跑门（行为一致 + 反射按剥离后口径钉死）收口。能力差距挂账（见家族头注）已收口：record 组件注解清空（typed RecordAttr 组件槽内过滤 + 父 Record槽连带置脏）、SpecificAnnotationRemover 的参数注解槽内过滤（Raw 面JVMS 4.7.20 布局条目摘除）。普查砍单：家族 method 级八件（LineNumberRemover / LocalVariableInfoRemover / ParametersInfoRemover / ExceptionInfoRemover / FrameInfoRemover / IllegalVarargsRemover / IllegalLocalVariableInfoRemover / LongIndyNameOptimizer）为 scope:method，归 C 方法级组；unused_member_remover 已由批 A 收口，不重迁）→C 方法级指令变换组（constant_propagator/dead_code_remover/method_inliner 等主力 12-15 个，CodeDom+CodeEditor 载体，按局部栈操作→数据流→控制流三小波，每 pass 先抽golden vector）→ D 依赖指令重编码/属性级的硬骨头（LVT 重建、stack map等 4-6 个，向 libjbc 单独立项，不硬写）。控制流余量挂账 libjbc A1（管线接线点已就绪，消费形态见 junk_code_inserter）。
+- crash_class_visitor / crash_method_visitor / frame_skipping_visitor：零消费方且为 jbytecode visitor 形态（libjbc 禁 visitor），**有意不迁**。
 - pass / spi：最后一批，依赖前面全部（spi 已迁，pass 余量见上）。
 
 ## 有意不迁
 
 - asm/cache（死代码候选）、info/ClassUnionFind（同）。
-- crash_class_visitor / crash_method_visitor / frame_skipping_visitor（零消费方，
-  jbytecode visitor 形态，libjbc 禁 visitor）。
-- analyzer 死岛四件（code_analyzer/code_rewriter/code_reference_value/
-  value_utils，零消费方互锁）+ destination_interpreter（零消费方；多来源
-  producer 集若未来有消费方按域插件重设计）+ dataflow_analyzer/
-  simple_interpreter/super_interpreter/subroutine 等 8 件旧栈驱动胶水
-  （职责由 DomainEngine/FrameQuery/branch_facts 承担，见 B4 收口提交）。
-- info（InfoUtil）：能力被 hierarchy 会话扫描 + libjbc classfile DOM 覆盖，
-  唯一 jbytecode 依赖点（ClassReader）；出现真实消费方时按 jbc 重写
-  ~50 行提取器即可，不单开模块。
-- 旧 matcher 与 tmatcher 在 mjbase 是否合并：第一批先各自迁移，
-  集成期裁决（合并进 tmatcher 一代）。
+- crash_class_visitor / crash_method_visitor / frame_skipping_visitor（零消费方，jbytecode visitor 形态，libjbc 禁 visitor）。
+- analyzer 死岛四件（code_analyzer/code_rewriter/code_reference_value/ value_utils，零消费方互锁）+ destination_interpreter（零消费方；多来源producer 集若未来有消费方按域插件重设计）+ dataflow_analyzer/ simple_interpreter/super_interpreter/subroutine 等 8 件旧栈驱动胶水（职责由 DomainEngine/FrameQuery/branch_facts 承担，见 B4 收口提交）。
+- info（InfoUtil）：能力被 hierarchy 会话扫描 + libjbc classfile DOM 覆盖，唯一 jbytecode 依赖点（ClassReader）；出现真实消费方时按 jbc 重写~50 行提取器即可，不单开模块。
+- 旧 matcher 与 tmatcher 在 mjbase 是否合并：第一批先各自迁移，集成期裁决（合并进 tmatcher 一代）。
