@@ -43,8 +43,8 @@ namespace mjbase::project {
 ///   层工具出口负责。
 ///
 /// 批量写入口（`ensureInput` / `ingestEntries` / `ingestClasses` /
-/// `replaceReferences` / `setRenames`）都走单事务 + 预编译语句复用；任一行
-/// 失败整批回滚，不留半截事实。
+/// `replaceReferences` / `replaceReferencesFromMember` / `setRenames`）都走
+/// 单事务 + 预编译语句复用；任一行失败整批回滚，不留半截事实。
 ///
 /// 存储引擎是 SQLite（xrepo `sqlite3`，静态链接）。sqlite3 C API 只出现在
 /// analysis_db.cpp；本头不暴露 SQL、句柄或表结构。错误统一走
@@ -538,6 +538,19 @@ public:
     /// @return 写入的引用条数。
     ca::Result<ca::usize, AnalysisDbError> replaceReferences(
         std::vector<DbReferenceRecord> references);
+
+    /// @brief 原子替换单个源成员的直接引用事实（单事务切片替换）。
+    ///
+    /// 删除 @p sourceMemberId 名下的全部引用行后按输入序插入 @p references；
+    /// 其他成员与 class 头的引用逐行不动。成员身份由参数携带，行内 source
+    /// 字段照常解析写入，且必须与 @p sourceMemberId 指向的成员一致（不一致
+    /// → `Invalid`）。@p sourceMemberId 不存在或不是方法、记录形状非法 →
+    /// `Invalid`，旧切片保持不动；空输入 = 清空该成员的引用切片。适合方法
+    /// 体编辑后的增量替换；整库重建用 `replaceReferences`。
+    ///
+    /// @return 写入的引用条数。
+    ca::Result<ca::usize, AnalysisDbError> replaceReferencesFromMember(
+        ca::i64 sourceMemberId, std::vector<DbReferenceRecord> references);
 
     /// @brief 按内部名查类事实；未登记返回 `std::nullopt`。
     ca::Result<std::optional<DbClassInfo>, AnalysisDbError> findClass(
