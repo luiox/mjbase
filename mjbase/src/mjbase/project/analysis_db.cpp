@@ -1,5 +1,7 @@
 #include "mjbase/project/analysis_db.hpp"
 
+#include "mjbase/project/library_origin.hpp"
+
 #include <sqlite3.h>
 
 #include <cstring>
@@ -2474,6 +2476,7 @@ ca::Result<std::vector<DbClassCensusRow>, AnalysisDbError> AnalysisDb::censusCla
         row.access       = static_cast<ca::i32>(sqlite3_column_int64(statement.raw, 1));
         row.superName    = utf8Column(statement.raw, 2);
         row.kind         = classifyClassKind(row.access, row.superName.ref());
+        row.origin       = classifyLibraryOrigin(row.internalName.ref());
         row.ifaceCount        = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 3));
         row.methodCount       = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 4));
         row.fieldCount        = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 5));

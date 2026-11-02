@@ -267,6 +267,38 @@ TEST(MjAnalysisCensusTest, ClassRowsProjectCountsEntryFactsAndDerivedKind)
     EXPECT_EQ(0, badRow->methodCount);   // 无成员登记 → 计数为 0
 }
 
+TEST(MjAnalysisCensusTest, ClassRowsProjectLibraryOriginByPrefix)
+{
+    // origin 是投影层派生（前缀分类，#132 L1）：Jdk/Known 按内部名前缀命中，
+    // Unknown 兜底；与条目形态、类形态派生正交。
+    const auto path = freshDbPath("origin");
+    auto       db   = openOrDie(path);
+    auto inputId = db.ensureInput(S("lib/mix.jar"), refOf(shaOf('0')), 4096);
+    ASSERT_TRUE(inputId.is_ok());
+    const ca::i64 jar = inputId.unwrap();
+
+    std::vector<DbClassInput> classes;
+    classes.push_back(classInput("java/test/Sample", "java/lang/Object"));
+    classes.push_back(classInput("com/google/gson/Stub", ""));
+    classes.push_back(classInput("app/Main", ""));
+    ASSERT_TRUE(db.ingestClasses(std::move(classes)).is_ok());
+
+    auto projected = db.censusClasses(jar);
+    ASSERT_TRUE(projected.is_ok());
+    auto rows = std::move(projected).unwrap();
+    ASSERT_EQ(3U, rows.size());
+
+    const DbClassCensusRow* jdk = findRow(rows, "java/test/Sample");
+    ASSERT_NE(jdk, nullptr);
+    EXPECT_EQ(LibraryOrigin::Jdk, jdk->origin);
+    const DbClassCensusRow* known = findRow(rows, "com/google/gson/Stub");
+    ASSERT_NE(known, nullptr);
+    EXPECT_EQ(LibraryOrigin::Known, known->origin);
+    const DbClassCensusRow* unknown = findRow(rows, "app/Main");
+    ASSERT_NE(unknown, nullptr);
+    EXPECT_EQ(LibraryOrigin::Unknown, unknown->origin);
+}
+
 TEST(MjAnalysisCensusTest, TombstonedEntriesDropTheirClassesFromCensus)
 {
     const auto path = freshDbPath("tombstone");
