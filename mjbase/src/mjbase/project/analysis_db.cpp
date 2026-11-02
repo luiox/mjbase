@@ -240,6 +240,23 @@ ca::Result<void, AnalysisDbError> validateMemberKind(DbMemberKind kind)
     return ca::Ok();
 }
 
+/// @brief 校验分页窗口参数：limit 与 offset 均须非负。
+///
+/// 0 页与超过命中行数的 offset 都是合法窗口（返回空页）；负值是调用方
+/// 契约错误，统一 `Invalid` 拒绝。
+ca::Result<void, AnalysisDbError> validatePageWindow(ca::i64 limit, ca::i64 offset)
+{
+    if (limit < 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "page limit must not be negative"));
+    }
+    if (offset < 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "page offset must not be negative"));
+    }
+    return ca::Ok();
+}
+
 ca::Result<void, AnalysisDbError> validateClassFields(const ca::str::Utf8StringRef& owner,
                                                       const ca::str::Utf8StringRef& shadow,
                                                       const ca::str::Utf8StringRef& token)
@@ -1202,15 +1219,34 @@ constexpr const char* kReferenceSelectSql =
 constexpr const char* kReferenceOrderSql =
     "ORDER BY r.source_class_id, r.source_member_id, r.insn_index, r.ref_id";
 
+/// @brief 执行引用查询并按行序收集；@p pageLimit 非负时在 SQL 末尾追加
+///        LIMIT/OFFSET 窗口（参数号紧跟既有绑定之后，绑 @p pageLimit /
+///        @p pageOffset）。@p pageLimit < 0 表示无窗口（@p pageOffset 被忽
+///        略）——内部调用方约定：分页入口必须先过 `validatePageWindow`。
 ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> runReferenceQuery(
-    sqlite3* db, const std::string& sql, int bindCount,
+    sqlite3* db, const std::string& sql, int bindCount, ca::i64 pageLimit, ca::i64 pageOffset,
     const std::function<ca::Result<void, AnalysisDbError>(sqlite3_stmt*)>& bind)
 {
-    auto prepared = prepare(db, sql.c_str());
+    std::string windowSql = sql;
+    if (pageLimit >= 0) {
+        windowSql += " LIMIT ?" + std::to_string(bindCount + 1) +
+                     " OFFSET ?" + std::to_string(bindCount + 2);
+    }
+    auto prepared = prepare(db, windowSql.c_str());
     if (prepared.is_err()) return errorOf(std::move(prepared));
     auto statement = std::move(prepared).unwrap();
     if (bindCount > 0) {
         if (auto result = bind(statement.raw); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+    }
+    if (pageLimit >= 0) {
+        if (auto result = bindInt(db, statement.raw, bindCount + 1, pageLimit);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(db, statement.raw, bindCount + 2, pageOffset);
+            result.is_err()) {
             return errorOf(std::move(result));
         }
     }
@@ -1359,6 +1395,32 @@ constexpr const char* kSchemaDdl[] = {
     ")",
     "CREATE INDEX mask_rules_order ON mask_rules(priority, rule_id)",
 };
+
+/// @brief 全部后代闭包 SQL（allSubclasses / allSubclassesPaged 共用）；
+///        分页变体在末尾追加 LIMIT/OFFSET 窗口。
+constexpr const char* kAllSubclassesSql =
+    "WITH RECURSIVE subs(name) AS ("
+    "  SELECT internal_name FROM classes WHERE super_name=?1"
+    "  UNION"
+    "  SELECT c.internal_name FROM classes c JOIN subs s ON c.super_name=s.name"
+    ") SELECT name FROM subs ORDER BY name";
+
+/// @brief 接口实现类闭包 SQL（implementors / implementorsPaged 共用）；
+///        分页变体在末尾追加 LIMIT/OFFSET 窗口。
+constexpr const char* kImplementorsSql =
+    "WITH RECURSIVE ifaces(name) AS ("
+    "  SELECT ?1"
+    "  UNION"
+    "  SELECT i.interface_name FROM interfaces i "
+    "  JOIN classes c ON c.class_id=i.class_id "
+    "  JOIN ifaces f ON c.internal_name=f.name"
+    "), impls(name) AS ("
+    "  SELECT c.internal_name FROM classes c "
+    "  JOIN interfaces i ON i.class_id=c.class_id "
+    "  JOIN ifaces f ON i.interface_name=f.name"
+    "  UNION"
+    "  SELECT c.internal_name FROM classes c JOIN impls p ON c.super_name=p.name"
+    ") SELECT name FROM impls ORDER BY name";
 
 }   // namespace
 
@@ -3109,16 +3171,46 @@ ca::Result<std::vector<ca::str::Utf8String>, AnalysisDbError> AnalysisDb::allSub
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
     }
 
-    auto prepared = prepare(
-        impl_->handle,
-        "WITH RECURSIVE subs(name) AS ("
-        "  SELECT internal_name FROM classes WHERE super_name=?1"
-        "  UNION"
-        "  SELECT c.internal_name FROM classes c JOIN subs s ON c.super_name=s.name"
-        ") SELECT name FROM subs ORDER BY name");
+    auto prepared = prepare(impl_->handle, kAllSubclassesSql);
     if (prepared.is_err()) return errorOf(std::move(prepared));
     auto statement = std::move(prepared).unwrap();
     if (auto result = bindText(impl_->handle, statement.raw, 1, owner); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    std::vector<ca::str::Utf8String> names;
+    for (;;) {
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+        names.push_back(utf8Column(statement.raw, 0));
+    }
+    return ca::Ok(std::move(names));
+}
+
+ca::Result<std::vector<ca::str::Utf8String>, AnalysisDbError> AnalysisDb::allSubclassesPaged(
+    const ca::str::Utf8StringRef& owner, ca::i64 limit, ca::i64 offset) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto result = validatePageWindow(limit, offset); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    // 窗口在递归 CTE 全量展开、ORDER BY 之后截取（SQLite LIMIT/OFFSET 语义）：
+    // 分页只省行对象构造与返回内存，遍历与排序成本不随窗口缩小。
+    const std::string sql = std::string(kAllSubclassesSql) + " LIMIT ?2 OFFSET ?3";
+    auto prepared = prepare(impl_->handle, sql.c_str());
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindText(impl_->handle, statement.raw, 1, owner); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(impl_->handle, statement.raw, 2, limit); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(impl_->handle, statement.raw, 3, offset); result.is_err()) {
         return errorOf(std::move(result));
     }
 
@@ -3139,24 +3231,45 @@ ca::Result<std::vector<ca::str::Utf8String>, AnalysisDbError> AnalysisDb::implem
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
     }
 
-    auto prepared = prepare(
-        impl_->handle,
-        "WITH RECURSIVE ifaces(name) AS ("
-        "  SELECT ?1"
-        "  UNION"
-        "  SELECT i.interface_name FROM interfaces i "
-        "  JOIN classes c ON c.class_id=i.class_id "
-        "  JOIN ifaces f ON c.internal_name=f.name"
-        "), impls(name) AS ("
-        "  SELECT c.internal_name FROM classes c "
-        "  JOIN interfaces i ON i.class_id=c.class_id "
-        "  JOIN ifaces f ON i.interface_name=f.name"
-        "  UNION"
-        "  SELECT c.internal_name FROM classes c JOIN impls p ON c.super_name=p.name"
-        ") SELECT name FROM impls ORDER BY name");
+    auto prepared = prepare(impl_->handle, kImplementorsSql);
     if (prepared.is_err()) return errorOf(std::move(prepared));
     auto statement = std::move(prepared).unwrap();
     if (auto result = bindText(impl_->handle, statement.raw, 1, interfaceName); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    std::vector<ca::str::Utf8String> names;
+    for (;;) {
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+        names.push_back(utf8Column(statement.raw, 0));
+    }
+    return ca::Ok(std::move(names));
+}
+
+ca::Result<std::vector<ca::str::Utf8String>, AnalysisDbError> AnalysisDb::implementorsPaged(
+    const ca::str::Utf8StringRef& interfaceName, ca::i64 limit, ca::i64 offset) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto result = validatePageWindow(limit, offset); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    // 窗口在闭包展开、ORDER BY 之后截取（同 allSubclassesPaged）。
+    const std::string sql = std::string(kImplementorsSql) + " LIMIT ?2 OFFSET ?3";
+    auto prepared = prepare(impl_->handle, sql.c_str());
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindText(impl_->handle, statement.raw, 1, interfaceName); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(impl_->handle, statement.raw, 2, limit); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(impl_->handle, statement.raw, 3, offset); result.is_err()) {
         return errorOf(std::move(result));
     }
 
@@ -3181,7 +3294,35 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referenc
                             "WHERE r.ref_kind=2 AND r.target_class=?1 AND r.target_name=?2 "
                             "AND r.target_desc=?3 " +
                             kReferenceOrderSql;
-    return runReferenceQuery(impl_->handle, sql, 3,
+    return runReferenceQuery(impl_->handle, sql, 3, -1, -1,
+                             [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
+                                 if (auto result = bindText(impl_->handle, statement, 1, owner);
+                                     result.is_err()) {
+                                     return errorOf(std::move(result));
+                                 }
+                                 if (auto result = bindText(impl_->handle, statement, 2, name);
+                                     result.is_err()) {
+                                     return errorOf(std::move(result));
+                                 }
+                                 return bindText(impl_->handle, statement, 3, descriptor);
+                             });
+}
+
+ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referencesToMethodPaged(
+    const ca::str::Utf8StringRef& owner, const ca::str::Utf8StringRef& name,
+    const ca::str::Utf8StringRef& descriptor, ca::i64 limit, ca::i64 offset) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto result = validatePageWindow(limit, offset); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    const std::string sql = std::string(kReferenceSelectSql) +
+                            "WHERE r.ref_kind=2 AND r.target_class=?1 AND r.target_name=?2 "
+                            "AND r.target_desc=?3 " +
+                            kReferenceOrderSql;
+    return runReferenceQuery(impl_->handle, sql, 3, limit, offset,
                              [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
                                  if (auto result = bindText(impl_->handle, statement, 1, owner);
                                      result.is_err()) {
@@ -3206,7 +3347,35 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referenc
                             "WHERE r.ref_kind=1 AND r.target_class=?1 AND r.target_name=?2 "
                             "AND r.target_desc=?3 " +
                             kReferenceOrderSql;
-    return runReferenceQuery(impl_->handle, sql, 3,
+    return runReferenceQuery(impl_->handle, sql, 3, -1, -1,
+                             [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
+                                 if (auto result = bindText(impl_->handle, statement, 1, owner);
+                                     result.is_err()) {
+                                     return errorOf(std::move(result));
+                                 }
+                                 if (auto result = bindText(impl_->handle, statement, 2, name);
+                                     result.is_err()) {
+                                     return errorOf(std::move(result));
+                                 }
+                                 return bindText(impl_->handle, statement, 3, descriptor);
+                             });
+}
+
+ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referencesToFieldPaged(
+    const ca::str::Utf8StringRef& owner, const ca::str::Utf8StringRef& name,
+    const ca::str::Utf8StringRef& descriptor, ca::i64 limit, ca::i64 offset) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto result = validatePageWindow(limit, offset); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    const std::string sql = std::string(kReferenceSelectSql) +
+                            "WHERE r.ref_kind=1 AND r.target_class=?1 AND r.target_name=?2 "
+                            "AND r.target_desc=?3 " +
+                            kReferenceOrderSql;
+    return runReferenceQuery(impl_->handle, sql, 3, limit, offset,
                              [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
                                  if (auto result = bindText(impl_->handle, statement, 1, owner);
                                      result.is_err()) {
@@ -3228,7 +3397,24 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referenc
     }
     const std::string sql = std::string(kReferenceSelectSql) +
                             "WHERE r.target_class=?1 " + kReferenceOrderSql;
-    return runReferenceQuery(impl_->handle, sql, 1,
+    return runReferenceQuery(impl_->handle, sql, 1, -1, -1,
+                             [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
+                                 return bindText(impl_->handle, statement, 1, owner);
+                             });
+}
+
+ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referencesToClassPaged(
+    const ca::str::Utf8StringRef& owner, ca::i64 limit, ca::i64 offset) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto result = validatePageWindow(limit, offset); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    const std::string sql = std::string(kReferenceSelectSql) +
+                            "WHERE r.target_class=?1 " + kReferenceOrderSql;
+    return runReferenceQuery(impl_->handle, sql, 1, limit, offset,
                              [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
                                  return bindText(impl_->handle, statement, 1, owner);
                              });
@@ -3248,7 +3434,30 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referenc
     if (memberId.unwrap() == 0) return ca::Ok(std::vector<DbReferenceRecord>());
     const std::string sql = std::string(kReferenceSelectSql) +
                             "WHERE r.source_member_id=?1 " + kReferenceOrderSql;
-    return runReferenceQuery(impl_->handle, sql, 1,
+    return runReferenceQuery(impl_->handle, sql, 1, -1, -1,
+                             [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
+                                 return bindInt(impl_->handle, statement, 1,
+                                                memberId.unwrap());
+                             });
+}
+
+ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referencesFromMemberPaged(
+    const ca::str::Utf8StringRef& owner, const ca::str::Utf8StringRef& name,
+    const ca::str::Utf8StringRef& descriptor, ca::i64 limit, ca::i64 offset) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto result = validatePageWindow(limit, offset); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    // 两步走（同 referencesFromMember）：先解析 member_id 再下探索引。
+    auto memberId = memberIdByName(impl_->handle, owner, name, descriptor);
+    if (memberId.is_err()) return errorOf(std::move(memberId));
+    if (memberId.unwrap() == 0) return ca::Ok(std::vector<DbReferenceRecord>());
+    const std::string sql = std::string(kReferenceSelectSql) +
+                            "WHERE r.source_member_id=?1 " + kReferenceOrderSql;
+    return runReferenceQuery(impl_->handle, sql, 1, limit, offset,
                              [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
                                  return bindInt(impl_->handle, statement, 1,
                                                 memberId.unwrap());
@@ -3266,7 +3475,29 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referenc
     if (classId.unwrap() == 0) return ca::Ok(std::vector<DbReferenceRecord>());
     const std::string sql = std::string(kReferenceSelectSql) +
                             "WHERE r.source_class_id=?1 " + kReferenceOrderSql;
-    return runReferenceQuery(impl_->handle, sql, 1,
+    return runReferenceQuery(impl_->handle, sql, 1, -1, -1,
+                             [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
+                                 return bindInt(impl_->handle, statement, 1,
+                                                classId.unwrap());
+                             });
+}
+
+ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referencesFromClassPaged(
+    const ca::str::Utf8StringRef& owner, ca::i64 limit, ca::i64 offset) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto result = validatePageWindow(limit, offset); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    // 两步走（同 referencesFromClass）：先解析 class_id 再下探索引。
+    auto classId = classIdByName(impl_->handle, owner);
+    if (classId.is_err()) return errorOf(std::move(classId));
+    if (classId.unwrap() == 0) return ca::Ok(std::vector<DbReferenceRecord>());
+    const std::string sql = std::string(kReferenceSelectSql) +
+                            "WHERE r.source_class_id=?1 " + kReferenceOrderSql;
+    return runReferenceQuery(impl_->handle, sql, 1, limit, offset,
                              [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
                                  return bindInt(impl_->handle, statement, 1,
                                                 classId.unwrap());

@@ -582,9 +582,28 @@ public:
     ca::Result<std::vector<ca::str::Utf8String>, AnalysisDbError> allSubclasses(
         const ca::str::Utf8StringRef& owner) const;
 
+    /// @brief `allSubclasses` 的分页变体：闭包按 internal_name 升序，只返回
+    ///        第 @p offset 行起的 @p limit 行（SQLite OFFSET 行偏移分页）。
+    ///
+    /// 分页契约（层次闭包分页查询共用）：
+    /// - 全量结果 = 各页按 offset 升序拼接，跨页不重不漏（闭包行键唯一、
+    ///   排序确定）；
+    /// - @p limit 为 0 返回空页，超出剩余行数只返回剩余行；负值 → `Invalid`；
+    /// - @p offset 超过闭包大小返回空页；负值 → `Invalid`；
+    /// - 窗口在递归 CTE 全量展开、排序之后截取：分页只省行对象构造与返回
+    ///   内存，遍历与排序成本不随窗口缩小；游标分页不在本层预设。
+    ca::Result<std::vector<ca::str::Utf8String>, AnalysisDbError> allSubclassesPaged(
+        const ca::str::Utf8StringRef& owner, ca::i64 limit, ca::i64 offset) const;
+
     /// @brief 接口的实现类：接口自身闭包（含子接口）+ 实现者的全部后代。
     ca::Result<std::vector<ca::str::Utf8String>, AnalysisDbError> implementors(
         const ca::str::Utf8StringRef& interfaceName) const;
+
+    /// @brief `implementors` 的分页变体：实现类按 internal_name 升序，分页
+    ///        契约（窗口语义、参数约束、遍历成本不随窗口缩小）与
+    ///        `allSubclassesPaged` 完全相同。
+    ca::Result<std::vector<ca::str::Utf8String>, AnalysisDbError> implementorsPaged(
+        const ca::str::Utf8StringRef& interfaceName, ca::i64 limit, ca::i64 offset) const;
 
     /// @brief 精确目标查询：编码目标为 owner/name/descriptor 的方法引用。
     ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> referencesToMethod(
@@ -608,6 +627,50 @@ public:
     /// @brief 来源类查询：class 头与全部方法体发出的引用。
     ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> referencesFromClass(
         const ca::str::Utf8StringRef& owner) const;
+
+    //-- 引用查询分页变体（行偏移窗口；全量接口语义不变） ------------------
+
+    /// @brief `referencesToClass` 的分页变体：命中行按全量版同一行序，只返回
+    ///        第 @p offset 行起的 @p limit 行（SQLite OFFSET 行偏移分页）。
+    ///
+    /// 引用分页契约（本组查询共用）：
+    /// - 全量结果 = 各页按 offset 升序拼接，跨页不重不漏（行序键含 ref_id，
+    ///   排序全量确定）；
+    /// - @p limit 为 0 返回空页，超出剩余行数只返回剩余行；负值 → `Invalid`；
+    /// - @p offset 超过命中行数返回空页；负值 → `Invalid`；
+    /// - 窗口在排序后截取：匹配与排序每次查询仍全量执行，分页省的是行对象
+    ///   构造与返回内存；游标分页不在本层预设；
+    /// - 相邻两次分页查询之间 refs 被整体替换（如 `replaceReferences`）会使
+    ///   行序重排，跨页窗口以「同一事实状态」为前提。
+    ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> referencesToClassPaged(
+        const ca::str::Utf8StringRef& owner, ca::i64 limit, ca::i64 offset) const;
+
+    /// @brief `referencesToMethod` 的分页变体：分页契约与
+    ///        `referencesToClassPaged` 完全相同，命中目标为
+    ///        owner/name/descriptor 的方法引用。
+    ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> referencesToMethodPaged(
+        const ca::str::Utf8StringRef& owner, const ca::str::Utf8StringRef& name,
+        const ca::str::Utf8StringRef& descriptor, ca::i64 limit, ca::i64 offset) const;
+
+    /// @brief `referencesToField` 的分页变体：分页契约与
+    ///        `referencesToClassPaged` 完全相同，命中目标为
+    ///        owner/name/descriptor 的字段引用。
+    ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> referencesToFieldPaged(
+        const ca::str::Utf8StringRef& owner, const ca::str::Utf8StringRef& name,
+        const ca::str::Utf8StringRef& descriptor, ca::i64 limit, ca::i64 offset) const;
+
+    /// @brief `referencesFromMember` 的分页变体：分页契约与
+    ///        `referencesToClassPaged` 完全相同，命中来源为 owner/name/
+    ///        descriptor 方法体的引用；成员未登记返回空页（非错误）。
+    ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> referencesFromMemberPaged(
+        const ca::str::Utf8StringRef& owner, const ca::str::Utf8StringRef& name,
+        const ca::str::Utf8StringRef& descriptor, ca::i64 limit, ca::i64 offset) const;
+
+    /// @brief `referencesFromClass` 的分页变体：分页契约与
+    ///        `referencesToClassPaged` 完全相同，命中来源为 owner 的
+    ///        class 头与方法体引用；类未登记返回空页（非错误）。
+    ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> referencesFromClassPaged(
+        const ca::str::Utf8StringRef& owner, ca::i64 limit, ca::i64 offset) const;
 
     /// @brief 库内直接引用总数。
     ca::Result<ca::usize, AnalysisDbError> referenceCount() const;

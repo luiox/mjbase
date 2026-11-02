@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <string>
 #include <utility>
@@ -516,6 +517,36 @@ DbReferenceRecord referenceRecord(const char* sourceClass, const char* sourceMet
     return record;
 }
 
+/// @brief 引用行逐字段比较（DbReferenceRecord 无 operator==）。
+void expectSameRecords(const std::vector<DbReferenceRecord>& expected,
+                       const std::vector<DbReferenceRecord>& actual)
+{
+    ASSERT_EQ(expected.size(), actual.size());
+    for (ca::usize i = 0; i < expected.size(); ++i) {
+        EXPECT_EQ(expected[i].sourceClass.to_std_string(), actual[i].sourceClass.to_std_string());
+        EXPECT_EQ(expected[i].sourceMethod.to_std_string(),
+                  actual[i].sourceMethod.to_std_string());
+        EXPECT_EQ(expected[i].sourceDescriptor.to_std_string(),
+                  actual[i].sourceDescriptor.to_std_string());
+        EXPECT_EQ(expected[i].insnIndex, actual[i].insnIndex);
+        EXPECT_EQ(expected[i].kind, actual[i].kind);
+        EXPECT_EQ(expected[i].targetClass.to_std_string(), actual[i].targetClass.to_std_string());
+        EXPECT_EQ(expected[i].targetName.to_std_string(), actual[i].targetName.to_std_string());
+        EXPECT_EQ(expected[i].targetDescriptor.to_std_string(),
+                  actual[i].targetDescriptor.to_std_string());
+    }
+}
+
+/// @brief 类名列表逐项比较（分页窗口与全量基线对拍用）。
+void expectSameNames(const std::vector<Utf8String>& expected,
+                     const std::vector<Utf8String>& actual)
+{
+    ASSERT_EQ(expected.size(), actual.size());
+    for (ca::usize i = 0; i < expected.size(); ++i) {
+        EXPECT_EQ(expected[i].to_std_string(), actual[i].to_std_string());
+    }
+}
+
 }   // namespace
 
 TEST(MjAnalysisDbTest, IngestsHierarchyMembersAndQueries)
@@ -890,6 +921,248 @@ TEST(MjAnalysisDbTest, ReplaceReferencesFromMemberRejectsBadSliceWithoutWriting)
     count = db.referenceCount();
     ASSERT_TRUE(count.is_ok());
     EXPECT_EQ(1U, count.unwrap());
+}
+
+//-- 分页变体（引用与层次闭包查询，行偏移窗口） ------------------------------
+
+TEST(MjAnalysisDbTest, ReferencePagedQueriesMatchFullResults)
+{
+    const auto path = freshDbPath("refs_paged");
+    auto       db   = openOrDie(path);
+
+    std::vector<DbClassInput> inputs;
+    DbClassInput callerA = classInput("demo/A", "java/lang/Object");
+    callerA.members.push_back(methodInput("hit", "()V"));
+    callerA.members.push_back(methodInput("loop", "()V"));
+    DbClassInput callerB = classInput("demo/B", "java/lang/Object");
+    callerB.members.push_back(methodInput("visit", "()V"));
+    DbClassInput callerC = classInput("demo/C", "java/lang/Object");
+    callerC.members.push_back(methodInput("go", "()V"));
+    DbClassInput base = classInput("demo/Base", "java/lang/Object");
+    base.members.push_back(methodInput("run", "()V"));
+    base.members.push_back(fieldInput("counter", "I"));
+    base.members.push_back(fieldInput("next", "J"));
+    inputs.push_back(std::move(callerA));
+    inputs.push_back(std::move(callerB));
+    inputs.push_back(std::move(callerC));
+    inputs.push_back(std::move(base));
+    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+
+    // 8 行命中 demo/Base：三个方法体 + 一个 class 头，三种引用类别混排。
+    std::vector<DbReferenceRecord> references;
+    references.push_back(referenceRecord("demo/A", "hit", "()V", 1,
+                                         DbReferenceKind::Method, "demo/Base", "run", "()V"));
+    references.push_back(referenceRecord("demo/A", "loop", "()V", 2,
+                                         DbReferenceKind::Field, "demo/Base", "counter", "I"));
+    references.push_back(referenceRecord("demo/A", "loop", "()V", 3,
+                                         DbReferenceKind::Type, "demo/Base", "", ""));
+    references.push_back(referenceRecord("demo/B", "visit", "()V", 4,
+                                         DbReferenceKind::Method, "demo/Base", "run", "()V"));
+    references.push_back(referenceRecord("demo/B", "visit", "()V", 5,
+                                         DbReferenceKind::Type, "demo/Base", "", ""));
+    references.push_back(referenceRecord("demo/C", "go", "()V", 6,
+                                         DbReferenceKind::Method, "demo/Base", "run", "()V"));
+    references.push_back(referenceRecord("demo/C", "go", "()V", 7,
+                                         DbReferenceKind::Field, "demo/Base", "next", "J"));
+    references.push_back(referenceRecord("demo/C", "", "", -1, DbReferenceKind::Type,
+                                         "demo/Base", "", ""));
+    auto replaced = db.replaceReferences(std::move(references));
+    ASSERT_TRUE(replaced.is_ok());
+    EXPECT_EQ(8U, replaced.unwrap());
+
+    // 全量基线。
+    auto fullToClass = db.referencesToClass(S("demo/Base"));
+    ASSERT_TRUE(fullToClass.is_ok());
+    std::vector<DbReferenceRecord> toClassRows = std::move(fullToClass).unwrap();
+    ASSERT_EQ(8U, toClassRows.size());
+
+    // 整窗一次取全 = 全量（行序一致）。
+    auto whole = db.referencesToClassPaged(S("demo/Base"), 100, 0);
+    ASSERT_TRUE(whole.is_ok());
+    expectSameRecords(toClassRows, std::move(whole).unwrap());
+
+    // 3 行一页跨页拼接 = 全量：不重不漏，尾页只回剩余行。
+    std::vector<DbReferenceRecord> stitched;
+    for (ca::i64 offset = 0; offset < 8; offset += 3) {
+        auto page = db.referencesToClassPaged(S("demo/Base"), 3, offset);
+        ASSERT_TRUE(page.is_ok());
+        auto rows = std::move(page).unwrap();
+        ASSERT_LE(rows.size(), 3U);
+        // Utf8String 只移不拷：页行整体 move 进拼接窗口。
+        stitched.insert(stitched.end(), std::make_move_iterator(rows.begin()),
+                        std::make_move_iterator(rows.end()));
+    }
+    expectSameRecords(toClassRows, stitched);
+
+    auto tail = db.referencesToClassPaged(S("demo/Base"), 3, 6);
+    ASSERT_TRUE(tail.is_ok());
+    EXPECT_EQ(2U, std::move(tail).unwrap().size());
+
+    // offset 越界与 limit=0 都是空页（合法，非错误）。
+    auto beyond = db.referencesToClassPaged(S("demo/Base"), 3, 8);
+    ASSERT_TRUE(beyond.is_ok());
+    EXPECT_TRUE(std::move(beyond).unwrap().empty());
+    auto far = db.referencesToClassPaged(S("demo/Base"), 3, 1000);
+    ASSERT_TRUE(far.is_ok());
+    EXPECT_TRUE(std::move(far).unwrap().empty());
+    auto zero = db.referencesToClassPaged(S("demo/Base"), 0, 0);
+    ASSERT_TRUE(zero.is_ok());
+    EXPECT_TRUE(std::move(zero).unwrap().empty());
+
+    // 负窗口参数是契约错误：Invalid。
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.referencesToClassPaged(S("demo/Base"), -1, 0)));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.referencesToClassPaged(S("demo/Base"), 3, -1)));
+
+    // 精确目标分页：与全量版同序，两页拼接等于全量。
+    auto fullToMethod = db.referencesToMethod(S("demo/Base"), S("run"), S("()V"));
+    ASSERT_TRUE(fullToMethod.is_ok());
+    std::vector<DbReferenceRecord> toMethodRows = std::move(fullToMethod).unwrap();
+    ASSERT_EQ(3U, toMethodRows.size());
+    auto methodHead = db.referencesToMethodPaged(S("demo/Base"), S("run"), S("()V"), 2, 0);
+    ASSERT_TRUE(methodHead.is_ok());
+    auto methodTail = db.referencesToMethodPaged(S("demo/Base"), S("run"), S("()V"), 2, 2);
+    ASSERT_TRUE(methodTail.is_ok());
+    std::vector<DbReferenceRecord> methodPages = std::move(methodHead).unwrap();
+    auto methodTailRows = std::move(methodTail).unwrap();
+    ASSERT_EQ(1U, methodTailRows.size());
+    methodPages.insert(methodPages.end(), std::make_move_iterator(methodTailRows.begin()),
+                       std::make_move_iterator(methodTailRows.end()));
+    expectSameRecords(toMethodRows, methodPages);
+
+    auto fullToField = db.referencesToField(S("demo/Base"), S("counter"), S("I"));
+    ASSERT_TRUE(fullToField.is_ok());
+    std::vector<DbReferenceRecord> toFieldRows = std::move(fullToField).unwrap();
+    ASSERT_EQ(1U, toFieldRows.size());
+    auto fieldPage = db.referencesToFieldPaged(S("demo/Base"), S("counter"), S("I"), 5, 0);
+    ASSERT_TRUE(fieldPage.is_ok());
+    expectSameRecords(toFieldRows, std::move(fieldPage).unwrap());
+
+    // 按源分页：referencesFromClassPaged 单行窗口逐步走完 = 全量。
+    auto fullFromA = db.referencesFromClass(S("demo/A"));
+    ASSERT_TRUE(fullFromA.is_ok());
+    std::vector<DbReferenceRecord> fromARows = std::move(fullFromA).unwrap();
+    ASSERT_EQ(3U, fromARows.size());
+    std::vector<DbReferenceRecord> fromAStitched;
+    for (ca::i64 offset = 0; offset < 3; ++offset) {
+        auto page = db.referencesFromClassPaged(S("demo/A"), 1, offset);
+        ASSERT_TRUE(page.is_ok());
+        auto rows = std::move(page).unwrap();
+        ASSERT_EQ(1U, rows.size());
+        fromAStitched.push_back(std::move(rows[0]));
+    }
+    expectSameRecords(fromARows, fromAStitched);
+
+    auto fullFromLoop = db.referencesFromMember(S("demo/A"), S("loop"), S("()V"));
+    ASSERT_TRUE(fullFromLoop.is_ok());
+    std::vector<DbReferenceRecord> fromLoopRows = std::move(fullFromLoop).unwrap();
+    ASSERT_EQ(2U, fromLoopRows.size());
+    auto loopPage = db.referencesFromMemberPaged(S("demo/A"), S("loop"), S("()V"), 10, 0);
+    ASSERT_TRUE(loopPage.is_ok());
+    expectSameRecords(fromLoopRows, std::move(loopPage).unwrap());
+
+    // 未登记目标/来源：全量与分页同为空页（非错误）。
+    auto ghostFull = db.referencesFromClass(S("demo/Nope"));
+    ASSERT_TRUE(ghostFull.is_ok());
+    EXPECT_TRUE(std::move(ghostFull).unwrap().empty());
+    auto ghostPage = db.referencesFromClassPaged(S("demo/Nope"), 5, 0);
+    ASSERT_TRUE(ghostPage.is_ok());
+    EXPECT_TRUE(std::move(ghostPage).unwrap().empty());
+    auto ghostMember = db.referencesFromMemberPaged(S("demo/Nope"), S("x"), S("()V"), 5, 0);
+    ASSERT_TRUE(ghostMember.is_ok());
+    EXPECT_TRUE(std::move(ghostMember).unwrap().empty());
+}
+
+TEST(MjAnalysisDbTest, HierarchyPagedQueriesMatchFullResults)
+{
+    const auto path = freshDbPath("hierarchy_paged");
+    auto       db   = openOrDie(path);
+
+    // 层次语料：Root 下两链一支（A→A1→A1x、A→A2、B），另有一支实现 If 接口。
+    std::vector<DbClassInput> inputs;
+    inputs.push_back(classInput("demo/Root", "java/lang/Object"));
+    inputs.push_back(classInput("demo/A", "demo/Root"));
+    inputs.push_back(classInput("demo/B", "demo/Root"));
+    inputs.push_back(classInput("demo/A1", "demo/A"));
+    inputs.push_back(classInput("demo/A2", "demo/A"));
+    inputs.push_back(classInput("demo/A1x", "demo/A1"));
+    DbClassInput wing = classInput("demo/Wing", "java/lang/Object");
+    wing.interfaces.push_back(Utf8String::from_cstr("demo/If"));
+    inputs.push_back(std::move(wing));
+    DbClassInput wingImpl = classInput("demo/WingImpl", "demo/Wing");
+    wingImpl.interfaces.push_back(Utf8String::from_cstr("demo/If"));
+    inputs.push_back(std::move(wingImpl));
+    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+
+    auto fullSubs = db.allSubclasses(S("demo/Root"));
+    ASSERT_TRUE(fullSubs.is_ok());
+    std::vector<Utf8String> subsRows = std::move(fullSubs).unwrap();
+    ASSERT_EQ(5U, subsRows.size());
+    EXPECT_EQ("demo/A", subsRows[0].to_std_string());
+    EXPECT_EQ("demo/B", subsRows[4].to_std_string());
+
+    // 整窗 = 全量；2 行一页跨页拼接 = 全量（不重不漏）。
+    auto whole = db.allSubclassesPaged(S("demo/Root"), 100, 0);
+    ASSERT_TRUE(whole.is_ok());
+    expectSameNames(subsRows, std::move(whole).unwrap());
+
+    std::vector<Utf8String> stitched;
+    for (ca::i64 offset = 0; offset < 5; offset += 2) {
+        auto page = db.allSubclassesPaged(S("demo/Root"), 2, offset);
+        ASSERT_TRUE(page.is_ok());
+        auto rows = std::move(page).unwrap();
+        ASSERT_LE(rows.size(), 2U);
+        stitched.insert(stitched.end(), std::make_move_iterator(rows.begin()),
+                        std::make_move_iterator(rows.end()));
+    }
+    expectSameNames(subsRows, stitched);
+
+    // 尾页只回剩余行；offset 越界与 limit=0 空页；负窗口参数 Invalid。
+    auto tail = db.allSubclassesPaged(S("demo/Root"), 2, 4);
+    ASSERT_TRUE(tail.is_ok());
+    auto tailRows = std::move(tail).unwrap();
+    ASSERT_EQ(1U, tailRows.size());
+    EXPECT_EQ("demo/B", tailRows[0].to_std_string());
+    auto beyond = db.allSubclassesPaged(S("demo/Root"), 2, 5);
+    ASSERT_TRUE(beyond.is_ok());
+    EXPECT_TRUE(std::move(beyond).unwrap().empty());
+    auto zero = db.allSubclassesPaged(S("demo/Root"), 0, 0);
+    ASSERT_TRUE(zero.is_ok());
+    EXPECT_TRUE(std::move(zero).unwrap().empty());
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.allSubclassesPaged(S("demo/Root"), -1, 0)));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.allSubclassesPaged(S("demo/Root"), 2, -1)));
+
+    // 接口实现类分页：与 implementors 全量同序，单行窗口逐步走完。
+    auto fullImpls = db.implementors(S("demo/If"));
+    ASSERT_TRUE(fullImpls.is_ok());
+    std::vector<Utf8String> implRows = std::move(fullImpls).unwrap();
+    ASSERT_EQ(2U, implRows.size());
+    EXPECT_EQ("demo/Wing", implRows[0].to_std_string());
+    EXPECT_EQ("demo/WingImpl", implRows[1].to_std_string());
+
+    std::vector<Utf8String> implStitched;
+    for (ca::i64 offset = 0; offset < 2; ++offset) {
+        auto page = db.implementorsPaged(S("demo/If"), 1, offset);
+        ASSERT_TRUE(page.is_ok());
+        auto rows = std::move(page).unwrap();
+        ASSERT_EQ(1U, rows.size());
+        implStitched.push_back(std::move(rows[0]));
+    }
+    expectSameNames(implRows, implStitched);
+    auto implBeyond = db.implementorsPaged(S("demo/If"), 1, 2);
+    ASSERT_TRUE(implBeyond.is_ok());
+    EXPECT_TRUE(std::move(implBeyond).unwrap().empty());
+
+    // 未登记类/接口：空页（非错误），与全量语义一致。
+    auto ghostSubs = db.allSubclassesPaged(S("demo/Nope"), 10, 0);
+    ASSERT_TRUE(ghostSubs.is_ok());
+    EXPECT_TRUE(std::move(ghostSubs).unwrap().empty());
+    auto ghostImpls = db.implementorsPaged(S("demo/Nope"), 10, 0);
+    ASSERT_TRUE(ghostImpls.is_ok());
+    EXPECT_TRUE(std::move(ghostImpls).unwrap().empty());
 }
 
 //-- 条目身份层（schema v3） ------------------------------------------------
