@@ -16,8 +16,11 @@ EntryPathShape classifyEntryPathShape(std::string_view path) noexcept
     if (path.front() == '/') return EntryPathShape::LeadingSlash;
 
     // 结构面逐段扫描：中段空 = 连续斜杠（EmptySegment 优先于点段）；末段
-    // 空 = 尾随 '/'，留到最后再判（TrailingSlash 优先序最低）。
-    std::string_view::size_type start = 0;
+    // 空 = 尾随 '/'，留到最后再判（TrailingSlash 优先序最低）。同轮记段长
+    // 峰值与段首尾空白，供低优先序的 Overlong / WhitespaceEdge 收尾判定。
+    std::string_view::size_type start          = 0;
+    std::string_view::size_type maxSegmentSize = 0;
+    bool                        whitespaceEdge = false;
     while (start < path.size()) {
         const auto slash = path.find('/', start);
         const auto end   = (slash == std::string_view::npos) ? path.size() : slash;
@@ -27,10 +30,16 @@ EntryPathShape classifyEntryPathShape(std::string_view path) noexcept
             break;   // 末段空：尾随 '/' 情形，跳出走收尾判定
         }
         if (segment == "." || segment == "..") return EntryPathShape::DotSegment;
+        if (segment.size() > maxSegmentSize) maxSegmentSize = segment.size();
+        if (segment.front() == ' ' || segment.back() == ' ') whitespaceEdge = true;
         if (slash == std::string_view::npos) break;
         start = slash + 1;
     }
     if (path.back() == '/') return EntryPathShape::TrailingSlash;
+    if (maxSegmentSize > kOverlongSegmentBytes || path.size() > kOverlongPathBytes) {
+        return EntryPathShape::Overlong;
+    }
+    if (whitespaceEdge) return EntryPathShape::WhitespaceEdge;
     return EntryPathShape::Regular;
 }
 
@@ -50,6 +59,8 @@ std::string_view entryPathShapeName(EntryPathShape shape) noexcept
     case EntryPathShape::EmptySegment: return "empty_segment";
     case EntryPathShape::DotSegment: return "dot_segment";
     case EntryPathShape::TrailingSlash: return "trailing_slash";
+    case EntryPathShape::Overlong: return "overlong";
+    case EntryPathShape::WhitespaceEdge: return "whitespace_edge";
     }
     return "regular";
 }
