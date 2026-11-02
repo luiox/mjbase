@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "mjbase/project/entry_shape.hpp"
 #include "mjbase/project/mask_regex_engine.hpp"
 
 namespace mjbase::project {
@@ -2332,6 +2333,218 @@ ca::Result<std::vector<DbEntryInfo>, AnalysisDbError> AnalysisDb::listEntries(
         entries.push_back(std::move(info));
     }
     return ca::Ok(std::move(entries));
+}
+
+//-- 普查投影层（census，#121 §5 B4） ------------------------------------------
+
+namespace {
+
+// census 口径的类集合：关联指定输入活跃条目的类（条目墓碑 = 类已不在当前
+// 容器内容；entry_id 为空的类不属于任何输入的普查面）。?1 = input_id。
+constexpr const char* kCensusLiveClassIds =
+    "(SELECT c.class_id FROM classes c JOIN entries e ON e.entry_id = c.entry_id"
+    " WHERE e.input_id = ?1 AND e.tombstoned = 0)";
+
+// ACC_NATIVE（JVMS 4.6 方法访问旗标）；members.access 是整数列，按位与即可。
+constexpr ca::i64 kMethodAccNative = 0x100;
+
+/// @brief census 查询共用的前置门：连接已打开 + 输入已登记（不存在与
+///        「已登记但无条目」区分开，前者是调用方错误）。
+ca::Result<void, AnalysisDbError> censusGate(sqlite3* handle, ca::i64 inputId)
+{
+    if (inputId <= 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "input id must be positive"));
+    }
+    auto selected = prepare(handle, "SELECT input_id FROM inputs WHERE input_id=?1");
+    if (selected.is_err()) return errorOf(std::move(selected));
+    auto statement = std::move(selected).unwrap();
+    if (auto result = bindInt(handle, statement.raw, 1, inputId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasRow = step(handle, statement.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    if (!hasRow.unwrap()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "input is not registered: " + std::to_string(inputId)));
+    }
+    return ca::Ok();
+}
+
+}   // namespace
+
+ca::Result<std::vector<DbClassCensusRow>, AnalysisDbError> AnalysisDb::censusClasses(
+    ca::i64 inputId) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto gate = censusGate(impl_->handle, inputId); gate.is_err()) {
+        return ca::Err(std::move(gate).unwrap_err());
+    }
+
+    // 计数走 members/interfaces 的 (class_id, ...) 索引前缀相关子查询；行序
+    // internal_name BINARY 升序即确定性序（导出面按库序渲染，不重排）。
+    const std::string classesSql =
+        std::string("SELECT c.internal_name, c.access, c.super_name,")
+        + " (SELECT COUNT(*) FROM interfaces i WHERE i.class_id = c.class_id),"
+          " (SELECT COUNT(*) FROM members m WHERE m.class_id = c.class_id AND m.kind = 1),"
+          " (SELECT COUNT(*) FROM members m WHERE m.class_id = c.class_id AND m.kind = 0),"
+          " (SELECT COUNT(*) FROM members m WHERE m.class_id = c.class_id AND m.kind = 1"
+          "   AND (m.access & " + std::to_string(kMethodAccNative) + ") <> 0),"
+          " c.entry_id, e.size, e.regular"
+          " FROM classes c JOIN entries e ON e.entry_id = c.entry_id"
+          " WHERE e.input_id = ?1 AND e.tombstoned = 0"
+          " ORDER BY c.internal_name";
+    auto prepared = prepare(impl_->handle, classesSql.c_str());
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindInt(impl_->handle, statement.raw, 1, inputId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    std::vector<DbClassCensusRow> rows;
+    for (;;) {
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+        DbClassCensusRow row;
+        row.internalName = utf8Column(statement.raw, 0);
+        row.access       = static_cast<ca::i32>(sqlite3_column_int64(statement.raw, 1));
+        row.superName    = utf8Column(statement.raw, 2);
+        row.kind         = classifyClassKind(row.access, row.superName.ref());
+        row.ifaceCount        = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 3));
+        row.methodCount       = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 4));
+        row.fieldCount        = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 5));
+        row.nativeMethodCount = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 6));
+        row.entryId           = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 7));
+        row.byteSize          = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 8));
+        row.entryRegular      = sqlite3_column_int(statement.raw, 9) != 0;
+        rows.push_back(std::move(row));
+    }
+    return ca::Ok(std::move(rows));
+}
+
+ca::Result<DbContainerCensus, AnalysisDbError> AnalysisDb::censusContainer(ca::i64 inputId) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto gate = censusGate(impl_->handle, inputId); gate.is_err()) {
+        return ca::Err(std::move(gate).unwrap_err());
+    }
+
+    DbContainerCensus census;
+    census.inputId = inputId;
+
+    {
+        // 输入容器身份（登记 path / 规模 / 内容锚）。
+        auto prepared = prepare(
+            impl_->handle, "SELECT path, size, sha256 FROM inputs WHERE input_id=?1");
+        if (prepared.is_err()) return errorOf(std::move(prepared));
+        auto statement = std::move(prepared).unwrap();
+        if (auto result = bindInt(impl_->handle, statement.raw, 1, inputId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Schema,
+                                     "census input query returned no row"));
+        }
+        census.path   = utf8Column(statement.raw, 0);
+        census.size   = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 1));
+        census.sha256 = utf8Column(statement.raw, 2);
+    }
+
+    {
+        // 条目形态面：活跃/墓碑、regular 二分、kind 存储值分布、路径形态
+        // facet 分布（entry_shape 投影层细化）一次扫描全部产出。
+        auto prepared = prepare(
+            impl_->handle,
+            "SELECT path, kind, tombstoned, regular FROM entries WHERE input_id=?1"
+            " ORDER BY entry_id");
+        if (prepared.is_err()) return errorOf(std::move(prepared));
+        auto statement = std::move(prepared).unwrap();
+        if (auto result = bindInt(impl_->handle, statement.raw, 1, inputId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+
+        std::map<std::string, ca::i64>         kindCounts;
+        std::map<EntryPathShape, ca::i64>      shapeCounts;
+        for (;;) {
+            auto hasRow = step(impl_->handle, statement.raw);
+            if (hasRow.is_err()) return errorOf(std::move(hasRow));
+            if (!hasRow.unwrap()) break;
+            const bool tombstoned = sqlite3_column_int(statement.raw, 2) != 0;
+            if (tombstoned) {
+                census.entriesTombstoned += 1;
+                continue;
+            }
+            census.entriesActive += 1;
+            const bool regular = sqlite3_column_int(statement.raw, 3) != 0;
+            if (regular) {
+                census.entriesRegular += 1;
+            }
+            else {
+                census.entriesIrregular += 1;
+            }
+            const auto kind = utf8Column(statement.raw, 1);
+            kindCounts[kind.to_std_string()] += 1;
+            const auto path = utf8Column(statement.raw, 0);
+            shapeCounts[classifyEntryPathShape(std::string_view(
+                reinterpret_cast<const char*>(path.data()), path.byte_length()))] += 1;
+        }
+        for (const auto& [kind, count] : kindCounts) {
+            census.entryKinds.push_back(
+                {ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(
+                                                              kind.data()),
+                                                          kind.size()),
+                 count});
+        }
+        for (const auto& [shape, count] : shapeCounts) {
+            const auto name = entryPathShapeName(shape);
+            census.entryShapes.push_back(
+                {ca::str::Utf8String::from_data_unchecked(
+                     reinterpret_cast<const ca::u8*>(name.data()), name.size()),
+                 count});
+        }
+    }
+
+    {
+        // 分析事实面：类/成员/引用计数（成员计数经 kCensusLiveClassIds 索引
+        // 下探；引用按 source_class_id 索引计数）。
+        const std::string nativeBit = std::to_string(kMethodAccNative);
+        const std::string factsSql =
+            std::string("SELECT")
+            + " (SELECT COUNT(*) FROM classes c JOIN entries e ON e.entry_id = c.entry_id"
+              "   WHERE e.input_id = ?1 AND e.tombstoned = 0),"
+              " (SELECT COUNT(*) FROM members m WHERE m.kind = 1 AND m.class_id IN "
+            + std::string(kCensusLiveClassIds) + "),"
+            + " (SELECT COUNT(*) FROM members m WHERE m.kind = 0 AND m.class_id IN "
+            + std::string(kCensusLiveClassIds) + "),"
+            + " (SELECT COUNT(*) FROM members m WHERE m.kind = 1 AND (m.access & " + nativeBit
+            + ") <> 0 AND m.class_id IN " + std::string(kCensusLiveClassIds) + "),"
+            + " (SELECT COUNT(*) FROM refs r WHERE r.source_class_id IN "
+            + std::string(kCensusLiveClassIds) + ")";
+        auto prepared = prepare(impl_->handle, factsSql.c_str());
+        if (prepared.is_err()) return errorOf(std::move(prepared));
+        auto statement = std::move(prepared).unwrap();
+        if (auto result = bindInt(impl_->handle, statement.raw, 1, inputId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Schema,
+                                     "census fact query returned no row"));
+        }
+        census.classes       = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 0));
+        census.methods       = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 1));
+        census.fields        = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 2));
+        census.nativeMethods = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 3));
+        census.references    = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 4));
+    }
+    return ca::Ok(std::move(census));
 }
 
 //-- 出口遮蔽层（mask_rules / 信任级别，schema v4） --------------------------
