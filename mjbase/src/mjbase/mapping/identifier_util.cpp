@@ -74,19 +74,37 @@ bool needEscape(ca::u32 cp)
     return true;
 }
 
-void appendHex4(ca::str::Utf8StringBuilder& sb, ca::u32 cp)
+/// @brief 单个码点的 \u 转义 token（\uXXXX 只能表达 BMP：增补平面码点按
+///        UTF-16 代理对拆成相邻两个 4-hex 转义，与 JVM/mapping 生态同约定；
+///        hex 大写，代理区码点原样出 token——lone surrogate 混淆样本存活）。
+std::string escapeToken(ca::u32 cp)
 {
     char buf[8];
-    int  n = std::snprintf(buf, sizeof(buf), "%04X", cp & 0xFFFFu);
-    sb.append(reinterpret_cast<const ca::u8*>(buf), static_cast<ca::usize>(n));
+    if (cp > 0xFFFFu) {
+        const ca::u32 high = 0xD800u + ((cp - 0x10000u) >> 10);
+        const ca::u32 low  = 0xDC00u + ((cp - 0x10000u) & 0x3FFu);
+        std::string   out;
+        std::snprintf(buf, sizeof(buf), "\\u%04X", high);
+        out += buf;
+        std::snprintf(buf, sizeof(buf), "\\u%04X", low);
+        out += buf;
+        return out;
+    }
+    std::snprintf(buf, sizeof(buf), "\\u%04X", cp);
+    return std::string(buf);
+}
+
+void appendEscaped(ca::str::Utf8StringBuilder& sb, ca::u32 cp)
+{
+    const std::string token = escapeToken(cp);
+    sb.append(reinterpret_cast<const ca::u8*>(token.data()),
+              static_cast<ca::usize>(token.size()));
 }
 
 ca::str::Utf8String escapeOne(ca::u32 cp)
 {
     ca::str::Utf8StringBuilder sb;
-    sb.append_code_point('\\');
-    sb.append_code_point('u');
-    appendHex4(sb, cp);
+    appendEscaped(sb, cp);
     return sb.build();
 }
 
@@ -358,9 +376,7 @@ ca::str::Utf8String IdentifierUtil::escapeUnicode(ca::str::Utf8StringRef utf8Str
             continue;
         }
         if (needEscape(cp)) {
-            sb.append_code_point('\\');
-            sb.append_code_point('u');
-            appendHex4(sb, cp);
+            appendEscaped(sb, cp);
         }
         else {
             sb.append_code_point(cp);
@@ -421,9 +437,7 @@ ca::str::Utf8String IdentifierUtil::escapeCommentString(ca::str::Utf8StringRef v
             sb.append_code_point(cp);
         }
         else {
-            sb.append_code_point('\\');
-            sb.append_code_point('u');
-            appendHex4(sb, cp);
+            appendEscaped(sb, cp);
         }
     }
     return sb.build();
@@ -441,9 +455,7 @@ ca::str::Utf8String IdentifierUtil::unicodify(ca::str::Utf8StringRef value)
             sb.append(ca::str::Utf8StringRef::from_cstr("\\uFFFD"));
             continue;
         }
-        sb.append_code_point('\\');
-        sb.append_code_point('u');
-        appendHex4(sb, cp);
+        appendEscaped(sb, cp);
     }
     return sb.build();
 }
@@ -499,9 +511,7 @@ ca::str::Utf8String IdentifierUtil::optimizeIllegalChar(ca::u32 cp)
 {
     ca::str::Utf8StringBuilder sb;
     if (!isLegalJavaIdentifierChar(cp)) {
-        sb.append_code_point('\\');
-        sb.append_code_point('u');
-        appendHex4(sb, cp);
+        appendEscaped(sb, cp);
     }
     else {
         sb.append_code_point(cp);
@@ -596,9 +606,7 @@ std::string IdentifierUtil::printReadable(const std::string& raw, int collapseTh
             tokens.emplace_back(1, static_cast<char>(cp));
         }
         else {
-            char buf[8];
-            std::snprintf(buf, sizeof(buf), "\\u%04X", cp & 0xFFFFu);
-            tokens.emplace_back(buf);
+            tokens.push_back(escapeToken(cp));   // 增补平面拆代理对（与 escapeUnicode 同口径）
         }
     }
     if (tokens.empty()) return {};
@@ -631,53 +639,74 @@ std::string IdentifierUtil::unescapeUnicode(const std::string& escaped)
 {
     std::string out;
     out.reserve(escaped.size());
+    // 单个 4-hex 码元解码（失败返回 false）；配对重组在主循环里做。
+    auto hex4At = [&escaped](std::size_t at, ca::u32& value) {
+        if (at + 4 > escaped.size()) return false;
+        ca::u32 parsed = 0;
+        for (int k = 0; k < 4; k++) {
+            const char c = escaped[at + static_cast<std::size_t>(k)];
+            int        v;
+            if (c >= '0' && c <= '9')
+                v = c - '0';
+            else if (c >= 'a' && c <= 'f')
+                v = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F')
+                v = c - 'A' + 10;
+            else {
+                return false;
+            }
+            parsed = (parsed << 4) | static_cast<ca::u32>(v);
+        }
+        value = parsed;
+        return true;
+    };
+    // 码点 → UTF-8（代理区码点按 lone surrogate 的 3 字节形存活，与混淆
+    // 样本原字节约定一致；成对重组见下）。
+    auto appendCodePoint = [&out](ca::u32 cp) {
+        if (cp < 0x80) {
+            out.push_back(static_cast<char>(cp));
+        }
+        else if (cp < 0x800) {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+        else if (cp < 0x10000) {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+        else {
+            out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    };
+
     std::size_t i = 0;
     while (i < escaped.size()) {
-        // 识别 \uXXXX
-        if (escaped[i] == '\\' && i + 5 < escaped.size() + 1 && i + 1 < escaped.size() &&
-            escaped[i + 1] == 'u') {
-            // 需 i+2..i+5 共 4 个 hex 字符
-            if (i + 5 < escaped.size() + 1 && i + 6 <= escaped.size()) {
-                bool    allHex = true;
-                ca::u32 cp     = 0;
-                for (int k = 0; k < 4; k++) {
-                    char c = escaped[i + 2 + k];
-                    int  v;
-                    if (c >= '0' && c <= '9')
-                        v = c - '0';
-                    else if (c >= 'a' && c <= 'f')
-                        v = c - 'a' + 10;
-                    else if (c >= 'A' && c <= 'F')
-                        v = c - 'A' + 10;
-                    else {
-                        allHex = false;
-                        break;
-                    }
-                    cp = (cp << 4) | static_cast<ca::u32>(v);
-                }
-                if (allHex && cp <= 0x10FFFF) {
-                    // codepoint → UTF-8 编码追加
-                    if (cp < 0x80) {
-                        out.push_back(static_cast<char>(cp));
-                    }
-                    else if (cp < 0x800) {
-                        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
-                        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-                    }
-                    else if (cp < 0x10000) {
-                        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
-                        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-                        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-                    }
-                    else {
-                        out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
-                        out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-                        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-                        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-                    }
-                    i += 6;
+        // 识别 \uXXXX（需 i+2..i+5 共 4 个 hex 字符）
+        if (escaped[i] == '\\' && i + 1 < escaped.size() && escaped[i + 1] == 'u' &&
+            i + 6 <= escaped.size()) {
+            ca::u32 cp = 0;
+            if (hex4At(i + 2, cp) && cp <= 0x10FFFF) {
+                // 增补平面代理对（高代元后邻 \uD C00..DFFF 低代元）：重组为
+                // 规范形 4 字节 UTF-8——与读侧 classfile_utf8 的配对重组同
+                // 约定，escape(unescape) 对全码位域往返闭合。不成对的代理
+                // 转义保持 lone surrogate 字节存活。
+                ca::u32 low = 0;
+                if (cp >= 0xD800 && cp <= 0xDBFF && i + 12 <= escaped.size() &&
+                    escaped[i + 6] == '\\' && escaped[i + 7] == 'u' &&
+                    hex4At(i + 8, low) && low >= 0xDC00 && low <= 0xDFFF) {
+                    appendCodePoint(0x10000u +
+                                    ((static_cast<ca::u32>(cp - 0xD800) << 10) |
+                                     static_cast<ca::u32>(low - 0xDC00)));
+                    i += 12;
                     continue;
                 }
+                appendCodePoint(cp);
+                i += 6;
+                continue;
             }
         }
         // 非转义字符或非法 \u 序列：原样透传

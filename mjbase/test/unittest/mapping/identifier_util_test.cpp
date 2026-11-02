@@ -139,3 +139,72 @@ TEST(MjMappingIdentifierUtilTest, LoneSurrogatePreserved)
     // U+D800：UTF-8 = ED A0 80
     EXPECT_EQ(IdentifierUtil::unescapeUnicode("\\uD800"), "\xED\xA0\x80");
 }
+
+// ── 增补平面：代理对出码 + 重组（\uXXXX 格式只表达 BMP，B4 census 转义
+//    契约要求补充平面类名全码位域无损） ─────────────────────────────────
+
+TEST(MjMappingIdentifierUtilTest, SupplementaryPlaneEscapedAsSurrogatePair)
+{
+    // U+1F600（规范形 4 字节 UTF-8）→ 相邻代理对 \uD83D\uDE00（大写 hex）。
+    // 预期值是转义 token 的字面文本（反斜杠 + u + 4 hex），双写反斜杠。
+    EXPECT_EQ(IdentifierUtil::escapeUnicode(
+                  ca::str::Utf8StringRef::from_data(
+                      reinterpret_cast<const ca::u8*>("\xF0\x9F\x98\x80"), 4)),
+              "\\uD83D\\uDE00");
+    EXPECT_EQ(IdentifierUtil::printReadable("\xF0\x9F\x98\x80"), "\\uD83D\\uDE00");
+
+    // U+10000（码位域下界）与 U+10FFFF（上界）。
+    EXPECT_EQ(IdentifierUtil::escapeUnicode(
+                  ca::str::Utf8StringRef::from_data(
+                      reinterpret_cast<const ca::u8*>("\xF0\x90\x80\x80"), 4)),
+              "\\uD800\\uDC00");
+    EXPECT_EQ(IdentifierUtil::escapeUnicode(
+                  ca::str::Utf8StringRef::from_data(
+                      reinterpret_cast<const ca::u8*>("\xF4\x8F\xBF\xBF"), 4)),
+              "\\uDBFF\\uDFFF");
+
+    // BMP 与代理对混排：混排类名逐码点出列。
+    EXPECT_EQ(IdentifierUtil::escapeUnicode(
+                  ca::str::Utf8StringRef::from_data(
+                      reinterpret_cast<const ca::u8*>("a\xF0\x9F\x98\x80" "b"), 6)),
+              "a\\uD83D\\uDE00b");
+}
+
+TEST(MjMappingIdentifierUtilTest, LoneSurrogateBytesStillEscapeAsSingleToken)
+{
+    // CESU-8 形 lone surrogate 字节（ED A0 80 = U+D800）原样出单 token：
+    // 混淆样本存活约定不变（不成对不重组）。
+    EXPECT_EQ(IdentifierUtil::escapeUnicode(
+                  ca::str::Utf8StringRef::from_data(
+                      reinterpret_cast<const ca::u8*>("\xED\xA0\x80"), 3)),
+              "\\uD800");
+}
+
+TEST(MjMappingIdentifierUtilTest, UnescapeRecombinesSurrogatePairs)
+{
+    // 相邻高/低代元转义重组为规范形 4 字节 UTF-8（与 classfile 读侧配对
+    // 重组同约定）：escape → unescape 对增补平面逐字节闭合。输入是转义
+    // token 的字面文本（双写反斜杠）。
+    EXPECT_EQ(IdentifierUtil::unescapeUnicode("\\uD83D\\uDE00"), "\xF0\x9F\x98\x80");
+    EXPECT_EQ(IdentifierUtil::unescapeUnicode("\\uD800\\uDC00"), "\xF0\x90\x80\x80");
+    EXPECT_EQ(IdentifierUtil::unescapeUnicode("\\uDBFF\\uDFFF"), "\xF4\x8F\xBF\xBF");
+
+    // 不成对（高代元后跟 BMP 码元）：高代元按 lone surrogate 存活，后续原样。
+    EXPECT_EQ(IdentifierUtil::unescapeUnicode("\\uD800\\u0041"), "\xED\xA0\x80" "A");
+    // 高代元后跟非 \u 转义内容：同上。
+    EXPECT_EQ(IdentifierUtil::unescapeUnicode("\\uD800x"), "\xED\xA0\x80" "x");
+}
+
+TEST(MjMappingIdentifierUtilTest, SupplementaryPlaneRoundTrip)
+{
+    // escape(unescape(x)) 全码位域逐字节闭合（B4 census 转义契约）：
+    // 控制字符、BMP 高位、增补平面、lone surrogate 混排样本。
+    const std::string sample = std::string("a") + '\t' + '\x01' + "\xC3\xA9" +
+                               "\xF0\x9F\x98\x80" + "\xED\xA0\x80" + "z";
+    const std::string escaped = IdentifierUtil::escapeUnicode(
+                                    ca::str::Utf8StringRef::from_data(
+                                        reinterpret_cast<const ca::u8*>(sample.data()),
+                                        sample.size()))
+                                    .to_std_string();
+    EXPECT_EQ(IdentifierUtil::unescapeUnicode(escaped), sample);
+}
