@@ -6,9 +6,12 @@
 ///
 /// 驱动器语义注（v1 策略面的接力候选形态，见 outline_driver.hpp 文件头注）：
 /// apply 后调用点块（装载 + invokestatic + 转发 goto）自身仍满足预检与出口
-/// 形，干净臂语料上每轮都能再切一层（接力）——上限是唯一护栏。故可开档
-/// 语料的驱动要么命中上限、要么候选从始耗尽；多轮用例以「每轮产物独立合
-/// 法 + 行为保持」验收，收敛用例以零候选语料钉死。
+/// 形，干净臂语料上每轮都能再切一层（接力）——v1 档上限是唯一护栏。故
+/// v1 档下可开档语料的驱动要么命中上限、要么候选从始耗尽；多轮用例以
+/// 「每轮产物独立合法 + 行为保持」验收，收敛用例以零候选语料钉死。
+/// A8 收敛档：policy.excludeOutlineRelay = true 时排除档跳过接力候选（判
+/// 定事实与 planInline 的 NotOutlineSynthetic 同源）→ AllExcluded →
+/// CandidatesExhausted 正常终止（首层切完调用点块不再接力）。
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -381,6 +384,183 @@ TEST(MjAsmSemOutlineDriverTest, JvmGateDrivenMultiOutlineBehaviorPreserved)
     for (ca::usize i = 0; i < report.rounds.size(); ++i) {
         EXPECT_EQ(report.rounds[i].sequence, i + 1u);
     }
+
+    auto written = jbc::core::writeClass(session->backing());
+    ASSERT_TRUE(written.is_ok());
+    const Bytes outlined = std::move(written).unwrap();
+
+    const std::string runnerBody =
+        "System.out.println(OutlineSample.pick(3, 4, true));"
+        "System.out.println(OutlineSample.pick(3, 4, false));";
+
+    test::jdk::RunnerSpec before;
+    before.classes    = {{"OutlineSample", original}};
+    before.runnerBody = runnerBody;
+    std::string beforeOut;
+    ASSERT_TRUE(test::jdk::runRunnerChecked(tc, before, &beforeOut));
+
+    test::jdk::RunnerSpec after;
+    after.classes    = {{"OutlineSample", outlined}};
+    after.runnerBody = runnerBody;
+    std::string afterOut;
+    ASSERT_TRUE(test::jdk::runRunnerChecked(tc, after, &afterOut));
+
+    EXPECT_EQ(afterOut, "106\n107\n");
+    EXPECT_EQ(afterOut, beforeOut);   /// -Xverify:all 全程验证 + 行为逐字一致
+    fs::remove_all(scratch, ec);
+}
+
+// ---------------------------------------------------------------------------
+// A8 收敛档：排除档开启时接力候选被跳过 → 候选耗尽正常终止
+// ---------------------------------------------------------------------------
+
+/// 排除档开启 + 单候选语料：首层切完调用点块不再接力——第二轮重建后接力
+/// 块被排除档跳过（AllExcluded）→ CandidatesExhausted 正常终止（1 轮 apply，
+/// 非上限命中）。
+TEST(MjAsmSemOutlineDriverTest, ExclusionTierSingleCutThenExhausted)
+{
+    ClassBytesBuilder b("T");
+    SemFixture        fixture{b.assemble({singleRegionSpec()})};
+    CodeUnit*         unit = fixture.code("pick");
+    ASSERT_NE(unit, nullptr);
+    const jbc::ir::MethodId pickId =
+        fixture.session->unit().methods[fixture.visits[0].methodIdx].id;
+
+    jbc::analysis::ShapeResolver resolver;
+    OutlineDriveRequest req{*fixture.session, pickId,
+                            sigOf(true, "(IIIZ)I", "pick", "T"), resolver};
+    req.policy.excludeOutlineRelay = true;   /// A8 收敛档（缺省上限 16 不变）
+    const OutlineDriveReport report = driveOutlines(req);
+    ASSERT_EQ(report.appliedCount(), 1u);
+    EXPECT_EQ(report.note, OutlineDriveNote::CandidatesExhausted);
+    EXPECT_EQ(report.stopSelectNote, RegionSelectNote::AllExcluded);
+    EXPECT_EQ(report.stopOutlineError, OutlineError::Ok);
+    EXPECT_EQ(report.rounds[0].sequence, 1u);
+    EXPECT_EQ(report.rounds[0].selectNote, RegionSelectNote::Ok);
+}
+
+/// v1 缺省档（排除关闭）保持 A7 接力现状：同语料 2 轮上限下第二轮继续切
+/// 调用点块本身（chosenMemberCount = 1 的接力候选），命中上限——v1 行为
+/// 零改动的驱动器级钉死。
+TEST(MjAsmSemOutlineDriverTest, ExclusionOffKeepsRelayChaining)
+{
+    ClassBytesBuilder b("T");
+    SemFixture        fixture{b.assemble({singleRegionSpec()})};
+    CodeUnit*         unit = fixture.code("pick");
+    ASSERT_NE(unit, nullptr);
+    const jbc::ir::MethodId pickId =
+        fixture.session->unit().methods[fixture.visits[0].methodIdx].id;
+
+    jbc::analysis::ShapeResolver resolver;
+    OutlineDriveRequest req{*fixture.session, pickId,
+                            sigOf(true, "(IIIZ)I", "pick", "T"), resolver};
+    req.maxRounds = 2;
+    const OutlineDriveReport report = driveOutlines(req);
+    ASSERT_EQ(report.appliedCount(), 2u);
+    EXPECT_EQ(report.note, OutlineDriveNote::IterationCap);
+    EXPECT_EQ(report.rounds[1].chosenMemberCount, 1u);   /// 接力块本身被切
+    EXPECT_EQ(report.rounds[1].selectNote, RegionSelectNote::Ok);
+}
+
+/// 嵌套梯 + 排除档：内层先行、逐轮收缩且接力块被跳过——切有限层后候选
+/// 耗尽正常收敛（非上限命中）。迹线：R1 切 {B3}（调用点 CS1 = lone
+/// invokestatic + goto，纯栈切片免装载）→ R2 切 {B2, CS1}（B1 入栈值 a
+/// 升格 Stack 入参，调用点 CS2 仍无装载 = 接力形态）→ R3 切 {B1, CS2}
+/// （a 转局部入参，调用点 CS3 = [iload; invokestatic; goto] 接力形态）
+/// → R4 仅剩接力候选（B1/B2 已被消化，else 臂 F4 形态不进序）→
+/// AllExcluded → CandidatesExhausted（3 轮 apply）。
+TEST(MjAsmSemOutlineDriverTest, NestedLadderExclusionConvergesFinite)
+{
+    ClassBytesBuilder b("T");
+    SemFixture        fixture{b.assemble({ladderSpec()})};
+    CodeUnit*         unit = fixture.code("pick");
+    ASSERT_NE(unit, nullptr);
+    const jbc::ir::MethodId pickId =
+        fixture.session->unit().methods[fixture.visits[0].methodIdx].id;
+
+    jbc::analysis::ShapeResolver resolver;
+    OutlineDriveRequest req{*fixture.session, pickId,
+                            sigOf(true, "(IIIZ)I", "pick", "T"), resolver};
+    req.policy.excludeOutlineRelay = true;
+    const OutlineDriveReport report = driveOutlines(req);
+    ASSERT_EQ(report.appliedCount(), 3u);   /// {B3} → {B2,调用点} → {B1,调用点}
+    EXPECT_EQ(report.note, OutlineDriveNote::CandidatesExhausted);
+    EXPECT_EQ(report.stopSelectNote, RegionSelectNote::AllExcluded);
+    EXPECT_EQ(report.stopOutlineError, OutlineError::Ok);
+    for (ca::usize i = 0; i < report.rounds.size(); ++i) {
+        EXPECT_EQ(report.rounds[i].sequence, i + 1u) << "round " << i;
+        EXPECT_NE(report.rounds[i].outcome.outlined, jbc::ir::kNoMethodId)
+            << "round " << i;
+    }
+}
+
+/// JVM 真跑端到端门（A8 收敛档）：javac 语料 + 排除档开启（A7 同语料曾
+/// 接力切满 4 轮）→ 首层切完调用点块不再接力（1 轮 apply + Candidates-
+/// Exhausted）→ java 运行行为与拆分前逐字一致（-Xverify:all 全程验证；
+/// JDK 缺失自动 SKIP）。
+TEST(MjAsmSemOutlineDriverTest, JvmGateExclusionTierConvergedBehaviorPreserved)
+{
+    namespace fs = std::filesystem;
+    static const auto tc = test::jdk::probeJdk();
+    if (!tc.available) {
+        GTEST_SKIP() << "JDK 不可用: " << tc.reason;
+    }
+
+    const fs::path scratch =
+        fs::temp_directory_path()
+        / ("mjbase_outline_driver_gate_a8_" + std::to_string(
+              std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::error_code ec;
+    fs::create_directories(scratch, ec);
+    ASSERT_FALSE(ec);
+    const fs::path src = scratch / "OutlineSample.java";
+    {
+        std::ofstream out(src, std::ios::binary);
+        out << "public class OutlineSample {\n"
+               "    static int pick(int a, int b, boolean c) {\n"
+               "        return (c ? a * 2 : b + 3) + 100;\n"
+               "    }\n"
+               "}\n";
+    }
+    ASSERT_TRUE(test::jdk::compileJava(tc, src, scratch));
+
+    Bytes original;
+    {
+        std::ifstream in(scratch / "OutlineSample.class", std::ios::binary);
+        original.assign(std::istreambuf_iterator<char>(in),
+                        std::istreambuf_iterator<char>());
+    }
+    ASSERT_GT(original.size(), 0u);
+
+    auto made = jbc::ir::makeSessionFromBytes(
+        jbc::core::ByteView{original.data(), original.size()});
+    ASSERT_TRUE(made.is_ok());
+    auto session = std::move(made).unwrap();
+    auto visits  = jbc::ir::collectCodeUnits(*session);
+    CodeUnit*             pick   = nullptr;
+    jbc::ir::MethodId     pickId{};
+    for (const jbc::ir::CodeVisit& v : visits) {
+        if (v.kind != jbc::ir::CodeVisit::Kind::Ok) {
+            continue;
+        }
+        const jbc::ir::MethodUnit& mu = session->unit().methods[v.methodIdx];
+        if (session->unit().symbols().str(mu.name) == "pick") {
+            pick   = v.unit.get();
+            pickId = mu.id;
+        }
+    }
+    ASSERT_NE(pick, nullptr);
+
+    jbc::analysis::ShapeResolver resolver;
+    OutlineDriveRequest req{*session, pickId,
+                            sigOf(true, "(IIIZ)I", "pick", "OutlineSample"),
+                            resolver};
+    req.maxRounds                  = 4;   /// A7 同语料曾接力切满 4 轮
+    req.policy.excludeOutlineRelay = true;   /// A8 收敛档
+    const OutlineDriveReport report = driveOutlines(req);
+    ASSERT_EQ(report.appliedCount(), 1u) << mjbase::asm_sem::to_string(report.note);
+    EXPECT_EQ(report.note, OutlineDriveNote::CandidatesExhausted);
+    EXPECT_EQ(report.stopSelectNote, RegionSelectNote::AllExcluded);
 
     auto written = jbc::core::writeClass(session->backing());
     ASSERT_TRUE(written.is_ok());
