@@ -9,6 +9,7 @@
 #include "libca/str/utf8_string.hpp"
 
 #include "mjbase/project/class_kind.hpp"
+#include "mjbase/project/library_origin.hpp"
 #include "mjbase/project/mask_types.hpp"
 
 namespace mjbase::project {
@@ -258,6 +259,8 @@ struct DbClassCensusRow
     ca::i32             access = 0;
     ca::str::Utf8String superName;
     DbClassKind         kind = DbClassKind::Class; ///< 投影层派生形态
+    LibraryOrigin       origin = LibraryOrigin::Unknown; ///< 投影层派生来源（前缀
+                                                   ///< 分类，规则版本 kLibraryOriginRuleVersion）
     ca::i64             ifaceCount        = 0;     ///< classfile 声明序接口数
     ca::i64             methodCount       = 0;
     ca::i64             fieldCount        = 0;
