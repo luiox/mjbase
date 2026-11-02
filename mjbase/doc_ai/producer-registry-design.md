@@ -65,6 +65,7 @@ CREATE TABLE batches(
   finished_at  TEXT NOT NULL DEFAULT '',  -- 空串 = 未收尾（失败/中断的残批，可见）
   class_count  INTEGER NOT NULL DEFAULT 0,
   entry_count  INTEGER NOT NULL DEFAULT 0,
+  member_count INTEGER NOT NULL DEFAULT 0,
   ref_count    INTEGER NOT NULL DEFAULT 0,
   note         TEXT NOT NULL DEFAULT ''
 );
@@ -139,6 +140,8 @@ ca::Result<std::vector<DbProducerStats>, AnalysisDbError> producerStats() const;
 
 工具指纹由各消费面自报；私有侧适配器使用公开的注册面自报身份，mjbase 不验证其真伪（注册表回答的是「写方自称是谁」，可信级别的处置是消费方策略）。
 
+full_import 批的逐类作用域行是 classOwnership 可答的必需项而非审计细节：导入若只写 input 加 refs_all 作用域，类事实归属对全部类返回空（PoC 实测确认该行为）。实现必须逐类落行（PoC 语料每次导入 263 行、单事务 9-91ms，成本可忽略），批 3 验收含负例：逐类行缺失时类归属必须为空而非回退到别的批次。
+
 ## 4. 开放决策点
 
 | 问题 | 当前倾向 | 需要裁决 |
@@ -162,7 +165,7 @@ ca::Result<std::vector<DbProducerStats>, AnalysisDbError> producerStats() const;
 |---|---|---|---|
 | 1 | mjbase | v5 DDL（producers/batches/batch_scopes）+ registerProducer/openBatch/closeBatch + 版本门递增 | 新库注册幂等、残批可见；旧 v4 库拒绝打开且错误可诊断 |
 | 2 | mjbase | renames 行级 producer_id + renames 写入口归属化 | 覆盖来源逐行可查；覆盖重放后归属与 updated_at 正确 |
-| 3 | mjbase | 事实写入口批次参数化 + 作用域行 + refSliceOwnership/producerStats | 归属解析逐用例：成员批与 refs_all 批取大、整库替换后切片归属翻转、批内回滚不留作用域行、崩溃注入后批次状态与事实一致 |
+| 3 | mjbase | 事实写入口批次参数化 + 作用域行 + refSliceOwnership/producerStats | 归属解析逐用例：成员批与 refs_all 批取大、整库替换后切片归属翻转、批内回滚不留作用域行、崩溃注入后批次状态与事实一致；负例：full_import 缺逐类作用域行时类归属为空 |
 | 4 | mjt（经 luiox-repo 词条 bump） | 导入桥、MCP 出口、pysdk 接线注册身份并传批次 | workspace 套件 + pysdk 套件全绿；导入后 producers/batches 非空且计数与 AnalysisIngestStats 对账 |
 | 5（可选） | mjt | producerStats 的 MCP 工具出口 | 按工具面验收 |
 
