@@ -21,6 +21,7 @@ const char* to_string(RegionSelectNote note) noexcept
     case RegionSelectNote::AllFiltered:       return "all-filtered";
     case RegionSelectNote::ConflictAmbiguous: return "conflict-ambiguous";
     case RegionSelectNote::NoneAdmitted:      return "none-admitted";
+    case RegionSelectNote::AllExcluded:       return "all-excluded";
     }
     return "unknown";
 }
@@ -104,6 +105,72 @@ bool hasOverlapTie(const std::vector<RegionCandidate>& candidates,
         }
     }
     return false;
+}
+
+/// v2 排除档（A8）：候选是否为「合成接力块」——apply 调用点块形态（批量
+/// 驱动 A7 实证的接力候选：apply 后调用点块自身满足全部预检与出口形，排
+/// 除档开启时驱动器跳过它，候选耗尽正常收敛）。判定规则见 region_select.hpp
+/// selectRegion 注：单块 + 转发 goto + lone invokestatic（身份事实与
+/// planInline 的 NotOutlineSynthetic 同源）+ 其余指令限装载/复位族。
+/// 事实面不足或任一事实不符 → false（不排除；误排除方向安全但宁漏勿误）。
+bool isOutlineRelayBlock(const RegionSelectRequest& req, const RegionCandidate& c)
+{
+    if (req.session == nullptr || req.view == nullptr || req.unit == nullptr) {
+        return false;   /// 排除档事实面不足：无从判定身份，保守不排除。
+    }
+    if (c.members.size() != 1) {
+        return false;   /// 接力块恒单成员（apply 调用点块）。
+    }
+    const mjbase::asm_cfg::BasicBlock* b = req.view->cfg().block(c.members.front());
+    if (b == nullptr || b->insns.size() < 2) {
+        return false;   /// 至少 [invokestatic, 转发 goto] 两条。
+    }
+    const jbc::ir::ClassUnit& cu       = req.session->unit();
+    const std::string_view thisClass = cu.symbols().str(cu.thisClass);
+    const ca::usize n                = b->insns.size();
+    const jbc::ir::Insn* term        = req.unit->dom.peek(b->insns[n - 1]);
+    if (term == nullptr || !mjbase::asm_insn::isGoto(term->op)) {
+        return false;   /// 单转发形态：末条 = goto。直落出口不在本档判定
+                        /// 范围（requireExitGoto 档下接力块恒带转发 goto）。
+    }
+    ca::usize callCount = 0;
+    for (ca::usize i = 0; i + 1 < n; ++i) {
+        const jbc::ir::Insn* in = req.unit->dom.peek(b->insns[i]);
+        if (in == nullptr) {
+            return false;
+        }
+        if (in->op == jbc::core::Op::INVOKESTATIC) {
+            if (++callCount > 1) {
+                return false;   /// lone：恰一个 invokestatic。
+            }
+            /// 身份事实（与 planInline NotOutlineSynthetic 同源三元）：同类 +
+            /// outline$ 名前缀 + access 恒等 private|static|synthetic。
+            jbc::ir::ClassSession::MemberSem sem;
+            if (!req.session->memberOf(*in, sem)
+                || sem.kind != jbc::ir::ClassSession::MemberSem::Kind::Method
+                || sem.owner != thisClass) {
+                return false;
+            }
+            const std::string_view prefix("outline$");
+            if (sem.name.size() <= prefix.size()
+                || sem.name.substr(0, prefix.size()) != prefix) {
+                return false;
+            }
+            const jbc::ir::MethodUnit* cm = cu.method(cu.findMethodId(sem.name, sem.desc));
+            if (cm == nullptr || cm->access != (0x0002u | 0x0008u | 0x1000u)) {
+                return false;   /// 悬空/身份不符 = 非本设施产物，不排除。
+            }
+            continue;
+        }
+        /// 其余指令限 apply preamble 发射族：局部读（含紧凑形态）+ DUP/DUP2
+        /// 复位（entryDupResetInsn）。常量/算术/字段/其他调用一概不匹配。
+        if (in->op == jbc::core::Op::DUP || in->op == jbc::core::Op::DUP2
+            || mjbase::asm_insn::isLoad(in->op)) {
+            continue;
+        }
+        return false;
+    }
+    return callCount == 1;
 }
 
 /// 候选级事实面预检（v1 规则 F2–F6；返回 false = 该候选被过滤）。
@@ -196,14 +263,24 @@ RegionDecision selectRegion(const RegionSelectPolicy& policy,
     }
 
     std::vector<ca::usize> passing;
+    ca::usize excludedRelay = 0;
     for (ca::usize i = 0; i < req.candidates.size(); ++i) {
+        /// v2 排除档先于事实面预检：接力块跳过（不进优先序、不进探针）；
+        /// 档位关闭时零开销零行为差（v1 口径）。
+        if (policy.excludeOutlineRelay && isOutlineRelayBlock(req, req.candidates[i])) {
+            ++excludedRelay;
+            continue;
+        }
         if (passesFactPreflight(policy, req, req.candidates[i])) {
             passing.push_back(i);
         }
     }
     d.order = rankRegions(policy, req.candidates, passing);
     if (d.order.empty()) {
-        d.note = RegionSelectNote::AllFiltered;
+        /// 排除档参与了全拒 → AllExcluded（批量驱动据此判候选耗尽正常收敛）；
+        /// 纯 v1 预检全滤仍记 AllFiltered（口径不变）。
+        d.note = excludedRelay > 0 ? RegionSelectNote::AllExcluded
+                                   : RegionSelectNote::AllFiltered;
         return d;
     }
     if (policy.rejectOverlapTie && hasOverlapTie(req.candidates, d.order)) {

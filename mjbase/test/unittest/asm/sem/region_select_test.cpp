@@ -208,6 +208,82 @@ MethodSpec jsrSpec()
     return m;
 }
 
+/// 接力块样本（A8 排除档形态，apply 调用点块同构）：A（iload a; iload c;
+/// ifeq else，出口栈 [a]）→ R 单块 = [dup; invokestatic outline$pick$1;
+/// goto join]（复位 DUP + lone invokestatic + 转发 goto）；else 臂 C
+/// （iconst_5）fallthrough join（F4 形态）；join iadd 收两臂双值栈。
+/// callOwner 可调（异类 owner 负控用——「非本设施产物不排除」）。
+MethodSpec relaySpec(std::string_view callOwner = "T")
+{
+    MethodSpec m;
+    m.name      = "pick";
+    m.desc      = "(IZ)I";
+    m.maxStack  = 3;
+    m.maxLocals = 2;
+    m.emit      = [callOwner](CodeEmit& e) {
+        const std::size_t elseArm = e.newLabel();   /// 0
+        const std::size_t join    = e.newLabel();   /// 1
+        e.varInsn(Op::ILOAD, 0);        /// A：[a]
+        e.varInsn(Op::ILOAD, 1);        /// [a, c]
+        e.branch(Op::IFEQ, elseArm);    /// 弹 c → 出口栈 [a]
+        e.op(Op::DUP);                  /// R：复位 DUP 形态 [a] → [a, a]
+        e.invoke(Op::INVOKESTATIC, callOwner, "outline$pick$1", "(I)I");
+        e.branch(Op::GOTO, join);       /// [a, ret]
+        e.bindLabel(elseArm);
+        e.op(Op::ICONST_5);             /// C：[a, 5]（fallthrough → join）
+        e.bindLabel(join);
+        e.op(Op::IADD);
+        e.op(Op::IRETURN);
+    };
+    return m;
+}
+
+/// 接力块的合成callee样本（apply newAccess 恒等 private|static|synthetic）。
+MethodSpec outlineSyntheticSpec(ca::u16 access = 0x0002u | 0x0008u | 0x1000u)
+{
+    MethodSpec m;
+    m.access    = access;
+    m.name      = "outline$pick$1";
+    m.desc      = "(I)I";
+    m.maxStack  = 2;
+    m.maxLocals = 1;
+    m.emit      = [](CodeEmit& e) {
+        e.varInsn(Op::ILOAD, 0);
+        e.op(Op::ICONST_1);
+        e.op(Op::IADD);
+        e.op(Op::IRETURN);
+    };
+    return m;
+}
+
+/// 装载前缀接力样本（局部入参装载形态，javac 语料首层切完同构）：
+/// A（iload c; ifeq else）→ R 单块 = [iload a; invokestatic outline$pick$1;
+/// goto join]；C = [iconst_5; goto join]（goto 出口的真实臂——非接力形态，
+/// 排除档下保留）；join ireturn 收单值栈。
+MethodSpec relayLoadSpec()
+{
+    MethodSpec m;
+    m.name      = "pick";
+    m.desc      = "(IIZ)I";
+    m.maxStack  = 2;
+    m.maxLocals = 3;
+    m.emit      = [](CodeEmit& e) {
+        const std::size_t elseArm = e.newLabel();   /// 0
+        const std::size_t join    = e.newLabel();   /// 1
+        e.varInsn(Op::ILOAD, 2);
+        e.branch(Op::IFEQ, elseArm);    /// A
+        e.varInsn(Op::ILOAD, 0);        /// R：局部入参装载（a）
+        e.invoke(Op::INVOKESTATIC, "T", "outline$pick$1", "(I)I");
+        e.branch(Op::GOTO, join);       /// [ret]
+        e.bindLabel(elseArm);
+        e.op(Op::ICONST_5);             /// C：真实臂（goto 出口，非接力）
+        e.branch(Op::GOTO, join);
+        e.bindLabel(join);
+        e.op(Op::IRETURN);
+    };
+    return m;
+}
+
 /// 语料策略上下文：会话保活 + pick 的视图/事实面装配（builder 语料档）。
 struct SelectContext
 {
@@ -635,3 +711,101 @@ TEST(MjAsmSemRegionSelectTest, JvmGateStrategyPickedRegionBehaviorPreserved)
     fs::remove_all(scratch, ec);
 }
 
+
+// ---------------------------------------------------------------------------
+// v2 排除档（A8）：合成接力块跳过
+// ---------------------------------------------------------------------------
+
+/// v1 缺省档不排除（A7 现状钉死）：接力形态候选照常进优先序，等尺寸平局
+/// 按首成员程序序选中接力块 R；真实臂 C 同在序中。
+TEST(MjAsmSemRegionSelectTest, RelayBlockSelectableByDefault)
+{
+    ClassBytesBuilder b("T");
+    SelectContext     ctx{b.assemble({relayLoadSpec(), outlineSyntheticSpec()}),
+                          sigOf(true, "(IIZ)I", "pick", "T")};
+    ASSERT_EQ(ctx.candidates.size(), 2u);   /// 接力块 R + 真实臂 C
+
+    const RegionDecision d = mjbase::asm_sem::selectRegion(
+        RegionSelectPolicy{},
+        RegionSelectRequest{ctx.candidates, &ctx.view, ctx.unit});
+    ASSERT_TRUE(d.accepted);
+    EXPECT_EQ(d.order.size(), 2u);
+    EXPECT_EQ(d.chosen, indexOfMembers(ctx.candidates, {1u}));
+}
+
+/// 排除档开启：装载前缀接力块被跳过（不进优先序、不进探针），真实臂 C
+/// 保留入选——部分排除不记 AllExcluded（仍有通过预检的候选）。
+TEST(MjAsmSemRegionSelectTest, RelayLoadPrefixExcludedKeepsGenuineRegion)
+{
+    ClassBytesBuilder b("T");
+    SelectContext     ctx{b.assemble({relayLoadSpec(), outlineSyntheticSpec()}),
+                          sigOf(true, "(IIZ)I", "pick", "T")};
+
+    RegionSelectPolicy policy;
+    policy.excludeOutlineRelay = true;
+    RegionSelectRequest req{ctx.candidates, &ctx.view, ctx.unit};
+    req.session = ctx.fixture.session.get();
+    const RegionDecision d = mjbase::asm_sem::selectRegion(policy, req);
+    ASSERT_TRUE(d.accepted);
+    ASSERT_EQ(d.order.size(), 1u);
+    EXPECT_EQ(d.chosen, indexOfMembers(ctx.candidates, {2u}));
+
+    /// 复位 DUP 形态（apply retIsEntryCopy 同构：[dup; invokestatic; goto]）
+    /// 同判接力块：仅剩接力候选时全拒 AllExcluded（批量驱动耗尽映射源）。
+    ClassBytesBuilder b2("T");
+    SelectContext     dup{b2.assemble({relaySpec(), outlineSyntheticSpec()}),
+                          sigOf(true, "(IZ)I", "pick", "T")};
+    ASSERT_EQ(dup.candidates.size(), 2u);
+    RegionSelectRequest dupReq{dup.candidates, &dup.view, dup.unit};
+    dupReq.session = dup.fixture.session.get();
+    const RegionDecision dDup = mjbase::asm_sem::selectRegion(policy, dupReq);
+    EXPECT_FALSE(dDup.accepted);
+    EXPECT_EQ(dDup.note, RegionSelectNote::AllExcluded);
+    EXPECT_TRUE(dDup.order.empty());
+}
+
+/// 身份事实门（planInline NotOutlineSynthetic 同源三元）：access 恒等不符
+/// （public|static）或异类 owner（invoke 指向他类 outline$ 名）= 非本设施
+/// 产物，不排除、照常入选。
+TEST(MjAsmSemRegionSelectTest, RelayIdentityFactsGateExclusion)
+{
+    RegionSelectPolicy policy;
+    policy.excludeOutlineRelay = true;
+
+    /// access 不符：outline$ 前缀 + 同类，但非 private|static|synthetic。
+    {
+        ClassBytesBuilder b("T");
+        SelectContext ctx{b.assemble({relaySpec(), outlineSyntheticSpec(0x0009u)}),
+                          sigOf(true, "(IZ)I", "pick", "T")};
+        RegionSelectRequest req{ctx.candidates, &ctx.view, ctx.unit};
+        req.session = ctx.fixture.session.get();
+        const RegionDecision d = mjbase::asm_sem::selectRegion(policy, req);
+        ASSERT_TRUE(d.accepted);
+        EXPECT_EQ(d.chosen, indexOfMembers(ctx.candidates, {1u}));
+    }
+    /// 异类 owner：调用点引用他类（U）同名方法，本类方法身份不构成事实。
+    {
+        ClassBytesBuilder b("T");
+        SelectContext ctx{b.assemble({relaySpec("U"), outlineSyntheticSpec()}),
+                          sigOf(true, "(IZ)I", "pick", "T")};
+        RegionSelectRequest req{ctx.candidates, &ctx.view, ctx.unit};
+        req.session = ctx.fixture.session.get();
+        const RegionDecision d = mjbase::asm_sem::selectRegion(policy, req);
+        ASSERT_TRUE(d.accepted);
+        EXPECT_EQ(d.chosen, indexOfMembers(ctx.candidates, {1u}));
+    }
+}
+
+/// 缺面保守回落（纯数据档）：无 view/unit/session 时排除档无从判定身份
+/// 事实，一律不排除（v1 口径）——排除档绝不比事实面更激进。
+TEST(MjAsmSemRegionSelectTest, HandBuiltWithoutFacesNeverExcluded)
+{
+    std::vector<RegionCandidate> cands{straightCand({1u})};
+    RegionSelectPolicy policy;
+    policy.excludeOutlineRelay = true;
+    const RegionDecision d = mjbase::asm_sem::selectRegion(
+        policy, RegionSelectRequest{cands});
+    ASSERT_TRUE(d.accepted);
+    EXPECT_EQ(d.chosen, 0u);
+    EXPECT_EQ(d.note, RegionSelectNote::Ok);
+}

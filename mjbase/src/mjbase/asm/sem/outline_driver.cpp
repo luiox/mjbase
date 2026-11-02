@@ -67,6 +67,7 @@ OutlineDriveReport driveOutlines(const OutlineDriveRequest& req)
         RegionSelectRequest selReq{candidates, &view, &unit};
         selReq.frame    = hasFrames ? &frames : nullptr;
         selReq.liveness = &live;
+        selReq.session  = &req.session;   /// v2 排除档身份事实面（A8）
         selReq.admit    = [&req, &view, seq](const RegionCandidate& c) {
             return planOutline(
                        OutlineRequest{req.session, req.parent, req.sig, req.resolver,
@@ -76,7 +77,10 @@ OutlineDriveReport driveOutlines(const OutlineDriveRequest& req)
         const RegionDecision d = req.select(req.policy, selReq);
         rec.selectNote = d.note;
         if (!d.accepted) {
-            report.note = d.note == RegionSelectNote::NoCandidates
+            /// 排除档耗尽（AllExcluded，A8）与零候选同为正常收敛：接力候选
+            /// 被跳过后候选池抽干；其余全拒仍为 SelectRejected（v1 口径）。
+            report.note = (d.note == RegionSelectNote::NoCandidates
+                           || d.note == RegionSelectNote::AllExcluded)
                               ? OutlineDriveNote::CandidatesExhausted
                               : OutlineDriveNote::SelectRejected;
             report.stopSelectNote = d.note;

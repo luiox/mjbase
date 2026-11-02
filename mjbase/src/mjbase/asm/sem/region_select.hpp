@@ -63,6 +63,8 @@ enum class RegionSelectNote : ca::u8 {
     AllFiltered,         ///< 全部候选被事实面预检过滤（直线/异常/出口形/判据 3/6 面）
     ConflictAmbiguous,   ///< 冲突保守拒绝：存在等尺寸部分重叠候选对
     NoneAdmitted,        ///< 通过预检的候选全部被准入探针拒绝（判据级细节在探针侧）
+    AllExcluded,         ///< 全部候选被排除档跳过（v2 排除档；至少一个命中
+                         ///  接力形态——批量驱动据此判候选耗尽正常收敛）
 };
 
 const char* to_string(RegionSelectNote note) noexcept;
@@ -80,6 +82,13 @@ struct RegionSelectPolicy
     bool preferSmallest = true;
     /// 冲突保守拒绝：等尺寸部分重叠候选对 → 全拒（false = 程序序破平挑选）。
     bool rejectOverlapTie = true;
+    /// v2 排除档（A8）：跳过「合成接力块」候选——apply 调用点形态（装载 +
+    /// invokestatic + 转发 goto，判定事实与 planInline 的 NotOutlineSynthetic
+    /// 同源，规则详见 selectRegion 注）。缺省 false = v1 不排除（保持 A7
+    /// 批量驱动的接力现状，迭代上限是唯一护栏）；true = 驱动收敛档，接力
+    /// 候选被跳过后候选耗尽正常终止。误排除的方向是安全的：少切一个形似
+    /// 接力块的真实区域（错过优化机会），不产生任何非法变换。
+    bool excludeOutlineRelay = false;
 };
 
 /// @brief 策略请求（值语义）：候选集必填，事实面与探针可缺省——缺哪面
@@ -97,6 +106,11 @@ struct RegionSelectRequest
                                             ///  预检；缺省跳过）
     const LivenessView* liveness = nullptr; ///< 活跃事实面（判据 3 写回集
                                             ///  预检；缺省跳过）
+    /// 会话借用面（v2 排除档专用）：invokestatic 目标的身份解析（同类 +
+    /// outline$ 前缀 + synthetic 三元事实，planInline 同源）。缺省（空）=
+    /// 排除档无从判定，一律不排除（保守回落 v1 枚举口径）。其余档位不用
+    /// 本面；指针借用，请求全程存活。
+    const jbc::ir::ClassSession* session = nullptr;
     /// 准入探针：判据级精确准入（消费方把 planOutline 识别包成探针，识别
     /// 上下文随闭包捕获；同 FrameView 的 FunctionTypeResolver 注入面）。
     /// 返回 true = 该候选可交付识别。缺省（空）= 纯事实面决策。
@@ -145,6 +159,21 @@ rankRegions(const RegionSelectPolicy& policy, const std::vector<RegionCandidate>
 ///     不冲突（形状性质见文件头注）。
 ///   - 准入探针：按优先序逐个探测，首个通过即选中；全不通过 → 全拒
 ///     （NoneAdmitted）。缺省探针 → 选中优先序首位。
+///   - v2 排除档（policy.excludeOutlineRelay = true，A8）：先于事实面预检
+///     跳过「合成接力块」候选——apply 调用点块的形态（批量驱动 A7 实证的
+///     接力候选：每轮 apply 后调用点块自身满足全部预检与出口形，驱动器
+///     借此连切不停）。判定（保守匹配发射形态，宁可漏判不可误判）：
+///       a. 单成员块，末条指令为转发 goto（apply 恒以 GOTO 复用出口标签；
+///          直落出口形态不在本档判定范围——requireExitGoto 档下不会出现）；
+///       b. 块内恰一个 INVOKESTATIC，其余指令限装载族（局部读）+ DUP/DUP2
+///          复位（apply preamble = [复位 DUP] + 局部入参装载，别无他物）；
+///       c. 调用目标身份事实与 planInline 的 NotOutlineSynthetic 同源：同类
+///          （owner = thisClass）+ outline$ 名前缀 + access 恒等
+///          private|static|synthetic（悬空/身份不符 = 非本设施产物，不排除）。
+///     事实面不足（view/unit/session 任一缺）→ 不排除（保守回落 v1）。
+///     被排除候选不进优先序、不进探针；通过预检的候选为空且至少一个命中
+///     排除时记 AllExcluded（批量驱动映射候选耗尽正常收敛），否则仍记
+///     AllFiltered（v1 口径不变）。
 RegionDecision selectRegion(const RegionSelectPolicy& policy,
                             const RegionSelectRequest& request);
 
