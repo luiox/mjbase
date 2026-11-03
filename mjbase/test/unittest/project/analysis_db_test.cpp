@@ -3,7 +3,8 @@
 ///              token 约束、只读拒写、原子替换与非法输入零写入；
 ///              v3 条目身份层的输入/条目登记、重导入匹配与墓碑语义；
 ///              v5 引用目标侧 id 化的行形状、CHECK 门、登记时序等价、
-///              字节语义与查询计划回归。
+///              字节语义与查询计划回归；v8 方法版本指纹层的记录/查询
+///              闭环、版本历史与当前指针唯一、批量原子性、指纹字节往返。
 #include <gtest/gtest.h>
 
 #include <sqlite3.h>
@@ -1564,13 +1565,21 @@ TEST(MjAnalysisDbTest, RejectsForeignSchemaVersionDatabase)
         EXPECT_EQ(AnalysisDbErrorKind::Schema, error.kind);
         EXPECT_NE(std::string::npos, error.message.to_std_string().find("version 5"));
     }
-    patchHeaderField(v2Path, 60, 6);   // v6：producer 注册表一代（v7 的直接前代）
+    patchHeaderField(v2Path, 60, 6);   // v6：producer 注册表一代
     {
         auto rejected = AnalysisDb::open(refOf(v2Path.string()));
         ASSERT_TRUE(rejected.is_err());
         auto error = std::move(rejected).unwrap_err();
         EXPECT_EQ(AnalysisDbErrorKind::Schema, error.kind);
         EXPECT_NE(std::string::npos, error.message.to_std_string().find("version 6"));
+    }
+    patchHeaderField(v2Path, 60, 7);   // v7：mask 配置面归属化一代（v8 的直接前代）
+    {
+        auto rejected = AnalysisDb::open(refOf(v2Path.string()));
+        ASSERT_TRUE(rejected.is_err());
+        auto error = std::move(rejected).unwrap_err();
+        EXPECT_EQ(AnalysisDbErrorKind::Schema, error.kind);
+        EXPECT_NE(std::string::npos, error.message.to_std_string().find("version 7"));
     }
 
     const auto foreignPath = freshDbPath("entries_foreign_app");
@@ -2125,3 +2134,590 @@ TEST(MjAnalysisDbTest, ReferenceQueryPlansProbeIndexesWithoutFullScans)
     sqlite3_close(raw);
 }
 
+//-- 方法版本指纹层（method_versions，schema v8，#132）--------------------------
+
+namespace {
+
+using mjbase::analysis::SemanticFp;
+using mjbase::analysis::kSemanticFpHashBytes;
+using mjbase::analysis::kSemanticFpVersion;
+
+/// @brief 构造确定性指纹：32 字节 = seed + i（不同 seed 得到不同指纹）。
+///        全零字节模式不在此生成——那是引擎不可能的输出，拒绝用例显式构造。
+SemanticFp fpOf(ca::u8 seed)
+{
+    SemanticFp fp;
+    for (ca::usize i = 0; i < kSemanticFpHashBytes; ++i) {
+        fp.bytes[i] = static_cast<ca::u8>(seed + i);
+    }
+    return fp;
+}
+
+/// @brief 覆盖全部 256 个字节值的指纹模式（bytes[i] = i）：边界字节逐位还原。
+SemanticFp allBytesPattern()
+{
+    SemanticFp fp;
+    for (ca::usize i = 0; i < kSemanticFpHashBytes; ++i) {
+        fp.bytes[i] = static_cast<ca::u8>(i);
+    }
+    return fp;
+}
+
+/// @brief 高位全 1 的对偶指纹模式（防高位截断）。
+SemanticFp highOnesPattern()
+{
+    SemanticFp fp;
+    for (auto& byte : fp.bytes) byte = 0xFF;
+    return fp;
+}
+
+/// @brief 方法版本语料的身份（resolveMethodVersionCorpus 产出）。
+struct MethodVersionCorpus
+{
+    ca::i64 classId     = 0; ///< demo/Alpha
+    ca::i64 runId       = 0; ///< demo/Alpha.run()I
+    ca::i64 goId        = 0; ///< demo/Alpha.go()V
+    ca::i64 fieldId     = 0; ///< demo/Alpha.counter:I（字段，指纹面外）
+    ca::i64 betaClassId = 0; ///< demo/Beta
+    ca::i64 betaGoId    = 0; ///< demo/Beta.go()V（跨类重名方法）
+};
+
+/// @brief 登记方法版本语料：两类各带方法，Alpha 另带一个字段（负例用）。
+void writeMethodVersionCorpus(AnalysisDb& db)
+{
+    std::vector<DbClassInput> inputs;
+    DbClassInput alpha = classInput("demo/Alpha", "java/lang/Object");
+    alpha.members.push_back(methodInput("run", "()I"));
+    alpha.members.push_back(methodInput("go", "()V"));
+    alpha.members.push_back(fieldInput("counter", "I"));
+    inputs.push_back(std::move(alpha));
+    DbClassInput beta = classInput("demo/Beta", "java/lang/Object");
+    beta.members.push_back(methodInput("go", "()V"));
+    inputs.push_back(std::move(beta));
+    ASSERT_TRUE(db.ingestClasses(0, std::move(inputs)).is_ok());
+}
+
+/// @brief 解析语料身份（只读连接可用；重开后 id 不漂移）。
+MethodVersionCorpus resolveMethodVersionCorpus(const AnalysisDb& db)
+{
+    MethodVersionCorpus corpus;
+    auto alphaClass = db.findClass(S("demo/Alpha"));
+    EXPECT_TRUE(alphaClass.is_ok());
+    corpus.classId = std::move(alphaClass).unwrap()->classId;
+    auto run = db.findMember(DbMemberKind::Method, S("demo/Alpha"), S("run"), S("()I"));
+    EXPECT_TRUE(run.is_ok());
+    corpus.runId = std::move(run).unwrap()->memberId;
+    auto go = db.findMember(DbMemberKind::Method, S("demo/Alpha"), S("go"), S("()V"));
+    EXPECT_TRUE(go.is_ok());
+    corpus.goId = std::move(go).unwrap()->memberId;
+    auto field = db.findMember(DbMemberKind::Field, S("demo/Alpha"), S("counter"), S("I"));
+    EXPECT_TRUE(field.is_ok());
+    corpus.fieldId = std::move(field).unwrap()->memberId;
+    auto betaClass = db.findClass(S("demo/Beta"));
+    EXPECT_TRUE(betaClass.is_ok());
+    corpus.betaClassId = std::move(betaClass).unwrap()->classId;
+    auto betaGo = db.findMember(DbMemberKind::Method, S("demo/Beta"), S("go"), S("()V"));
+    EXPECT_TRUE(betaGo.is_ok());
+    corpus.betaGoId = std::move(betaGo).unwrap()->memberId;
+    return corpus;
+}
+
+/// @brief 读出侧 hex 契约：64 位小写 hex 且逐位对应指纹字节（派生重建）。
+void expectHexMatchesBytes(const SemanticFp& fp)
+{
+    ASSERT_EQ(64U, fp.hex.byte_length());
+    const std::string text = fp.hex.to_std_string();
+    static constexpr char kDigits[] = "0123456789abcdef";
+    for (ca::usize i = 0; i < kSemanticFpHashBytes; ++i) {
+        EXPECT_EQ(kDigits[fp.bytes[i] >> 4], text[2 * i]) << "byte " << i;
+        EXPECT_EQ(kDigits[fp.bytes[i] & 0x0F], text[2 * i + 1]) << "byte " << i;
+    }
+}
+
+/// @brief 期望指纹逐字节相等（32 字节 BLOB 逐位还原的核心断言）。
+void expectSameFingerprint(const SemanticFp& actual, const SemanticFp& expected)
+{
+    EXPECT_EQ(0, std::memcmp(actual.bytes.data(), expected.bytes.data(),
+                             kSemanticFpHashBytes));
+}
+
+/// @brief method_versions 被裸 SCAN（无 USING 的全表扫）即回归。
+bool hasBareMethodVersionsScan(const std::vector<std::string>& details)
+{
+    for (const auto& detail : details) {
+        const bool scan = detail.rfind("SCAN", 0) == 0 &&
+                          detail.find("method_versions") != std::string::npos;
+        if (scan && detail.find("USING") == std::string::npos) return true;
+    }
+    return false;
+}
+
+}   // namespace
+
+TEST(MjAnalysisDbTest, MethodVersionRecordThenCurrentQueryLoop)
+{
+    const auto path = freshDbPath("mv_loop");
+    {
+        auto db = openOrDie(path);
+        writeMethodVersionCorpus(db);
+        auto corpus = resolveMethodVersionCorpus(db);
+
+        // 未落版本：合法空态（成员已登记、无版本行）。
+        auto none = db.currentMethodFingerprint(corpus.runId);
+        ASSERT_TRUE(none.is_ok());
+        EXPECT_FALSE(std::move(none).unwrap().has_value());
+        auto emptyHistory = db.listMethodVersions(corpus.runId);
+        ASSERT_TRUE(emptyHistory.is_ok());
+        EXPECT_TRUE(std::move(emptyHistory).unwrap().empty());
+
+        auto recorded = db.recordMethodVersion(corpus.classId, corpus.runId, fpOf(7));
+        ASSERT_TRUE(recorded.is_ok());
+        const ca::i64 firstVersionId = std::move(recorded).unwrap();
+        EXPECT_GT(firstVersionId, 0);
+
+        auto current = db.currentMethodFingerprint(corpus.runId);
+        ASSERT_TRUE(current.is_ok());
+        auto fp = std::move(current).unwrap();
+        ASSERT_TRUE(fp.has_value());
+        expectSameFingerprint(*fp, fpOf(7));
+        expectHexMatchesBytes(*fp);
+
+        // 同指纹幂等：返回同一当前行 id，不产生伪版本行。
+        auto again = db.recordMethodVersion(corpus.classId, corpus.runId, fpOf(7));
+        ASSERT_TRUE(again.is_ok());
+        EXPECT_EQ(firstVersionId, std::move(again).unwrap());
+        auto history = db.listMethodVersions(corpus.runId);
+        ASSERT_TRUE(history.is_ok());
+        EXPECT_EQ(1U, std::move(history).unwrap().size());
+
+        ASSERT_TRUE(db.save().is_ok());
+        ASSERT_TRUE(db.close().is_ok());
+    }
+
+    // 跨重开持久：只读连接逐字节还原。
+    auto reopened = openOrDie(path, AnalysisDbOpenMode::ReadOnly);
+    auto corpus   = resolveMethodVersionCorpus(reopened);
+    auto current  = reopened.currentMethodFingerprint(corpus.runId);
+    ASSERT_TRUE(current.is_ok());
+    auto fp = std::move(current).unwrap();
+    ASSERT_TRUE(fp.has_value());
+    expectSameFingerprint(*fp, fpOf(7));
+}
+
+TEST(MjAnalysisDbTest, MethodVersionHistoryAccumulatesAndCurrentStaysUnique)
+{
+    const auto path = freshDbPath("mv_history");
+    {
+        auto db = openOrDie(path);
+        writeMethodVersionCorpus(db);
+        auto corpus = resolveMethodVersionCorpus(db);
+
+        ASSERT_TRUE(db.recordMethodVersion(corpus.classId, corpus.runId, fpOf(1)).is_ok());
+        ASSERT_TRUE(db.recordMethodVersion(corpus.classId, corpus.runId, fpOf(2)).is_ok());
+        auto third = db.recordMethodVersion(corpus.classId, corpus.runId, fpOf(3));
+        ASSERT_TRUE(third.is_ok());
+        const ca::i64 thirdId = std::move(third).unwrap();
+
+        // 版本历史累积：三行、id 升序（= 记录序）、只有最新一行是当前，
+        // 每行盖 kSemanticFpVersion 算法版本字节并带记录时间。
+        auto history = db.listMethodVersions(corpus.runId);
+        ASSERT_TRUE(history.is_ok());
+        auto rows = std::move(history).unwrap();
+        ASSERT_EQ(3U, rows.size());
+        for (ca::usize i = 1; i < rows.size(); ++i) {
+            EXPECT_GT(rows[i].methodVersionId, rows[i - 1].methodVersionId);
+        }
+        EXPECT_FALSE(rows[0].isCurrent);
+        EXPECT_FALSE(rows[1].isCurrent);
+        EXPECT_TRUE(rows[2].isCurrent);
+        EXPECT_EQ(thirdId, rows[2].methodVersionId);
+        expectSameFingerprint(rows[0].fingerprint, fpOf(1));
+        expectSameFingerprint(rows[1].fingerprint, fpOf(2));
+        expectSameFingerprint(rows[2].fingerprint, fpOf(3));
+        for (const auto& row : rows) {
+            EXPECT_EQ(kSemanticFpVersion, row.fpVersion);
+            EXPECT_EQ(corpus.classId, row.classId);
+            EXPECT_EQ(corpus.runId, row.memberId);
+            EXPECT_FALSE(row.recordedAt.is_empty());
+        }
+
+        // 语义回退（fp3 → fp1）也是新版本事件：历史累积第四行，当前指回
+        // 同指纹的「新」行（版本行只增不删，不与历史行合并）。
+        ASSERT_TRUE(db.recordMethodVersion(corpus.classId, corpus.runId, fpOf(1)).is_ok());
+        auto reverted = db.listMethodVersions(corpus.runId);
+        ASSERT_TRUE(reverted.is_ok());
+        auto revertRows = std::move(reverted).unwrap();
+        ASSERT_EQ(4U, revertRows.size());
+        EXPECT_TRUE(revertRows[3].isCurrent);
+        EXPECT_FALSE(revertRows[2].isCurrent);
+        expectSameFingerprint(revertRows[3].fingerprint, fpOf(1));
+
+        // 旧指纹（fp2）查不中当前行 = 标脏语义可查询：当前只有 fp1。
+        auto current = db.currentMethodFingerprint(corpus.runId);
+        ASSERT_TRUE(current.is_ok());
+        expectSameFingerprint(*std::move(current).unwrap(), fpOf(1));
+
+        // go 方法独立记账：跨方法互不干扰。
+        ASSERT_TRUE(db.recordMethodVersion(corpus.classId, corpus.goId, fpOf(50)).is_ok());
+        auto goHistory = db.listMethodVersions(corpus.goId);
+        ASSERT_TRUE(goHistory.is_ok());
+        EXPECT_EQ(1U, std::move(goHistory).unwrap().size());
+
+        ASSERT_TRUE(db.save().is_ok());
+        ASSERT_TRUE(db.close().is_ok());
+    }
+
+    // 存储层锁死「同成员至多一行当前版本」：部分唯一索引在位（带 WHERE
+    // 子句），绕过写入口的裸 INSERT 撞 UNIQUE 约束——插入的其余约束（FK、
+    // CHECK、长度门）全部合法，能 firing 的只有当前指针唯一性。
+    sqlite3* raw = openRawReadOnly(path);
+    ASSERT_NE(nullptr, raw);
+    EXPECT_EQ(1, rawScalar(raw,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' "
+        "AND name='method_versions_current' AND sql LIKE '%WHERE is_current=1'"));
+    EXPECT_EQ(1, rawScalar(raw,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' "
+        "AND name='method_versions_member'"));
+    sqlite3_close(raw);
+
+    sqlite3* rw = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open_v2(path.string().c_str(), &rw,
+                                         SQLITE_OPEN_READWRITE, nullptr));
+    {
+        sqlite3_stmt* statement = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(rw,
+            "INSERT INTO method_versions(class_id, member_id, fingerprint, fp_version, "
+            "is_current, recorded_at) VALUES("
+            "(SELECT class_id FROM classes WHERE internal_name='demo/Alpha'), "
+            "(SELECT member_id FROM members WHERE name='run' AND descriptor='()I'), "
+            "x'0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20', "
+            "1, 1, 'x')",
+            -1, &statement, nullptr));
+        EXPECT_EQ(SQLITE_CONSTRAINT, sqlite3_step(statement));
+        const std::string message = sqlite3_errmsg(rw);
+        EXPECT_NE(std::string::npos, message.find("UNIQUE constraint failed")) << message;
+        sqlite3_finalize(statement);
+    }
+    sqlite3_close(rw);
+}
+
+TEST(MjAnalysisDbTest, MethodVersionBatchRecordsWholeClassAtomically)
+{
+    const auto path = freshDbPath("mv_batch");
+    {
+        auto db = openOrDie(path);
+        writeMethodVersionCorpus(db);
+        auto corpus = resolveMethodVersionCorpus(db);
+
+        // 预置 go 的当前指纹：批量面里它将以同指纹出现（幂等跳过路径）。
+        ASSERT_TRUE(db.recordMethodVersion(corpus.classId, corpus.goId, fpOf(20)).is_ok());
+
+        // 整类重写场景：Alpha 两方法 + Beta 一方法一批（跨类批量合法）——
+        // run 语义有变化（落新行）、go 语义未动（幂等跳过）、Beta.go 首次
+        // 落版本。
+        std::vector<DbMethodVersionInput> batch;
+        DbMethodVersionInput runRow;
+        runRow.classId     = corpus.classId;
+        runRow.memberId    = corpus.runId;
+        runRow.fingerprint = fpOf(11);
+        batch.push_back(std::move(runRow));
+        DbMethodVersionInput goRow;
+        goRow.classId     = corpus.classId;
+        goRow.memberId    = corpus.goId;
+        goRow.fingerprint = fpOf(20);
+        batch.push_back(std::move(goRow));
+        DbMethodVersionInput betaRow;
+        betaRow.classId     = corpus.betaClassId;
+        betaRow.memberId    = corpus.betaGoId;
+        betaRow.fingerprint = fpOf(21);
+        batch.push_back(std::move(betaRow));
+
+        auto applied = db.recordMethodVersions(std::move(batch));
+        ASSERT_TRUE(applied.is_ok());
+        auto stats = std::move(applied).unwrap();
+        EXPECT_EQ(2U, stats.recorded);
+        EXPECT_EQ(1U, stats.unchanged);
+
+        auto runCurrent = db.currentMethodFingerprint(corpus.runId);
+        ASSERT_TRUE(runCurrent.is_ok());
+        expectSameFingerprint(*std::move(runCurrent).unwrap(), fpOf(11));
+        auto goCurrent = db.currentMethodFingerprint(corpus.goId);
+        ASSERT_TRUE(goCurrent.is_ok());
+        expectSameFingerprint(*std::move(goCurrent).unwrap(), fpOf(20));
+        auto betaCurrent = db.currentMethodFingerprint(corpus.betaGoId);
+        ASSERT_TRUE(betaCurrent.is_ok());
+        expectSameFingerprint(*std::move(betaCurrent).unwrap(), fpOf(21));
+        auto goHistory = db.listMethodVersions(corpus.goId);
+        ASSERT_TRUE(goHistory.is_ok());
+        EXPECT_EQ(1U, std::move(goHistory).unwrap().size());
+
+        // 空批为空操作。
+        auto empty = db.recordMethodVersions({});
+        ASSERT_TRUE(empty.is_ok());
+        auto emptyStats = std::move(empty).unwrap();
+        EXPECT_EQ(0U, emptyStats.recorded);
+        EXPECT_EQ(0U, emptyStats.unchanged);
+
+        // 原子性：批内夹一行未登记成员 → Invalid，整批回滚——成功路径上
+        // 已落的版本行不出现半截状态（go 无新行、当前指纹不动）。
+        std::vector<DbMethodVersionInput> bad;
+        DbMethodVersionInput okRow;
+        okRow.classId     = corpus.classId;
+        okRow.memberId    = corpus.goId;
+        okRow.fingerprint = fpOf(30);
+        bad.push_back(std::move(okRow));
+        DbMethodVersionInput ghostRow;
+        ghostRow.classId     = corpus.classId;
+        ghostRow.memberId    = 999999;
+        ghostRow.fingerprint = fpOf(31);
+        bad.push_back(std::move(ghostRow));
+        auto failed = db.recordMethodVersions(std::move(bad));
+        ASSERT_TRUE(failed.is_err());
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid, std::move(failed).unwrap_err().kind);
+
+        auto goAfter = db.currentMethodFingerprint(corpus.goId);
+        ASSERT_TRUE(goAfter.is_ok());
+        expectSameFingerprint(*std::move(goAfter).unwrap(), fpOf(20));
+        auto goHistoryAfter = db.listMethodVersions(corpus.goId);
+        ASSERT_TRUE(goHistoryAfter.is_ok());
+        EXPECT_EQ(1U, std::move(goHistoryAfter).unwrap().size());
+        auto betaHistory = db.listMethodVersions(corpus.betaGoId);
+        ASSERT_TRUE(betaHistory.is_ok());
+        EXPECT_EQ(1U, std::move(betaHistory).unwrap().size());
+    }
+
+    // 失败批回滚后重开：库状态与失败前一致（无半截版本）。
+    auto reopened = openOrDie(path, AnalysisDbOpenMode::ReadOnly);
+    auto corpus   = resolveMethodVersionCorpus(reopened);
+    auto runHistory = reopened.listMethodVersions(corpus.runId);
+    ASSERT_TRUE(runHistory.is_ok());
+    EXPECT_EQ(1U, std::move(runHistory).unwrap().size());
+}
+
+TEST(MjAnalysisDbTest, MethodVersionFingerprintBytesRoundTripByteExact)
+{
+    const auto path = freshDbPath("mv_bytes");
+    {
+        auto db = openOrDie(path);
+        writeMethodVersionCorpus(db);
+        auto corpus = resolveMethodVersionCorpus(db);
+
+        // 两个对偶模式覆盖全部 256 个字节值与高位全 1。
+        ASSERT_TRUE(
+            db.recordMethodVersion(corpus.classId, corpus.runId, allBytesPattern()).is_ok());
+        ASSERT_TRUE(
+            db.recordMethodVersion(corpus.classId, corpus.goId, highOnesPattern()).is_ok());
+
+        ASSERT_TRUE(db.save().is_ok());
+        ASSERT_TRUE(db.close().is_ok());
+
+        // 存储形状：BLOB 恰 32 字节逐位相等，fp_version 盖 kSemanticFpVersion，
+        // recorded_at 非空。
+        sqlite3* raw = openRawReadOnly(path);
+        ASSERT_NE(nullptr, raw);
+        const auto rawCurrentRow = [&](ca::i64 memberId) {
+            sqlite3_stmt* statement = nullptr;
+            EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(raw,
+                "SELECT fingerprint, fp_version, is_current, length(recorded_at) "
+                "FROM method_versions WHERE member_id=?1 AND is_current=1",
+                -1, &statement, nullptr));
+            EXPECT_EQ(SQLITE_OK, sqlite3_bind_int64(statement, 1, memberId));
+            EXPECT_EQ(SQLITE_ROW, sqlite3_step(statement));
+            const auto* bytes = static_cast<const ca::u8*>(sqlite3_column_blob(statement, 0));
+            const int   size  = sqlite3_column_bytes(statement, 0);
+            std::vector<ca::u8> stored(bytes, bytes + size);
+            const ca::i64 fpVersion  = sqlite3_column_int64(statement, 1);
+            const ca::i64 isCurrent  = sqlite3_column_int64(statement, 2);
+            const ca::i64 recordedAt = sqlite3_column_int64(statement, 3);
+            sqlite3_finalize(statement);
+            return std::make_tuple(stored, fpVersion, isCurrent, recordedAt);
+        };
+        {
+            auto [stored, fpVersion, isCurrent, recordedAt] = rawCurrentRow(corpus.runId);
+            EXPECT_EQ(static_cast<ca::usize>(kSemanticFpHashBytes), stored.size());
+            EXPECT_EQ(0, std::memcmp(stored.data(), allBytesPattern().bytes.data(),
+                                     kSemanticFpHashBytes));
+            EXPECT_EQ(static_cast<ca::i64>(kSemanticFpVersion), fpVersion);
+            EXPECT_EQ(1, isCurrent);
+            EXPECT_GT(recordedAt, 0);
+        }
+        {
+            auto [stored, fpVersion, isCurrent, recordedAt] = rawCurrentRow(corpus.goId);
+            EXPECT_EQ(static_cast<ca::usize>(kSemanticFpHashBytes), stored.size());
+            EXPECT_EQ(0, std::memcmp(stored.data(), highOnesPattern().bytes.data(),
+                                     kSemanticFpHashBytes));
+            EXPECT_EQ(static_cast<ca::i64>(kSemanticFpVersion), fpVersion);
+            EXPECT_EQ(1, isCurrent);
+            EXPECT_GT(recordedAt, 0);
+        }
+        sqlite3_close(raw);
+    }
+
+    // 只读重开：C++ API 逐字节 + hex 派生重建。
+    auto reopened = openOrDie(path, AnalysisDbOpenMode::ReadOnly);
+    auto corpus   = resolveMethodVersionCorpus(reopened);
+    auto runFp    = reopened.currentMethodFingerprint(corpus.runId);
+    ASSERT_TRUE(runFp.is_ok());
+    auto runValue = std::move(runFp).unwrap();
+    ASSERT_TRUE(runValue.has_value());
+    expectSameFingerprint(*runValue, allBytesPattern());
+    expectHexMatchesBytes(*runValue);
+    auto goFp = reopened.currentMethodFingerprint(corpus.goId);
+    ASSERT_TRUE(goFp.is_ok());
+    auto goValue = std::move(goFp).unwrap();
+    ASSERT_TRUE(goValue.has_value());
+    expectSameFingerprint(*goValue, highOnesPattern());
+    expectHexMatchesBytes(*goValue);
+}
+
+TEST(MjAnalysisDbTest, MethodVersionRecordValidationRejections)
+{
+    const auto path = freshDbPath("mv_reject");
+    {
+        auto db = openOrDie(path);
+        writeMethodVersionCorpus(db);
+        auto corpus = resolveMethodVersionCorpus(db);
+
+        SemanticFp zeroFp;   // 显式全零：引擎不可能的输出（未初始化形状）
+
+        // 非正 id。
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.recordMethodVersion(0, corpus.runId, fpOf(1))));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.recordMethodVersion(corpus.classId, -1, fpOf(1))));
+
+        // 全零指纹。
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.recordMethodVersion(corpus.classId, corpus.runId, zeroFp)));
+
+        // 未登记成员。
+        auto ghost = db.recordMethodVersion(corpus.classId, 999999, fpOf(1));
+        ASSERT_TRUE(ghost.is_err());
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid, std::move(ghost).unwrap_err().kind);
+
+        // 字段成员：无指纹面。
+        auto fieldRow = db.recordMethodVersion(corpus.classId, corpus.fieldId, fpOf(1));
+        ASSERT_TRUE(fieldRow.is_err());
+        EXPECT_NE(std::string::npos,
+                  std::move(fieldRow).unwrap_err().message.to_std_string()
+                      .find("not a registered method"));
+
+        // 归属错位：runId 挂在 Beta 类名下。
+        auto mismatched = db.recordMethodVersion(corpus.betaClassId, corpus.runId, fpOf(1));
+        ASSERT_TRUE(mismatched.is_err());
+        EXPECT_NE(std::string::npos,
+                  std::move(mismatched).unwrap_err().message.to_std_string()
+                      .find("does not belong to class"));
+
+        // 读口同口径：未登记成员与字段都 Invalid，不静默返回空。
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.currentMethodFingerprint(999999)));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.currentMethodFingerprint(corpus.fieldId)));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.currentMethodFingerprint(0)));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.listMethodVersions(999999)));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.listMethodVersions(corpus.fieldId)));
+
+        // 批量面校验失败不写库：重复成员、全零指纹。
+        std::vector<DbMethodVersionInput> duplicate;
+        DbMethodVersionInput first;
+        first.classId     = corpus.classId;
+        first.memberId    = corpus.runId;
+        first.fingerprint = fpOf(1);
+        duplicate.push_back(std::move(first));
+        DbMethodVersionInput second;
+        second.classId     = corpus.classId;
+        second.memberId    = corpus.runId;
+        second.fingerprint = fpOf(2);
+        duplicate.push_back(std::move(second));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.recordMethodVersions(std::move(duplicate))));
+
+        std::vector<DbMethodVersionInput> zero;
+        DbMethodVersionInput zeroRow;
+        zeroRow.classId     = corpus.classId;
+        zeroRow.memberId    = corpus.runId;
+        zeroRow.fingerprint = zeroFp;
+        zero.push_back(std::move(zeroRow));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.recordMethodVersions(std::move(zero))));
+
+        // 全部拒绝后零写入：各方法仍是合法空态。
+        auto runCurrent = db.currentMethodFingerprint(corpus.runId);
+        ASSERT_TRUE(runCurrent.is_ok());
+        EXPECT_FALSE(std::move(runCurrent).unwrap().has_value());
+        auto betaCurrent = db.currentMethodFingerprint(corpus.betaGoId);
+        ASSERT_TRUE(betaCurrent.is_ok());
+        EXPECT_FALSE(std::move(betaCurrent).unwrap().has_value());
+
+        ASSERT_TRUE(db.save().is_ok());
+        ASSERT_TRUE(db.close().is_ok());
+    }
+
+    // 只读连接拒写（读写口在只读连接上都是 ReadOnly）。
+    auto readOnly = openOrDie(path, AnalysisDbOpenMode::ReadOnly);
+    auto corpus   = resolveMethodVersionCorpus(readOnly);
+    EXPECT_EQ(AnalysisDbErrorKind::ReadOnly,
+              takeErrorKind(readOnly.recordMethodVersion(corpus.classId, corpus.runId,
+                                                         fpOf(1))));
+    std::vector<DbMethodVersionInput> batch;
+    DbMethodVersionInput row;
+    row.classId     = corpus.classId;
+    row.memberId    = corpus.runId;
+    row.fingerprint = fpOf(1);
+    batch.push_back(std::move(row));
+    EXPECT_EQ(AnalysisDbErrorKind::ReadOnly,
+              takeErrorKind(readOnly.recordMethodVersions(std::move(batch))));
+    // 读口不受限：只读连接上查询可用。
+    auto current = readOnly.currentMethodFingerprint(corpus.runId);
+    ASSERT_TRUE(current.is_ok());
+    EXPECT_FALSE(std::move(current).unwrap().has_value());
+}
+
+TEST(MjAnalysisDbTest, MethodVersionQueryPlansProbeIndexesWithoutFullScans)
+{
+    const auto path = freshDbPath("mv_plans");
+    {
+        auto db = openOrDie(path);
+        writeMethodVersionCorpus(db);
+        auto corpus = resolveMethodVersionCorpus(db);
+        ASSERT_TRUE(db.recordMethodVersion(corpus.classId, corpus.runId, fpOf(1)).is_ok());
+        ASSERT_TRUE(db.recordMethodVersion(corpus.classId, corpus.runId, fpOf(2)).is_ok());
+        ASSERT_TRUE(db.recordMethodVersion(corpus.classId, corpus.runId, fpOf(3)).is_ok());
+        ASSERT_TRUE(db.save().is_ok());
+        ASSERT_TRUE(db.close().is_ok());
+    }
+
+    sqlite3* raw = openRawReadOnly(path);
+    ASSERT_NE(nullptr, raw);
+
+    // 两条索引在位：当前指针部分唯一索引 + 版本历史索引。
+    EXPECT_EQ(2, rawScalar(raw,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN "
+        "('method_versions_current','method_versions_member')"));
+
+    // 当前指纹查询：部分唯一索引 (member_id) WHERE is_current=1 精确探，
+    // 不裸扫。
+    {
+        auto details = rawQueryPlanDetails(raw,
+            "SELECT fingerprint FROM method_versions WHERE member_id=1 AND is_current=1");
+        EXPECT_TRUE(hasSearchOnIndex(details, "method_versions_current"));
+        EXPECT_FALSE(hasBareMethodVersionsScan(details));
+    }
+    // 版本历史：method_versions_member (member_id, method_version_id) 索引
+    // 扫描，免排序（无 TEMP B-TREE）、不裸扫。
+    {
+        auto details = rawQueryPlanDetails(raw,
+            "SELECT method_version_id FROM method_versions WHERE member_id=1 "
+            "ORDER BY method_version_id");
+        EXPECT_TRUE(hasSearchOnIndex(details, "method_versions_member"));
+        EXPECT_FALSE(hasBareMethodVersionsScan(details));
+        for (const auto& detail : details) {
+            EXPECT_EQ(std::string::npos, detail.find("TEMP B-TREE")) << detail;
+        }
+    }
+
+    sqlite3_close(raw);
+}
