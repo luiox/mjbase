@@ -1,12 +1,32 @@
 # 分析数据库设计（analysis-db）
 
-状态：草案，2026-10-21。待评审，未落地。
+状态：设计稿 2026-10-21；引擎已落地（#117 起，0.0.13 定版为 schema v4），已落地面见下节；方法语义指纹、增量流水线等章节仍为目标设计。
 
 本文定义 mjbase 分析数据库的存储模型、增量分析边界和编辑语义。目标是用一个可查询、可增量更新、崩溃安全的项目数据库替代 `project_store` 的整文件 section 模型；`project_store` 的可靠写入原语保留为自研引擎的备选实现和导入导出层。
 
+## 已落地面（截至 0.0.13）
+
+引擎与 schema：单文件 SQLite 库 `.mjdb`（#117 落地），`PRAGMA user_version` 载 schema 版本（当前 v4），`application_id` 固定 ASCII "MJDB"，`meta.kind` 自描述串防把别的 SQLite 库当分析库打开；打开分 ReadWrite（不存在则建库写 schema）与 ReadOnly（必须已存在且已 checkpoint，不创建、不写、不触发分析）；打开期 WAL/SHM 伴随，`save()` / `close()` 做 TRUNCATE checkpoint 收敛回单文件；打开面 PRAGMA 调优（WAL、synchronous=NORMAL、cache_size、temp_store=MEMORY）与 refs 按源类索引见 #128。SQL 只出现在 analysis_db.cpp，公开面是类型化 C++ API，错误统一 `ca::Result<T, AnalysisDbError>`；单连接非线程安全。
+
+身份与重命名覆盖层：`classes` / `members` 首次登记分配单调 ID，只增不删；重命名只写 `renames` 覆盖层（目标用稳定 ID 键控，token 为空或 8 位小写 hex），不改身份、不触发分析；批量入口 `setRenames` / `replaceRenames` 单事务、先整体校验后执行、任一行失败整批回滚；按 shadow 反查有单条与批量（预编译语句复用）两个变体。
+
+条目身份层（schema v3，#122）：`inputs` 登记输入容器（path 为身份键），`entries` 登记 jar 条目（entry_id 单调分配、只增不删，内容锚 = size + sha256）；重导入按 (input_id, path, sha256) 匹配——锚命中复用 entry_id（消失后重现的条目原地复活，id 不漂移），未命中新建 id，本批未出现的既有活跃条目打墓碑不删行；`classes.entry_id` 记录类字节所属条目。
+
+分析事实层：`ingestClasses` 批量登记/更新类、接口与成员（身份键 internal_name，成员只增不删）；`replaceReferences` 原子替换全部直接引用事实；`replaceReferencesFromMember`（#139）按源成员切片替换——删该成员名下全部引用行后按输入序插入，其他成员与 class 头引用逐行不动，适合方法体编辑后的增量替换，整库重建仍用 `replaceReferences`。
+
+查询与分页：层次闭包查询（superChain / directSubclasses / allSubclasses / implementors）；引用反查按目标（referencesToMethod / referencesToField / referencesToClass）与按来源（referencesFromMember / referencesFromClass），#128 起按源反查先解析 id 再索引下探。分页变体（#141）：引用五个方向与层次闭包两个方向各出行偏移分页（`*Paged`，SQLite OFFSET）；契约是全量结果 = 各页按 offset 升序拼接、不重不漏，limit/offset 负值报 `Invalid`，窗口在排序后截取（省行对象构造与返回内存，不省遍历与排序），跨页窗口以同一事实状态为前提，游标分页不在本层预设。
+
+普查投影层（census，#131）：库上的只读 SELECT 投影，不反向定义存储、不重新扫描容器。`censusClasses` 一行一类——类事实 JOIN 所属条目（byteSize / regular 登记旗标）加接口与成员计数聚合（native 方法数单列），`ORDER BY internal_name`（BINARY 字节序，跨平台确定），只统计关联指定输入活跃条目的类；#142 补 origin 列，取值为 library_origin 前缀分类的投影派生（不存储，规则版本 kLibraryOriginRuleVersion 进导出版本契约）。`censusContainer` 容器汇总面——条目活跃/墓碑与 regular 二分、entries.kind 存储值分布、路径形态 facet 分布、类/成员/引用计数（facet 分布折叠为稳定名加计数的行集，只含非零项）。类形态 kind（class/interface/annotation/enum/record/module）由 access 加 super 在投影层现算（class_kind，不存储，entries.kind 登记语义不变）。
+
+entry_shape 条目路径形态判定（#131 上提公共面，#136 补全）：纯字节扫描、无正则，每条路径命中恰一个 facet，固定优先序 Empty > ControlChar > Backslash > LeadingSlash > EmptySegment > DotSegment > TrailingSlash > Overlong > WhitespaceEdge > Regular；`regular` 登记口径 = `isRegularEntryPath`（即 shape == Regular）。#136 补 Overlong（单段超 255 字节或全路径超 4096 字节）与 WhitespaceEdge（段首或段尾空格）两 facet，收口空白与超长形态漏判 Regular 的最小口径空洞；历史库重导入后相关条目的 regular 翻转属预期，不构成登记面漂移。
+
+library_origin 包前缀分类（#140）：类内部名按前缀段边界匹配分三档 Jdk / Known / Unknown，官方表先查、第三方表后查、均未命中落 Unknown；官方 10 根（java / javax / jdk / sun / com/sun / org/omg 等 JDK 事实发行集合）加第三方 16 根（高频库坐标，宁缺勿滥），表条目全部以 '/' 收尾（编译期校验锁死），命中判据即字节前缀对齐，首段超长自动失配防前缀串误吸；任一表条目增删改递增 kLibraryOriginRuleVersion。Unknown 是无前缀证据，不是业务代码；识别只用于分层、标注、过滤，不改写任何字节。
+
+出口遮蔽层（schema v4，#126）：`mask_rules` 存出口遮蔽规则（priority 有序、先匹配先生效、hit_count 记账、整体替换语义），meta 存项目信任级别（Trusted 默认放行 / Untrusted 默认遮蔽）；规则写入面与求值器同源校验（条数上限 1024、pattern 编译性），编译不了的模式不入库。suspect 旗标扫描（controlChars / zeroWidthChars / anomalousUnicode / injectionPattern 四类）与 mask_evaluator 判定序（suspect 先行、超 256 字节走长度门按默认档、allow 命中被 suspect 旗标压制）为纯函数面，出口接线归上层。
+
 ## 1. 背景与目标
 
-mjbase 的分析结果目前全部驻留内存：def-use、string flow、路径条件、调用图、字段访问图和引用索引都没有持久化面，反编译文本和 IR 也只活在会话里。`project` 模块只覆盖输入登记、批注和 shadow sidecar 引用；`project_store` 以整文件 section 为单位读写，适合归档，不适合在线查询和增量更新。mjt 侧尚未接入 `project`，`ProjectStore::open/flush` 也未落地，现在重构不需要背兼容包袱。
+mjbase 的分析结果目前全部驻留内存：def-use、string flow、路径条件、调用图、字段访问图和引用索引都没有持久化面，反编译文本和 IR 也只活在会话里。`project` 模块在输入登记、批注和 shadow sidecar 引用之外，已由分析数据库引擎（见上节）承载稳定身份、引用事实与普查投影；`project_store` 以整文件 section 为单位读写，适合归档，不适合在线查询和增量更新。`ProjectStore::open/flush` 仍未落地。
 
 目标：
 
