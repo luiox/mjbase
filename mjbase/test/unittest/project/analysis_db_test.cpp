@@ -1556,13 +1556,21 @@ TEST(MjAnalysisDbTest, RejectsForeignSchemaVersionDatabase)
         EXPECT_EQ(AnalysisDbErrorKind::Schema, error.kind);
         EXPECT_NE(std::string::npos, error.message.to_std_string().find("version 4"));
     }
-    patchHeaderField(v2Path, 60, 5);   // v5：refs 目标侧 id 化一代（v6 的直接前代）
+    patchHeaderField(v2Path, 60, 5);   // v5：refs 目标侧 id 化一代
     {
         auto rejected = AnalysisDb::open(refOf(v2Path.string()));
         ASSERT_TRUE(rejected.is_err());
         auto error = std::move(rejected).unwrap_err();
         EXPECT_EQ(AnalysisDbErrorKind::Schema, error.kind);
         EXPECT_NE(std::string::npos, error.message.to_std_string().find("version 5"));
+    }
+    patchHeaderField(v2Path, 60, 6);   // v6：producer 注册表一代（v7 的直接前代）
+    {
+        auto rejected = AnalysisDb::open(refOf(v2Path.string()));
+        ASSERT_TRUE(rejected.is_err());
+        auto error = std::move(rejected).unwrap_err();
+        EXPECT_EQ(AnalysisDbErrorKind::Schema, error.kind);
+        EXPECT_NE(std::string::npos, error.message.to_std_string().find("version 6"));
     }
 
     const auto foreignPath = freshDbPath("entries_foreign_app");

@@ -51,6 +51,13 @@ namespace mjbase::project {
 ///   `renames.producer_id` 列（写入口尾参盖章，缺省 0 = 匿名写入落 NULL，
 ///   覆盖行为不变 last-write-wins，覆盖来源事后可查）。
 ///
+/// - mask 配置面归属化（schema v7，#143 遗留回填）：mask_rules 与 renames
+///   同为覆盖层与配置型小表，行级归属即语义，走行级 `mask_rules.producer_id`
+///   列（`replaceMaskRules` 尾参盖章，口径同 renames）；meta 信任级别键的
+///   写入口 `setMaskTrustLevel` 同样尾参盖章，归属落伴随 meta 键
+///   `mask_trust_level_producer`（匿名写入时清除）。规则面写入挂批
+///   （rules_write）属消费方职责，本层只做行级归属。
+///
 /// - 普查投影层（#121 §5 B4）：census 是库上的只读 SELECT 投影（#39 类
 ///   普查事实面 + 容器形态汇总面；#148 成员普查事实面），不反向定义存储、
 ///   不重新扫描容器。形态判定核心（entry_shape 路径 facet、class_kind 类
@@ -71,18 +78,22 @@ namespace mjbase::project {
 /// @brief 当前 schema 版本（`PRAGMA user_version`）。不识别的版本拒绝打开
 ///        （包括旧版本：不提供自动迁移，旧库由上层显式重建）。
 ///
-/// v6：producer 注册表——新增 producers / batches / batch_scopes 三表
-///        （#143：写入运行登记与作用域锚，事实表不加归属列）与
-///        renames.producer_id 行级归属（可空外键，写入口尾参盖章）。v5：
-///        refs 目标侧 id 化——新增可空外键 `refs.target_class_id` /
-///        `target_member_id`，目标整体二元化（登记目标落 id 清文本，未登记
-///        目标整体落文本），目标反查走 refs_target_id / refs_target_text 两个
-///        部分索引两分支 UNION ALL。v4：新增 mask_rules 遮蔽规则表与 meta
-///        信任级别键（出口遮蔽层，#121 §4.3）。v3：新增 `inputs` / `entries`
-///        条目身份表与 `classes.entry_id` 外键。v2：classes 增加
-///        super/access/version，新增 interfaces 与 refs 表，members 增加
-///        access。v1 未发布，版本号仅用于识别本分支早期的临时库。
-inline constexpr ca::u32 kAnalysisDbSchemaVersion = 6;
+/// v7：mask 配置面归属化（#143 遗留回填）——mask_rules 增加可空外键
+///        `producer_id`（列序末位追加，`replaceMaskRules` 尾参盖章）与
+///        meta 信任级别写入口 `setMaskTrustLevel` 尾参盖章（伴随键
+///        `mask_trust_level_producer`）。v6：producer 注册表——新增
+///        producers / batches / batch_scopes 三表（#143：写入运行登记与
+///        作用域锚，事实表不加归属列）与 renames.producer_id 行级归属
+///        （可空外键，写入口尾参盖章）。v5：refs 目标侧 id 化——新增可空
+///        外键 `refs.target_class_id` / `target_member_id`，目标整体二元化
+///        （登记目标落 id 清文本，未登记目标整体落文本），目标反查走
+///        refs_target_id / refs_target_text 两个部分索引两分支 UNION ALL。
+///        v4：新增 mask_rules 遮蔽规则表与 meta 信任级别键（出口遮蔽层，
+///        #121 §4.3）。v3：新增 `inputs` / `entries` 条目身份表与
+///        `classes.entry_id` 外键。v2：classes 增加 super/access/version，
+///        新增 interfaces 与 refs 表，members 增加 access。v1 未发布，
+///        版本号仅用于识别本分支早期的临时库。
+inline constexpr ca::u32 kAnalysisDbSchemaVersion = 7;
 
 /// @brief SQLite 数据库头里的应用标识（ASCII "MJDB"）。
 inline constexpr ca::u32 kAnalysisDbApplicationId = 0x4D4A4442u;
@@ -388,12 +399,14 @@ struct DbMaskRuleInput
 /// @brief 已登记的遮蔽规则（`listMaskRules` 输出，(priority, rule_id) 升序）。
 struct DbMaskRule
 {
-    ca::i64             ruleId   = 0;
-    ca::i32             priority = 0;
+    ca::i64             ruleId     = 0;
+    ca::i32             priority   = 0;
     ca::str::Utf8String pattern;
-    MaskAction          action   = MaskAction::Mask;
+    MaskAction          action     = MaskAction::Mask;
     ca::str::Utf8String note;
-    ca::i64             hitCount = 0; ///< 命中计数（含被 suspect 压制的 allow 命中）
+    ca::i64             hitCount   = 0; ///< 命中计数（含被 suspect 压制的 allow 命中）
+    ca::i64             producerId = 0; ///< 规则写入者（schema v7 行级归属）；
+                                       ///< 0 = 匿名写入
 };
 
 /// @brief 一次遮蔽规则整体替换（`replaceMaskRules`）的计数。
@@ -699,15 +712,25 @@ public:
     /// 空/含 NUL/超 kMaximumMaskPatternBytes/编译失败 → `Invalid`，整批不
     /// 写库——数据面不存编译不了的模式，求值器装载失败只剩实现缺陷一种
     /// 来源。
+    ///
+    /// `producerId` 行级盖章（schema v7，#143；口径同 `setClassRename`）：
+    /// 0 = 匿名写入，producer_id 落 NULL；非 0 必须已注册，否则 `Invalid`。
+    /// 整体替换后新行统一盖 @p producerId，覆盖来源事后可查。
     ca::Result<DbMaskRuleReplaceStats, AnalysisDbError> replaceMaskRules(
-        std::vector<DbMaskRuleInput> rules);
+        std::vector<DbMaskRuleInput> rules, ca::i64 producerId = 0);
 
     /// @brief 全部遮蔽规则，按 (priority, rule_id) 升序（求值器同序）。
     ca::Result<std::vector<DbMaskRule>, AnalysisDbError> listMaskRules() const;
 
     /// @brief 设置项目信任级别（meta 键 `mask_trust_level`；default_action
     ///        的翻转开关，见 MaskTrustLevel）。重复设置同值幂等。
-    ca::Result<void, AnalysisDbError> setMaskTrustLevel(MaskTrustLevel level);
+    ///
+    /// `producerId` 配置面归属盖章（schema v7，#143；口径同
+    /// `setClassRename`）：0 = 匿名写入（伴随键清除），非 0 必须已注册，
+    /// 否则 `Invalid`；归属落伴随 meta 键 `mask_trust_level_producer`
+    /// （裸 SQL 可查），随每次设置整体刷新。
+    ca::Result<void, AnalysisDbError> setMaskTrustLevel(MaskTrustLevel level,
+                                                        ca::i64        producerId = 0);
 
     /// @brief 项目信任级别；未设置（键缺省）按 `Trusted`。
     ca::Result<MaskTrustLevel, AnalysisDbError> maskTrustLevel() const;

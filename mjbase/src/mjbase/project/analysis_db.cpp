@@ -1649,13 +1649,18 @@ constexpr const char* kSchemaDdl[] = {
     // 出口遮蔽层（v4）：规则是项目级配置（整体替换、rule_id 单调分配），
     // hit_count 是命中记账（含被 suspect 压制的 allow 命中），查询序与
     // 求值器装载序同源：(priority, rule_id) 升序。
+    // 行级归属（v7 #143 遗留回填）：与 renames 同为覆盖层与配置型小表，
+    // 行级归属即语义。可空外键追加在列序末位，既有列序与既有索引保持
+    // 不动；NULL = 匿名写入（写入口 producerId 缺省 0），整体替换后新行
+    // 统一盖章，覆盖来源事后可查。
     "CREATE TABLE mask_rules("
     "  rule_id INTEGER PRIMARY KEY AUTOINCREMENT,"
     "  priority INTEGER NOT NULL DEFAULT 0,"
     "  pattern TEXT NOT NULL,"
     "  action INTEGER NOT NULL CHECK(action IN (0,1)),"
     "  note TEXT NOT NULL DEFAULT '',"
-    "  hit_count INTEGER NOT NULL DEFAULT 0"
+    "  hit_count INTEGER NOT NULL DEFAULT 0,"
+    "  producer_id INTEGER REFERENCES producers(producer_id)"
     ")",
     "CREATE INDEX mask_rules_order ON mask_rules(priority, rule_id)",
     // producer 注册表（v6，#143）：登记向本库写事实的身份与逻辑写入运行。
@@ -1954,9 +1959,10 @@ ca::Result<void, AnalysisDbError> AnalysisDb::close()
 
 namespace {
 
-/// @brief renames 行级归属的生产者门：0 = 匿名写入放行；非 0 必须已注册
-///        （FK 也拦，但先查给出可诊断错误）；负值是调用方契约错误。
-ca::Result<void, AnalysisDbError> validateRenameProducer(sqlite3* db, ca::i64 producerId)
+/// @brief 行级归属写入口共用的生产者门（renames 覆盖层与 mask 配置面）：
+///        0 = 匿名写入放行；非 0 必须已注册（FK 也拦，但先查给出可诊断
+///        错误）；负值是调用方契约错误。
+ca::Result<void, AnalysisDbError> validateRegisteredProducer(sqlite3* db, ca::i64 producerId)
 {
     if (producerId < 0) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
@@ -2000,7 +2006,7 @@ ca::Result<void, AnalysisDbError> AnalysisDb::setClassRename(
     if (transaction.is_err()) return errorOf(std::move(transaction));
     auto txn = std::move(transaction).unwrap();
 
-    if (auto result = validateRenameProducer(impl_->handle, producerId); result.is_err()) {
+    if (auto result = validateRegisteredProducer(impl_->handle, producerId); result.is_err()) {
         return errorOf(std::move(result));
     }
 
@@ -2039,7 +2045,7 @@ ca::Result<void, AnalysisDbError> AnalysisDb::setMemberRename(
     if (transaction.is_err()) return errorOf(std::move(transaction));
     auto txn = std::move(transaction).unwrap();
 
-    if (auto result = validateRenameProducer(impl_->handle, producerId); result.is_err()) {
+    if (auto result = validateRegisteredProducer(impl_->handle, producerId); result.is_err()) {
         return errorOf(std::move(result));
     }
 
@@ -2075,7 +2081,7 @@ ca::Result<void, AnalysisDbError> AnalysisDb::setRenames(std::vector<DbRenameRec
     if (transaction.is_err()) return errorOf(std::move(transaction));
     auto txn = std::move(transaction).unwrap();
 
-    if (auto result = validateRenameProducer(impl_->handle, producerId); result.is_err()) {
+    if (auto result = validateRegisteredProducer(impl_->handle, producerId); result.is_err()) {
         return errorOf(std::move(result));
     }
     if (auto result = applyRenameBatch(impl_->handle, records, producerId); result.is_err()) {
@@ -2369,7 +2375,7 @@ ca::Result<void, AnalysisDbError> AnalysisDb::replaceRenames(
     if (transaction.is_err()) return errorOf(std::move(transaction));
     auto txn = std::move(transaction).unwrap();
 
-    if (auto result = validateRenameProducer(impl_->handle, producerId); result.is_err()) {
+    if (auto result = validateRegisteredProducer(impl_->handle, producerId); result.is_err()) {
         return errorOf(std::move(result));
     }
     if (auto result = exec(impl_->handle, "DELETE FROM renames"); result.is_err()) {
@@ -3128,10 +3134,10 @@ ca::Result<DbContainerCensus, AnalysisDbError> AnalysisDb::censusContainer(ca::i
     return ca::Ok(std::move(census));
 }
 
-//-- 出口遮蔽层（mask_rules / 信任级别，schema v4） --------------------------
+//-- 出口遮蔽层（mask_rules / 信任级别，schema v4；行级归属 v7） --------------
 
 ca::Result<DbMaskRuleReplaceStats, AnalysisDbError> AnalysisDb::replaceMaskRules(
-    std::vector<DbMaskRuleInput> rules)
+    std::vector<DbMaskRuleInput> rules, ca::i64 producerId)
 {
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
@@ -3139,6 +3145,9 @@ ca::Result<DbMaskRuleReplaceStats, AnalysisDbError> AnalysisDb::replaceMaskRules
     if (isReadOnly()) {
         return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
                                  "cannot write a read-only analysis database"));
+    }
+    if (auto result = validateRegisteredProducer(impl_->handle, producerId); result.is_err()) {
+        return errorOf(std::move(result));
     }
     // 整批校验前置（含编译性，与求值器 MaskEvaluator::build 同源）：任何
     // 一条非法整批不写库。
@@ -3194,8 +3203,8 @@ ca::Result<DbMaskRuleReplaceStats, AnalysisDbError> AnalysisDb::replaceMaskRules
     }
 
     auto insert = prepare(impl_->handle,
-                          "INSERT INTO mask_rules(priority, pattern, action, note) "
-                          "VALUES(?1, ?2, ?3, ?4)");
+                          "INSERT INTO mask_rules(priority, pattern, action, note, producer_id) "
+                          "VALUES(?1, ?2, ?3, ?4, ?5)");
     if (insert.is_err()) return errorOf(std::move(insert));
     auto insertStatement = std::move(insert).unwrap();
     for (const DbMaskRuleInput& rule : rules) {
@@ -3218,6 +3227,12 @@ ca::Result<DbMaskRuleReplaceStats, AnalysisDbError> AnalysisDb::replaceMaskRules
             result.is_err()) {
             return errorOf(std::move(result));
         }
+        // 行级归属：0 = 匿名写入（producer_id 落 NULL），非 0 整批统一盖章。
+        if (auto result = producerId > 0 ? bindInt(impl_->handle, insertStatement.raw, 5, producerId)
+                                         : bindNull(impl_->handle, insertStatement.raw, 5);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
         auto hasRow = step(impl_->handle, insertStatement.raw);
         if (hasRow.is_err()) return errorOf(std::move(hasRow));
         ++stats.total;
@@ -3236,8 +3251,8 @@ ca::Result<std::vector<DbMaskRule>, AnalysisDbError> AnalysisDb::listMaskRules()
     }
 
     auto prepared = prepare(impl_->handle,
-                            "SELECT rule_id, priority, pattern, action, note, hit_count "
-                            "FROM mask_rules ORDER BY priority, rule_id");
+                            "SELECT rule_id, priority, pattern, action, note, hit_count, "
+                            "producer_id FROM mask_rules ORDER BY priority, rule_id");
     if (prepared.is_err()) return errorOf(std::move(prepared));
     auto statement = std::move(prepared).unwrap();
 
@@ -3247,19 +3262,22 @@ ca::Result<std::vector<DbMaskRule>, AnalysisDbError> AnalysisDb::listMaskRules()
         if (hasRow.is_err()) return errorOf(std::move(hasRow));
         if (!hasRow.unwrap()) break;
         DbMaskRule rule;
-        rule.ruleId   = sqlite3_column_int64(statement.raw, 0);
-        rule.priority = sqlite3_column_int(statement.raw, 1);
-        rule.pattern  = utf8Column(statement.raw, 2);
-        rule.action   = sqlite3_column_int(statement.raw, 3) != 0 ? MaskAction::Mask
-                                                                  : MaskAction::Allow;
-        rule.note     = utf8Column(statement.raw, 4);
-        rule.hitCount = sqlite3_column_int64(statement.raw, 5);
+        rule.ruleId     = sqlite3_column_int64(statement.raw, 0);
+        rule.priority   = sqlite3_column_int(statement.raw, 1);
+        rule.pattern    = utf8Column(statement.raw, 2);
+        rule.action     = sqlite3_column_int(statement.raw, 3) != 0 ? MaskAction::Mask
+                                                                    : MaskAction::Allow;
+        rule.note       = utf8Column(statement.raw, 4);
+        rule.hitCount   = sqlite3_column_int64(statement.raw, 5);
+        // NULL = 匿名写入，读回 0（与 renames 行级归属同口径）。
+        rule.producerId = sqlite3_column_int64(statement.raw, 6);
         rules.push_back(std::move(rule));
     }
     return ca::Ok(std::move(rules));
 }
 
-ca::Result<void, AnalysisDbError> AnalysisDb::setMaskTrustLevel(MaskTrustLevel level)
+ca::Result<void, AnalysisDbError> AnalysisDb::setMaskTrustLevel(MaskTrustLevel level,
+                                                                ca::i64        producerId)
 {
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
@@ -3268,6 +3286,15 @@ ca::Result<void, AnalysisDbError> AnalysisDb::setMaskTrustLevel(MaskTrustLevel l
         return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
                                  "cannot write a read-only analysis database"));
     }
+    if (auto result = validateRegisteredProducer(impl_->handle, producerId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    // 信任级别值与归属伴随键（v7 #143）同事务落库：归属随每次设置整体刷新
+    // （last-write-wins 口径同 renames），匿名写入清除伴随键。
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
 
     auto prepared = prepare(impl_->handle,
                             "INSERT INTO meta(key, value) VALUES('mask_trust_level', ?1) "
@@ -3282,7 +3309,32 @@ ca::Result<void, AnalysisDbError> AnalysisDb::setMaskTrustLevel(MaskTrustLevel l
     }
     auto hasRow = step(impl_->handle, statement.raw);
     if (hasRow.is_err()) return errorOf(std::move(hasRow));
-    return ca::Ok();
+
+    if (producerId > 0) {
+        auto stampPrepared = prepare(
+            impl_->handle,
+            "INSERT INTO meta(key, value) VALUES('mask_trust_level_producer', ?1) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+        if (stampPrepared.is_err()) return errorOf(std::move(stampPrepared));
+        auto stampStatement = std::move(stampPrepared).unwrap();
+        if (auto result = bindText(impl_->handle, stampStatement.raw, 1,
+                                   ca::str::Utf8StringRef::from_string_view(
+                                       std::to_string(producerId)));
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto stamped = step(impl_->handle, stampStatement.raw);
+        if (stamped.is_err()) return errorOf(std::move(stamped));
+    }
+    else {
+        // 匿名写入 = 回到无归属态：伴随键整行清除（缺键即匿名，读路径无歧义）。
+        if (auto result = exec(impl_->handle,
+                               "DELETE FROM meta WHERE key='mask_trust_level_producer'");
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+    }
+    return txn.commit();
 }
 
 ca::Result<MaskTrustLevel, AnalysisDbError> AnalysisDb::maskTrustLevel() const

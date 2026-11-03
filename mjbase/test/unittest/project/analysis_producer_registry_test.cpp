@@ -1,8 +1,8 @@
 /// @file        analysis_producer_registry_test.cpp
 /// @brief       AnalysisDb producer 注册表（schema v6，#143）：注册幂等、
 ///              批次生命周期（started → 收尾回填）、残批可见、trust_level
-///              CHECK 门、只读拒写；后续批次在此叠加 renames 行级归属与
-///              作用域归属解析。
+///              CHECK 门、只读拒写；renames 行级归属与作用域归属解析，及
+///              mask 配置面行级归属（schema v7 遗留回填）。
 #include <gtest/gtest.h>
 
 #include <sqlite3.h>
@@ -603,6 +603,252 @@ TEST(MjAnalysisProducerRegistryTest, ReplaceRenamesReplayStartsNullAndStampWorks
         ASSERT_TRUE(found.is_ok());
         EXPECT_EQ(producerId, std::move(found).unwrap()->producerId);
     }
+}
+
+//-- mask 配置面归属化（schema v7，#143 遗留回填）--------------------------------
+
+namespace {
+
+DbMaskRuleInput maskRuleInput(ca::i32 priority, const char* pattern, const char* note = "")
+{
+    DbMaskRuleInput input;
+    input.priority = priority;
+    input.pattern  = Utf8String::from_cstr(pattern);
+    input.action   = MaskAction::Mask;
+    input.note     = Utf8String::from_cstr(note);
+    return input;
+}
+
+}   // namespace
+
+TEST(MjAnalysisProducerRegistryTest, MaskRulesSchemaKeepsColumnOrderAndIndex)
+{
+    // 可空外键列追加在列序末位（等价 ALTER ADD COLUMN 落位），既有列序与
+    // 既有索引保持不动——与 renames 行级归属同一条重建纪律。
+    const auto path = freshDbPath("mask_rules_schema");
+    auto       db   = openOrDie(path);
+    std::vector<DbMaskRuleInput> rules;
+    rules.push_back(maskRuleInput(1, "^poc_never_matches_[0-9]+$"));
+    ASSERT_TRUE(db.replaceMaskRules(std::move(rules)).is_ok());
+    ASSERT_TRUE(db.save().is_ok());
+    ASSERT_TRUE(db.close().is_ok());
+
+    sqlite3* raw = openRawReadOnly(path);
+    ASSERT_NE(nullptr, raw);
+    // pragma_table_info 的 cid 序：producer_id 必须是最后一列。
+    EXPECT_EQ("rule_id,priority,pattern,action,note,hit_count,producer_id",
+              rawText(raw,
+                      "SELECT group_concat(name, ',') FROM "
+                      "(SELECT name FROM pragma_table_info('mask_rules') ORDER BY cid)"));
+    EXPECT_EQ(1, rawScalar(raw,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='mask_rules_order'"));
+    sqlite3_close(raw);
+}
+
+TEST(MjAnalysisProducerRegistryTest, MaskRuleRowsCarryProducerAttribution)
+{
+    const auto path = freshDbPath("mask_rules_attribution");
+    auto       db   = openOrDie(path);
+
+    auto first  = db.registerProducer(producerInput("mjt.mcp.mask_exit", "MaskExit", ""));
+    ASSERT_TRUE(first.is_ok());
+    const ca::i64 exitId = first.unwrap();
+    auto second = db.registerProducer(producerInput("mjt.pysdk.facade", "Facade", ""));
+    ASSERT_TRUE(second.is_ok());
+    const ca::i64 facadeId = second.unwrap();
+
+    // 盖章写入：listMaskRules 逐行带出写入者，且与 listProducers 登记行对上。
+    std::vector<DbMaskRuleInput> firstBatch;
+    firstBatch.push_back(maskRuleInput(1, "^secret_[a-z]+$", "a"));
+    firstBatch.push_back(maskRuleInput(2, "^token_[a-z]+$", "b"));
+    ASSERT_TRUE(db.replaceMaskRules(std::move(firstBatch), exitId).is_ok());
+    {
+        auto listed = db.listMaskRules();
+        ASSERT_TRUE(listed.is_ok());
+        auto rows = std::move(listed).unwrap();
+        ASSERT_EQ(2U, rows.size());
+        for (const auto& row : rows) {
+            EXPECT_EQ(exitId, row.producerId);
+        }
+        auto producers = db.listProducers();
+        ASSERT_TRUE(producers.is_ok());
+        bool matched = false;
+        for (const auto& producer : std::move(producers).unwrap()) {
+            matched = matched || producer.producerId == exitId;
+        }
+        EXPECT_TRUE(matched);
+    }
+
+    // 缺省（producerId 0）= 匿名写入：整体替换后新行 producer_id 落 NULL，
+    // 记录输出 0，不残留上一轮归属——缺省参数对既有调用语义零破坏。
+    std::vector<DbMaskRuleInput> replay;
+    replay.push_back(maskRuleInput(1, "^secret_[a-z]+$", "a"));
+    ASSERT_TRUE(db.replaceMaskRules(std::move(replay)).is_ok());
+    {
+        auto listed = db.listMaskRules();
+        ASSERT_TRUE(listed.is_ok());
+        auto rows = std::move(listed).unwrap();
+        ASSERT_EQ(1U, rows.size());
+        EXPECT_EQ(0, rows[0].producerId);
+    }
+    ASSERT_TRUE(db.save().is_ok());
+    ASSERT_TRUE(db.close().is_ok());
+    {
+        sqlite3* raw = openRawReadOnly(path);
+        ASSERT_NE(nullptr, raw);
+        EXPECT_EQ(1, rawScalar(raw, "SELECT COUNT(*) FROM mask_rules"));
+        EXPECT_EQ(0,
+                  rawScalar(raw, "SELECT COUNT(*) FROM mask_rules WHERE producer_id IS NOT NULL"));
+        sqlite3_close(raw);
+    }
+
+    // 后写者整体覆盖先写者：归属随替换翻到新写者。
+    auto reopened = openOrDie(path);
+    {
+        std::vector<DbMaskRuleInput> stamped;
+        stamped.push_back(maskRuleInput(1, "^secret_[a-z]+$", "a"));
+        stamped.push_back(maskRuleInput(2, "^token_[a-z]+$", "b"));
+        ASSERT_TRUE(reopened.replaceMaskRules(std::move(stamped), facadeId).is_ok());
+        auto listed = reopened.listMaskRules();
+        ASSERT_TRUE(listed.is_ok());
+        for (const auto& row : std::move(listed).unwrap()) {
+            EXPECT_EQ(facadeId, row.producerId);
+        }
+    }
+
+    // 匿名重放 → 外部归批动线：规则面挂批属消费方职责，对 NULL 行一次
+    // 盖章 UPDATE，读路径随之逐行可见。
+    std::vector<DbMaskRuleInput> anonymous;
+    anonymous.push_back(maskRuleInput(1, "^secret_[a-z]+$", "a"));
+    ASSERT_TRUE(reopened.replaceMaskRules(std::move(anonymous)).is_ok());
+    ASSERT_TRUE(reopened.save().is_ok());
+    ASSERT_TRUE(reopened.close().is_ok());
+    {
+        sqlite3* rw = openRawReadWrite(path);
+        ASSERT_NE(nullptr, rw);
+        const std::string stamp =
+            "UPDATE mask_rules SET producer_id=" + std::to_string(exitId) +
+            " WHERE producer_id IS NULL";
+        EXPECT_EQ(SQLITE_OK, sqlite3_exec(rw, stamp.c_str(), nullptr, nullptr, nullptr));
+        EXPECT_EQ(exitId, rawScalar(rw, "SELECT MIN(producer_id) FROM mask_rules"));
+        EXPECT_EQ(SQLITE_OK, sqlite3_exec(rw, stamp.c_str(), nullptr, nullptr, nullptr));
+        EXPECT_EQ(1, rawScalar(rw, "SELECT COUNT(*) FROM mask_rules"));
+        sqlite3_close(rw);
+    }
+    {
+        auto after = openOrDie(path);
+        auto listed = after.listMaskRules();
+        ASSERT_TRUE(listed.is_ok());
+        auto rows = std::move(listed).unwrap();
+        ASSERT_EQ(1U, rows.size());
+        EXPECT_EQ(exitId, rows[0].producerId);
+    }
+}
+
+TEST(MjAnalysisProducerRegistryTest, MaskRuleProducerGateRejectsUnregisteredIds)
+{
+    const auto path = freshDbPath("mask_rules_producer_gate");
+    auto       db   = openOrDie(path);
+
+    // 未注册生产者 → Invalid（可诊断拒绝面，非裸 FK 报错）；负值同拒。
+    std::vector<DbMaskRuleInput> rules;
+    rules.push_back(maskRuleInput(1, "^poc_[a-z]+$"));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.replaceMaskRules(std::move(rules), 42)));
+    std::vector<DbMaskRuleInput> negative;
+    negative.push_back(maskRuleInput(1, "^poc_[a-z]+$"));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.replaceMaskRules(std::move(negative), -1)));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.setMaskTrustLevel(MaskTrustLevel::Untrusted, 42)));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.setMaskTrustLevel(MaskTrustLevel::Untrusted, -1)));
+    // 拒绝零写入：规则面与信任级别键都保持原状。
+    auto listed = db.listMaskRules();
+    ASSERT_TRUE(listed.is_ok());
+    EXPECT_TRUE(std::move(listed).unwrap().empty());
+    auto level = db.maskTrustLevel();
+    ASSERT_TRUE(level.is_ok());
+    EXPECT_EQ(MaskTrustLevel::Trusted, std::move(level).unwrap());
+
+    // FK 兜底门：绕过 API 的直插对未知生产者必须拒写。
+    std::vector<DbMaskRuleInput> ok;
+    ok.push_back(maskRuleInput(1, "^poc_[a-z]+$"));
+    ASSERT_TRUE(db.replaceMaskRules(std::move(ok)).is_ok());
+    ASSERT_TRUE(db.save().is_ok());
+    ASSERT_TRUE(db.close().is_ok());
+    sqlite3* rw = openRawReadWrite(path);
+    ASSERT_NE(nullptr, rw);
+    auto fk = rawExec(rw,
+        "INSERT INTO mask_rules(priority, pattern, action, note, producer_id) "
+        "VALUES(2, '^x$', 0, '', 999)");
+    EXPECT_NE(SQLITE_OK, fk.first);
+    EXPECT_EQ(1, rawScalar(rw, "SELECT COUNT(*) FROM mask_rules"));
+    sqlite3_close(rw);
+}
+
+TEST(MjAnalysisProducerRegistryTest, MaskTrustLevelAttributionFollowsLastWriter)
+{
+    const auto path = freshDbPath("mask_trust_attribution");
+    auto       db   = openOrDie(path);
+
+    auto first  = db.registerProducer(producerInput("mjt.mcp.mask_exit", "MaskExit", ""));
+    ASSERT_TRUE(first.is_ok());
+    const ca::i64 exitId = first.unwrap();
+    auto second = db.registerProducer(producerInput("poc.other", "Other", ""));
+    ASSERT_TRUE(second.is_ok());
+    const ca::i64 otherId = second.unwrap();
+
+    // 匿名缺省写入：值落库，伴随归属键不存在（缺键即匿名）。
+    ASSERT_TRUE(db.setMaskTrustLevel(MaskTrustLevel::Untrusted).is_ok());
+    ASSERT_TRUE(db.save().is_ok());
+    ASSERT_TRUE(db.close().is_ok());
+    {
+        sqlite3* raw = openRawReadOnly(path);
+        ASSERT_NE(nullptr, raw);
+        EXPECT_EQ("untrusted", rawText(raw, "SELECT value FROM meta WHERE key='mask_trust_level'"));
+        EXPECT_EQ(0,
+                  rawScalar(raw, "SELECT COUNT(*) FROM meta WHERE key='mask_trust_level_producer'"));
+        sqlite3_close(raw);
+    }
+
+    // 盖章写入：伴随键落写入者 id；重复设置同值幂等（归属随写刷新）。
+    auto reopened = openOrDie(path);
+    ASSERT_TRUE(reopened.setMaskTrustLevel(MaskTrustLevel::Untrusted, exitId).is_ok());
+    ASSERT_TRUE(reopened.setMaskTrustLevel(MaskTrustLevel::Untrusted, exitId).is_ok());
+    ASSERT_TRUE(reopened.save().is_ok());
+    ASSERT_TRUE(reopened.close().is_ok());
+    {
+        sqlite3* raw = openRawReadOnly(path);
+        ASSERT_NE(nullptr, raw);
+        EXPECT_EQ("untrusted", rawText(raw, "SELECT value FROM meta WHERE key='mask_trust_level'"));
+        EXPECT_EQ(exitId,
+                  rawScalar(raw,
+                            "SELECT CAST(value AS INTEGER) FROM meta "
+                            "WHERE key='mask_trust_level_producer'"));
+        sqlite3_close(raw);
+    }
+
+    // 后写者整体覆盖：值翻转 + 归属刷新；匿名重设清除伴随键、值保持。
+    auto again = openOrDie(path);
+    ASSERT_TRUE(again.setMaskTrustLevel(MaskTrustLevel::Trusted, otherId).is_ok());
+    ASSERT_TRUE(again.setMaskTrustLevel(MaskTrustLevel::Trusted).is_ok());
+    ASSERT_TRUE(again.save().is_ok());
+    ASSERT_TRUE(again.close().is_ok());
+    {
+        sqlite3* raw = openRawReadOnly(path);
+        ASSERT_NE(nullptr, raw);
+        EXPECT_EQ("trusted", rawText(raw, "SELECT value FROM meta WHERE key='mask_trust_level'"));
+        EXPECT_EQ(0,
+                  rawScalar(raw, "SELECT COUNT(*) FROM meta WHERE key='mask_trust_level_producer'"));
+        sqlite3_close(raw);
+    }
+
+    // 读路径（maskTrustLevel）全程不感知归属键，语义与 v7 之前一致。
+    auto readOnly = openOrDie(path, AnalysisDbOpenMode::ReadOnly);
+    auto level    = readOnly.maskTrustLevel();
+    ASSERT_TRUE(level.is_ok());
+    EXPECT_EQ(MaskTrustLevel::Trusted, std::move(level).unwrap());
 }
 
 //-- 批 3：写入口批次参数化、作用域归属解析与查询面 ------------------------------
