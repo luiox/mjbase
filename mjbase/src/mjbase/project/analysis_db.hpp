@@ -46,7 +46,10 @@ namespace mjbase::project {
 ///   身份（稳定 key 幂等、id 单调只增不删、trust_level 两档），`batches`
 ///   记录逻辑写入运行（一次整库导入、一次引用替换各一批；finished_at 空串
 ///   = 未收尾的残批，合法审计状态），`batch_scopes` 记录批次覆盖的事实
-///   区间（作用域锚）。事实表不加归属列，逐行归属经作用域解析回答。
+///   区间（作用域锚）。事实表不加归属列，逐行归属经作用域解析回答；
+///   renames 是覆盖层与配置型小表，行级归属即语义，走行级
+///   `renames.producer_id` 列（写入口尾参盖章，缺省 0 = 匿名写入落 NULL，
+///   覆盖行为不变 last-write-wins，覆盖来源事后可查）。
 ///
 /// - 普查投影层（#121 §5 B4）：census 是库上的只读 SELECT 投影（#39 类
 ///   普查事实面 + 容器形态汇总面；#148 成员普查事实面），不反向定义存储、
@@ -69,8 +72,9 @@ namespace mjbase::project {
 ///        （包括旧版本：不提供自动迁移，旧库由上层显式重建）。
 ///
 /// v6：producer 注册表——新增 producers / batches / batch_scopes 三表
-///        （#143：写入运行登记与作用域锚，事实表不加归属列）。v5：refs
-///        目标侧 id 化——新增可空外键 `refs.target_class_id` /
+///        （#143：写入运行登记与作用域锚，事实表不加归属列）与
+///        renames.producer_id 行级归属（可空外键，写入口尾参盖章）。v5：
+///        refs 目标侧 id 化——新增可空外键 `refs.target_class_id` /
 ///        `target_member_id`，目标整体二元化（登记目标落 id 清文本，未登记
 ///        目标整体落文本），目标反查走 refs_target_id / refs_target_text 两个
 ///        部分索引两分支 UNION ALL。v4：新增 mask_rules 遮蔽规则表与 meta
@@ -154,6 +158,9 @@ struct AnalysisDbError
 /// - `token` 为空表示未分配（旧 shadow 格式），非空时必须是 8 位小写 hex。
 /// - `updatedAt` 由数据库写入时生成（ISO-8601 UTC）；作为 `replaceRenames`
 ///   输入时忽略。
+/// - `producerId` 是行级归属（schema v6）：查询输出为盖章结果（0 = 匿名
+///   写入或未归属）；作为写入输入时忽略，归属由写入口的 producerId 参数
+///   决定，不经记录携带。
 struct DbRenameRecord
 {
     RenameTargetKind    target     = RenameTargetKind::Class;
@@ -164,6 +171,7 @@ struct DbRenameRecord
     ca::str::Utf8String shadow;
     ca::str::Utf8String token;
     ca::str::Utf8String updatedAt;
+    ca::i64             producerId = 0; ///< 覆盖来源生产者；0 = 匿名写入
 };
 
 /// @brief 直接引用的目标类别（与指令/class 头的编码事实一一对应）。
@@ -460,26 +468,35 @@ public:
 
     /// @brief 设置类重命名；类身份不存在时先登记。
     ///        `shadow` 非空；`token` 为空或 8 位小写 hex。已存在则整体覆盖。
+    ///
+    /// `producerId` 行级盖章（0 = 匿名写入，producer_id 落 NULL；非 0 必须
+    /// 已注册，否则 `Invalid`）。覆盖来源 + updated_at 让「谁盖掉了谁」
+    /// 事后可查。
     ca::Result<void, AnalysisDbError> setClassRename(
         const ca::str::Utf8StringRef& owner,
         const ca::str::Utf8StringRef& shadow,
-        const ca::str::Utf8StringRef& token = {});
+        const ca::str::Utf8StringRef& token      = {},
+        ca::i64                       producerId = 0);
 
     /// @brief 设置成员重命名；成员身份不存在时先登记。已存在则整体覆盖。
+    ///        `producerId` 行级盖章，口径同 `setClassRename`。
     ca::Result<void, AnalysisDbError> setMemberRename(
         DbMemberKind                  kind,
         const ca::str::Utf8StringRef& owner,
         const ca::str::Utf8StringRef& name,
         const ca::str::Utf8StringRef& desc,
         const ca::str::Utf8StringRef& shadow,
-        const ca::str::Utf8StringRef& token = {});
+        const ca::str::Utf8StringRef& token      = {},
+        ca::i64                       producerId = 0);
 
     /// @brief 批量设置重命名：单事务、语句预编译复用，未提及的既有覆盖保持不变。
     ///
     /// 输入先整体校验（重复目标、重复非空 token、非法字段 → `Invalid`），
     /// 校验失败不写库；执行中任何一行失败（如 token 与库内既有行冲突）整批回滚。
     /// AI 批量重命名脚本走这个入口，不要循环调用单条接口。
-    ca::Result<void, AnalysisDbError> setRenames(std::vector<DbRenameRecord> records);
+    /// `producerId` 对本批全部行级盖章，口径同 `setClassRename`。
+    ca::Result<void, AnalysisDbError> setRenames(std::vector<DbRenameRecord> records,
+                                                 ca::i64                     producerId = 0);
 
     /// @brief 删除类重命名；返回是否确有该行。身份登记保留。
     ca::Result<bool, AnalysisDbError> clearClassRename(const ca::str::Utf8StringRef& owner);
@@ -522,7 +539,10 @@ public:
     ///
     /// 输入先整体校验：重复目标、重复非空 token、非法字段一律 `Invalid`，
     /// 且不改动现有数据。身份登记（classes/members）保留，ID 不重排。
-    ca::Result<void, AnalysisDbError> replaceRenames(std::vector<DbRenameRecord> records);
+    /// `producerId` 对本批全部行级盖章，口径同 `setClassRename`（0 = 匿名
+    /// 写入，重放后新行 producer_id 为 NULL）。
+    ca::Result<void, AnalysisDbError> replaceRenames(std::vector<DbRenameRecord> records,
+                                                     ca::i64                     producerId = 0);
 
     //-- 条目身份层（inputs / entries，schema v3） --------------------------
 

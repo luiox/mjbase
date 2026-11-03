@@ -68,6 +68,30 @@ DbProducerInput producerInput(const char* key, const char* name, const char* fin
     return input;
 }
 
+DbRenameRecord classRecord(const char* owner, const char* shadow, const char* token = "")
+{
+    DbRenameRecord record;
+    record.target = RenameTargetKind::Class;
+    record.owner  = Utf8String::from_cstr(owner);
+    record.shadow = Utf8String::from_cstr(shadow);
+    record.token  = Utf8String::from_cstr(token);
+    return record;
+}
+
+DbRenameRecord memberRecord(DbMemberKind kind, const char* owner, const char* name,
+                            const char* desc, const char* shadow, const char* token = "")
+{
+    DbRenameRecord record;
+    record.target     = RenameTargetKind::Member;
+    record.memberKind = kind;
+    record.owner      = Utf8String::from_cstr(owner);
+    record.name       = Utf8String::from_cstr(name);
+    record.desc       = Utf8String::from_cstr(desc);
+    record.shadow     = Utf8String::from_cstr(shadow);
+    record.token      = Utf8String::from_cstr(token);
+    return record;
+}
+
 /// @brief 裸 sqlite3 只读连接（AnalysisDb 已 save + close 后使用）。
 sqlite3* openRawReadOnly(const std::filesystem::path& path)
 {
@@ -361,4 +385,222 @@ TEST(MjAnalysisProducerRegistryTest, RegistryWritesValidateInputsAndReadOnly)
               takeErrorKind(readOnly.openBatch(1, DbBatchKind::FullImport)));
     EXPECT_EQ(AnalysisDbErrorKind::ReadOnly,
               takeErrorKind(readOnly.closeBatch(1, DbBatchCounts{})));
+}
+
+//-- 批 2：renames 行级归属 ------------------------------------------------------
+
+TEST(MjAnalysisProducerRegistryTest, RenamesSchemaKeepsColumnOrderAndIndexes)
+{
+    // 可空外键列追加在列序末位（等价 ALTER ADD COLUMN 落位），既有列序与
+    // 两条索引保持不动——重建表路径的纪律就是原样保留这两样。
+    const auto path = freshDbPath("renames_schema");
+    auto       db   = openOrDie(path);
+    ASSERT_TRUE(db.setClassRename(S("a/A"), S("Class_1")).is_ok());
+    ASSERT_TRUE(db.save().is_ok());
+    ASSERT_TRUE(db.close().is_ok());
+
+    sqlite3* raw = openRawReadOnly(path);
+    ASSERT_NE(nullptr, raw);
+    // pragma_table_info 的 cid 序：producer_id 必须是最后一列。
+    EXPECT_EQ("target_kind,target_id,new_name,token,updated_at,producer_id",
+              rawText(raw,
+                      "SELECT group_concat(name, ',') FROM "
+                      "(SELECT name FROM pragma_table_info('renames') ORDER BY cid)"));
+    EXPECT_EQ(2, rawScalar(raw,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN "
+        "('renames_token','renames_new_name')"));
+    sqlite3_close(raw);
+}
+
+TEST(MjAnalysisProducerRegistryTest, RenameRowsCarryProducerAttribution)
+{
+    const auto path = freshDbPath("renames_attribution");
+    auto       db   = openOrDie(path);
+
+    auto first = db.registerProducer(producerInput("mjt.pysdk.facade", "Facade", ""));
+    ASSERT_TRUE(first.is_ok());
+    const ca::i64 facadeId = first.unwrap();
+    auto second = db.registerProducer(producerInput("mjt.workspace.ingest", "Ingest", ""));
+    ASSERT_TRUE(second.is_ok());
+    const ca::i64 ingestId = second.unwrap();
+    ASSERT_NE(facadeId, ingestId);
+
+    // 带生产者盖章写入：逐行可查（API 输出与裸表一致）。
+    ASSERT_TRUE(
+        db.setClassRename(S("a/A"), S("Class_1"), S("deadbeef"), facadeId).is_ok());
+    ASSERT_TRUE(db.setMemberRename(DbMemberKind::Method, S("a/A"), S("run"), S("()V"),
+                                   S("Method_1"), S("00000001"), facadeId)
+                    .is_ok());
+    {
+        auto found = db.findClassRename(S("a/A"));
+        ASSERT_TRUE(found.is_ok());
+        auto value = std::move(found).unwrap();
+        ASSERT_TRUE(value.has_value());
+        EXPECT_EQ(facadeId, value->producerId);
+        auto member = db.findMemberRename(DbMemberKind::Method, S("a/A"), S("run"), S("()V"));
+        ASSERT_TRUE(member.is_ok());
+        EXPECT_EQ(facadeId, std::move(member).unwrap()->producerId);
+    }
+
+    // 缺省（producerId 0）= 匿名写入：producer_id 落 NULL，记录输出 0。
+    ASSERT_TRUE(db.setClassRename(S("a/B"), S("Class_2")).is_ok());
+    {
+        auto found = db.findClassRename(S("a/B"));
+        ASSERT_TRUE(found.is_ok());
+        EXPECT_EQ(0, std::move(found).unwrap()->producerId);
+    }
+
+    // 批量入口整批盖章；覆盖（last-write-wins）把方法行归属翻到新写者。
+    std::vector<DbRenameRecord> batch;
+    batch.push_back(memberRecord(DbMemberKind::Method, "a/A", "run", "()V", "Method_1b",
+                                 "00000002"));
+    batch.push_back(classRecord("a/C", "Class_3", "00000003"));
+    ASSERT_TRUE(db.setRenames(std::move(batch), ingestId).is_ok());
+    {
+        auto all = db.listRenames();
+        ASSERT_TRUE(all.is_ok());
+        ca::usize facadeRows = 0;
+        ca::usize ingestRows = 0;
+        ca::usize nullRows   = 0;
+        for (const auto& row : std::move(all).unwrap()) {
+            if (row.producerId == facadeId) ++facadeRows;
+            if (row.producerId == ingestId) ++ingestRows;
+            if (row.producerId == 0) ++nullRows;
+        }
+        // (0,A)=facade、(1,method)=ingest（覆盖翻转）、(0,B)=NULL、(0,C)=ingest。
+        EXPECT_EQ(1, static_cast<int>(facadeRows));
+        EXPECT_EQ(2, static_cast<int>(ingestRows));
+        EXPECT_EQ(1, static_cast<int>(nullRows));
+    }
+
+    // 后写者整体覆盖先写者：方法行归属随最后一次覆盖再翻回来。
+    ASSERT_TRUE(db.setMemberRename(DbMemberKind::Method, S("a/A"), S("run"), S("()V"),
+                                   S("Method_2"), S("00000001"), facadeId)
+                    .is_ok());
+    {
+        auto all = db.listRenames();
+        ASSERT_TRUE(all.is_ok());
+        ca::usize facadeRows = 0;
+        ca::usize ingestRows = 0;
+        for (const auto& row : std::move(all).unwrap()) {
+            if (row.producerId == facadeId) ++facadeRows;
+            if (row.producerId == ingestId) ++ingestRows;
+        }
+        EXPECT_EQ(2, static_cast<int>(facadeRows));
+        EXPECT_EQ(1, static_cast<int>(ingestRows));
+    }
+
+    ASSERT_TRUE(db.save().is_ok());
+    ASSERT_TRUE(db.close().is_ok());
+    sqlite3* raw = openRawReadOnly(path);
+    ASSERT_NE(nullptr, raw);
+    EXPECT_EQ(4, rawScalar(raw, "SELECT COUNT(*) FROM renames"));
+    EXPECT_EQ(3, rawScalar(raw, "SELECT COUNT(*) FROM renames WHERE producer_id IS NOT NULL"));
+    sqlite3_close(raw);
+}
+
+TEST(MjAnalysisProducerRegistryTest, RenameProducerGateRejectsUnregisteredIds)
+{
+    const auto path = freshDbPath("renames_producer_gate");
+    auto       db   = openOrDie(path);
+
+    // 未注册生产者 → Invalid（可诊断拒绝面，非裸 FK 报错）；负值同拒。
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.setClassRename(S("a/A"), S("Class_1"), S(""), 42)));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.setClassRename(S("a/A"), S("Class_1"), S(""), -1)));
+    std::vector<DbRenameRecord> batchSet;
+    batchSet.push_back(classRecord("a/A", "Class_1"));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.setRenames(std::move(batchSet), 42)));
+    std::vector<DbRenameRecord> batchReplace;
+    batchReplace.push_back(classRecord("a/A", "Class_1"));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+              takeErrorKind(db.replaceRenames(std::move(batchReplace), 42)));
+    // 拒绝零写入：行不存在。
+    auto all = db.listRenames();
+    ASSERT_TRUE(all.is_ok());
+    EXPECT_TRUE(std::move(all).unwrap().empty());
+
+    // FK 兜底门：绕过 API 的直插对未知生产者必须拒写。
+    ASSERT_TRUE(db.setClassRename(S("a/A"), S("Class_1")).is_ok());
+    ASSERT_TRUE(db.save().is_ok());
+    ASSERT_TRUE(db.close().is_ok());
+    sqlite3* rw = openRawReadWrite(path);
+    ASSERT_NE(nullptr, rw);
+    // target_id 无 FK（身份存在性由写入口保证）；这里只有 producer FK 会响。
+    auto fk = rawExec(rw,
+        "INSERT INTO renames(target_kind, target_id, new_name, token, updated_at, producer_id) "
+        "VALUES(1, 12345, 'x', NULL, 't', 999)");
+    EXPECT_NE(SQLITE_OK, fk.first);
+    sqlite3_close(rw);
+}
+
+TEST(MjAnalysisProducerRegistryTest, ReplaceRenamesReplayStartsNullAndStampWorks)
+{
+    // 验收线（#143 批 2）：覆盖重放后新行 NULL；盖章 UPDATE 路径可重放生效。
+    const auto path = freshDbPath("renames_replay_stamp");
+    auto       db   = openOrDie(path);
+
+    auto producer = db.registerProducer(producerInput("mjt.workspace.ingest", "Ingest", ""));
+    ASSERT_TRUE(producer.is_ok());
+    const ca::i64 producerId = producer.unwrap();
+
+    // 首轮覆盖导入（带生产者）：行级盖章。
+    std::vector<DbRenameRecord> first;
+    first.push_back(classRecord("a/A", "Class_1", "deadbeef"));
+    first.push_back(memberRecord(DbMemberKind::Method, "a/A", "run", "()V", "Method_1"));
+    ASSERT_TRUE(db.replaceRenames(std::move(first), producerId).is_ok());
+    {
+        auto all = db.listRenames();
+        ASSERT_TRUE(all.is_ok());
+        for (const auto& row : std::move(all).unwrap()) {
+            EXPECT_EQ(producerId, row.producerId);
+        }
+    }
+
+    // 覆盖重放（匿名缺省）：整层替换后新行全部 NULL，不残留上一轮归属。
+    std::vector<DbRenameRecord> replay;
+    replay.push_back(classRecord("a/A", "Class_1", "deadbeef"));
+    replay.push_back(memberRecord(DbMemberKind::Method, "a/A", "run", "()V", "Method_1"));
+    ASSERT_TRUE(db.replaceRenames(std::move(replay), 0).is_ok());
+    {
+        auto all = db.listRenames();
+        ASSERT_TRUE(all.is_ok());
+        auto rows = std::move(all).unwrap();
+        ASSERT_EQ(2U, rows.size());
+        for (const auto& row : rows) {
+            EXPECT_EQ(0, row.producerId);
+        }
+    }
+    {
+        auto byShadow = db.findRenamesByShadow(S("Method_1"));
+        ASSERT_TRUE(byShadow.is_ok());
+        EXPECT_EQ(1U, std::move(byShadow).unwrap().size());
+    }
+
+    // 盖章 UPDATE（外部归批动线）：对 NULL 行一次盖章，读路径随之可见；
+    // 重复执行（重放同一条 UPDATE）幂等。
+    ASSERT_TRUE(db.save().is_ok());
+    ASSERT_TRUE(db.close().is_ok());
+    sqlite3* rw = openRawReadWrite(path);
+    ASSERT_NE(nullptr, rw);
+    const std::string stamp =
+        "UPDATE renames SET producer_id=" + std::to_string(producerId) +
+        " WHERE producer_id IS NULL";
+    EXPECT_EQ(SQLITE_OK, sqlite3_exec(rw, stamp.c_str(), nullptr, nullptr, nullptr));
+    EXPECT_EQ(2, rawScalar(rw, "SELECT COUNT(*) FROM renames WHERE producer_id IS NOT NULL"));
+    EXPECT_EQ(producerId,
+              rawScalar(rw, "SELECT MIN(producer_id) FROM renames"));
+    EXPECT_EQ(SQLITE_OK, sqlite3_exec(rw, stamp.c_str(), nullptr, nullptr, nullptr));
+    EXPECT_EQ(2, rawScalar(rw, "SELECT COUNT(*) FROM renames WHERE producer_id IS NOT NULL"));
+    sqlite3_close(rw);
+
+    // 盖章后 API 读路径逐行可见。
+    auto reopened = openOrDie(path);
+    {
+        auto found = reopened.findClassRename(S("a/A"));
+        ASSERT_TRUE(found.is_ok());
+        EXPECT_EQ(producerId, std::move(found).unwrap()->producerId);
+    }
 }

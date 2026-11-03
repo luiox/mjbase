@@ -136,6 +136,24 @@ ca::Result<void, AnalysisDbError> bindOptionalText(sqlite3* db, sqlite3_stmt* st
     return bindText(db, statement, index, value);
 }
 
+ca::Result<void, AnalysisDbError> bindNull(sqlite3* db, sqlite3_stmt* statement, int index)
+{
+    if (sqlite3_bind_null(statement, index) != SQLITE_OK) {
+        return ca::Err(sqliteFailure(db, "bind null failed"));
+    }
+    return ca::Ok();
+}
+
+/// @brief 绑定零长度文本（''，非 NULL）——id 行清空的 target_name/target_desc。
+ca::Result<void, AnalysisDbError> bindEmptyText(sqlite3* db, sqlite3_stmt* statement, int index)
+{
+    static const char kEmptyText[] = "";
+    if (sqlite3_bind_text(statement, index, kEmptyText, 0, SQLITE_TRANSIENT) != SQLITE_OK) {
+        return ca::Err(sqliteFailure(db, "bind text failed"));
+    }
+    return ca::Ok();
+}
+
 ca::Result<void, AnalysisDbError> bindInt(sqlite3* db, sqlite3_stmt* statement, int index,
                                           ca::i64 value)
 {
@@ -644,14 +662,16 @@ ca::Result<void, AnalysisDbError> upsertRename(sqlite3* db, ca::i64 targetId,
                                                 RenameTargetKind targetKind,
                                                 const ca::str::Utf8StringRef& shadow,
                                                 const ca::str::Utf8StringRef& token,
-                                                const std::string&            updatedAt)
+                                                const std::string&            updatedAt,
+                                                ca::i64                       producerId)
 {
     auto prepared = prepare(
         db,
-        "INSERT INTO renames(target_kind, target_id, new_name, token, updated_at) "
-        "VALUES(?1, ?2, ?3, ?4, ?5) "
+        "INSERT INTO renames(target_kind, target_id, new_name, token, updated_at, producer_id) "
+        "VALUES(?1, ?2, ?3, ?4, ?5, ?6) "
         "ON CONFLICT(target_kind, target_id) DO UPDATE SET "
-        "new_name=excluded.new_name, token=excluded.token, updated_at=excluded.updated_at");
+        "new_name=excluded.new_name, token=excluded.token, updated_at=excluded.updated_at, "
+        "producer_id=excluded.producer_id");
     if (prepared.is_err()) return errorOf(std::move(prepared));
     auto statement = std::move(prepared).unwrap();
 
@@ -670,6 +690,12 @@ ca::Result<void, AnalysisDbError> upsertRename(sqlite3* db, ca::i64 targetId,
     }
     const auto updated = ca::str::Utf8StringRef::from_string_view(updatedAt);
     if (auto result = bindText(db, statement.raw, 5, updated); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    // 行级归属：0 = 匿名写入（producer_id 落 NULL），非 0 随覆盖整体刷新。
+    if (auto result = producerId > 0 ? bindInt(db, statement.raw, 6, producerId)
+                                     : bindNull(db, statement.raw, 6);
+        result.is_err()) {
         return errorOf(std::move(result));
     }
 
@@ -699,7 +725,7 @@ ca::Result<void, AnalysisDbError> deleteRename(sqlite3* db, ca::i64 targetId,
 
 constexpr const char* kRenameSelectSql =
     "SELECT r.target_kind, r.new_name, r.token, r.updated_at, "
-    "       c.internal_name, m.kind, m.name, m.descriptor, mc.internal_name "
+    "       c.internal_name, m.kind, m.name, m.descriptor, mc.internal_name, r.producer_id "
     "FROM renames r "
     "LEFT JOIN classes c ON r.target_kind=0 AND c.class_id=r.target_id "
     "LEFT JOIN members m ON r.target_kind=1 AND m.member_id=r.target_id "
@@ -715,6 +741,7 @@ ca::Result<DbRenameRecord, AnalysisDbError> readRenameRow(sqlite3_stmt* statemen
     record.shadow    = utf8Column(statement, 1);
     record.token     = utf8Column(statement, 2);
     record.updatedAt = utf8Column(statement, 3);
+    record.producerId = sqlite3_column_int64(statement, 9);
 
     const ca::i64 targetKind = sqlite3_column_int64(statement, 0);
     if (targetKind == static_cast<ca::i64>(RenameTargetKind::Class)) {
@@ -775,10 +802,11 @@ ca::Result<RenameBatchStatements, AnalysisDbError> prepareRenameBatch(sqlite3* d
 
     auto upsertRename = prepare(
         db,
-        "INSERT INTO renames(target_kind, target_id, new_name, token, updated_at) "
-        "VALUES(?1, ?2, ?3, ?4, ?5) "
+        "INSERT INTO renames(target_kind, target_id, new_name, token, updated_at, producer_id) "
+        "VALUES(?1, ?2, ?3, ?4, ?5, ?6) "
         "ON CONFLICT(target_kind, target_id) DO UPDATE SET "
-        "new_name=excluded.new_name, token=excluded.token, updated_at=excluded.updated_at");
+        "new_name=excluded.new_name, token=excluded.token, updated_at=excluded.updated_at, "
+        "producer_id=excluded.producer_id");
     if (upsertRename.is_err()) return errorOf(std::move(upsertRename));
     statements.upsertRename = std::move(upsertRename).unwrap();
 
@@ -794,9 +822,9 @@ void resetStatement(Statement& statement)
 /// @brief 批量写入已校验的重命名记录；调用方负责事务边界。
 ///
 /// 所有语句在批次内预编译复用，class ID 按 owner 缓存；这是批量重命名的
-/// 热路径，不要退回逐条 prepare。
+/// 热路径，不要退回逐条 prepare。@p producerId 对全部行级盖章（0 = 匿名）。
 ca::Result<void, AnalysisDbError> applyRenameBatch(
-    sqlite3* db, const std::vector<DbRenameRecord>& records)
+    sqlite3* db, const std::vector<DbRenameRecord>& records, ca::i64 producerId)
 {
     auto preparedBatch = prepareRenameBatch(db);
     if (preparedBatch.is_err()) return errorOf(std::move(preparedBatch));
@@ -912,27 +940,15 @@ ca::Result<void, AnalysisDbError> applyRenameBatch(
             result.is_err()) {
             return errorOf(std::move(result));
         }
+        // 行级归属：0 = 匿名写入（producer_id 落 NULL），非 0 随覆盖整体刷新。
+        if (auto result = producerId > 0 ? bindInt(db, batch.upsertRename.raw, 6, producerId)
+                                         : bindNull(db, batch.upsertRename.raw, 6);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
         auto upserted = step(db, batch.upsertRename.raw);
         resetStatement(batch.upsertRename);
         if (upserted.is_err()) return errorOf(std::move(upserted));
-    }
-    return ca::Ok();
-}
-
-ca::Result<void, AnalysisDbError> bindNull(sqlite3* db, sqlite3_stmt* statement, int index)
-{
-    if (sqlite3_bind_null(statement, index) != SQLITE_OK) {
-        return ca::Err(sqliteFailure(db, "bind null failed"));
-    }
-    return ca::Ok();
-}
-
-/// @brief 绑定零长度文本（''，非 NULL）——id 行清空的 target_name/target_desc。
-ca::Result<void, AnalysisDbError> bindEmptyText(sqlite3* db, sqlite3_stmt* statement, int index)
-{
-    static const char kEmptyText[] = "";
-    if (sqlite3_bind_text(statement, index, kEmptyText, 0, SQLITE_TRANSIENT) != SQLITE_OK) {
-        return ca::Err(sqliteFailure(db, "bind text failed"));
     }
     return ca::Ok();
 }
@@ -1595,12 +1611,17 @@ constexpr const char* kSchemaDdl[] = {
     // 两条 source 侧索引必须照抄——PoC 实测漏建后 referencesFromMember 从
     // 0.575ms 退化为 1.672ms 全表扫。
     "CREATE INDEX refs_source_class ON refs(source_class_id)",
+    // renames 行级归属（v6 #143 3.4）：覆盖层与配置型小表，行级归属即语义
+    // （「这条覆盖是谁、何时设置的」就是行问题）。可空外键追加在列序末位，
+    // 既有列序与两条索引保持不动；NULL = 匿名写入（写入口 producerId 缺省
+    // 0），覆盖行为不变 last-write-wins，producer_id 随覆盖整体刷新。
     "CREATE TABLE renames("
     "  target_kind INTEGER NOT NULL CHECK(target_kind IN (0,1)),"
     "  target_id INTEGER NOT NULL,"
     "  new_name TEXT NOT NULL,"
     "  token TEXT,"
     "  updated_at TEXT NOT NULL,"
+    "  producer_id INTEGER REFERENCES producers(producer_id),"
     "  PRIMARY KEY(target_kind, target_id)"
     ") WITHOUT ROWID",
     "CREATE UNIQUE INDEX renames_token ON renames(token) WHERE token IS NOT NULL",
@@ -1911,9 +1932,38 @@ ca::Result<void, AnalysisDbError> AnalysisDb::close()
     return ca::Ok();
 }
 
+namespace {
+
+/// @brief renames 行级归属的生产者门：0 = 匿名写入放行；非 0 必须已注册
+///        （FK 也拦，但先查给出可诊断错误）；负值是调用方契约错误。
+ca::Result<void, AnalysisDbError> validateRenameProducer(sqlite3* db, ca::i64 producerId)
+{
+    if (producerId < 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "producer id must not be negative"));
+    }
+    if (producerId == 0) return ca::Ok();
+
+    auto selected = prepare(db, "SELECT 1 FROM producers WHERE producer_id=?1");
+    if (selected.is_err()) return errorOf(std::move(selected));
+    auto statement = std::move(selected).unwrap();
+    if (auto result = bindInt(db, statement.raw, 1, producerId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasRow = step(db, statement.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    if (!hasRow.unwrap()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "producer is not registered: " + std::to_string(producerId)));
+    }
+    return ca::Ok();
+}
+
+}   // namespace
+
 ca::Result<void, AnalysisDbError> AnalysisDb::setClassRename(
     const ca::str::Utf8StringRef& owner, const ca::str::Utf8StringRef& shadow,
-    const ca::str::Utf8StringRef& token)
+    const ca::str::Utf8StringRef& token, ca::i64 producerId)
 {
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
@@ -1930,13 +1980,17 @@ ca::Result<void, AnalysisDbError> AnalysisDb::setClassRename(
     if (transaction.is_err()) return errorOf(std::move(transaction));
     auto txn = std::move(transaction).unwrap();
 
+    if (auto result = validateRenameProducer(impl_->handle, producerId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
     auto classId = ensureClass(impl_->handle, owner);
     if (classId.is_err()) return errorOf(std::move(classId));
 
     const std::string updatedAt = nowIso8601();
     if (auto result =
             upsertRename(impl_->handle, classId.unwrap(), RenameTargetKind::Class, shadow, token,
-                         updatedAt);
+                         updatedAt, producerId);
         result.is_err()) {
         return errorOf(std::move(result));
     }
@@ -1946,7 +2000,8 @@ ca::Result<void, AnalysisDbError> AnalysisDb::setClassRename(
 ca::Result<void, AnalysisDbError> AnalysisDb::setMemberRename(
     DbMemberKind kind, const ca::str::Utf8StringRef& owner,
     const ca::str::Utf8StringRef& name, const ca::str::Utf8StringRef& desc,
-    const ca::str::Utf8StringRef& shadow, const ca::str::Utf8StringRef& token)
+    const ca::str::Utf8StringRef& shadow, const ca::str::Utf8StringRef& token,
+    ca::i64 producerId)
 {
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
@@ -1964,6 +2019,10 @@ ca::Result<void, AnalysisDbError> AnalysisDb::setMemberRename(
     if (transaction.is_err()) return errorOf(std::move(transaction));
     auto txn = std::move(transaction).unwrap();
 
+    if (auto result = validateRenameProducer(impl_->handle, producerId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
     auto classId = ensureClass(impl_->handle, owner);
     if (classId.is_err()) return errorOf(std::move(classId));
     auto memberId = ensureMember(impl_->handle, classId.unwrap(), kind, name, desc);
@@ -1971,14 +2030,15 @@ ca::Result<void, AnalysisDbError> AnalysisDb::setMemberRename(
 
     const std::string updatedAt = nowIso8601();
     if (auto result = upsertRename(impl_->handle, memberId.unwrap(), RenameTargetKind::Member,
-                                   shadow, token, updatedAt);
+                                   shadow, token, updatedAt, producerId);
         result.is_err()) {
         return errorOf(std::move(result));
     }
     return txn.commit();
 }
 
-ca::Result<void, AnalysisDbError> AnalysisDb::setRenames(std::vector<DbRenameRecord> records)
+ca::Result<void, AnalysisDbError> AnalysisDb::setRenames(std::vector<DbRenameRecord> records,
+                                                         ca::i64                     producerId)
 {
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
@@ -1995,7 +2055,10 @@ ca::Result<void, AnalysisDbError> AnalysisDb::setRenames(std::vector<DbRenameRec
     if (transaction.is_err()) return errorOf(std::move(transaction));
     auto txn = std::move(transaction).unwrap();
 
-    if (auto result = applyRenameBatch(impl_->handle, records); result.is_err()) {
+    if (auto result = validateRenameProducer(impl_->handle, producerId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = applyRenameBatch(impl_->handle, records, producerId); result.is_err()) {
         return errorOf(std::move(result));
     }
     return txn.commit();
@@ -2120,7 +2183,7 @@ ca::Result<std::optional<DbRenameRecord>, AnalysisDbError> AnalysisDb::findClass
 
     auto prepared = prepare(
         impl_->handle,
-        "SELECT r.new_name, r.token, r.updated_at, c.internal_name "
+        "SELECT r.new_name, r.token, r.updated_at, c.internal_name, r.producer_id "
         "FROM renames r JOIN classes c ON r.target_kind=0 AND c.class_id=r.target_id "
         "WHERE c.internal_name=?1");
     if (prepared.is_err()) return errorOf(std::move(prepared));
@@ -2134,11 +2197,12 @@ ca::Result<std::optional<DbRenameRecord>, AnalysisDbError> AnalysisDb::findClass
     if (!hasRow.unwrap()) return ca::Ok(std::optional<DbRenameRecord>());
 
     DbRenameRecord record;
-    record.target    = RenameTargetKind::Class;
-    record.shadow    = utf8Column(statement.raw, 0);
-    record.token     = utf8Column(statement.raw, 1);
-    record.updatedAt = utf8Column(statement.raw, 2);
-    record.owner     = utf8Column(statement.raw, 3);
+    record.target     = RenameTargetKind::Class;
+    record.shadow     = utf8Column(statement.raw, 0);
+    record.token      = utf8Column(statement.raw, 1);
+    record.updatedAt  = utf8Column(statement.raw, 2);
+    record.owner      = utf8Column(statement.raw, 3);
+    record.producerId = sqlite3_column_int64(statement.raw, 4);
     return ca::Ok(std::optional<DbRenameRecord>(std::move(record)));
 }
 
@@ -2165,7 +2229,7 @@ ca::Result<std::optional<DbRenameRecord>, AnalysisDbError> AnalysisDb::findMembe
     auto prepared = prepare(
         impl_->handle,
         "SELECT r.new_name, r.token, r.updated_at, c.internal_name, m.kind, m.name, "
-        "m.descriptor "
+        "m.descriptor, r.producer_id "
         "FROM renames r "
         "JOIN members m ON r.target_kind=1 AND m.member_id=r.target_id "
         "JOIN classes c ON c.class_id=m.class_id "
@@ -2199,6 +2263,7 @@ ca::Result<std::optional<DbRenameRecord>, AnalysisDbError> AnalysisDb::findMembe
     record.owner      = utf8Column(statement.raw, 3);
     record.name       = utf8Column(statement.raw, 5);
     record.desc       = utf8Column(statement.raw, 6);
+    record.producerId = sqlite3_column_int64(statement.raw, 7);
     return ca::Ok(std::optional<DbRenameRecord>(std::move(record)));
 }
 
@@ -2266,7 +2331,7 @@ ca::Result<std::vector<DbRenameRecord>, AnalysisDbError> AnalysisDb::findRenames
 }
 
 ca::Result<void, AnalysisDbError> AnalysisDb::replaceRenames(
-    std::vector<DbRenameRecord> records)
+    std::vector<DbRenameRecord> records, ca::i64 producerId)
 {
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
@@ -2284,10 +2349,13 @@ ca::Result<void, AnalysisDbError> AnalysisDb::replaceRenames(
     if (transaction.is_err()) return errorOf(std::move(transaction));
     auto txn = std::move(transaction).unwrap();
 
+    if (auto result = validateRenameProducer(impl_->handle, producerId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
     if (auto result = exec(impl_->handle, "DELETE FROM renames"); result.is_err()) {
         return errorOf(std::move(result));
     }
-    if (auto result = applyRenameBatch(impl_->handle, records); result.is_err()) {
+    if (auto result = applyRenameBatch(impl_->handle, records, producerId); result.is_err()) {
         return errorOf(std::move(result));
     }
     return txn.commit();
