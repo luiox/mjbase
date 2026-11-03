@@ -1,10 +1,15 @@
 /// @file        analysis_db_test.cpp
 /// @brief       AnalysisDb 基础层：建库/重开、稳定身份上的重命名覆盖、
 ///              token 约束、只读拒写、原子替换与非法输入零写入；
-///              v3 条目身份层的输入/条目登记、重导入匹配与墓碑语义。
+///              v3 条目身份层的输入/条目登记、重导入匹配与墓碑语义；
+///              v5 引用目标侧 id 化的行形状、CHECK 门、登记时序等价、
+///              字节语义与查询计划回归。
 #include <gtest/gtest.h>
 
+#include <sqlite3.h>
+
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -535,6 +540,17 @@ void expectSameRecords(const std::vector<DbReferenceRecord>& expected,
         EXPECT_EQ(expected[i].targetDescriptor.to_std_string(),
                   actual[i].targetDescriptor.to_std_string());
     }
+}
+
+/// @brief 期望基线行集：记录只移不拷（Utf8String 无拷贝），逐个 move 进
+///        向量——braced initializer_list 对只移类型走拷贝构造，不可用。
+template <typename... Rest>
+std::vector<DbReferenceRecord> recordSet(DbReferenceRecord first, Rest... rest)
+{
+    std::vector<DbReferenceRecord> rows;
+    rows.push_back(std::move(first));
+    (rows.push_back(std::move(rest)), ...);
+    return rows;
 }
 
 /// @brief 类名列表逐项比较（分页窗口与全量基线对拍用）。
@@ -1531,6 +1547,15 @@ TEST(MjAnalysisDbTest, RejectsForeignSchemaVersionDatabase)
         ASSERT_TRUE(rejected.is_err());
         EXPECT_EQ(AnalysisDbErrorKind::Schema, std::move(rejected).unwrap_err().kind);
     }
+    patchHeaderField(v2Path, 60, 4);   // v4：随包词条 0.0.10 发布过的真实上一代
+    {
+        auto rejected = AnalysisDb::open(refOf(v2Path.string()));
+        ASSERT_TRUE(rejected.is_err());
+        // 错误可诊断：拒绝消息带上被拒版本号，重导入动线由上层据此提示。
+        auto error = std::move(rejected).unwrap_err();
+        EXPECT_EQ(AnalysisDbErrorKind::Schema, error.kind);
+        EXPECT_NE(std::string::npos, error.message.to_std_string().find("version 4"));
+    }
 
     const auto foreignPath = freshDbPath("entries_foreign_app");
     {
@@ -1543,3 +1568,544 @@ TEST(MjAnalysisDbTest, RejectsForeignSchemaVersionDatabase)
     ASSERT_TRUE(foreign.is_err());
     EXPECT_EQ(AnalysisDbErrorKind::Schema, std::move(foreign).unwrap_err().kind);
 }
+
+//-- v5 引用目标侧 id 化：行形状、CHECK 门、登记时序等价、字节语义、查询计划 --
+
+namespace {
+
+/// @brief 混合行形状语料（行形状检查与查询计划检查共用）：已登记目标与
+///        未登记目标混排，demo/Later 刻意不登记（成员引用文本行常驻）。
+///        五行覆盖四类行形状：Type 登记目标、Type 未登记目标、成员双登记、
+///        成员未登记。写完 save + close 收敛单文件。
+void writeMixedCorpus(const std::filesystem::path& path)
+{
+    auto db = openOrDie(path);
+    std::vector<DbClassInput> inputs;
+    DbClassInput alpha = classInput("demo/Alpha", "java/lang/Object");
+    alpha.members.push_back(methodInput("run", "()V"));
+    alpha.members.push_back(fieldInput("counter", "I"));
+    inputs.push_back(std::move(alpha));
+    DbClassInput beta = classInput("demo/Beta", "java/lang/Object");
+    beta.members.push_back(methodInput("go", "()V"));
+    inputs.push_back(std::move(beta));
+    inputs.push_back(classInput("demo/Gamma", "java/lang/Object"));
+    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+
+    std::vector<DbReferenceRecord> references;
+    references.push_back(referenceRecord("demo/Alpha", "run", "()V", 3,
+                                         DbReferenceKind::Method, "demo/Beta", "go", "()V"));
+    references.push_back(referenceRecord("demo/Alpha", "run", "()V", 4,
+                                         DbReferenceKind::Field, "demo/Alpha", "counter", "I"));
+    references.push_back(referenceRecord("demo/Alpha", "run", "()V", 5,
+                                         DbReferenceKind::Type, "demo/Gamma", "", ""));
+    references.push_back(referenceRecord("demo/Alpha", "run", "()V", 6,
+                                         DbReferenceKind::Type, "demo/External", "", ""));
+    references.push_back(referenceRecord("demo/Alpha", "run", "()V", 7,
+                                         DbReferenceKind::Method, "demo/Later", "later", "()V"));
+    ASSERT_TRUE(db.replaceReferences(std::move(references)).is_ok());
+    ASSERT_TRUE(db.save().is_ok());
+    ASSERT_TRUE(db.close().is_ok());
+}
+
+/// @brief 裸 sqlite3 只读连接（AnalysisDb 已 save + close 后使用）。
+sqlite3* openRawReadOnly(const std::filesystem::path& path)
+{
+    sqlite3* handle = nullptr;
+    EXPECT_EQ(SQLITE_OK, sqlite3_open_v2(path.string().c_str(), &handle,
+                                         SQLITE_OPEN_READONLY, nullptr));
+    return handle;
+}
+
+/// @brief 裸连接上的标量查询；SQL 由测试内给定，失败即致命。
+ca::i64 rawScalar(sqlite3* db, const char* sql)
+{
+    sqlite3_stmt* statement = nullptr;
+    EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, sql, -1, &statement, nullptr));
+    EXPECT_EQ(SQLITE_ROW, sqlite3_step(statement));
+    const ca::i64 value = sqlite3_column_int64(statement, 0);
+    sqlite3_finalize(statement);
+    return value;
+}
+
+/// @brief EXPLAIN QUERY PLAN 的 detail 列（列 3）逐行收集。
+std::vector<std::string> rawQueryPlanDetails(sqlite3* db, const std::string& sql)
+{
+    sqlite3_stmt* statement = nullptr;
+    EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, ("EXPLAIN QUERY PLAN " + sql).c_str(), -1,
+                                            &statement, nullptr));
+    std::vector<std::string> details;
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+        const auto* text = sqlite3_column_text(statement, 3);
+        details.emplace_back(text != nullptr ? reinterpret_cast<const char*>(text) : "");
+    }
+    sqlite3_finalize(statement);
+    return details;
+}
+
+/// @brief 计划里存在走指定索引的 SEARCH 行（索引下探证据；老版 SQLite 的
+///        "SEARCH TABLE refs AS r USING INDEX x" 与新版 "SEARCH r USING
+///        INDEX x" 两种 detail 文案都命中）。
+bool hasSearchOnIndex(const std::vector<std::string>& details, const char* indexName)
+{
+    for (const auto& detail : details) {
+        if (detail.find("SEARCH") != std::string::npos &&
+            detail.find(indexName) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// @brief refs（别名 r）被裸 SCAN（无 USING 的全表扫）即回归。
+///
+/// 文本分支类目标查询允许 "SCAN r USING PARTIAL INDEX refs_target_text"
+/// （部分索引全扫，PoC 实测的诚实代价），裸表扫才是漏建索引的信号。
+bool hasBareRefsScan(const std::vector<std::string>& details)
+{
+    for (const auto& detail : details) {
+        const bool refsScan = detail.rfind("SCAN", 0) == 0 &&
+                              (detail.find("refs") != std::string::npos ||
+                               detail.rfind("SCAN r", 0) == 0);
+        if (refsScan && detail.find("USING") == std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// @brief 目标侧两分支 UNION ALL 查询的计划检查共用分支形状（镜像
+///        analysis_db.cpp 的 kReferenceTargetBranchSql）。
+const char* kTestTargetBranchSql =
+    "SELECT c.internal_name AS source_class, COALESCE(m.name, '') AS source_member, "
+    "       COALESCE(m.descriptor, '') AS source_descriptor, "
+    "       r.insn_index AS insn_index, r.ref_kind AS ref_kind, "
+    "       COALESCE(tc.internal_name, r.target_class) AS target_class, "
+    "       COALESCE(tm.name, r.target_name) AS target_name, "
+    "       COALESCE(tm.descriptor, r.target_desc) AS target_desc, "
+    "       r.source_class_id AS order_class, r.source_member_id AS order_member, "
+    "       r.insn_index AS order_insn, r.ref_id AS order_ref "
+    "FROM refs r "
+    "JOIN classes c ON c.class_id=r.source_class_id "
+    "LEFT JOIN members m ON m.member_id=r.source_member_id "
+    "LEFT JOIN classes tc ON tc.class_id=r.target_class_id "
+    "LEFT JOIN members tm ON tm.member_id=r.target_member_id ";
+
+/// @brief 引用查询输出形状（镜像 kReferenceSelectSql，计划里 source 探测
+///        用的就是这个 join 形状）。
+const char* kTestReferenceSelectSql =
+    "SELECT c.internal_name, COALESCE(m.name, ''), COALESCE(m.descriptor, ''), "
+    "       r.insn_index, r.ref_kind, "
+    "       COALESCE(tc.internal_name, r.target_class), "
+    "       COALESCE(tm.name, r.target_name), "
+    "       COALESCE(tm.descriptor, r.target_desc) "
+    "FROM refs r "
+    "JOIN classes c ON c.class_id=r.source_class_id "
+    "LEFT JOIN members m ON m.member_id=r.source_member_id "
+    "LEFT JOIN classes tc ON tc.class_id=r.target_class_id "
+    "LEFT JOIN members tm ON tm.member_id=r.target_member_id ";
+
+}   // namespace
+
+TEST(MjAnalysisDbTest, TargetRowsBinarizeAndCheckRejectsMixedShapes)
+{
+    const auto path = freshDbPath("refs_v5_shapes");
+    writeMixedCorpus(path);
+
+    // 四类行形状各就其位（v5 二元化：id 行文本三列清空、target_class 为
+    // NULL；文本行两个 id 列为 NULL；无混合行）。
+    sqlite3* raw = openRawReadOnly(path);
+    ASSERT_NE(nullptr, raw);
+    EXPECT_EQ(5, rawScalar(raw, "SELECT COUNT(*) FROM refs"));
+    EXPECT_EQ(1, rawScalar(raw,
+        "SELECT COUNT(*) FROM refs WHERE ref_kind=0 AND target_class_id IS NOT NULL "
+        "AND target_member_id IS NULL AND target_class IS NULL "
+        "AND target_name='' AND target_desc=''"));
+    EXPECT_EQ(1, rawScalar(raw,
+        "SELECT COUNT(*) FROM refs WHERE ref_kind=0 AND target_class_id IS NULL "
+        "AND target_member_id IS NULL AND target_class='demo/External' "
+        "AND target_name='' AND target_desc=''"));
+    EXPECT_EQ(2, rawScalar(raw,
+        "SELECT COUNT(*) FROM refs WHERE ref_kind!=0 AND target_class_id IS NOT NULL "
+        "AND target_member_id IS NOT NULL AND target_class IS NULL "
+        "AND target_name='' AND target_desc=''"));
+    EXPECT_EQ(1, rawScalar(raw,
+        "SELECT COUNT(*) FROM refs WHERE ref_kind=2 AND target_class_id IS NULL "
+        "AND target_member_id IS NULL AND target_class='demo/Later' "
+        "AND target_name='later' AND target_desc='()V'"));
+    sqlite3_close(raw);
+
+    // 三条 CHECK 与代码校验同源：混合行拒写（裸读写连接直插验证）。
+    sqlite3* rw = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open_v2(path.string().c_str(), &rw,
+                                         SQLITE_OPEN_READWRITE, nullptr));
+    const auto execRaw = [&](const char* sql) {
+        char*       message = nullptr;
+        const int   rc      = sqlite3_exec(rw, sql, nullptr, nullptr, &message);
+        std::string detail  = message != nullptr ? message : "";
+        sqlite3_free(message);
+        return std::make_pair(rc, detail);
+    };
+
+    // owner 走 id、成员走文本的混合行：CHECK((class_id IS NULL) != (class IS NULL)) 拒绝。
+    auto mixed = execRaw(
+        "INSERT INTO refs(source_class_id, insn_index, ref_kind, target_class_id, "
+        "target_class, target_name, target_desc) VALUES("
+        "(SELECT class_id FROM classes WHERE internal_name='demo/Alpha'), 900, 1, "
+        "(SELECT class_id FROM classes WHERE internal_name='demo/Beta'), "
+        "'demo/Beta', 'go', '()V')");
+    EXPECT_NE(SQLITE_OK, mixed.first);
+    EXPECT_NE(std::string::npos, mixed.second.find("CHECK"));
+
+    // 成员 id 行携带非空文本：CHECK(member_id IS NULL OR (name='' AND desc='')) 拒绝。
+    auto texted = execRaw(
+        "INSERT INTO refs(source_class_id, insn_index, ref_kind, target_class_id, "
+        "target_member_id, target_name, target_desc) VALUES("
+        "(SELECT class_id FROM classes WHERE internal_name='demo/Alpha'), 901, 1, "
+        "(SELECT class_id FROM classes WHERE internal_name='demo/Beta'), "
+        "(SELECT member_id FROM members WHERE name='counter'), 'counter', '')");
+    EXPECT_NE(SQLITE_OK, texted.first);
+    EXPECT_NE(std::string::npos, texted.second.find("CHECK"));
+
+    // Type 引用挂成员 id：CHECK(member_id IS NULL OR ref_kind != 0) 拒绝。
+    auto typed = execRaw(
+        "INSERT INTO refs(source_class_id, insn_index, ref_kind, target_class_id, "
+        "target_member_id) VALUES("
+        "(SELECT class_id FROM classes WHERE internal_name='demo/Alpha'), 902, 0, "
+        "(SELECT class_id FROM classes WHERE internal_name='demo/Gamma'), "
+        "(SELECT member_id FROM members WHERE name='counter'))");
+    EXPECT_NE(SQLITE_OK, typed.first);
+    EXPECT_NE(std::string::npos, typed.second.find("CHECK"));
+
+    // 正向对照：合法 id 行（双登记成员）可写，随后清理复原行数。
+    auto valid = execRaw(
+        "INSERT INTO refs(source_class_id, insn_index, ref_kind, target_class_id, "
+        "target_member_id) VALUES("
+        "(SELECT class_id FROM classes WHERE internal_name='demo/Alpha'), 903, 1, "
+        "(SELECT class_id FROM classes WHERE internal_name='demo/Beta'), "
+        "(SELECT member_id FROM members WHERE name='go'))");
+    EXPECT_EQ(SQLITE_OK, valid.first) << valid.second;
+    EXPECT_EQ(6, rawScalar(rw, "SELECT COUNT(*) FROM refs"));
+    EXPECT_EQ(SQLITE_OK, execRaw("DELETE FROM refs WHERE insn_index=903").first);
+    EXPECT_EQ(5, rawScalar(rw, "SELECT COUNT(*) FROM refs"));
+    sqlite3_close(rw);
+}
+
+TEST(MjAnalysisDbTest, TargetQueriesStayEquivalentAcrossRegistrationTiming)
+{
+    const auto path = freshDbPath("refs_v5_equivalence");
+    auto       db   = openOrDie(path);
+
+    std::vector<DbClassInput> inputs;
+    DbClassInput alpha = classInput("demo/Alpha", "java/lang/Object");
+    alpha.members.push_back(methodInput("run", "()V"));
+    alpha.members.push_back(fieldInput("counter", "I"));
+    inputs.push_back(std::move(alpha));
+    DbClassInput beta = classInput("demo/Beta", "java/lang/Object");
+    beta.members.push_back(methodInput("go", "()V"));
+    inputs.push_back(std::move(beta));
+    inputs.push_back(classInput("demo/Gamma", "java/lang/Object"));
+    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+
+    // 9 行混排语料：登记目标（id 行）与未登记目标（文本行）；demo/Later
+    // 刻意在引用写入之后才登记（登记时序交错）。行序 = 写入序。记录只移
+    // 不拷（Utf8String），基线行用工厂按需重建。
+    const auto r1 = [] { return referenceRecord("demo/Alpha", "run", "()V", 3,
+                                                DbReferenceKind::Method, "demo/Beta", "go", "()V"); };
+    const auto r2 = [] { return referenceRecord("demo/Alpha", "run", "()V", 4,
+                                                DbReferenceKind::Field, "demo/Alpha", "counter", "I"); };
+    const auto r3 = [] { return referenceRecord("demo/Alpha", "run", "()V", 5,
+                                                DbReferenceKind::Type, "demo/Gamma", "", ""); };
+    const auto r4 = [] { return referenceRecord("demo/Alpha", "run", "()V", 6,
+                                                DbReferenceKind::Type, "demo/External", "", ""); };
+    const auto r5 = [] { return referenceRecord("demo/Alpha", "run", "()V", 7,
+                                                DbReferenceKind::Method, "demo/Later", "later", "()V"); };
+    const auto r6 = [] { return referenceRecord("demo/Beta", "go", "()V", 0,
+                                                DbReferenceKind::Field, "demo/External", "extField", "I"); };
+    const auto r7 = [] { return referenceRecord("demo/Beta", "go", "()V", 1,
+                                                DbReferenceKind::Method, "demo/Beta", "go", "()V"); };
+    const auto r8 = [] { return referenceRecord("demo/Alpha", "", "", -1, DbReferenceKind::Type,
+                                                "demo/External", "", ""); };
+    const auto r9 = [] { return referenceRecord("demo/Beta", "", "", -1, DbReferenceKind::Type,
+                                                "demo/Gamma", "", ""); };
+    auto references = recordSet(r1(), r2(), r3(), r4(), r5(), r6(), r7(), r8(), r9());
+    ASSERT_TRUE(db.replaceReferences(std::move(references)).is_ok());
+    EXPECT_EQ(9U, db.referenceCount().unwrap());
+
+    const auto rowsOf = [&](auto result) {
+        EXPECT_TRUE(result.is_ok());
+        return std::move(result).unwrap();
+    };
+
+    // 按源反查（source 侧零改动面）：class 头行（member NULL）排最前，方法体
+    // 行按 insn 升序。
+    expectSameRecords(recordSet(r1(), r2(), r3(), r4(), r5()),
+                      rowsOf(db.referencesFromMember(S("demo/Alpha"), S("run"), S("()V"))));
+    expectSameRecords(recordSet(r8(), r1(), r2(), r3(), r4(), r5()),
+                      rowsOf(db.referencesFromClass(S("demo/Alpha"))));
+    expectSameRecords(recordSet(r6(), r7()),
+                      rowsOf(db.referencesFromMember(S("demo/Beta"), S("go"), S("()V"))));
+    expectSameRecords(recordSet(r9(), r6(), r7()), rowsOf(db.referencesFromClass(S("demo/Beta"))));
+
+    // 按目标反查：id 分支（登记目标）与文本分支（未登记目标）拼接结果与
+    // 名字键控基线逐行一致；demo/Later 尚未登记，全靠文本分支。
+    expectSameRecords(recordSet(r1(), r7()),
+                      rowsOf(db.referencesToMethod(S("demo/Beta"), S("go"), S("()V"))));
+    expectSameRecords(recordSet(r2()),
+                      rowsOf(db.referencesToField(S("demo/Alpha"), S("counter"), S("I"))));
+    expectSameRecords(recordSet(r6()),
+                      rowsOf(db.referencesToField(S("demo/External"), S("extField"), S("I"))));
+    expectSameRecords(recordSet(r5()),
+                      rowsOf(db.referencesToMethod(S("demo/Later"), S("later"), S("()V"))));
+    expectSameRecords(recordSet(r2()), rowsOf(db.referencesToClass(S("demo/Alpha"))));
+    expectSameRecords(recordSet(r1(), r7()), rowsOf(db.referencesToClass(S("demo/Beta"))));
+    expectSameRecords(recordSet(r3(), r9()), rowsOf(db.referencesToClass(S("demo/Gamma"))));
+    expectSameRecords(recordSet(r8(), r4(), r6()), rowsOf(db.referencesToClass(S("demo/External"))));
+    expectSameRecords(recordSet(r5()), rowsOf(db.referencesToClass(S("demo/Later"))));
+
+    // 未登记目标/成员：空结果（非错误）。
+    EXPECT_TRUE(rowsOf(db.referencesToClass(S("demo/Nowhere"))).empty());
+    EXPECT_TRUE(
+        rowsOf(db.referencesToMethod(S("demo/External"), S("nope"), S("()V"))).empty());
+
+    // UNION ALL 不重不漏：各目标命中数之和 == 库内引用总数（行按目标恰计
+    // 一次——id 形状与文本形状互斥，任何一行只可能落进一个分支）。
+    ca::usize summed = rowsOf(db.referencesToClass(S("demo/Alpha"))).size() +
+                       rowsOf(db.referencesToClass(S("demo/Beta"))).size() +
+                       rowsOf(db.referencesToClass(S("demo/Gamma"))).size() +
+                       rowsOf(db.referencesToClass(S("demo/External"))).size() +
+                       rowsOf(db.referencesToClass(S("demo/Later"))).size();
+    EXPECT_EQ(9U, summed);
+
+    // 分页窗口与全量同序：单行页拼接 = 全量（复合查询 + 外层排序 + 窗口）。
+    std::vector<DbReferenceRecord> toClassStitched;
+    for (ca::i64 offset = 0;; ++offset) {
+        auto page = db.referencesToClassPaged(S("demo/External"), 1, offset);
+        ASSERT_TRUE(page.is_ok());
+        auto rows = std::move(page).unwrap();
+        if (rows.empty()) break;
+        ASSERT_LE(rows.size(), 1U);
+        toClassStitched.push_back(std::move(rows[0]));
+    }
+    expectSameRecords(recordSet(r8(), r4(), r6()), toClassStitched);
+    std::vector<DbReferenceRecord> toMethodStitched;
+    for (ca::i64 offset = 0;; ++offset) {
+        auto page = db.referencesToMethodPaged(S("demo/Beta"), S("go"), S("()V"), 1, offset);
+        ASSERT_TRUE(page.is_ok());
+        auto rows = std::move(page).unwrap();
+        if (rows.empty()) break;
+        ASSERT_LE(rows.size(), 1U);
+        toMethodStitched.push_back(std::move(rows[0]));
+    }
+    expectSameRecords(recordSet(r1(), r7()), toMethodStitched);
+
+    // 登记时序交错第一段：Later 现在登记——既有文本行原样保留（身份只增
+    // 不删不改既有编码），目标反查经文本分支仍然命中。
+    std::vector<DbClassInput> laterBatch;
+    DbClassInput laterClass = classInput("demo/Later", "java/lang/Object");
+    laterClass.members.push_back(methodInput("later", "()V"));
+    laterBatch.push_back(std::move(laterClass));
+    ASSERT_TRUE(db.ingestClasses(std::move(laterBatch)).is_ok());
+    expectSameRecords(recordSet(r5()),
+                      rowsOf(db.referencesToMethod(S("demo/Later"), S("later"), S("()V"))));
+    expectSameRecords(recordSet(r5()), rowsOf(db.referencesToClass(S("demo/Later"))));
+
+    // 登记时序交错第二段：切片重写 A.run——同一逻辑目标改落 id 行，反查
+    // 结果逐行一致（insn 更新为 70），其余方向与切片语义对齐。
+    auto runMember = db.findMember(DbMemberKind::Method, S("demo/Alpha"), S("run"), S("()V"));
+    ASSERT_TRUE(runMember.is_ok());
+    const ca::i64 runId = std::move(runMember).unwrap()->memberId;
+    const auto r5b = [] { return referenceRecord("demo/Alpha", "run", "()V", 70,
+                                                 DbReferenceKind::Method, "demo/Later", "later", "()V"); };
+    auto slice = recordSet(r5b());
+    ASSERT_TRUE(db.replaceReferencesFromMember(runId, std::move(slice)).is_ok());
+    expectSameRecords(recordSet(r5b()),
+                      rowsOf(db.referencesToMethod(S("demo/Later"), S("later"), S("()V"))));
+    expectSameRecords(recordSet(r5b()),
+                      rowsOf(db.referencesFromMember(S("demo/Alpha"), S("run"), S("()V"))));
+    expectSameRecords(recordSet(r7()),
+                      rowsOf(db.referencesToMethod(S("demo/Beta"), S("go"), S("()V"))));
+    expectSameRecords(recordSet(r8(), r6()), rowsOf(db.referencesToClass(S("demo/External"))));
+    EXPECT_EQ(5U, db.referenceCount().unwrap());
+}
+
+TEST(MjAnalysisDbTest, TargetTextRoundTripsByteSemantics)
+{
+    const auto path = freshDbPath("refs_v5_bytes");
+    auto       db   = openOrDie(path);
+
+    // 对抗名（非合法 UTF-8 字节流，无 NUL——NUL 走既有 Invalid 校验）：
+    // 登记成员名（id 分支）与未登记 owner/成员名（文本分支）都要按字节往返。
+    const std::string binField("\xFF\x80z", 3);
+    const std::string rawOwner("\xC3\x28q", 3);
+    const std::string rawName("\xFF\xFE", 2);
+    const std::string rawDesc("\x80J", 2);
+
+    std::vector<DbClassInput> inputs;
+    DbClassInput alpha = classInput("demo/Alpha", "java/lang/Object");
+    alpha.members.push_back(methodInput("run", "()V"));
+    inputs.push_back(std::move(alpha));
+    DbClassInput bin = classInput("demo/Bin", "java/lang/Object");
+    DbMemberInput hostileField;
+    hostileField.kind       = DbMemberKind::Field;
+    hostileField.name       = Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(binField.data()), binField.size());
+    hostileField.descriptor = Utf8String::from_cstr("I");
+    hostileField.access     = 0x0001;
+    bin.members.push_back(std::move(hostileField));
+    inputs.push_back(std::move(bin));
+    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+
+    // from_cstr 走严格 UTF-8 解码（非法字节静默落空串）——对抗名必须走
+    // from_data_unchecked 字节构造；读写两侧按字节绑定与还原，不解码。
+    const auto bytesOf = [](const std::string& raw) {
+        return Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(raw.data()),
+                                               raw.size());
+    };
+    const auto byteRecord = [&](const char* sourceClass, const char* sourceMethod,
+                                const char* sourceDesc, ca::i64 insn, DbReferenceKind kind,
+                                const std::string& targetClass, const std::string& targetName,
+                                const std::string& targetDesc) {
+        DbReferenceRecord record;
+        record.sourceClass      = Utf8String::from_cstr(sourceClass);
+        record.sourceMethod     = Utf8String::from_cstr(sourceMethod);
+        record.sourceDescriptor = Utf8String::from_cstr(sourceDesc);
+        record.insnIndex        = insn;
+        record.kind             = kind;
+        record.targetClass      = bytesOf(targetClass);
+        record.targetName       = bytesOf(targetName);
+        record.targetDescriptor = bytesOf(targetDesc);
+        return record;
+    };
+
+    auto r1 = byteRecord("demo/Alpha", "run", "()V", 0, DbReferenceKind::Field,
+                         "demo/Bin", binField, "I");
+    auto r2 = byteRecord("demo/Alpha", "run", "()V", 1, DbReferenceKind::Type,
+                         rawOwner, "", "");
+    auto r3 = byteRecord("demo/Alpha", "run", "()V", 2, DbReferenceKind::Field,
+                         rawOwner, rawName, rawDesc);
+    std::vector<DbReferenceRecord> references;
+    references.push_back(std::move(r1));
+    references.push_back(std::move(r2));
+    references.push_back(std::move(r3));
+    ASSERT_TRUE(db.replaceReferences(std::move(references)).is_ok());
+
+    const auto expectBytes = [](const Utf8String& actual, const std::string& expected) {
+        ASSERT_EQ(expected.size(), actual.byte_length());
+        EXPECT_EQ(0, std::memcmp(actual.data(), expected.data(), expected.size()));
+    };
+
+    // 按源反查逐行字节还原（读写两侧都走带长度的字节 API）。
+    auto fromRun = db.referencesFromMember(S("demo/Alpha"), S("run"), S("()V"));
+    ASSERT_TRUE(fromRun.is_ok());
+    auto runRows = std::move(fromRun).unwrap();
+    ASSERT_EQ(3U, runRows.size());
+    expectBytes(runRows[0].targetClass, "demo/Bin");
+    expectBytes(runRows[0].targetName, binField);
+    expectBytes(runRows[0].targetDescriptor, "I");
+    expectBytes(runRows[1].targetClass, rawOwner);
+    expectBytes(runRows[2].targetClass, rawOwner);
+    expectBytes(runRows[2].targetName, rawName);
+    expectBytes(runRows[2].targetDescriptor, rawDesc);
+
+    // id 分支：对抗名成员已登记，按字节键解析 member_id 命中。
+    auto toField = db.referencesToField(S("demo/Bin"), refOf(binField), S("I"));
+    ASSERT_TRUE(toField.is_ok());
+    auto fieldRows = std::move(toField).unwrap();
+    ASSERT_EQ(1U, fieldRows.size());
+    expectBytes(fieldRows[0].targetClass, "demo/Bin");
+    expectBytes(fieldRows[0].targetName, binField);
+
+    // 文本分支：未登记 owner 与成员按字节键命中。
+    auto toClass = db.referencesToClass(refOf(rawOwner));
+    ASSERT_TRUE(toClass.is_ok());
+    auto classRows = std::move(toClass).unwrap();
+    ASSERT_EQ(2U, classRows.size());
+    expectBytes(classRows[0].targetClass, rawOwner);
+    expectBytes(classRows[1].targetClass, rawOwner);
+    expectBytes(classRows[1].targetName, rawName);
+    expectBytes(classRows[1].targetDescriptor, rawDesc);
+
+    auto toRawField = db.referencesToField(refOf(rawOwner), refOf(rawName), refOf(rawDesc));
+    ASSERT_TRUE(toRawField.is_ok());
+    auto rawFieldRows = std::move(toRawField).unwrap();
+    ASSERT_EQ(1U, rawFieldRows.size());
+    expectBytes(rawFieldRows[0].targetClass, rawOwner);
+    expectBytes(rawFieldRows[0].targetName, rawName);
+    expectBytes(rawFieldRows[0].targetDescriptor, rawDesc);
+}
+
+TEST(MjAnalysisDbTest, ReferenceQueryPlansProbeIndexesWithoutFullScans)
+{
+    const auto path = freshDbPath("refs_v5_plans");
+    writeMixedCorpus(path);
+
+    sqlite3* raw = openRawReadOnly(path);
+    ASSERT_NE(nullptr, raw);
+
+    // 索引沿用清单：source 侧两条（漏建回归 0.575 → 1.672ms）+ v5 两条部分索引。
+    EXPECT_EQ(4, rawScalar(raw,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN "
+        "('refs_source_class','refs_source_member','refs_target_id','refs_target_text')"));
+
+    // 按源反查：refs_source_member / refs_source_class 索引下探，无 refs 裸扫。
+    {
+        auto details = rawQueryPlanDetails(
+            raw, std::string(kTestReferenceSelectSql) +
+                     "WHERE r.source_member_id=1 ORDER BY r.source_class_id, "
+                     "r.source_member_id, r.insn_index, r.ref_id");
+        EXPECT_TRUE(hasSearchOnIndex(details, "refs_source_member"));
+        EXPECT_FALSE(hasBareRefsScan(details));
+    }
+    {
+        auto details = rawQueryPlanDetails(
+            raw, std::string(kTestReferenceSelectSql) +
+                     "WHERE r.source_class_id=1 ORDER BY r.source_class_id, "
+                     "r.source_member_id, r.insn_index, r.ref_id");
+        EXPECT_TRUE(hasSearchOnIndex(details, "refs_source_class"));
+        EXPECT_FALSE(hasBareRefsScan(details));
+    }
+
+    // 目标成员反查（referencesToMethod/Field 形状）：id 分支 refs_target_id
+    // 双列探 + 文本分支 refs_target_text 四元组探，两分支都走索引。
+    {
+        const std::string compound =
+            std::string("SELECT v.source_class, v.source_member, v.source_descriptor, "
+                        "v.insn_index, v.ref_kind, v.target_class, v.target_name, "
+                        "v.target_desc FROM (") +
+            kTestTargetBranchSql +
+            "WHERE r.ref_kind=2 AND r.target_class_id=?1 AND r.target_member_id=?2 "
+            "UNION ALL " + kTestTargetBranchSql +
+            "WHERE r.ref_kind=2 AND r.target_class_id IS NULL AND r.target_class=?3 "
+            "AND r.target_name=?4 AND r.target_desc=?5 "
+            ") v ORDER BY v.order_class, v.order_member, v.order_insn, v.order_ref";
+        auto details = rawQueryPlanDetails(raw, compound);
+        EXPECT_TRUE(hasSearchOnIndex(details, "refs_target_id"));
+        EXPECT_TRUE(hasSearchOnIndex(details, "refs_target_text"));
+        EXPECT_FALSE(hasBareRefsScan(details));
+    }
+
+    // 目标类反查（referencesToClass 形状）：id 分支 refs_target_id 前缀探；
+    // 文本分支允许部分索引全扫（PoC 实测的诚实代价），但绝不裸扫表。
+    {
+        const std::string compound =
+            std::string("SELECT v.source_class, v.source_member, v.source_descriptor, "
+                        "v.insn_index, v.ref_kind, v.target_class, v.target_name, "
+                        "v.target_desc FROM (") +
+            kTestTargetBranchSql +
+            "WHERE r.target_class_id=?1 "
+            "UNION ALL " + kTestTargetBranchSql +
+            "WHERE r.target_class_id IS NULL AND r.target_class=?2 "
+            ") v ORDER BY v.order_class, v.order_member, v.order_insn, v.order_ref";
+        auto details = rawQueryPlanDetails(raw, compound);
+        EXPECT_TRUE(hasSearchOnIndex(details, "refs_target_id"));
+        bool textBranchOnIndex = false;
+        for (const auto& detail : details) {
+            if (detail.find("refs_target_text") != std::string::npos) textBranchOnIndex = true;
+        }
+        EXPECT_TRUE(textBranchOnIndex);
+        EXPECT_FALSE(hasBareRefsScan(details));
+    }
+
+    sqlite3_close(raw);
+}
+
