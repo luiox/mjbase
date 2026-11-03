@@ -177,7 +177,7 @@ TEST(MjAnalysisCensusTest, ClassRowsProjectCountsEntryFactsAndDerivedKind)
     entries.push_back(entryInput("demo/bad name.class", "class", shaOf('f'), 64));
     entries.push_back(entryInput("dir/", "resource", shaOf('7'), 0, false));
     entries.push_back(entryInput("META-INF/MANIFEST.MF", "manifest", shaOf('8'), 8, false));
-    auto ingested = db.ingestEntries(jar, std::move(entries));
+    auto ingested = db.ingestEntries(0, jar, std::move(entries));
     if (ingested.is_err()) {
         ADD_FAILURE() << "ingestEntries: "
                       << std::move(ingested).unwrap_err().message.to_std_string();
@@ -220,7 +220,7 @@ TEST(MjAnalysisCensusTest, ClassRowsProjectCountsEntryFactsAndDerivedKind)
     DbClassInput bad = classInput("demo/bad name", "");
     bad.entryId      = ids.at("demo/bad name.class");
     classes.push_back(std::move(bad));
-    ASSERT_TRUE(db.ingestClasses(std::move(classes)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
 
     auto projected = db.censusClasses(jar);
     ASSERT_TRUE(projected.is_ok());
@@ -284,7 +284,7 @@ TEST(MjAnalysisCensusTest, ClassRowsProjectLibraryOriginByPrefix)
     entries.push_back(entryInput("java/test/Sample.class", "class", shaOf('1'), 128));
     entries.push_back(entryInput("com/google/gson/Stub.class", "class", shaOf('2'), 256));
     entries.push_back(entryInput("app/Main.class", "class", shaOf('3'), 512));
-    auto ingested = db.ingestEntries(jar, std::move(entries));
+    auto ingested = db.ingestEntries(0, jar, std::move(entries));
     ASSERT_TRUE(ingested.is_ok());
     const auto ids = liveEntryIds(db, jar);
     ASSERT_EQ(3U, ids.size());
@@ -299,7 +299,7 @@ TEST(MjAnalysisCensusTest, ClassRowsProjectLibraryOriginByPrefix)
     DbClassInput unknownClass = classInput("app/Main", "");
     unknownClass.entryId      = ids.at("app/Main.class");
     classes.push_back(std::move(unknownClass));
-    ASSERT_TRUE(db.ingestClasses(std::move(classes)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
 
     auto projected = db.censusClasses(jar);
     ASSERT_TRUE(projected.is_ok());
@@ -328,7 +328,7 @@ TEST(MjAnalysisCensusTest, TombstonedEntriesDropTheirClassesFromCensus)
     std::vector<DbEntryInput> first;
     first.push_back(entryInput("a/Keep.class", "class", shaOf('a')));
     first.push_back(entryInput("b/Gone.class", "class", shaOf('b')));
-    ASSERT_TRUE(db.ingestEntries(jar, std::move(first)).is_ok());
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(first)).is_ok());
     const auto ids = liveEntryIds(db, jar);
 
     std::vector<DbClassInput> classes;
@@ -338,12 +338,12 @@ TEST(MjAnalysisCensusTest, TombstonedEntriesDropTheirClassesFromCensus)
     DbClassInput gone = classInput("b/Gone", "java/lang/Object");
     gone.entryId      = ids.at("b/Gone.class");
     classes.push_back(std::move(gone));
-    ASSERT_TRUE(db.ingestClasses(std::move(classes)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
 
     // 重导入只剩 a/Keep：b/Gone 条目进墓碑，其类退出普查面（类行不删）。
     std::vector<DbEntryInput> shrunk;
     shrunk.push_back(entryInput("a/Keep.class", "class", shaOf('a')));
-    ASSERT_TRUE(db.ingestEntries(jar, std::move(shrunk)).is_ok());
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(shrunk)).is_ok());
 
     auto projected = db.censusClasses(jar);
     ASSERT_TRUE(projected.is_ok());
@@ -377,7 +377,7 @@ TEST(MjAnalysisCensusTest, MemberRowsProjectCompoundKeyOrderAndNativeDerivation)
     std::vector<DbEntryInput> entries;
     entries.push_back(entryInput("demo/Zed.class", "class", shaOf('a'), 256));
     entries.push_back(entryInput("demo/apple.class", "class", shaOf('b'), 128));
-    ASSERT_TRUE(db.ingestEntries(jar, std::move(entries)).is_ok());
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(entries)).is_ok());
     const auto ids = liveEntryIds(db, jar);
     ASSERT_EQ(2U, ids.size());
 
@@ -398,7 +398,7 @@ TEST(MjAnalysisCensusTest, MemberRowsProjectCompoundKeyOrderAndNativeDerivation)
     apple.entryId      = ids.at("demo/apple.class");
     apple.members.push_back(memberInput(DbMemberKind::Method, "act", "()V", 0x0001));
     classes.push_back(std::move(apple));
-    ASSERT_TRUE(db.ingestClasses(std::move(classes)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
 
     auto projected = db.censusMembers(jar);
     ASSERT_TRUE(projected.is_ok());
@@ -476,7 +476,7 @@ TEST(MjAnalysisCensusTest, MemberCensusFollowsEntryLifecycleAndLinkageContract)
     std::vector<DbEntryInput> first;
     first.push_back(entryInput("a/Keep.class", "class", shaOf('a')));
     first.push_back(entryInput("b/Gone.class", "class", shaOf('b')));
-    ASSERT_TRUE(db.ingestEntries(jar, std::move(first)).is_ok());
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(first)).is_ok());
     const auto ids = liveEntryIds(db, jar);
 
     std::vector<DbClassInput> classes;
@@ -493,7 +493,7 @@ TEST(MjAnalysisCensusTest, MemberCensusFollowsEntryLifecycleAndLinkageContract)
     DbClassInput orphan = classInput("c/Orphan", "java/lang/Object");
     orphan.members.push_back(memberInput(DbMemberKind::Method, "ghost", "()V", 0x0001));
     classes.push_back(std::move(orphan));
-    ASSERT_TRUE(db.ingestClasses(std::move(classes)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
 
     auto projected = db.censusMembers(jar);
     ASSERT_TRUE(projected.is_ok());
@@ -521,7 +521,7 @@ TEST(MjAnalysisCensusTest, MemberCensusFollowsEntryLifecycleAndLinkageContract)
     // 仍不在面内。
     std::vector<DbEntryInput> shrunk;
     shrunk.push_back(entryInput("a/Keep.class", "class", shaOf('a')));
-    ASSERT_TRUE(db.ingestEntries(jar, std::move(shrunk)).is_ok());
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(shrunk)).is_ok());
 
     auto reprojected = db.censusMembers(jar);
     ASSERT_TRUE(reprojected.is_ok());
@@ -555,7 +555,7 @@ TEST(MjAnalysisCensusTest, MemberRowsInheritOwnerLibraryOrigin)
     entries.push_back(entryInput("java/test/Sample.class", "class", shaOf('1'), 128));
     entries.push_back(entryInput("com/google/gson/Stub.class", "class", shaOf('2'), 256));
     entries.push_back(entryInput("app/Main.class", "class", shaOf('3'), 512));
-    ASSERT_TRUE(db.ingestEntries(jar, std::move(entries)).is_ok());
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(entries)).is_ok());
     const auto ids = liveEntryIds(db, jar);
     ASSERT_EQ(3U, ids.size());
 
@@ -574,7 +574,7 @@ TEST(MjAnalysisCensusTest, MemberRowsInheritOwnerLibraryOrigin)
     unknownClass.members.push_back(
         memberInput(DbMemberKind::Method, "main", "([Ljava/lang/String;)V", 0x0009));
     classes.push_back(std::move(unknownClass));
-    ASSERT_TRUE(db.ingestClasses(std::move(classes)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
 
     auto memberCensus = db.censusMembers(jar);
     ASSERT_TRUE(memberCensus.is_ok());
@@ -619,7 +619,7 @@ TEST(MjAnalysisCensusTest, ContainerSummaryAggregatesFacetsAndFacts)
     entries.push_back(entryInput("res/data.bin", "resource", shaOf('e'), 24));
     entries.push_back(entryInput("META-INF/MANIFEST.MF", "manifest", shaOf('f'), 8));
     entries.push_back(entryInput("weird//name.txt", "resource", shaOf('7'), 4, false));
-    ASSERT_TRUE(db.ingestEntries(jar, std::move(entries)).is_ok());
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(entries)).is_ok());
     const auto ids = liveEntryIds(db, jar);
 
     std::vector<DbClassInput> classes;
@@ -634,7 +634,7 @@ TEST(MjAnalysisCensusTest, ContainerSummaryAggregatesFacetsAndFacts)
         }
         classes.push_back(std::move(input));
     }
-    ASSERT_TRUE(db.ingestClasses(std::move(classes)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
 
     std::vector<DbReferenceRecord> references;
     DbReferenceRecord typeRef;
@@ -652,7 +652,7 @@ TEST(MjAnalysisCensusTest, ContainerSummaryAggregatesFacetsAndFacts)
     methodRef.targetName       = Utf8String::from_cstr("act");
     methodRef.targetDescriptor = Utf8String::from_cstr("()V");
     references.push_back(std::move(methodRef));
-    auto replaced = db.replaceReferences(std::move(references));
+    auto replaced = db.replaceReferences(0, std::move(references));
     ASSERT_TRUE(replaced.is_ok());
     EXPECT_EQ(2U, replaced.unwrap());
 

@@ -587,7 +587,7 @@ TEST(MjAnalysisDbTest, IngestsHierarchyMembersAndQueries)
     inputs.push_back(std::move(marker));
     inputs.push_back(std::move(base));
     inputs.push_back(std::move(child));
-    auto ingested = db.ingestClasses(std::move(inputs));
+    auto ingested = db.ingestClasses(0, std::move(inputs));
     ASSERT_TRUE(ingested.is_ok());
     EXPECT_EQ(3U, ingested.unwrap());
 
@@ -655,7 +655,7 @@ TEST(MjAnalysisDbTest, ClassIngestRejectsDuplicateBatchWithoutWriting)
     base.access       = 0x0001;
     std::vector<DbClassInput> first;
     first.push_back(std::move(base));
-    ASSERT_TRUE(db.ingestClasses(std::move(first)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(first)).is_ok());
 
     DbClassInput duplicate = classInput("demo/Base", "java/lang/Object");
     duplicate.access       = 0x0010;
@@ -663,7 +663,7 @@ TEST(MjAnalysisDbTest, ClassIngestRejectsDuplicateBatchWithoutWriting)
     second.push_back(classInput("demo/Other", "java/lang/Object"));
     second.push_back(std::move(duplicate));
     second.push_back(classInput("demo/Other", "java/lang/Object"));
-    EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.ingestClasses(std::move(second))));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.ingestClasses(0, std::move(second))));
 
     auto found = db.findClass(S("demo/Base"));
     ASSERT_TRUE(found.is_ok());
@@ -685,7 +685,7 @@ TEST(MjAnalysisDbTest, ReferencesReplaceAtomicallyAndQueryBySourceAndTarget)
     caller.members.push_back(fieldInput("slot", "I"));
     inputs.push_back(std::move(caller));
     inputs.push_back(classInput("demo/Child", "demo/Base"));
-    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(inputs)).is_ok());
 
     std::vector<DbReferenceRecord> references;
     references.push_back(referenceRecord("demo/Caller", "call", "()V", 3,
@@ -697,7 +697,7 @@ TEST(MjAnalysisDbTest, ReferencesReplaceAtomicallyAndQueryBySourceAndTarget)
     references.push_back(referenceRecord("demo/Child", "", "", -1, DbReferenceKind::Type,
                                          "demo/Base", "", ""));
 
-    auto replaced = db.replaceReferences(std::move(references));
+    auto replaced = db.replaceReferences(0, std::move(references));
     ASSERT_TRUE(replaced.is_ok());
     EXPECT_EQ(4U, replaced.unwrap());
 
@@ -735,7 +735,7 @@ TEST(MjAnalysisDbTest, ReferencesReplaceAtomicallyAndQueryBySourceAndTarget)
     std::vector<DbReferenceRecord> bad;
     bad.push_back(referenceRecord("demo/Missing", "call", "()V", 0, DbReferenceKind::Method,
                                   "demo/Base", "run", "()V"));
-    EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.replaceReferences(std::move(bad))));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.replaceReferences(0, std::move(bad))));
 
     count = db.referenceCount();
     ASSERT_TRUE(count.is_ok());
@@ -749,25 +749,25 @@ TEST(MjAnalysisDbTest, ReferenceValidationRejectsMalformedSites)
 
     std::vector<DbClassInput> inputs;
     inputs.push_back(classInput("demo/Base", "java/lang/Object"));
-    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(inputs)).is_ok());
 
     std::vector<DbReferenceRecord> classLevelMethod;
     classLevelMethod.push_back(referenceRecord("demo/Base", "", "", -1,
                                                DbReferenceKind::Method, "demo/Base", "run", "()V"));
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
-              takeErrorKind(db.replaceReferences(std::move(classLevelMethod))));
+              takeErrorKind(db.replaceReferences(0, std::move(classLevelMethod))));
 
     std::vector<DbReferenceRecord> methodWithoutSite;
     methodWithoutSite.push_back(referenceRecord("demo/Base", "run", "()V", -1,
                                                 DbReferenceKind::Method, "demo/Base", "x", "()V"));
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
-              takeErrorKind(db.replaceReferences(std::move(methodWithoutSite))));
+              takeErrorKind(db.replaceReferences(0, std::move(methodWithoutSite))));
 
     std::vector<DbReferenceRecord> typeWithName;
     typeWithName.push_back(referenceRecord("demo/Base", "", "", -1, DbReferenceKind::Type,
                                            "demo/Base", "x", ""));
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
-              takeErrorKind(db.replaceReferences(std::move(typeWithName))));
+              takeErrorKind(db.replaceReferences(0, std::move(typeWithName))));
 }
 
 TEST(MjAnalysisDbTest, ReplaceReferencesFromMemberSwapsSliceAndLeavesOtherRows)
@@ -782,7 +782,7 @@ TEST(MjAnalysisDbTest, ReplaceReferencesFromMemberSwapsSliceAndLeavesOtherRows)
     caller.members.push_back(fieldInput("slot", "I"));
     inputs.push_back(std::move(caller));
     inputs.push_back(classInput("demo/Base", "java/lang/Object"));
-    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(inputs)).is_ok());
 
     // 初版引用事实：call()V 两行、keep()J 两行、class 头一行。
     std::vector<DbReferenceRecord> references;
@@ -796,7 +796,7 @@ TEST(MjAnalysisDbTest, ReplaceReferencesFromMemberSwapsSliceAndLeavesOtherRows)
                                          DbReferenceKind::Method, "demo/Base", "run", "()V"));
     references.push_back(
         referenceRecord("demo/Caller", "", "", -1, DbReferenceKind::Type, "demo/Base", "", ""));
-    ASSERT_TRUE(db.replaceReferences(std::move(references)).is_ok());
+    ASSERT_TRUE(db.replaceReferences(0, std::move(references)).is_ok());
 
     auto callMember = db.findMember(DbMemberKind::Method, S("demo/Caller"), S("call"), S("()V"));
     ASSERT_TRUE(callMember.is_ok());
@@ -810,7 +810,7 @@ TEST(MjAnalysisDbTest, ReplaceReferencesFromMemberSwapsSliceAndLeavesOtherRows)
                                     DbReferenceKind::Method, "demo/Base", "run", "()V"));
     slice.push_back(referenceRecord("demo/Caller", "call", "()V", 31,
                                     DbReferenceKind::Type, "demo/Base", "", ""));
-    auto replaced = db.replaceReferencesFromMember(callId, std::move(slice));
+    auto replaced = db.replaceReferencesFromMember(0, callId, std::move(slice));
     ASSERT_TRUE(replaced.is_ok());
     EXPECT_EQ(2U, replaced.unwrap());
 
@@ -857,7 +857,7 @@ TEST(MjAnalysisDbTest, ReplaceReferencesFromMemberSwapsSliceAndLeavesOtherRows)
 
     // 空输入 = 清空该成员切片，别的行依旧不动。
     std::vector<DbReferenceRecord> empty;
-    auto cleared = db.replaceReferencesFromMember(callId, std::move(empty));
+    auto cleared = db.replaceReferencesFromMember(0, callId, std::move(empty));
     ASSERT_TRUE(cleared.is_ok());
     EXPECT_EQ(0U, cleared.unwrap());
     fromCall = db.referencesFromMember(S("demo/Caller"), S("call"), S("()V"));
@@ -880,12 +880,12 @@ TEST(MjAnalysisDbTest, ReplaceReferencesFromMemberRejectsBadSliceWithoutWriting)
     caller.members.push_back(fieldInput("slot", "I"));
     inputs.push_back(std::move(caller));
     inputs.push_back(classInput("demo/Base", "java/lang/Object"));
-    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(inputs)).is_ok());
 
     std::vector<DbReferenceRecord> references;
     references.push_back(referenceRecord("demo/Caller", "call", "()V", 3,
                                          DbReferenceKind::Method, "demo/Base", "run", "()V"));
-    ASSERT_TRUE(db.replaceReferences(std::move(references)).is_ok());
+    ASSERT_TRUE(db.replaceReferences(0, std::move(references)).is_ok());
 
     auto callMember = db.findMember(DbMemberKind::Method, S("demo/Caller"), S("call"), S("()V"));
     ASSERT_TRUE(callMember.is_ok());
@@ -898,7 +898,7 @@ TEST(MjAnalysisDbTest, ReplaceReferencesFromMemberRejectsBadSliceWithoutWriting)
     ghost.push_back(referenceRecord("demo/Caller", "call", "()V", 9,
                                     DbReferenceKind::Method, "demo/Base", "run", "()V"));
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
-              takeErrorKind(db.replaceReferencesFromMember(424242, std::move(ghost))));
+              takeErrorKind(db.replaceReferencesFromMember(0, 424242, std::move(ghost))));
     auto count = db.referenceCount();
     ASSERT_TRUE(count.is_ok());
     EXPECT_EQ(1U, count.unwrap());
@@ -912,7 +912,7 @@ TEST(MjAnalysisDbTest, ReplaceReferencesFromMemberRejectsBadSliceWithoutWriting)
     viaField.push_back(referenceRecord("demo/Caller", "slot", "I", 0,
                                        DbReferenceKind::Method, "demo/Base", "run", "()V"));
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
-              takeErrorKind(db.replaceReferencesFromMember(fieldRow->memberId,
+              takeErrorKind(db.replaceReferencesFromMember(0, fieldRow->memberId,
                                                            std::move(viaField))));
 
     // 行内 source 与参数成员不一致：切片身份错位，Invalid 且 call()V 切片原样。
@@ -920,7 +920,7 @@ TEST(MjAnalysisDbTest, ReplaceReferencesFromMemberRejectsBadSliceWithoutWriting)
     mismatched.push_back(referenceRecord("demo/Caller", "keep", "()J", 9,
                                          DbReferenceKind::Method, "demo/Base", "run", "()V"));
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
-              takeErrorKind(db.replaceReferencesFromMember(callId, std::move(mismatched))));
+              takeErrorKind(db.replaceReferencesFromMember(0, callId, std::move(mismatched))));
 
     auto fromCall = db.referencesFromMember(S("demo/Caller"), S("call"), S("()V"));
     ASSERT_TRUE(fromCall.is_ok());
@@ -933,7 +933,7 @@ TEST(MjAnalysisDbTest, ReplaceReferencesFromMemberRejectsBadSliceWithoutWriting)
     malformed.push_back(referenceRecord("demo/Caller", "", "", -1, DbReferenceKind::Type,
                                         "demo/Base", "", ""));
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
-              takeErrorKind(db.replaceReferencesFromMember(callId, std::move(malformed))));
+              takeErrorKind(db.replaceReferencesFromMember(0, callId, std::move(malformed))));
     count = db.referenceCount();
     ASSERT_TRUE(count.is_ok());
     EXPECT_EQ(1U, count.unwrap());
@@ -962,7 +962,7 @@ TEST(MjAnalysisDbTest, ReferencePagedQueriesMatchFullResults)
     inputs.push_back(std::move(callerB));
     inputs.push_back(std::move(callerC));
     inputs.push_back(std::move(base));
-    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(inputs)).is_ok());
 
     // 8 行命中 demo/Base：三个方法体 + 一个 class 头，三种引用类别混排。
     std::vector<DbReferenceRecord> references;
@@ -982,7 +982,7 @@ TEST(MjAnalysisDbTest, ReferencePagedQueriesMatchFullResults)
                                          DbReferenceKind::Field, "demo/Base", "next", "J"));
     references.push_back(referenceRecord("demo/C", "", "", -1, DbReferenceKind::Type,
                                          "demo/Base", "", ""));
-    auto replaced = db.replaceReferences(std::move(references));
+    auto replaced = db.replaceReferences(0, std::move(references));
     ASSERT_TRUE(replaced.is_ok());
     EXPECT_EQ(8U, replaced.unwrap());
 
@@ -1109,7 +1109,7 @@ TEST(MjAnalysisDbTest, HierarchyPagedQueriesMatchFullResults)
     DbClassInput wingImpl = classInput("demo/WingImpl", "demo/Wing");
     wingImpl.interfaces.push_back(Utf8String::from_cstr("demo/If"));
     inputs.push_back(std::move(wingImpl));
-    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(inputs)).is_ok());
 
     auto fullSubs = db.allSubclasses(S("demo/Root"));
     ASSERT_TRUE(fullSubs.is_ok());
@@ -1257,7 +1257,7 @@ TEST(MjAnalysisDbTest, EntryIngestKeepsStableIdsAndTombstonesMissing)
     first.push_back(entryInput("a/A.class", "class", shaOf('a')));
     first.push_back(entryInput("b/B.class", "class", shaOf('b')));
     first.push_back(entryInput("META-INF/MANIFEST.MF", "manifest", shaOf('c'), 8, false));
-    auto firstStats = db.ingestEntries(jar, std::move(first));
+    auto firstStats = db.ingestEntries(0, jar, std::move(first));
     ASSERT_TRUE(firstStats.is_ok());
     {
         const auto stats = firstStats.unwrap();
@@ -1290,7 +1290,7 @@ TEST(MjAnalysisDbTest, EntryIngestKeepsStableIdsAndTombstonesMissing)
     same.push_back(entryInput("b/B.class", "class", shaOf('b')));
     same.push_back(entryInput("META-INF/MANIFEST.MF", "manifest", shaOf('c'), 8, false));
     same.push_back(entryInput("a/A.class", "class", shaOf('a')));
-    auto sameStats = db.ingestEntries(jar, std::move(same));
+    auto sameStats = db.ingestEntries(0, jar, std::move(same));
     ASSERT_TRUE(sameStats.is_ok());
     {
         const auto stats = sameStats.unwrap();
@@ -1304,7 +1304,7 @@ TEST(MjAnalysisDbTest, EntryIngestKeepsStableIdsAndTombstonesMissing)
     // 二次重导入：只保留 a/A.class，其余进墓碑（不删行）。
     std::vector<DbEntryInput> shrunk;
     shrunk.push_back(entryInput("a/A.class", "class", shaOf('a')));
-    auto shrunkStats = db.ingestEntries(jar, std::move(shrunk));
+    auto shrunkStats = db.ingestEntries(0, jar, std::move(shrunk));
     ASSERT_TRUE(shrunkStats.is_ok());
     EXPECT_EQ(2U, shrunkStats.unwrap().tombstoned);
 
@@ -1321,7 +1321,7 @@ TEST(MjAnalysisDbTest, EntryIngestKeepsStableIdsAndTombstonesMissing)
     std::vector<DbEntryInput> revived;
     revived.push_back(entryInput("a/A.class", "class", shaOf('a')));
     revived.push_back(entryInput("b/B.class", "class", shaOf('b')));
-    auto revivedStats = db.ingestEntries(jar, std::move(revived));
+    auto revivedStats = db.ingestEntries(0, jar, std::move(revived));
     ASSERT_TRUE(revivedStats.is_ok());
     {
         const auto stats = revivedStats.unwrap();
@@ -1335,7 +1335,7 @@ TEST(MjAnalysisDbTest, EntryIngestKeepsStableIdsAndTombstonesMissing)
     std::vector<DbEntryInput> mutated;
     mutated.push_back(entryInput("a/A.class", "class", shaOf('a')));
     mutated.push_back(entryInput("b/B.class", "class", shaOf('d')));
-    auto mutatedStats = db.ingestEntries(jar, std::move(mutated));
+    auto mutatedStats = db.ingestEntries(0, jar, std::move(mutated));
     ASSERT_TRUE(mutatedStats.is_ok());
     {
         const auto stats = mutatedStats.unwrap();
@@ -1349,7 +1349,7 @@ TEST(MjAnalysisDbTest, EntryIngestKeepsStableIdsAndTombstonesMissing)
     std::vector<DbEntryInput> flippedBack;
     flippedBack.push_back(entryInput("a/A.class", "class", shaOf('a')));
     flippedBack.push_back(entryInput("b/B.class", "class", shaOf('b')));
-    auto flipBack = db.ingestEntries(jar, std::move(flippedBack));
+    auto flipBack = db.ingestEntries(0, jar, std::move(flippedBack));
     ASSERT_TRUE(flipBack.is_ok());
     EXPECT_EQ(1U, flipBack.unwrap().resurrected);
 
@@ -1378,43 +1378,43 @@ TEST(MjAnalysisDbTest, EntryIngestRejectsInvalidBatchWithoutWriting)
 
     std::vector<DbEntryInput> valid;
     valid.push_back(entryInput("a/A.class", "class", shaOf('a')));
-    ASSERT_TRUE(db.ingestEntries(jar, std::move(valid)).is_ok());
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(valid)).is_ok());
 
     std::vector<DbEntryInput> duplicate;
     duplicate.push_back(entryInput("x/Dup", "resource", shaOf('b')));
     duplicate.push_back(entryInput("x/Dup", "resource", shaOf('c')));
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
-              takeErrorKind(db.ingestEntries(jar, std::move(duplicate))));
+              takeErrorKind(db.ingestEntries(0, jar, std::move(duplicate))));
 
     std::vector<DbEntryInput> missingSha;
     missingSha.push_back(entryInput("x/NoSha", "resource", std::string(63, 'a')));
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
-              takeErrorKind(db.ingestEntries(jar, std::move(missingSha))));
+              takeErrorKind(db.ingestEntries(0, jar, std::move(missingSha))));
 
     std::vector<DbEntryInput> upperSha;
     upperSha.push_back(entryInput("x/Upper", "resource", std::string(64, 'A')));
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
-              takeErrorKind(db.ingestEntries(jar, std::move(upperSha))));
+              takeErrorKind(db.ingestEntries(0, jar, std::move(upperSha))));
 
     std::vector<DbEntryInput> emptyKind;
     emptyKind.push_back(entryInput("x/NoKind", "", shaOf('d')));
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
-              takeErrorKind(db.ingestEntries(jar, std::move(emptyKind))));
+              takeErrorKind(db.ingestEntries(0, jar, std::move(emptyKind))));
 
     std::vector<DbEntryInput> emptyPath;
     emptyPath.push_back(entryInput("", "resource", shaOf('e')));
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
-              takeErrorKind(db.ingestEntries(jar, std::move(emptyPath))));
+              takeErrorKind(db.ingestEntries(0, jar, std::move(emptyPath))));
 
     std::vector<DbEntryInput> negativeSize;
     negativeSize.push_back(entryInput("x/Neg", "resource", shaOf('f'), -1));
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
-              takeErrorKind(db.ingestEntries(jar, std::move(negativeSize))));
+              takeErrorKind(db.ingestEntries(0, jar, std::move(negativeSize))));
 
     std::vector<DbEntryInput> unknownInput;
     unknownInput.push_back(entryInput("a/A.class", "class", shaOf('a')));
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
-              takeErrorKind(db.ingestEntries(jar + 999, std::move(unknownInput))));
+              takeErrorKind(db.ingestEntries(0, jar + 999, std::move(unknownInput))));
 
     // 全部失败路径零写入。
     auto listed = db.listEntries(jar);
@@ -1437,7 +1437,7 @@ TEST(MjAnalysisDbTest, ClassesLinkToEntries)
 
     std::vector<DbEntryInput> entries;
     entries.push_back(entryInput("demo/Base.class", "class", shaOf('a')));
-    auto stats = db.ingestEntries(jar, std::move(entries));
+    auto stats = db.ingestEntries(0, jar, std::move(entries));
     ASSERT_TRUE(stats.is_ok());
     ASSERT_EQ(1U, stats.unwrap().created);
 
@@ -1450,7 +1450,7 @@ TEST(MjAnalysisDbTest, ClassesLinkToEntries)
     std::vector<DbClassInput> classes;
     classes.push_back(classInput("demo/Base", "java/lang/Object"));
     classes.back().entryId = entryId;
-    ASSERT_TRUE(db.ingestClasses(std::move(classes)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
 
     auto found = db.findClass(S("demo/Base"));
     ASSERT_TRUE(found.is_ok());
@@ -1461,7 +1461,7 @@ TEST(MjAnalysisDbTest, ClassesLinkToEntries)
     // 条目内容更新后重登记类：链接指向新条目。
     std::vector<DbEntryInput> mutated;
     mutated.push_back(entryInput("demo/Base.class", "class", shaOf('b')));
-    ASSERT_TRUE(db.ingestEntries(jar, std::move(mutated)).is_ok());
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(mutated)).is_ok());
     listed = db.listEntries(jar);
     ASSERT_TRUE(listed.is_ok());
     rows = std::move(listed).unwrap();
@@ -1475,7 +1475,7 @@ TEST(MjAnalysisDbTest, ClassesLinkToEntries)
     std::vector<DbClassInput> relinked;
     relinked.push_back(classInput("demo/Base", "java/lang/Object"));
     relinked.back().entryId = newEntryId;
-    ASSERT_TRUE(db.ingestClasses(std::move(relinked)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(relinked)).is_ok());
     found = db.findClass(S("demo/Base"));
     ASSERT_TRUE(found.is_ok());
     EXPECT_EQ(newEntryId, std::move(found).unwrap()->entryId);
@@ -1483,7 +1483,7 @@ TEST(MjAnalysisDbTest, ClassesLinkToEntries)
     // entryId=0 = 未指定：既有链接保持不动。
     std::vector<DbClassInput> unspecified;
     unspecified.push_back(classInput("demo/Base", "java/lang/Other"));
-    ASSERT_TRUE(db.ingestClasses(std::move(unspecified)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(unspecified)).is_ok());
     found = db.findClass(S("demo/Base"));
     ASSERT_TRUE(found.is_ok());
     auto baseAgain = std::move(found).unwrap();
@@ -1494,7 +1494,7 @@ TEST(MjAnalysisDbTest, ClassesLinkToEntries)
     std::vector<DbClassInput> dangling;
     dangling.push_back(classInput("demo/Base", "java/lang/Object"));
     dangling.back().entryId = newEntryId + 42;
-    EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.ingestClasses(std::move(dangling))));
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.ingestClasses(0, std::move(dangling))));
     found = db.findClass(S("demo/Base"));
     ASSERT_TRUE(found.is_ok());
     EXPECT_EQ(newEntryId, std::move(found).unwrap()->entryId);
@@ -1556,6 +1556,14 @@ TEST(MjAnalysisDbTest, RejectsForeignSchemaVersionDatabase)
         EXPECT_EQ(AnalysisDbErrorKind::Schema, error.kind);
         EXPECT_NE(std::string::npos, error.message.to_std_string().find("version 4"));
     }
+    patchHeaderField(v2Path, 60, 5);   // v5：refs 目标侧 id 化一代（v6 的直接前代）
+    {
+        auto rejected = AnalysisDb::open(refOf(v2Path.string()));
+        ASSERT_TRUE(rejected.is_err());
+        auto error = std::move(rejected).unwrap_err();
+        EXPECT_EQ(AnalysisDbErrorKind::Schema, error.kind);
+        EXPECT_NE(std::string::npos, error.message.to_std_string().find("version 5"));
+    }
 
     const auto foreignPath = freshDbPath("entries_foreign_app");
     {
@@ -1589,7 +1597,7 @@ void writeMixedCorpus(const std::filesystem::path& path)
     beta.members.push_back(methodInput("go", "()V"));
     inputs.push_back(std::move(beta));
     inputs.push_back(classInput("demo/Gamma", "java/lang/Object"));
-    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(inputs)).is_ok());
 
     std::vector<DbReferenceRecord> references;
     references.push_back(referenceRecord("demo/Alpha", "run", "()V", 3,
@@ -1602,7 +1610,7 @@ void writeMixedCorpus(const std::filesystem::path& path)
                                          DbReferenceKind::Type, "demo/External", "", ""));
     references.push_back(referenceRecord("demo/Alpha", "run", "()V", 7,
                                          DbReferenceKind::Method, "demo/Later", "later", "()V"));
-    ASSERT_TRUE(db.replaceReferences(std::move(references)).is_ok());
+    ASSERT_TRUE(db.replaceReferences(0, std::move(references)).is_ok());
     ASSERT_TRUE(db.save().is_ok());
     ASSERT_TRUE(db.close().is_ok());
 }
@@ -1804,7 +1812,7 @@ TEST(MjAnalysisDbTest, TargetQueriesStayEquivalentAcrossRegistrationTiming)
     beta.members.push_back(methodInput("go", "()V"));
     inputs.push_back(std::move(beta));
     inputs.push_back(classInput("demo/Gamma", "java/lang/Object"));
-    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(inputs)).is_ok());
 
     // 9 行混排语料：登记目标（id 行）与未登记目标（文本行）；demo/Later
     // 刻意在引用写入之后才登记（登记时序交错）。行序 = 写入序。记录只移
@@ -1828,7 +1836,7 @@ TEST(MjAnalysisDbTest, TargetQueriesStayEquivalentAcrossRegistrationTiming)
     const auto r9 = [] { return referenceRecord("demo/Beta", "", "", -1, DbReferenceKind::Type,
                                                 "demo/Gamma", "", ""); };
     auto references = recordSet(r1(), r2(), r3(), r4(), r5(), r6(), r7(), r8(), r9());
-    ASSERT_TRUE(db.replaceReferences(std::move(references)).is_ok());
+    ASSERT_TRUE(db.replaceReferences(0, std::move(references)).is_ok());
     EXPECT_EQ(9U, db.referenceCount().unwrap());
 
     const auto rowsOf = [&](auto result) {
@@ -1904,7 +1912,7 @@ TEST(MjAnalysisDbTest, TargetQueriesStayEquivalentAcrossRegistrationTiming)
     DbClassInput laterClass = classInput("demo/Later", "java/lang/Object");
     laterClass.members.push_back(methodInput("later", "()V"));
     laterBatch.push_back(std::move(laterClass));
-    ASSERT_TRUE(db.ingestClasses(std::move(laterBatch)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(laterBatch)).is_ok());
     expectSameRecords(recordSet(r5()),
                       rowsOf(db.referencesToMethod(S("demo/Later"), S("later"), S("()V"))));
     expectSameRecords(recordSet(r5()), rowsOf(db.referencesToClass(S("demo/Later"))));
@@ -1917,7 +1925,7 @@ TEST(MjAnalysisDbTest, TargetQueriesStayEquivalentAcrossRegistrationTiming)
     const auto r5b = [] { return referenceRecord("demo/Alpha", "run", "()V", 70,
                                                  DbReferenceKind::Method, "demo/Later", "later", "()V"); };
     auto slice = recordSet(r5b());
-    ASSERT_TRUE(db.replaceReferencesFromMember(runId, std::move(slice)).is_ok());
+    ASSERT_TRUE(db.replaceReferencesFromMember(0, runId, std::move(slice)).is_ok());
     expectSameRecords(recordSet(r5b()),
                       rowsOf(db.referencesToMethod(S("demo/Later"), S("later"), S("()V"))));
     expectSameRecords(recordSet(r5b()),
@@ -1953,7 +1961,7 @@ TEST(MjAnalysisDbTest, TargetTextRoundTripsByteSemantics)
     hostileField.access     = 0x0001;
     bin.members.push_back(std::move(hostileField));
     inputs.push_back(std::move(bin));
-    ASSERT_TRUE(db.ingestClasses(std::move(inputs)).is_ok());
+    ASSERT_TRUE(db.ingestClasses(0, std::move(inputs)).is_ok());
 
     // from_cstr 走严格 UTF-8 解码（非法字节静默落空串）——对抗名必须走
     // from_data_unchecked 字节构造；读写两侧按字节绑定与还原，不解码。
@@ -1987,7 +1995,7 @@ TEST(MjAnalysisDbTest, TargetTextRoundTripsByteSemantics)
     references.push_back(std::move(r1));
     references.push_back(std::move(r2));
     references.push_back(std::move(r3));
-    ASSERT_TRUE(db.replaceReferences(std::move(references)).is_ok());
+    ASSERT_TRUE(db.replaceReferences(0, std::move(references)).is_ok());
 
     const auto expectBytes = [](const Utf8String& actual, const std::string& expected) {
         ASSERT_EQ(expected.size(), actual.byte_length());
