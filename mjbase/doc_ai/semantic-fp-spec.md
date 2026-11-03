@@ -82,7 +82,18 @@ semantic_fp 给每个方法的内容算一个指纹。方法体没变，指纹�
 
 按本规范实现的原型全量过验收三条：1629 方法双算（重新解包重解析）逐方法一致；向每类常量池注入 18 个垃圾条目逼出全量重索引后 1629 个指纹零变化；整 jar 重打包重读再算同样零变化。唯一性：1629 方法得 1521 个指纹，21 个多重组共 129 个方法全部为真实同体（组内规范化 token 流逐字节一致），不同语义零碰撞。期望表 10 行全过，表外补验 3 条：方法自身改名不进指纹（21845 字节空格名真实样本实测不变）；被引用空格名字段改名翻引用者指纹；native/abstract 只盖方法头。语料覆盖 indy 1501 条、switch 283 条、wide 158 条。
 
-待评审定案的剩余边界 8 项（原型各自选定了一种口径，正式实现前逐项过目）：异常表 pc 到存活序号的映射口径；方法头是否含所属类名与 Exceptions 属性；非 int 常量折叠边界（FCONST_1 与 ldc float 是否同指）；ldc 的 Class/MethodType/MethodHandle/condy 载荷解引用深度；访问标志是否剔除编译器旗标；wide 前缀是否并入 opcode；bootstrap 方法参数解引用深度；switch key 表是否原样进指纹。
+待评审定案的剩余边界 8 项，原型各自选定了一种口径。下表的原型口径为 PoC 实现事实，不是规范定案，逐项过目后才进 v1。
+
+| 边界项 | 原型口径 | 备注 |
+|---|---|---|
+| 异常表 pc 到存活序号的映射口径 | 覆盖范围端点映射为「pc 不小于端点的首条存活指令」的规范序号，end 不含，越过末尾取存活总数 | handler 必须精确落在存活指令上，否则报错拒绝；catchType 解引用为类名，0 记空；表项顺序原样保留 |
+| 方法头是否含所属类名与 Exceptions 属性 | 不含：方法头只写算法版本、原始访问标志 u16、方法描述符 | 所属类名、方法名、Exceptions、Signature、注解、MethodParameters 全程不读不记 |
+| 非 int 常量折叠边界（FCONST_1 与 ldc float 是否同指） | 不同指：跨编码折叠只限 int 族，iconst、bipush、sipush、ldc Integer 归一为「int 值」token | lconst、fconst、dconst 记 plain opcode 原字节；ldc 的 float、double、long 记原始位型，不做 NaN 规范化 |
+| ldc 的 Class/MethodType/MethodHandle/condy 载荷解引用深度 | 全部解到语义值：Class 解为类名，MethodType 解为描述符串，MethodHandle 解为（kind，类，名字，描述符），condy 按 indy 同款记名字、描述符、BSM 句柄、全部静态参数 | ldc、ldc_w、ldc2_w 的 opcode 本身不进流，同载荷同 token |
+| 访问标志是否剔除编译器旗标 | 不剔除：记原始 u16 | BRIDGE、SYNTHETIC、VARARGS 等编译器旗标原样参与指纹 |
+| wide 前缀是否并入 opcode | 不并入：wide 前缀不进指纹，指令按 base opcode 归一记 | wide 与非 wide 同语义同 token，槽位与增量照常记实际值 |
+| bootstrap 方法参数解引用深度 | 解一整层：BSM 句柄解到（kind，类，名字，描述符），静态参数逐个按类型解引用 | 参数里的 Class、MethodType、MethodHandle 都展开到语义值；参数位再嵌 condy 或 indy 直接报错，不递归 |
+| switch key 表是否原样进指纹 | 原样进指纹：tableswitch 按 low 加序号重推出连续 key 全列，lookupswitch 逐 case 记原始 key 值 | 每个 key 配目标的规范序号，default 目标先记，顺序与 class 文件一致 |
 
 ## 实现与验收
 
