@@ -1,7 +1,9 @@
 /// @file        analysis_census_test.cpp
 /// @brief       普查投影层（#121 §5 B4）：censusClasses 事实面（计数、条目
-///              关联、形态旗标、墓碑排除、排序确定性）、censusContainer 汇总
-///              面（形态分布、分析事实计数）、空容器边界与非法输入。
+///              关联、形态旗标、墓碑排除、排序确定性）、censusMembers 成员
+///              事实面（复合键行序、native 派生、origin 继承、墓碑连带与
+///              条目关联契约，#148）、censusContainer 汇总面（形态分布、
+///              分析事实计数）、空容器边界与非法输入。
 #include <gtest/gtest.h>
 
 #include <map>
@@ -358,6 +360,247 @@ TEST(MjAnalysisCensusTest, TombstonedEntriesDropTheirClassesFromCensus)
     EXPECT_EQ(1, std::move(container).unwrap().entriesTombstoned);
 }
 
+TEST(MjAnalysisCensusTest, MemberRowsProjectCompoundKeyOrderAndNativeDerivation)
+{
+    // 行序复合键 BINARY 升序：owner 内部名 → kind（Field 在前，编码序）→
+    // 名字 → 描述符。kind 键先于名字（全部 Field 先于 Method "go"，尽管
+    // "go" 字节序靠前）；owner 键大小写敏感（'Z' 0x5A < 'a' 0x61，demo/Zed
+    // 整块在前）；同名成员按描述符字节序（"()V" 的 ')' 0x29 < "(I)V" 的
+    // 'I' 0x49）。native 是投影层派生：方法 ACC_NATIVE 按位测试，字段恒 0
+    // （含携带 0x0100 位的字段）。
+    const auto path = freshDbPath("members");
+    auto       db   = openOrDie(path);
+    auto inputId = db.ensureInput(S("lib/members.jar"), refOf(shaOf('0')), 4096);
+    ASSERT_TRUE(inputId.is_ok());
+    const ca::i64 jar = inputId.unwrap();
+
+    std::vector<DbEntryInput> entries;
+    entries.push_back(entryInput("demo/Zed.class", "class", shaOf('a'), 256));
+    entries.push_back(entryInput("demo/apple.class", "class", shaOf('b'), 128));
+    ASSERT_TRUE(db.ingestEntries(jar, std::move(entries)).is_ok());
+    const auto ids = liveEntryIds(db, jar);
+    ASSERT_EQ(2U, ids.size());
+
+    std::vector<DbClassInput> classes;
+    DbClassInput zed = classInput("demo/Zed", "java/lang/Object");
+    zed.entryId      = ids.at("demo/Zed.class");
+    zed.members.push_back(memberInput(DbMemberKind::Field, "aaa", "I", 0x0002));
+    zed.members.push_back(memberInput(DbMemberKind::Field, "odd", "J", 0x0100));
+    zed.members.push_back(
+        memberInput(DbMemberKind::Field, "state", "Ljava/lang/String;", 0x0002));
+    zed.members.push_back(memberInput(DbMemberKind::Method, "go", "()V", 0x0001));
+    zed.members.push_back(memberInput(DbMemberKind::Method, "go", "(I)V", 0x0001));
+    zed.members.push_back(memberInput(DbMemberKind::Method, "nativeOp", "()J", 0x0100));
+    zed.members.push_back(memberInput(DbMemberKind::Method, "nativeOp", "(I)V", 0x0001));
+    zed.members.push_back(memberInput(DbMemberKind::Method, "zzz", "()V", 0x0001));
+    classes.push_back(std::move(zed));
+    DbClassInput apple = classInput("demo/apple", "java/lang/Object");
+    apple.entryId      = ids.at("demo/apple.class");
+    apple.members.push_back(memberInput(DbMemberKind::Method, "act", "()V", 0x0001));
+    classes.push_back(std::move(apple));
+    ASSERT_TRUE(db.ingestClasses(std::move(classes)).is_ok());
+
+    auto projected = db.censusMembers(jar);
+    ASSERT_TRUE(projected.is_ok());
+    auto rows = std::move(projected).unwrap();
+    ASSERT_EQ(9U, rows.size());
+
+    // 复合键行序逐位断言。
+    ASSERT_EQ("demo/Zed", rows[0].ownerInternalName.to_std_string());
+    ASSERT_EQ("aaa", rows[0].name.to_std_string());
+    ASSERT_EQ("demo/Zed", rows[1].ownerInternalName.to_std_string());
+    ASSERT_EQ("odd", rows[1].name.to_std_string());
+    ASSERT_EQ("demo/Zed", rows[2].ownerInternalName.to_std_string());
+    ASSERT_EQ("state", rows[2].name.to_std_string());
+    ASSERT_EQ("demo/Zed", rows[3].ownerInternalName.to_std_string());
+    ASSERT_EQ("go", rows[3].name.to_std_string());
+    ASSERT_EQ("demo/Zed", rows[4].ownerInternalName.to_std_string());
+    ASSERT_EQ("go", rows[4].name.to_std_string());
+    ASSERT_EQ("demo/Zed", rows[5].ownerInternalName.to_std_string());
+    ASSERT_EQ("nativeOp", rows[5].name.to_std_string());
+    ASSERT_EQ("demo/Zed", rows[6].ownerInternalName.to_std_string());
+    ASSERT_EQ("nativeOp", rows[6].name.to_std_string());
+    ASSERT_EQ("demo/Zed", rows[7].ownerInternalName.to_std_string());
+    ASSERT_EQ("zzz", rows[7].name.to_std_string());
+    ASSERT_EQ("demo/apple", rows[8].ownerInternalName.to_std_string());
+    ASSERT_EQ("act", rows[8].name.to_std_string());
+
+    // kind 键：rows[0..2] 全是 Field，Method 从 rows[3] 起——kind 先于名字。
+    EXPECT_EQ(DbMemberKind::Field, rows[0].kind);
+    EXPECT_EQ(DbMemberKind::Field, rows[1].kind);
+    EXPECT_EQ(DbMemberKind::Field, rows[2].kind);
+    EXPECT_EQ(DbMemberKind::Method, rows[3].kind);
+    EXPECT_EQ(DbMemberKind::Method, rows[4].kind);
+    EXPECT_EQ(DbMemberKind::Method, rows[5].kind);
+    EXPECT_EQ(DbMemberKind::Method, rows[6].kind);
+    EXPECT_EQ(DbMemberKind::Method, rows[7].kind);
+    EXPECT_EQ(DbMemberKind::Method, rows[8].kind);
+    // 描述符键：同名 "go" 与 "nativeOp" 各自按 "()V"/"()J" < "(I)V"。
+    EXPECT_EQ("()V", rows[3].descriptor.to_std_string());
+    EXPECT_EQ("(I)V", rows[4].descriptor.to_std_string());
+    EXPECT_EQ("()J", rows[5].descriptor.to_std_string());
+    EXPECT_EQ("(I)V", rows[6].descriptor.to_std_string());
+
+    // native 派生：方法 ACC_NATIVE 按位测试；字段恒 0（含 0x0100 位的 odd），
+    // access 原样透传。
+    EXPECT_FALSE(rows[0].native);
+    EXPECT_FALSE(rows[1].native);
+    EXPECT_EQ(0x0100, rows[1].access);
+    EXPECT_FALSE(rows[2].native);
+    EXPECT_FALSE(rows[3].native);
+    EXPECT_FALSE(rows[4].native);
+    EXPECT_TRUE(rows[5].native);
+    EXPECT_EQ(0x0100, rows[5].access);
+    EXPECT_FALSE(rows[6].native);
+    EXPECT_FALSE(rows[7].native);
+    EXPECT_FALSE(rows[8].native);
+
+    // entryId 随所属类条目。
+    for (ca::usize i = 0; i <= 7; ++i) {
+        EXPECT_EQ(ids.at("demo/Zed.class"), rows[i].entryId);
+    }
+    EXPECT_EQ(ids.at("demo/apple.class"), rows[8].entryId);
+}
+
+TEST(MjAnalysisCensusTest, MemberCensusFollowsEntryLifecycleAndLinkageContract)
+{
+    // 条目关联契约：普查面只含关联到本输入活跃条目的类下的成员——未关联
+    // 条目的类（entry_id 为空）成员不进普查面；条目墓碑后类连带其成员一起
+    // 退出。行数与 censusContainer 成员计数对账（Σ method_count + field_count）。
+    const auto path = freshDbPath("member_lifecycle");
+    auto       db   = openOrDie(path);
+    auto inputId = db.ensureInput(S("lib/app.jar"), refOf(shaOf('0')), 2048);
+    ASSERT_TRUE(inputId.is_ok());
+    const ca::i64 jar = inputId.unwrap();
+
+    std::vector<DbEntryInput> first;
+    first.push_back(entryInput("a/Keep.class", "class", shaOf('a')));
+    first.push_back(entryInput("b/Gone.class", "class", shaOf('b')));
+    ASSERT_TRUE(db.ingestEntries(jar, std::move(first)).is_ok());
+    const auto ids = liveEntryIds(db, jar);
+
+    std::vector<DbClassInput> classes;
+    DbClassInput keep = classInput("a/Keep", "java/lang/Object");
+    keep.entryId      = ids.at("a/Keep.class");
+    keep.members.push_back(memberInput(DbMemberKind::Field, "k", "I", 0x0002));
+    keep.members.push_back(memberInput(DbMemberKind::Method, "stay", "()V", 0x0001));
+    classes.push_back(std::move(keep));
+    DbClassInput gone = classInput("b/Gone", "java/lang/Object");
+    gone.entryId      = ids.at("b/Gone.class");
+    gone.members.push_back(memberInput(DbMemberKind::Method, "vanish", "()V", 0x0004));
+    classes.push_back(std::move(gone));
+    // 未关联条目的类（entryId 缺省 0）：成员在库中，但不属于任何普查面。
+    DbClassInput orphan = classInput("c/Orphan", "java/lang/Object");
+    orphan.members.push_back(memberInput(DbMemberKind::Method, "ghost", "()V", 0x0001));
+    classes.push_back(std::move(orphan));
+    ASSERT_TRUE(db.ingestClasses(std::move(classes)).is_ok());
+
+    auto projected = db.censusMembers(jar);
+    ASSERT_TRUE(projected.is_ok());
+    auto rows = std::move(projected).unwrap();
+    ASSERT_EQ(3U, rows.size());
+    ASSERT_EQ("a/Keep", rows[0].ownerInternalName.to_std_string());
+    ASSERT_EQ("k", rows[0].name.to_std_string());
+    ASSERT_EQ("a/Keep", rows[1].ownerInternalName.to_std_string());
+    ASSERT_EQ("stay", rows[1].name.to_std_string());
+    ASSERT_EQ("b/Gone", rows[2].ownerInternalName.to_std_string());
+    ASSERT_EQ("vanish", rows[2].name.to_std_string());
+    for (const DbMemberCensusRow& row : rows) {
+        EXPECT_NE(std::string("c/Orphan"), row.ownerInternalName.to_std_string());
+    }
+
+    // 对账：成员行数 = 类级 method_count + field_count 之和。
+    auto summaryResult = db.censusContainer(jar);
+    ASSERT_TRUE(summaryResult.is_ok());
+    const auto summary = std::move(summaryResult).unwrap();
+    EXPECT_EQ(2, summary.methods);
+    EXPECT_EQ(1, summary.fields);
+    EXPECT_EQ(rows.size(), static_cast<ca::usize>(summary.methods + summary.fields));
+
+    // 重导入只剩 a/Keep：b/Gone 条目墓碑，其成员连带退出普查面；c/Orphan
+    // 仍不在面内。
+    std::vector<DbEntryInput> shrunk;
+    shrunk.push_back(entryInput("a/Keep.class", "class", shaOf('a')));
+    ASSERT_TRUE(db.ingestEntries(jar, std::move(shrunk)).is_ok());
+
+    auto reprojected = db.censusMembers(jar);
+    ASSERT_TRUE(reprojected.is_ok());
+    auto live = std::move(reprojected).unwrap();
+    ASSERT_EQ(2U, live.size());
+    EXPECT_EQ("a/Keep", live[0].ownerInternalName.to_std_string());
+    EXPECT_EQ("k", live[0].name.to_std_string());
+    EXPECT_EQ("a/Keep", live[1].ownerInternalName.to_std_string());
+    EXPECT_EQ("stay", live[1].name.to_std_string());
+
+    // 类与成员身份仍在库中（普查面退出不删行）。
+    auto all = db.listClasses();
+    ASSERT_TRUE(all.is_ok());
+    EXPECT_EQ(3U, std::move(all).unwrap().size());
+    auto goneMembers = db.listMembers(S("b/Gone"));
+    ASSERT_TRUE(goneMembers.is_ok());
+    EXPECT_EQ(1U, std::move(goneMembers).unwrap().size());
+}
+
+TEST(MjAnalysisCensusTest, MemberRowsInheritOwnerLibraryOrigin)
+{
+    // origin 继承所属类分类：对 owner 内部名走 classifyLibraryOrigin，与
+    // censusClasses 同源同果（owner 相同则逐行与类行一致）。
+    const auto path = freshDbPath("member_origin");
+    auto       db   = openOrDie(path);
+    auto inputId = db.ensureInput(S("lib/mix.jar"), refOf(shaOf('0')), 2048);
+    ASSERT_TRUE(inputId.is_ok());
+    const ca::i64 jar = inputId.unwrap();
+
+    std::vector<DbEntryInput> entries;
+    entries.push_back(entryInput("java/test/Sample.class", "class", shaOf('1'), 128));
+    entries.push_back(entryInput("com/google/gson/Stub.class", "class", shaOf('2'), 256));
+    entries.push_back(entryInput("app/Main.class", "class", shaOf('3'), 512));
+    ASSERT_TRUE(db.ingestEntries(jar, std::move(entries)).is_ok());
+    const auto ids = liveEntryIds(db, jar);
+    ASSERT_EQ(3U, ids.size());
+
+    std::vector<DbClassInput> classes;
+    DbClassInput jdkClass = classInput("java/test/Sample", "java/lang/Object");
+    jdkClass.entryId      = ids.at("java/test/Sample.class");
+    jdkClass.members.push_back(memberInput(DbMemberKind::Method, "id", "()I", 0x0001));
+    classes.push_back(std::move(jdkClass));
+    DbClassInput knownClass = classInput("com/google/gson/Stub", "");
+    knownClass.entryId      = ids.at("com/google/gson/Stub.class");
+    knownClass.members.push_back(
+        memberInput(DbMemberKind::Field, "gson", "Lcom/google/gson/Gson;", 0x0002));
+    classes.push_back(std::move(knownClass));
+    DbClassInput unknownClass = classInput("app/Main", "");
+    unknownClass.entryId      = ids.at("app/Main.class");
+    unknownClass.members.push_back(
+        memberInput(DbMemberKind::Method, "main", "([Ljava/lang/String;)V", 0x0009));
+    classes.push_back(std::move(unknownClass));
+    ASSERT_TRUE(db.ingestClasses(std::move(classes)).is_ok());
+
+    auto memberCensus = db.censusMembers(jar);
+    ASSERT_TRUE(memberCensus.is_ok());
+    auto memberRows = std::move(memberCensus).unwrap();
+    ASSERT_EQ(3U, memberRows.size());
+    // 行序 = owner 内部名 BINARY 升序（'a' < 'c' < 'j'）；origin 三档各归其主。
+    ASSERT_EQ("app/Main", memberRows[0].ownerInternalName.to_std_string());
+    EXPECT_EQ(LibraryOrigin::Unknown, memberRows[0].origin);
+    ASSERT_EQ("com/google/gson/Stub", memberRows[1].ownerInternalName.to_std_string());
+    EXPECT_EQ(LibraryOrigin::Known, memberRows[1].origin);
+    ASSERT_EQ("java/test/Sample", memberRows[2].ownerInternalName.to_std_string());
+    EXPECT_EQ(LibraryOrigin::Jdk, memberRows[2].origin);
+
+    // 与类级普查同源：owner 相同则 origin 逐行一致。
+    auto classCensus = db.censusClasses(jar);
+    ASSERT_TRUE(classCensus.is_ok());
+    auto classRows = std::move(classCensus).unwrap();
+    ASSERT_EQ(3U, classRows.size());
+    for (const DbMemberCensusRow& row : memberRows) {
+        const DbClassCensusRow* ownerRow =
+            findRow(classRows, row.ownerInternalName.to_std_string());
+        ASSERT_NE(ownerRow, nullptr);
+        EXPECT_EQ(ownerRow->origin, row.origin);
+    }
+}
+
 TEST(MjAnalysisCensusTest, ContainerSummaryAggregatesFacetsAndFacts)
 {
     const auto path = freshDbPath("summary");
@@ -458,19 +701,26 @@ TEST(MjAnalysisCensusTest, RejectedOnUnknownInputClosedDbAndReadOnlySurvives)
                   takeErrorKind(db.censusClasses(1234)));
         EXPECT_EQ(AnalysisDbErrorKind::Invalid,
                   takeErrorKind(db.censusContainer(1234)));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.censusMembers(1234)));
         EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.censusClasses(0)));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.censusMembers(0)));
         auto inputId = db.ensureInput(S("ro/app.jar"), refOf(shaOf('0')), 8);
         ASSERT_TRUE(inputId.is_ok());
         registered = inputId.unwrap();
         ASSERT_TRUE(db.close().is_ok());
         // 关闭后拒绝（错误类别与 listEntries 同门）。
         EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.censusClasses(registered)));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.censusMembers(registered)));
     }
     // 只读连接可用（census 是读路径）。
     auto readonly = openOrDie(path, AnalysisDbOpenMode::ReadOnly);
     auto classes  = readonly.censusClasses(registered);
     ASSERT_TRUE(classes.is_ok());
     EXPECT_TRUE(std::move(classes).unwrap().empty());
+    auto members = readonly.censusMembers(registered);
+    ASSERT_TRUE(members.is_ok());
+    EXPECT_TRUE(std::move(members).unwrap().empty());
     auto summary = readonly.censusContainer(registered);
     ASSERT_TRUE(summary.is_ok());
     EXPECT_EQ("ro/app.jar", std::move(summary).unwrap().path.to_std_string());
