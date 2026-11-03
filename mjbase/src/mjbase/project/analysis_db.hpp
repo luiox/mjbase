@@ -42,6 +42,12 @@ namespace mjbase::project {
 ///   并清空文本三列，未登记目标整体落文本；id 与名字互为冗余编码，查询输出
 ///   经 LEFT JOIN + COALESCE 重建文本三元组，DbReferenceRecord 契约不变。
 ///
+/// - producer 注册表（schema v6，#143）：`producers` 登记向本库写事实的
+///   身份（稳定 key 幂等、id 单调只增不删、trust_level 两档），`batches`
+///   记录逻辑写入运行（一次整库导入、一次引用替换各一批；finished_at 空串
+///   = 未收尾的残批，合法审计状态），`batch_scopes` 记录批次覆盖的事实
+///   区间（作用域锚）。事实表不加归属列，逐行归属经作用域解析回答。
+///
 /// - 普查投影层（#121 §5 B4）：census 是库上的只读 SELECT 投影（#39 类
 ///   普查事实面 + 容器形态汇总面；#148 成员普查事实面），不反向定义存储、
 ///   不重新扫描容器。形态判定核心（entry_shape 路径 facet、class_kind 类
@@ -62,7 +68,9 @@ namespace mjbase::project {
 /// @brief 当前 schema 版本（`PRAGMA user_version`）。不识别的版本拒绝打开
 ///        （包括旧版本：不提供自动迁移，旧库由上层显式重建）。
 ///
-/// v5：refs 目标侧 id 化——新增可空外键 `refs.target_class_id` /
+/// v6：producer 注册表——新增 producers / batches / batch_scopes 三表
+///        （#143：写入运行登记与作用域锚，事实表不加归属列）。v5：refs
+///        目标侧 id 化——新增可空外键 `refs.target_class_id` /
 ///        `target_member_id`，目标整体二元化（登记目标落 id 清文本，未登记
 ///        目标整体落文本），目标反查走 refs_target_id / refs_target_text 两个
 ///        部分索引两分支 UNION ALL。v4：新增 mask_rules 遮蔽规则表与 meta
@@ -70,7 +78,7 @@ namespace mjbase::project {
 ///        条目身份表与 `classes.entry_id` 外键。v2：classes 增加
 ///        super/access/version，新增 interfaces 与 refs 表，members 增加
 ///        access。v1 未发布，版本号仅用于识别本分支早期的临时库。
-inline constexpr ca::u32 kAnalysisDbSchemaVersion = 5;
+inline constexpr ca::u32 kAnalysisDbSchemaVersion = 6;
 
 /// @brief SQLite 数据库头里的应用标识（ASCII "MJDB"）。
 inline constexpr ca::u32 kAnalysisDbApplicationId = 0x4D4A4442u;
@@ -97,6 +105,27 @@ enum class DbMemberKind : ca::u8
 {
     Field  = 0,
     Method = 1,
+};
+
+/// @brief 事实来源可信级别（producers.trust_level，两档）。
+///
+/// 词表对齐既有 MaskTrustLevel（trusted/untrusted），但不复用同一 C++ 枚举：
+/// 两者语义不同（项目出口默认动作 vs 事实来源可信级别），绑死一个类型会让
+/// 两个轴被迫同步演化。
+enum class DbProducerTrustLevel : ca::u8
+{
+    Untrusted = 0, ///< 脚本来源等自报身份（处置策略由消费方决定）
+    Trusted   = 1, ///< 产品内置管线（如 workspace 整库导入桥）
+};
+
+/// @brief 批次种类（batches.kind；SQL CHECK 词表同源）。
+enum class DbBatchKind : ca::u8
+{
+    FullImport       = 0, ///< full_import：整库导入（条目 + 类事实 + 全库引用）
+    RefsReplace      = 1, ///< refs_replace：整库引用替换（只动 refs）
+    RefsSliceReplace = 2, ///< refs_slice_replace：单成员引用切片替换
+    RenamesWrite     = 3, ///< renames_write：覆盖层批量写入（预留）
+    RulesWrite       = 4, ///< rules_write：遮蔽规则配置写入（预留）
 };
 
 /// @brief 分析数据库错误类别。
@@ -367,6 +396,31 @@ struct DbMaskRuleReplaceStats
     ca::usize retired = 0; ///< 被替换掉的既有规则行数（hit 计数随行清零）
 };
 
+/// @brief 待注册的生产者（`registerProducer` 输入）。
+///
+/// `key` 是稳定 id（点分 slug 是建议命名，注册后不可变）；`name` 为展示名；
+/// `toolFingerprint` 由注册方自报（产品名 + 语义版本 + 构建标识的拼接是建议
+/// 载荷），回答「哪个版本的工具写的」，与事实内容指纹正交。
+struct DbProducerInput
+{
+    ca::str::Utf8String  key;
+    ca::str::Utf8String  name;
+    ca::str::Utf8String  toolFingerprint;
+    DbProducerTrustLevel trustLevel = DbProducerTrustLevel::Trusted;
+};
+
+/// @brief 批次收尾（`closeBatch`）回填的写入计数。
+///
+/// 由批次发起方按各写入口的返回值累计；注册表不核对其与库内行数的一致性
+/// （批次是逻辑运行记录，不是对账单）。
+struct DbBatchCounts
+{
+    ca::i64 classCount  = 0;
+    ca::i64 entryCount  = 0;
+    ca::i64 memberCount = 0;
+    ca::i64 refCount    = 0;
+};
+
 /// @brief 分析数据库连接（单文件、单连接、非线程安全）。
 class AnalysisDb
 {
@@ -559,6 +613,39 @@ public:
     /// 记账并发的正常窗口，命中记账是尽力而为的审计面，不因竞态失败）。
     /// 空输入为空操作。
     ca::Result<void, AnalysisDbError> recordMaskRuleHits(const std::vector<ca::i64>& ruleIds);
+
+    //-- producer 注册表（producers / batches / batch_scopes，schema v6） ----
+
+    /// @brief 注册生产者（幂等）：稳定 key 命中即刷新元数据并复用 id。
+    ///
+    /// producer_id 单调分配，key 注册后不可变，无删除 API（与身份层只增不删
+    /// 纪律同构）；改名或换工具指纹都是刷新元数据，历史批次仍指向登记行，
+    /// 演化经 updated_at 可追溯。`key` / `name` 非空且不含 NUL，
+    /// `toolFingerprint` 允许为空串但不含 NUL；违反 → `Invalid`。只读连接
+    /// → `ReadOnly`。
+    ///
+    /// @return 生产者 id（既有 key 复用原 id）。
+    ca::Result<ca::i64, AnalysisDbError> registerProducer(const DbProducerInput& input);
+
+    /// @brief 开启一个写入批次：先落一行 started 批（finished_at 为空串），
+    ///        随后各事实写入口以返回的 batchId 显式挂靠本批（写事实与作用域
+    ///        行），最后 `closeBatch` 收尾。生产者未注册 → `Invalid`。
+    ///
+    /// 批次是逻辑写入运行，不是事务：openBatch 自带事务只落批次行，各写
+    /// 入口在各自事务内写事实与作用域行，中途失败留下 finished_at 为空的
+    /// 残批——合法审计状态（回答了「这次运行开始过、走到哪一段」），不算
+    /// 脏数据。@p note 为人工备注（允许空）。
+    ///
+    /// @return 批次 id。
+    ca::Result<ca::i64, AnalysisDbError> openBatch(ca::i64                       producerId,
+                                                   DbBatchKind                   kind,
+                                                   const ca::str::Utf8StringRef& note = {});
+
+    /// @brief 收尾批次：写 finished_at 并回填计数（残批转终态的唯一出口）。
+    ///
+    /// 批次不存在或已收尾 → `Invalid`（重复收尾是调用方契约错误）；
+    /// 计数为负 → `Invalid`。只读连接 → `ReadOnly`。
+    ca::Result<void, AnalysisDbError> closeBatch(ca::i64 batchId, const DbBatchCounts& counts);
 
     //-- 分析事实层（类/成员/继承/直接引用） ------------------------------
 
