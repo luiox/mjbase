@@ -8,6 +8,7 @@
 #include "libca/core/result.hpp"
 #include "libca/str/utf8_string.hpp"
 
+#include "mjbase/analysis/semantic_fp.hpp"
 #include "mjbase/project/class_kind.hpp"
 #include "mjbase/project/library_origin.hpp"
 #include "mjbase/project/mask_types.hpp"
@@ -58,6 +59,16 @@ namespace mjbase::project {
 ///   `mask_trust_level_producer`（匿名写入时清除）。规则面写入挂批
 ///   （rules_write）属消费方职责，本层只做行级归属。
 ///
+/// - 方法版本指纹层（schema v8，#132「怎么接进数据库」）：`method_versions`
+///   存方法语义指纹的版本历史——行 = 一次语义落库（method_version_id 单调
+///   只增不删；fingerprint 32 字节定长 BLOB + fp_version 算法版本字节 +
+///   recorded_at）。「当前指针」是 `is_current` 列 + (member_id) 部分唯一
+///   索引：同成员至多一行当前版本，不动 members 表（成员身份与指纹版本是
+///   两条独立的轴，指针挤进身份登记面会让没有版本行的方法背空指针）。
+///   「标脏」不另建脏表：当前指针变更本身可查询（旧指纹对不上当前行即脏），
+///   is_current=0 的历史行就是审计面。指纹引擎（semanticFp，#152）在
+///   analysis 层，本层只做版本事实的存储与查询，编辑流接线归上层。
+///
 /// - 普查投影层（#121 §5 B4）：census 是库上的只读 SELECT 投影（#39 类
 ///   普查事实面 + 容器形态汇总面；#148 成员普查事实面），不反向定义存储、
 ///   不重新扫描容器。形态判定核心（entry_shape 路径 facet、class_kind 类
@@ -78,7 +89,10 @@ namespace mjbase::project {
 /// @brief 当前 schema 版本（`PRAGMA user_version`）。不识别的版本拒绝打开
 ///        （包括旧版本：不提供自动迁移，旧库由上层显式重建）。
 ///
-/// v7：mask 配置面归属化（#143 遗留回填）——mask_rules 增加可空外键
+/// v8：方法版本指纹层（#132）——新增 method_versions 表（行 = 方法语义
+///        指纹版本：32 字节定长 BLOB + fp_version 算法版本字节；is_current
+///        当前指针 + (member_id) 部分唯一索引，版本历史累积即审计面）。
+///        v7：mask 配置面归属化（#143 遗留回填）——mask_rules 增加可空外键
 ///        `producer_id`（列序末位追加，`replaceMaskRules` 尾参盖章）与
 ///        meta 信任级别写入口 `setMaskTrustLevel` 尾参盖章（伴随键
 ///        `mask_trust_level_producer`）。v6：producer 注册表——新增
@@ -93,7 +107,7 @@ namespace mjbase::project {
 ///        `classes.entry_id` 外键。v2：classes 增加 super/access/version，
 ///        新增 interfaces 与 refs 表，members 增加 access。v1 未发布，
 ///        版本号仅用于识别本分支早期的临时库。
-inline constexpr ca::u32 kAnalysisDbSchemaVersion = 7;
+inline constexpr ca::u32 kAnalysisDbSchemaVersion = 8;
 
 /// @brief SQLite 数据库头里的应用标识（ASCII "MJDB"）。
 inline constexpr ca::u32 kAnalysisDbApplicationId = 0x4D4A4442u;
@@ -523,6 +537,38 @@ struct DbProducerStats
     ca::i64              refCount    = 0;
     ca::str::Utf8String  firstBatchAt; ///< 各批 started_at 最小值；无批为空串
     ca::str::Utf8String  lastBatchAt;  ///< 各批 finished_at 最大值（残批不计）；无批为空串
+};
+
+/// @brief 待落库的方法版本指纹（`recordMethodVersions` 输入；schema v8，#132）。
+struct DbMethodVersionInput
+{
+    ca::i64              classId = 0;  ///< 方法宿主类（须与成员登记归属一致）
+    ca::i64              memberId = 0; ///< 已登记方法身份（字段无指纹）
+    analysis::SemanticFp fingerprint;  ///< 方法语义指纹（semanticFp 引擎输出）
+};
+
+/// @brief 一条方法版本事实（`listMethodVersions` 输出，method_version_id
+///        升序 = 记录序）。
+///
+/// fingerprint 的字节与 hex 都由库内 BLOB 重建（hex 是字节的小写文本派生
+/// 形态，不单独存储）；`isCurrent` 为 true 的行是当前版本，退位行是审计面。
+struct DbMethodVersionInfo
+{
+    ca::i64              methodVersionId = 0;
+    ca::i64              classId         = 0;
+    ca::i64              memberId        = 0;
+    analysis::SemanticFp fingerprint;
+    ca::u8               fpVersion = 0; ///< 记录时盖章的算法版本字节
+                                        ///< （kSemanticFpVersion）
+    bool                 isCurrent = false;
+    ca::str::Utf8String  recordedAt;    ///< ISO-8601 UTC
+};
+
+/// @brief 一次方法版本批量落库（`recordMethodVersions`）的计数。
+struct DbMethodVersionRecordStats
+{
+    ca::usize recorded  = 0; ///< 新落版本行数（语义有变化的成员）
+    ca::usize unchanged = 0; ///< 指纹与当前行相同、幂等跳过的成员数
 };
 
 /// @brief 分析数据库连接（单文件、单连接、非线程安全）。
@@ -978,6 +1024,50 @@ public:
 
     /// @brief 库内直接引用总数。
     ca::Result<ca::usize, AnalysisDbError> referenceCount() const;
+
+    //-- 方法版本指纹层（method_versions，schema v8，#132）----------------
+
+    /// @brief 记录方法版本指纹（单方法口；编辑流在每次方法体变更后调用）。
+    ///
+    /// 一个事务三件事（#132「怎么接进数据库」）：存新版本（异指纹落新行，
+    /// method_version_id 单调分配）、更新当前指针（旧行 is_current 退位、
+    /// 新行接棒，部分唯一索引锁死同成员至多一行当前版本）、可查询即标脏
+    /// （旧指纹对不上当前行即脏，不另建脏表）。指纹与当前行相同则幂等跳过
+    /// ——语义没变不是新版本，重复 record 不产生伪版本行。
+    ///
+    /// @p classId / @p memberId 必须为正，@p memberId 必须是已登记方法
+    /// （字段无指纹）且归属 @p classId，指纹不得为全零字节（未初始化的
+    /// SemanticFp）；违反 → `Invalid`。只读连接 → `ReadOnly`。
+    ///
+    /// @return 调用后的当前版本行 id（新落行 id，或幂等跳过时既有当前行 id）。
+    ca::Result<ca::i64, AnalysisDbError> recordMethodVersion(
+        ca::i64 classId, ca::i64 memberId, const analysis::SemanticFp& fingerprint);
+
+    /// @brief 方法的当前指纹；从未落过版本返回 `std::nullopt`。
+    ///
+    /// @p memberId 必须是已登记方法（未登记成员或字段 → `Invalid`，与
+    /// listEntries / listBatches 对未知 id 同口径，不静默返回空）。
+    /// 只读连接可用。
+    ca::Result<std::optional<analysis::SemanticFp>, AnalysisDbError>
+    currentMethodFingerprint(ca::i64 memberId) const;
+
+    /// @brief 方法的全部版本历史（method_version_id 升序 = 记录序；当前行
+    ///        与退位行都出，审计面）。@p memberId 口径同
+    ///        `currentMethodFingerprint`。只读连接可用。
+    ca::Result<std::vector<DbMethodVersionInfo>, AnalysisDbError> listMethodVersions(
+        ca::i64 memberId) const;
+
+    /// @brief 批量记录方法版本指纹（整类重写场景）：单事务，批内任一行失败
+    ///        整批回滚，不留半截版本。
+    ///
+    /// 输入先整体校验（id 为正、指纹非全零、批内成员不重复——一次编辑只落
+    /// 一个终态版本），校验失败不写库；成员存在性与归属一致性在事务内逐行
+    /// 校验。幂等语义与 `recordMethodVersion` 一致：与当前行同指纹的成员
+    /// 跳过不计新版本，整类重写后语义未动的成员不产生伪版本行。
+    ///
+    /// @return 计数（recorded = 新落行数，unchanged = 幂等跳过数）。
+    ca::Result<DbMethodVersionRecordStats, AnalysisDbError> recordMethodVersions(
+        std::vector<DbMethodVersionInput> inputs);
 
 private:
     struct Impl;

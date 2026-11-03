@@ -1,5 +1,6 @@
 #include "mjbase/project/analysis_db.hpp"
 
+#include "mjbase/analysis/semantic_fp.hpp"
 #include "mjbase/project/library_origin.hpp"
 
 #include <sqlite3.h>
@@ -163,6 +164,17 @@ ca::Result<void, AnalysisDbError> bindInt(sqlite3* db, sqlite3_stmt* statement, 
     return ca::Ok();
 }
 
+/// @brief 绑定定长 BLOB（方法版本指纹 32 字节；SQLITE_TRANSIENT 让 SQLite
+///        在 step 前自持拷贝）。
+ca::Result<void, AnalysisDbError> bindBlob(sqlite3* db, sqlite3_stmt* statement, int index,
+                                           const ca::u8* data, int size)
+{
+    if (sqlite3_bind_blob(statement, index, data, size, SQLITE_TRANSIENT) != SQLITE_OK) {
+        return ca::Err(sqliteFailure(db, "bind blob failed"));
+    }
+    return ca::Ok();
+}
+
 ca::Result<ca::i64, AnalysisDbError> queryScalarInt(sqlite3* db, const char* sql)
 {
     auto prepared = prepare(db, sql);
@@ -258,6 +270,17 @@ ca::Result<void, AnalysisDbError> validateMemberKind(DbMemberKind kind)
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "member kind is invalid"));
     }
     return ca::Ok();
+}
+
+/// @brief 校验指纹值：全零字节是未初始化的 SemanticFp（引擎输出是真实
+///        SHA-256，不可能是全零），fail-loud 拒绝，不做静默近似。
+ca::Result<void, AnalysisDbError> validateMethodFingerprint(const analysis::SemanticFp& fp)
+{
+    for (const ca::u8 byte : fp.bytes) {
+        if (byte != 0) return ca::Ok();
+    }
+    return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                             "fingerprint must not be all zero (uninitialized SemanticFp?)"));
 }
 
 /// @brief 校验分页窗口参数：limit 与 offset 均须非负。
@@ -1707,6 +1730,33 @@ constexpr const char* kSchemaDdl[] = {
     // 归属解析的反向探取索引：按 (scope_kind, scope_id) 前缀取最大 batch_id
     // （两次索引前缀探 + 取大，无全表扫；单条 OR 形态实测慢 2.8 倍）。
     "CREATE INDEX batch_scopes_owner ON batch_scopes(scope_kind, scope_id, batch_id)",
+    // 方法版本指纹层（v8，#132「怎么接进数据库」）：行 = 方法语义面的一次
+    // 落库版本（编辑流在方法体变更后 record），method_version_id 单调只增
+    // 不删；fingerprint 是 32 字节 SHA-256 定长 BLOB（CHECK 锁定长度），
+    // fp_version 盖 kSemanticFpVersion 算法版本字节（算法升级后旧行自证
+    // 版本位），recorded_at 与 renames/producers 同为 ISO-8601 UTC 文本。
+    // class_id 与 member_id 都是身份层既有稳定 id 的外键（member_id 已含
+    // 宿主类，class_id 是规范行形状的冗余编码，写入时校验归属一致）。
+    "CREATE TABLE method_versions("
+    "  method_version_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  class_id INTEGER NOT NULL REFERENCES classes(class_id) ON DELETE CASCADE,"
+    "  member_id INTEGER NOT NULL REFERENCES members(member_id) ON DELETE CASCADE,"
+    "  fingerprint BLOB NOT NULL CHECK(length(fingerprint)=32),"
+    "  fp_version INTEGER NOT NULL CHECK(fp_version>=1),"
+    "  is_current INTEGER NOT NULL DEFAULT 1 CHECK(is_current IN (0,1)),"
+    "  recorded_at TEXT NOT NULL"
+    ")",
+    // 当前指针（推荐定案，不动 members 表）：is_current 列 + (member_id)
+    // 部分唯一索引——同成员至多一行当前版本，存储层锁死（写路径退位在前、
+    // 落行在后同事务完成，违例即实现缺陷或裸 SQL 破坏）。成员身份与指纹
+    // 版本是两条独立的轴，指针挤进 members 会把身份登记面改造成版本面，
+    // 且没有版本行的方法要背空指针列。「标脏」不另建脏表：当前指针变更
+    // 本身可查询（旧指纹对不上当前行即脏），退位行就是审计面。
+    "CREATE UNIQUE INDEX method_versions_current "
+    "  ON method_versions(member_id) WHERE is_current=1",
+    // 版本历史索引：listMethodVersions 按 method_version_id 升序（单调分配
+    // 序 = 记录序）走索引扫描，不排序、不裸扫。
+    "CREATE INDEX method_versions_member ON method_versions(member_id, method_version_id)",
 };
 
 /// @brief 全部后代闭包 SQL（allSubclasses / allSubclassesPaged 共用）；
@@ -1734,6 +1784,178 @@ constexpr const char* kImplementorsSql =
     "  UNION"
     "  SELECT c.internal_name FROM classes c JOIN impls p ON c.super_name=p.name"
     ") SELECT name FROM impls ORDER BY name";
+
+//-- 方法版本指纹层（method_versions，v8）的共享助手 ---------------------------
+
+/// @brief 32 字节哈希 → 64 位小写 hex 文本（与 analysis 层 hexOf 同构）。
+///        存储面只存 BLOB 字节，hex 是读出时的派生文本形态，不单独存储。
+ca::str::Utf8String fpHexOf(const ca::u8* bytes)
+{
+    static constexpr char kDigits[] = "0123456789abcdef";
+    char                  text[analysis::kSemanticFpHashBytes * 2];
+    for (ca::usize i = 0; i < analysis::kSemanticFpHashBytes; ++i) {
+        text[2 * i]     = kDigits[bytes[i] >> 4];
+        text[2 * i + 1] = kDigits[bytes[i] & 0x0F];
+    }
+    return ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(text),
+                                                    sizeof(text));
+}
+
+/// @brief 从 BLOB 列读指纹值：字节逐位拷入，hex 派生重建。
+analysis::SemanticFp fingerprintFromColumn(sqlite3_stmt* statement, int index)
+{
+    analysis::SemanticFp fp;
+    const auto*          bytes =
+        static_cast<const ca::u8*>(sqlite3_column_blob(statement, index));
+    if (bytes != nullptr) {
+        for (ca::usize i = 0; i < analysis::kSemanticFpHashBytes; ++i) {
+            fp.bytes[i] = bytes[i];
+        }
+    }
+    fp.hex = fpHexOf(fp.bytes.data());
+    return fp;
+}
+
+/// @brief 方法成员存在性探取（方法版本读写口共用）：已登记方法返回 Ok(true)。
+///        未登记成员或字段返回 Ok(false)——字段无指纹，调用方按口径报
+///        `Invalid`。SELECT 1 走 member_id 主键，常数代价。
+ca::Result<bool, AnalysisDbError> methodMemberExists(sqlite3* db, ca::i64 memberId)
+{
+    auto prepared = prepare(db, "SELECT 1 FROM members WHERE member_id=?1 AND kind=1");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindInt(db, statement.raw, 1, memberId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasRow = step(db, statement.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    return ca::Ok(hasRow.unwrap());
+}
+
+/// @brief 单个方法版本落库的共享实现（调用方持事务）。成员身份校验 →
+///        当前指针同指纹幂等跳过 / 异指纹退位 + 落新行。
+struct RecordedMethodVersion
+{
+    ca::i64 currentId = 0; ///< 落库后的当前版本行 id
+    bool    inserted  = false;
+};
+
+ca::Result<RecordedMethodVersion, AnalysisDbError> recordOneMethodVersion(
+    sqlite3* db, ca::i64 classId, ca::i64 memberId, const analysis::SemanticFp& fingerprint)
+{
+    // 成员身份先落定：必须是已登记方法（指纹只对方法存在），且归属类与
+    // 入参 classId 一致——防止跨类错位写入（FK 只保证成员存在，不保证
+    // 调用方拿对宿主类）。
+    auto member = prepare(db, "SELECT class_id FROM members WHERE member_id=?1 AND kind=1");
+    if (member.is_err()) return errorOf(std::move(member));
+    auto memberStatement = std::move(member).unwrap();
+    if (auto result = bindInt(db, memberStatement.raw, 1, memberId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasMember = step(db, memberStatement.raw);
+    if (hasMember.is_err()) return errorOf(std::move(hasMember));
+    if (!hasMember.unwrap()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "method version target is not a registered method: " +
+                                     std::to_string(memberId)));
+    }
+    const ca::i64 ownerClassId = sqlite3_column_int64(memberStatement.raw, 0);
+    resetStatement(memberStatement);
+    if (ownerClassId != classId) {
+        return ca::Err(makeError(
+            AnalysisDbErrorKind::Invalid,
+            "member " + std::to_string(memberId) + " does not belong to class " +
+                std::to_string(classId) + " (registered under class " +
+                std::to_string(ownerClassId) + ")"));
+    }
+
+    // 当前指针：同指纹幂等跳过（语义没变不是新版本），异指纹退位 + 落新行。
+    auto current = prepare(db,
+                           "SELECT method_version_id, fingerprint FROM method_versions "
+                           "WHERE member_id=?1 AND is_current=1");
+    if (current.is_err()) return errorOf(std::move(current));
+    auto currentStatement = std::move(current).unwrap();
+    if (auto result = bindInt(db, currentStatement.raw, 1, memberId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasCurrent = step(db, currentStatement.raw);
+    if (hasCurrent.is_err()) return errorOf(std::move(hasCurrent));
+    const bool currentRow = hasCurrent.unwrap();
+    ca::i64    currentId  = 0;
+    bool       sameBytes  = false;
+    if (currentRow) {
+        currentId = sqlite3_column_int64(currentStatement.raw, 0);
+        const auto* bytes =
+            static_cast<const ca::u8*>(sqlite3_column_blob(currentStatement.raw, 1));
+        sameBytes = bytes != nullptr &&
+                    std::memcmp(bytes, fingerprint.bytes.data(),
+                                analysis::kSemanticFpHashBytes) == 0;
+        resetStatement(currentStatement);
+    }
+
+    if (currentRow && sameBytes) {
+        return ca::Ok(RecordedMethodVersion{currentId, false});
+    }
+
+    if (currentRow) {
+        auto retire = prepare(
+            db, "UPDATE method_versions SET is_current=0 WHERE method_version_id=?1");
+        if (retire.is_err()) return errorOf(std::move(retire));
+        auto retireStatement = std::move(retire).unwrap();
+        if (auto result = bindInt(db, retireStatement.raw, 1, currentId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto retired = step(db, retireStatement.raw);
+        if (retired.is_err()) return errorOf(std::move(retired));
+    }
+
+    auto insert = prepare(db,
+                          "INSERT INTO method_versions"
+                          "(class_id, member_id, fingerprint, fp_version, is_current, "
+                          " recorded_at) VALUES(?1, ?2, ?3, ?4, 1, ?5)");
+    if (insert.is_err()) return errorOf(std::move(insert));
+    auto insertStatement = std::move(insert).unwrap();
+    if (auto result = bindInt(db, insertStatement.raw, 1, classId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(db, insertStatement.raw, 2, memberId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindBlob(db, insertStatement.raw, 3,
+                               fingerprint.bytes.data(),
+                               static_cast<int>(analysis::kSemanticFpHashBytes));
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(db, insertStatement.raw, 4,
+                              static_cast<ca::i64>(analysis::kSemanticFpVersion));
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindText(db, insertStatement.raw, 5,
+                               ca::str::Utf8StringRef::from_string_view(nowIso8601()));
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto inserted = step(db, insertStatement.raw);
+    if (inserted.is_err()) return errorOf(std::move(inserted));
+
+    return ca::Ok(RecordedMethodVersion{sqlite3_last_insert_rowid(db), true});
+}
+
+/// @brief 方法版本行读取（listMethodVersions；method_version_id 升序游标）。
+DbMethodVersionInfo readMethodVersionRow(sqlite3_stmt* statement)
+{
+    DbMethodVersionInfo info;
+    info.methodVersionId = sqlite3_column_int64(statement, 0);
+    info.classId         = sqlite3_column_int64(statement, 1);
+    info.memberId        = sqlite3_column_int64(statement, 2);
+    info.fingerprint     = fingerprintFromColumn(statement, 3);
+    info.fpVersion       = static_cast<ca::u8>(sqlite3_column_int64(statement, 4));
+    info.isCurrent       = sqlite3_column_int64(statement, 5) != 0;
+    info.recordedAt      = utf8Column(statement, 6);
+    return info;
+}
 
 }   // namespace
 
@@ -4685,6 +4907,166 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::referenceCount() const
     auto count = queryScalarInt(impl_->handle, "SELECT COUNT(*) FROM refs");
     if (count.is_err()) return errorOf(std::move(count));
     return ca::Ok(static_cast<ca::usize>(count.unwrap()));
+}
+
+//-- 方法版本指纹层（method_versions，schema v8，#132）--------------------------
+
+ca::Result<ca::i64, AnalysisDbError> AnalysisDb::recordMethodVersion(
+    ca::i64 classId, ca::i64 memberId, const analysis::SemanticFp& fingerprint)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+    if (classId <= 0 || memberId <= 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "class id and member id must be positive"));
+    }
+    if (auto result = validateMethodFingerprint(fingerprint); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
+
+    auto recorded = recordOneMethodVersion(impl_->handle, classId, memberId, fingerprint);
+    if (recorded.is_err()) return errorOf(std::move(recorded));
+
+    if (auto result = txn.commit(); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    return ca::Ok(recorded.unwrap().currentId);
+}
+
+ca::Result<std::optional<analysis::SemanticFp>, AnalysisDbError>
+AnalysisDb::currentMethodFingerprint(ca::i64 memberId) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (memberId <= 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "member id must be positive"));
+    }
+    // 成员存在性先行：未登记成员与字段是调用方契约错误（与 listEntries /
+    // listBatches 对未知 id 同口径，不静默返回空）；从未落版本才是合法空态。
+    auto exists = methodMemberExists(impl_->handle, memberId);
+    if (exists.is_err()) return errorOf(std::move(exists));
+    if (!exists.unwrap()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "method fingerprint target is not a registered method: " +
+                                     std::to_string(memberId)));
+    }
+
+    auto prepared = prepare(impl_->handle,
+                            "SELECT fingerprint FROM method_versions "
+                            "WHERE member_id=?1 AND is_current=1");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindInt(impl_->handle, statement.raw, 1, memberId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasRow = step(impl_->handle, statement.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    if (!hasRow.unwrap()) return ca::Ok(std::optional<analysis::SemanticFp>());
+    return ca::Ok(std::optional<analysis::SemanticFp>(
+        fingerprintFromColumn(statement.raw, 0)));
+}
+
+ca::Result<std::vector<DbMethodVersionInfo>, AnalysisDbError> AnalysisDb::listMethodVersions(
+    ca::i64 memberId) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (memberId <= 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "member id must be positive"));
+    }
+    auto exists = methodMemberExists(impl_->handle, memberId);
+    if (exists.is_err()) return errorOf(std::move(exists));
+    if (!exists.unwrap()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "method version target is not a registered method: " +
+                                     std::to_string(memberId)));
+    }
+
+    auto prepared = prepare(impl_->handle,
+                            "SELECT method_version_id, class_id, member_id, fingerprint, "
+                            "fp_version, is_current, recorded_at "
+                            "FROM method_versions WHERE member_id=?1 "
+                            "ORDER BY method_version_id");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindInt(impl_->handle, statement.raw, 1, memberId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    std::vector<DbMethodVersionInfo> versions;
+    for (;;) {
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+        versions.push_back(readMethodVersionRow(statement.raw));
+    }
+    return ca::Ok(std::move(versions));
+}
+
+ca::Result<DbMethodVersionRecordStats, AnalysisDbError> AnalysisDb::recordMethodVersions(
+    std::vector<DbMethodVersionInput> inputs)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+    if (inputs.empty()) return ca::Ok(DbMethodVersionRecordStats());
+
+    // 输入先整体校验（纯输入面）：id 为正、指纹非全零、批内成员不重复
+    // ——一次编辑只落一个终态版本，重复成员是调用方契约错误。
+    std::set<ca::i64> members;
+    for (const auto& input : inputs) {
+        if (input.classId <= 0 || input.memberId <= 0) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     "class id and member id must be positive"));
+        }
+        if (auto result = validateMethodFingerprint(input.fingerprint); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (!members.insert(input.memberId).second) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     "duplicate member in method version batch: " +
+                                         std::to_string(input.memberId)));
+        }
+    }
+
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
+
+    DbMethodVersionRecordStats stats;
+    for (const auto& input : inputs) {
+        auto recorded = recordOneMethodVersion(impl_->handle, input.classId,
+                                               input.memberId, input.fingerprint);
+        if (recorded.is_err()) return errorOf(std::move(recorded));
+        if (recorded.unwrap().inserted) {
+            ++stats.recorded;
+        }
+        else {
+            ++stats.unchanged;
+        }
+    }
+
+    if (auto result = txn.commit(); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    return ca::Ok(stats);
 }
 
 }   // namespace mjbase::project
