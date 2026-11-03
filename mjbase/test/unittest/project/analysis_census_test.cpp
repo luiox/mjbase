@@ -270,17 +270,33 @@ TEST(MjAnalysisCensusTest, ClassRowsProjectCountsEntryFactsAndDerivedKind)
 TEST(MjAnalysisCensusTest, ClassRowsProjectLibraryOriginByPrefix)
 {
     // origin 是投影层派生（前缀分类，#132 L1）：Jdk/Known 按内部名前缀命中，
-    // Unknown 兜底；与条目形态、类形态派生正交。
+    // Unknown 兜底；与条目形态、类形态派生正交。普查面只含关联到本输入活跃
+    // 条目的类，先登记条目并挂 entryId 再断言。
     const auto path = freshDbPath("origin");
     auto       db   = openOrDie(path);
     auto inputId = db.ensureInput(S("lib/mix.jar"), refOf(shaOf('0')), 4096);
     ASSERT_TRUE(inputId.is_ok());
     const ca::i64 jar = inputId.unwrap();
 
+    std::vector<DbEntryInput> entries;
+    entries.push_back(entryInput("java/test/Sample.class", "class", shaOf('1'), 128));
+    entries.push_back(entryInput("com/google/gson/Stub.class", "class", shaOf('2'), 256));
+    entries.push_back(entryInput("app/Main.class", "class", shaOf('3'), 512));
+    auto ingested = db.ingestEntries(jar, std::move(entries));
+    ASSERT_TRUE(ingested.is_ok());
+    const auto ids = liveEntryIds(db, jar);
+    ASSERT_EQ(3U, ids.size());
+
     std::vector<DbClassInput> classes;
-    classes.push_back(classInput("java/test/Sample", "java/lang/Object"));
-    classes.push_back(classInput("com/google/gson/Stub", ""));
-    classes.push_back(classInput("app/Main", ""));
+    DbClassInput jdkClass = classInput("java/test/Sample", "java/lang/Object");
+    jdkClass.entryId      = ids.at("java/test/Sample.class");
+    classes.push_back(std::move(jdkClass));
+    DbClassInput knownClass = classInput("com/google/gson/Stub", "");
+    knownClass.entryId      = ids.at("com/google/gson/Stub.class");
+    classes.push_back(std::move(knownClass));
+    DbClassInput unknownClass = classInput("app/Main", "");
+    unknownClass.entryId      = ids.at("app/Main.class");
+    classes.push_back(std::move(unknownClass));
     ASSERT_TRUE(db.ingestClasses(std::move(classes)).is_ok());
 
     auto projected = db.censusClasses(jar);
