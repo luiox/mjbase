@@ -2697,6 +2697,55 @@ ca::Result<std::vector<DbClassCensusRow>, AnalysisDbError> AnalysisDb::censusCla
     return ca::Ok(std::move(rows));
 }
 
+ca::Result<std::vector<DbMemberCensusRow>, AnalysisDbError> AnalysisDb::censusMembers(
+    ca::i64 inputId) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto gate = censusGate(impl_->handle, inputId); gate.is_err()) {
+        return ca::Err(std::move(gate).unwrap_err());
+    }
+
+    // 一条 SQL 成型：成员 JOIN 所属类 JOIN 所属条目，可见域与 censusClasses
+    // 同谓词（本输入活跃条目）。行序复合键 BINARY 升序（owner 内部名 → kind
+    // 编码序 → 名字 → 描述符）即确定性序（导出面按库序渲染，不重排）。
+    const std::string membersSql =
+        std::string("SELECT c.internal_name, m.kind, m.name, m.descriptor, m.access, c.entry_id")
+        + " FROM members m"
+          " JOIN classes c ON c.class_id = m.class_id"
+          " JOIN entries e ON e.entry_id = c.entry_id"
+          " WHERE e.input_id = ?1 AND e.tombstoned = 0"
+          " ORDER BY c.internal_name, m.kind, m.name, m.descriptor";
+    auto prepared = prepare(impl_->handle, membersSql.c_str());
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindInt(impl_->handle, statement.raw, 1, inputId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    std::vector<DbMemberCensusRow> rows;
+    for (;;) {
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+        DbMemberCensusRow row;
+        row.ownerInternalName = utf8Column(statement.raw, 0);
+        row.kind              = static_cast<DbMemberKind>(sqlite3_column_int(statement.raw, 1));
+        row.name              = utf8Column(statement.raw, 2);
+        row.descriptor        = utf8Column(statement.raw, 3);
+        row.access            = sqlite3_column_int(statement.raw, 4);
+        // native 是投影层派生：方法按 ACC_NATIVE 按位测试，字段恒 0。
+        row.native =
+            row.kind == DbMemberKind::Method
+            && (row.access & static_cast<ca::i32>(kMethodAccNative)) != 0;
+        row.entryId           = static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 5));
+        row.origin            = classifyLibraryOrigin(row.ownerInternalName.ref());
+        rows.push_back(std::move(row));
+    }
+    return ca::Ok(std::move(rows));
+}
+
 ca::Result<DbContainerCensus, AnalysisDbError> AnalysisDb::censusContainer(ca::i64 inputId) const
 {
     if (!isOpen()) {

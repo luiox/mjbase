@@ -43,10 +43,10 @@ namespace mjbase::project {
 ///   经 LEFT JOIN + COALESCE 重建文本三元组，DbReferenceRecord 契约不变。
 ///
 /// - 普查投影层（#121 §5 B4）：census 是库上的只读 SELECT 投影（#39 类
-///   普查事实面 + 容器形态汇总面），不反向定义存储、不重新扫描容器。
-///   形态判定核心（entry_shape 路径 facet、class_kind 类形态）是纯字节
-///   码域知识，随本层落 mjbase；导出渲染（TSV、转义、版本化表头）由上
-///   层工具出口负责。
+///   普查事实面 + 容器形态汇总面；#148 成员普查事实面），不反向定义存储、
+///   不重新扫描容器。形态判定核心（entry_shape 路径 facet、class_kind 类
+///   形态）是纯字节码域知识，随本层落 mjbase；导出渲染（TSV、转义、版本
+///   化表头）由上层工具出口负责。
 ///
 /// 批量写入口（`ensureInput` / `ingestEntries` / `ingestClasses` /
 /// `replaceReferences` / `replaceReferencesFromMember` / `setRenames`）都走
@@ -280,6 +280,25 @@ struct DbClassCensusRow
                                                    ///< 登记方通常取 isRegularEntryPath）
 };
 
+/// @brief 成员普查投影行（`censusMembers` 输出；#148 member_census 的库侧
+///        事实面）。
+///
+/// 除 `native` / `origin` 外全是库内编码事实：`native` 是投影层派生（方法
+/// ACC_NATIVE 按位测试，字段恒 0）；`origin` 继承所属类分类（对 owner 内部
+/// 名走 classifyLibraryOrigin，与 `censusClasses` 同源同果）。行序 = 复合键
+/// BINARY 升序：owner 内部名 → kind（Field 在前，编码序）→ 名字 → 描述符。
+struct DbMemberCensusRow
+{
+    ca::str::Utf8String ownerInternalName;
+    DbMemberKind        kind       = DbMemberKind::Field;
+    ca::str::Utf8String name;
+    ca::str::Utf8String descriptor;
+    ca::i32             access     = 0;
+    bool                native     = false; ///< 方法 ACC_NATIVE 派生；字段恒 0
+    ca::i64             entryId    = 0;     ///< 所属类关联条目（活跃/墓碑语义随类）
+    LibraryOrigin       origin     = LibraryOrigin::Unknown; ///< 继承所属类
+};
+
 /// @brief 计数分布行（facet 稳定名 + 计数；census 汇总面通用行）。
 struct DbCensusFacetCount
 {
@@ -489,6 +508,18 @@ public:
     /// 内容，未关联条目的类（entry_id 为空）不属于任何输入的普查面。
     /// 输入不存在、连接未打开 → `Invalid`；只读连接可用。
     ca::Result<std::vector<DbClassCensusRow>, AnalysisDbError> censusClasses(
+        ca::i64 inputId) const;
+
+    /// @brief 成员普查投影：一行一成员（#148 member_census 事实面；v1 范围
+    ///        = 全部成员，字段与方法都出）。
+    ///
+    /// 纯 SELECT 投影：members JOIN 所属类 JOIN 所属条目，行序复合键 BINARY
+    /// 升序（owner 内部名 → kind 编码序 → 名字 → 描述符，键序定死投影层）。
+    /// 可见域与 `censusClasses` 同契约：只含关联 @p inputId 活跃条目的类下的
+    /// 成员——条目墓碑表示类已不在当前容器内容，墓碑类连带其成员一起退出
+    /// 普查面；未关联条目的类（entry_id 为空）不属于任何输入的普查面。
+    /// 输入不存在、连接未打开 → `Invalid`；只读连接可用。
+    ca::Result<std::vector<DbMemberCensusRow>, AnalysisDbError> censusMembers(
         ca::i64 inputId) const;
 
     /// @brief 容器普查投影：条目形态分布 + 类/成员/引用计数（汇总面）。
