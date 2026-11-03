@@ -31,7 +31,7 @@
 | jar | ✅ | jar | jar_reader/jar_writer/manifest/jar_util + dos_time_util（随迁叶） | manifest 保序字节级输出契约保留；throw 改 Result<_,JarError> |
 | model | ✅ | model | resource_model/container/io/helper | 解包面不随迁（mjbase 全家零调用方，能力随需求下沉消费方）；throw 改 ModelError 枚举；路径统一 u8path |
 | mapping | ✅ | mapping | 全 16 文件（7 格式注册表 + TinyV2 + shadow-alias + identifier_*） | 格式输出字节级等价（怪异行为原样）；invalid_mapping_exception 删除改 MappingError |
-| project | ✅ | project | analysis_project（schema v1）+ project_store（事务/锁/恢复） | 契约值原封（schema/kind 串/sha256 形状/engine 自述串/锁语义）；平台分支照搬 |
+| project | ✅ | project | analysis_project（schema v1/v2 登记解析）+ project_store（事务/锁/恢复/section 引擎）；新设计部分：edit_ledger / edit_ledger_store（编辑台账行模型与存储）+ analysis_cache（xref/decompile 缓存 section 落盘），设计见 doc_ai/analysis-project-schema-v2.md、doc_ai/analysis-cache-and-container-stack.md | 契约值原封（schema/kind 串/sha256 形状/engine 自述串/锁语义）；平台分支照搬；analysis_db 与出口遮蔽面见第九批 |
 
 ## 第三批（叶子与 CLI/JASM 面）
 
@@ -78,6 +78,14 @@
 | 模块 | 状态 | 来源 | 迁移范围 | 说明 |
 |---|---|---|---|---|
 | consumer | ✅（E3） | libjbc design.md §9 IClassSource 草案重定型 + mbase workspace/summary_scan 口径 | class_source（IClassSource 协议 + Memory/Container 双实现）+ summary_scanner（SummaryScanner → ClassSummary） | 产品线消费的类字节供给面与骨架扫描面：错误走 ConsumerError 值语义，fail-closed（缺名 Err(NotFound)、容器带病资源 Err(BadClassFile)、扫描损坏字节不产半截摘要）；Recovered（尾部降级）照常出骨架；ClassSummary 口径与 mbase listClassSummaries 逐字段对拍（version 编码 `(minor << 16) \| major`），计数之外再交付成员签名与方法 hasCode 分流位；ContainerClassSource 内部名 first-wins 并记 duplicateNames（与容器 URI 级重复表互补）；14 用例（class_source_test 8 + summary_parity_test 6，截断逐字节全 sweep）。E1（ReferenceSite/reference_index）已随第五批落地 |
+
+## 第九批（分析数据库与出口遮蔽，新设计）
+
+| 模块 | 状态 | 来源 | 迁移范围 | 说明 |
+|---|---|---|---|---|
+| project/analysis_db | ✅ | 新设计（doc_ai/analysis-database.md） | 单文件 SQLite 工程库：稳定身份与重命名覆盖层、条目身份层（schema v3）、分析事实层、普查投影 census、出口遮蔽数据面（schema v4）、引用与层次闭包查询 | 概览与已落地面见 doc_ai/analysis-database.md；引擎 #117、PRAGMA 调优 #128、条目身份 #122、切片替换 #139、行偏移分页 #141、census #131/#142、遮蔽数据面 #126 |
+| project/entry_shape · class_kind · library_origin | ✅ | 新设计（#121 B4 钩子 + #132 L1） | entry_shape（条目路径形态 facet 全集 10 项，#136 补 Overlong/WhitespaceEdge）+ class_kind（类头形态投影派生，access + super 现算）+ library_origin（包前缀三档分类：Jdk/Known/Unknown，官方 10 + 第三方 16 根，kLibraryOriginRuleVersion 规则版本契约） | census 投影取值面；纯字节码域知识，只判不改、不改写任何字节 |
+| project/mask_* | ✅ | 新设计（#121 §4） | mask_types + mask_regex_engine + mask_suspect + mask_evaluator（出口遮蔽判定族：规则数据面 schema v4、suspect 四类旗标扫描、求值器判定序） | 纯函数判定面无 IO；出口接线归上层消费方 |
 
 ## 后续批次（未开始）
 
