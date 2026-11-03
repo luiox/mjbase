@@ -37,6 +37,11 @@ namespace mjbase::project {
 ///   （default_action 翻转开关）。规则匹配与判定在 `mask_evaluator`（纯
 ///   函数面、无 IO），本层只做规则配置的数据面与命中记账。
 ///
+/// - 引用目标 id 化（schema v5）：refs 目标侧复用身份层既有稳定 id（可空
+///   外键 target_class_id / target_member_id），写入时已登记的目标整体落 id
+///   并清空文本三列，未登记目标整体落文本；id 与名字互为冗余编码，查询输出
+///   经 LEFT JOIN + COALESCE 重建文本三元组，DbReferenceRecord 契约不变。
+///
 /// - 普查投影层（#121 §5 B4）：census 是库上的只读 SELECT 投影（#39 类
 ///   普查事实面 + 容器形态汇总面），不反向定义存储、不重新扫描容器。
 ///   形态判定核心（entry_shape 路径 facet、class_kind 类形态）是纯字节
@@ -57,11 +62,15 @@ namespace mjbase::project {
 /// @brief 当前 schema 版本（`PRAGMA user_version`）。不识别的版本拒绝打开
 ///        （包括旧版本：不提供自动迁移，旧库由上层显式重建）。
 ///
-/// v4：新增 mask_rules 遮蔽规则表与 meta 信任级别键（出口遮蔽层，
-/// #121 §4.3）。v3：新增 `inputs` / `entries` 条目身份表与 `classes.entry_id`
-/// 外键。v2：classes 增加 super/access/version，新增 interfaces 与 refs 表，
-/// members 增加 access。v1 未发布，版本号仅用于识别本分支早期的临时库。
-inline constexpr ca::u32 kAnalysisDbSchemaVersion = 4;
+/// v5：refs 目标侧 id 化——新增可空外键 `refs.target_class_id` /
+///        `target_member_id`，目标整体二元化（登记目标落 id 清文本，未登记
+///        目标整体落文本），目标反查走 refs_target_id / refs_target_text 两个
+///        部分索引两分支 UNION ALL。v4：新增 mask_rules 遮蔽规则表与 meta
+///        信任级别键（出口遮蔽层，#121 §4.3）。v3：新增 `inputs` / `entries`
+///        条目身份表与 `classes.entry_id` 外键。v2：classes 增加
+///        super/access/version，新增 interfaces 与 refs 表，members 增加
+///        access。v1 未发布，版本号仅用于识别本分支早期的临时库。
+inline constexpr ca::u32 kAnalysisDbSchemaVersion = 5;
 
 /// @brief SQLite 数据库头里的应用标识（ASCII "MJDB"）。
 inline constexpr ca::u32 kAnalysisDbApplicationId = 0x4D4A4442u;

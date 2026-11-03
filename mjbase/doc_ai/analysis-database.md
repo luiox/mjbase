@@ -1,20 +1,20 @@
 # 分析数据库设计（analysis-db）
 
-状态：设计稿 2026-10-21；引擎已落地（#117 起，0.0.13 定版为 schema v4），已落地面见下节；方法语义指纹、增量流水线等章节仍为目标设计。
+状态：设计稿 2026-10-21；引擎已落地（#117 起，0.0.13 定版为 schema v4，schema v5 起引用目标侧 id 化），已落地面见下节；方法语义指纹、增量流水线等章节仍为目标设计。
 
 本文定义 mjbase 分析数据库的存储模型、增量分析边界和编辑语义。目标是用一个可查询、可增量更新、崩溃安全的项目数据库替代 `project_store` 的整文件 section 模型；`project_store` 的可靠写入原语保留为自研引擎的备选实现和导入导出层。
 
 ## 已落地面（截至 0.0.13）
 
-引擎与 schema：单文件 SQLite 库 `.mjdb`（#117 落地），`PRAGMA user_version` 载 schema 版本（当前 v4），`application_id` 固定 ASCII "MJDB"，`meta.kind` 自描述串防把别的 SQLite 库当分析库打开；打开分 ReadWrite（不存在则建库写 schema）与 ReadOnly（必须已存在且已 checkpoint，不创建、不写、不触发分析）；打开期 WAL/SHM 伴随，`save()` / `close()` 做 TRUNCATE checkpoint 收敛回单文件；打开面 PRAGMA 调优（WAL、synchronous=NORMAL、cache_size、temp_store=MEMORY）与 refs 按源类索引见 #128。SQL 只出现在 analysis_db.cpp，公开面是类型化 C++ API，错误统一 `ca::Result<T, AnalysisDbError>`；单连接非线程安全。
+引擎与 schema：单文件 SQLite 库 `.mjdb`（#117 落地），`PRAGMA user_version` 载 schema 版本（当前 v5），`application_id` 固定 ASCII "MJDB"，`meta.kind` 自描述串防把别的 SQLite 库当分析库打开；打开分 ReadWrite（不存在则建库写 schema）与 ReadOnly（必须已存在且已 checkpoint，不创建、不写、不触发分析）；打开期 WAL/SHM 伴随，`save()` / `close()` 做 TRUNCATE checkpoint 收敛回单文件；打开面 PRAGMA 调优（WAL、synchronous=NORMAL、cache_size、temp_store=MEMORY）与 refs 按源类索引见 #128。SQL 只出现在 analysis_db.cpp，公开面是类型化 C++ API，错误统一 `ca::Result<T, AnalysisDbError>`；单连接非线程安全。
 
 身份与重命名覆盖层：`classes` / `members` 首次登记分配单调 ID，只增不删；重命名只写 `renames` 覆盖层（目标用稳定 ID 键控，token 为空或 8 位小写 hex），不改身份、不触发分析；批量入口 `setRenames` / `replaceRenames` 单事务、先整体校验后执行、任一行失败整批回滚；按 shadow 反查有单条与批量（预编译语句复用）两个变体。
 
 条目身份层（schema v3，#122）：`inputs` 登记输入容器（path 为身份键），`entries` 登记 jar 条目（entry_id 单调分配、只增不删，内容锚 = size + sha256）；重导入按 (input_id, path, sha256) 匹配——锚命中复用 entry_id（消失后重现的条目原地复活，id 不漂移），未命中新建 id，本批未出现的既有活跃条目打墓碑不删行；`classes.entry_id` 记录类字节所属条目。
 
-分析事实层：`ingestClasses` 批量登记/更新类、接口与成员（身份键 internal_name，成员只增不删）；`replaceReferences` 原子替换全部直接引用事实；`replaceReferencesFromMember`（#139）按源成员切片替换——删该成员名下全部引用行后按输入序插入，其他成员与 class 头引用逐行不动，适合方法体编辑后的增量替换，整库重建仍用 `replaceReferences`。
+分析事实层：`ingestClasses` 批量登记/更新类、接口与成员（身份键 internal_name，成员只增不删）；`replaceReferences` 原子替换全部直接引用事实；`replaceReferencesFromMember`（#139）按源成员切片替换——删该成员名下全部引用行后按输入序插入，其他成员与 class 头引用逐行不动，适合方法体编辑后的增量替换，整库重建仍用 `replaceReferences`。引用目标侧 id 化（schema v5）：refs 增可空外键 `target_class_id` / `target_member_id` 复用身份层既有稳定 id，写入时目标整体二元化——owner 与成员共解析则整目标落 id（文本三列清空），任一未命中整体落文本（未登记的外部符号靠文本分支表达，目标文本按字节语义读写，对抗名原样入库）；三条 CHECK 与代码校验同源，混合行拒写；id 与名字互为冗余编码，不引入第三套 id，公开契约（DbReferenceRecord 与全部方法签名）零变更。
 
-查询与分页：层次闭包查询（superChain / directSubclasses / allSubclasses / implementors）；引用反查按目标（referencesToMethod / referencesToField / referencesToClass）与按来源（referencesFromMember / referencesFromClass），#128 起按源反查先解析 id 再索引下探。分页变体（#141）：引用五个方向与层次闭包两个方向各出行偏移分页（`*Paged`，SQLite OFFSET）；契约是全量结果 = 各页按 offset 升序拼接、不重不漏，limit/offset 负值报 `Invalid`，窗口在排序后截取（省行对象构造与返回内存，不省遍历与排序），跨页窗口以同一事实状态为前提，游标分页不在本层预设。
+查询与分页：层次闭包查询（superChain / directSubclasses / allSubclasses / implementors）；引用反查按目标（referencesToMethod / referencesToField / referencesToClass）与按来源（referencesFromMember / referencesFromClass），#128 起按源反查先解析 id 再索引下探，schema v5 起目标反查同一模式对称扩展——id 分支走 refs_target_id（member 双列精确探 / class 前缀探），文本分支走 refs_target_text，按 target_class_id 是否 NULL 互斥 UNION ALL 不重不漏（文本分支承接写入时未登记、其后才登记的存量行与始终未登记的外部符号）。分页变体（#141）：引用五个方向与层次闭包两个方向各出行偏移分页（`*Paged`，SQLite OFFSET）；契约是全量结果 = 各页按 offset 升序拼接、不重不漏，limit/offset 负值报 `Invalid`，窗口在排序后截取（省行对象构造与返回内存，不省遍历与排序），跨页窗口以同一事实状态为前提，游标分页不在本层预设。
 
 普查投影层（census，#131）：库上的只读 SELECT 投影，不反向定义存储、不重新扫描容器。`censusClasses` 一行一类——类事实 JOIN 所属条目（byteSize / regular 登记旗标）加接口与成员计数聚合（native 方法数单列），`ORDER BY internal_name`（BINARY 字节序，跨平台确定），只统计关联指定输入活跃条目的类；#142 补 origin 列，取值为 library_origin 前缀分类的投影派生（不存储，规则版本 kLibraryOriginRuleVersion 进导出版本契约）。`censusContainer` 容器汇总面——条目活跃/墓碑与 regular 二分、entries.kind 存储值分布、路径形态 facet 分布、类/成员/引用计数（facet 分布折叠为稳定名加计数的行集，只含非零项）。类形态 kind（class/interface/annotation/enum/record/module）由 access 加 super 在投影层现算（class_kind，不存储，entries.kind 登记语义不变）。
 

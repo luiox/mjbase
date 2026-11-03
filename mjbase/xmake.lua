@@ -118,6 +118,9 @@ target("mjbase_unittest")
 
     add_deps("mjbase", "test_helper")
     add_packages("libca")
+    -- v5 引用计划回归测试需要裸 sqlite3 面（EXPLAIN QUERY PLAN / CHECK 行形状
+    -- 直插断言）；SQL 仍只出现在 analysis_db.cpp，公开头不暴露 sqlite3。
+    add_packages("sqlite3")
     -- 显式闭包（consumer→dep 序）：xmake 3.x 不自动链静态依赖的传递闭包。
     -- libjhasm 0.3.0 后端换 libjbc：libjblw 出链；libjbytecode 五段闭包与
     -- 其独占传递的 libgarena 已随 relaxed_verifier 换道 libjbc 摘除

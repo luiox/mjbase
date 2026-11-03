@@ -914,6 +914,16 @@ ca::Result<void, AnalysisDbError> bindNull(sqlite3* db, sqlite3_stmt* statement,
     return ca::Ok();
 }
 
+/// @brief 绑定零长度文本（''，非 NULL）——id 行清空的 target_name/target_desc。
+ca::Result<void, AnalysisDbError> bindEmptyText(sqlite3* db, sqlite3_stmt* statement, int index)
+{
+    static const char kEmptyText[] = "";
+    if (sqlite3_bind_text(statement, index, kEmptyText, 0, SQLITE_TRANSIENT) != SQLITE_OK) {
+        return ca::Err(sqliteFailure(db, "bind text failed"));
+    }
+    return ca::Ok();
+}
+
 ca::Result<void, AnalysisDbError> applyClassBatch(sqlite3* db,
                                                   const std::vector<DbClassInput>& classes)
 {
@@ -1050,14 +1060,81 @@ ca::Result<void, AnalysisDbError> applyClassBatch(sqlite3* db,
     return ca::Ok();
 }
 
+/// @brief 目标 owner 名 → class_id（批内 memo；未登记 memo 0）。
+///
+/// 与 source 解析共用同一条 select 语句（bind→step→reset 串行复用）；与
+/// source 侧「未登记即报错」不同，目标自由是 replaceReferences 的合同，未
+/// 登记是合法状态（落文本分支），memo 记 0。每个不同目标至多两次唯一索引
+/// 探测，批内 memo 后总量受不同目标数约束。
+ca::Result<ca::i64, AnalysisDbError> resolveTargetClassId(
+    sqlite3* db, Statement& selectClass,
+    std::unordered_map<std::string_view, ca::i64>& memo, const ca::str::Utf8StringRef& owner)
+{
+    const std::string_view ownerView = owner;
+    auto                   it        = memo.find(ownerView);
+    if (it != memo.end()) return ca::Ok(it->second);
+
+    if (auto result = bindText(db, selectClass.raw, 1, owner); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasRow = step(db, selectClass.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    const ca::i64 classId = hasRow.unwrap() ? sqlite3_column_int64(selectClass.raw, 0) : 0;
+    resetStatement(selectClass);
+    memo.emplace(ownerView, classId);
+    return ca::Ok(classId);
+}
+
+/// @brief (class_id, member kind, name, desc) → member_id（批内 memo；未登记
+///        memo 0）。kind 区分字段与方法，与 members 的类内唯一键同形。
+ca::Result<ca::i64, AnalysisDbError> resolveTargetMemberId(
+    sqlite3* db, Statement& selectMember,
+    std::map<std::tuple<ca::i64, ca::i64, std::string_view, std::string_view>, ca::i64>& memo,
+    ca::i64 classId, DbMemberKind kind, const ca::str::Utf8StringRef& name,
+    const ca::str::Utf8StringRef& desc)
+{
+    auto key = std::make_tuple(classId, static_cast<ca::i64>(kind), std::string_view(name),
+                               std::string_view(desc));
+    auto it  = memo.find(key);
+    if (it != memo.end()) return ca::Ok(it->second);
+
+    if (auto result = bindInt(db, selectMember.raw, 1, classId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(db, selectMember.raw, 2, static_cast<ca::i64>(kind));
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindText(db, selectMember.raw, 3, name); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindText(db, selectMember.raw, 4, desc); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasRow = step(db, selectMember.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    const ca::i64 memberId = hasRow.unwrap() ? sqlite3_column_int64(selectMember.raw, 0) : 0;
+    resetStatement(selectMember);
+    memo.emplace(std::move(key), memberId);
+    return ca::Ok(memberId);
+}
+
+/// @brief 批量写入已校验的引用记录；调用方负责事务边界与 refs 清理。
+///
+/// 目标整体二元化（v5）：owner 名与 (class_id, kind, name, desc) 成员各自
+/// memo 化解析，共解析则整目标落 id（文本三列清空、target_class 为 NULL），
+/// 任一未命中整体落文本（两个 id 列为 NULL）——无「owner 走 id、成员走文本」
+/// 的混合行。目标文本列按字节语义绑定（带长度 bind_text，不做 UTF-8 校验），
+/// 对抗名原样入库。
 ca::Result<void, AnalysisDbError> applyReferenceBatch(
     sqlite3* db, const std::vector<DbReferenceRecord>& references)
 {
     auto insert = prepare(
         db,
         "INSERT INTO refs(source_class_id, source_member_id, insn_index, ref_kind, "
+        "                 target_class_id, target_member_id, "
         "                 target_class, target_name, target_desc) "
-        "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)");
+        "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)");
     if (insert.is_err()) return errorOf(std::move(insert));
     auto insertStatement = std::move(insert).unwrap();
 
@@ -1070,8 +1147,18 @@ ca::Result<void, AnalysisDbError> applyReferenceBatch(
     if (selectMember.is_err()) return errorOf(std::move(selectMember));
     auto selectMemberStatement = std::move(selectMember).unwrap();
 
+    auto selectTargetMember = prepare(
+        db, "SELECT member_id FROM members WHERE class_id=?1 AND kind=?2 AND name=?3 AND descriptor=?4");
+    if (selectTargetMember.is_err()) return errorOf(std::move(selectTargetMember));
+    auto selectTargetMemberStatement = std::move(selectTargetMember).unwrap();
+
     std::unordered_map<std::string_view, ca::i64> classIds;
     std::map<std::tuple<ca::i64, std::string_view, std::string_view>, ca::i64> memberIds;
+    // target memo：owner 名 → class_id（0 = 未登记），(class_id, kind, name,
+    // desc) → member_id（0 = 未登记）。与 source memo 并列、各管各的。
+    std::unordered_map<std::string_view, ca::i64> targetClassIds;
+    std::map<std::tuple<ca::i64, ca::i64, std::string_view, std::string_view>, ca::i64>
+        targetMemberIds;
 
     for (const DbReferenceRecord& reference : references) {
         const std::string_view sourceClass = reference.sourceClass.ref();
@@ -1135,6 +1222,24 @@ ca::Result<void, AnalysisDbError> applyReferenceBatch(
             memberId = memberIt->second;
         }
 
+        // 目标解析：owner 与成员共解析则整目标落 id，任一未命中整体落文本。
+        auto targetClassId = resolveTargetClassId(db, selectClassStatement, targetClassIds,
+                                                  reference.targetClass.ref());
+        if (targetClassId.is_err()) return errorOf(std::move(targetClassId));
+
+        ca::i64 targetMemberId = 0;
+        if (reference.kind != DbReferenceKind::Type && targetClassId.unwrap() != 0) {
+            const auto memberKind = static_cast<DbMemberKind>(static_cast<int>(reference.kind) - 1);
+            auto resolved = resolveTargetMemberId(db, selectTargetMemberStatement, targetMemberIds,
+                                                  targetClassId.unwrap(), memberKind,
+                                                  reference.targetName.ref(),
+                                                  reference.targetDescriptor.ref());
+            if (resolved.is_err()) return errorOf(std::move(resolved));
+            targetMemberId = resolved.unwrap();
+        }
+        const bool targetOnIds = targetClassId.unwrap() != 0 &&
+                                 (reference.kind == DbReferenceKind::Type || targetMemberId != 0);
+
         if (auto result = bindInt(db, insertStatement.raw, 1, classId); result.is_err()) {
             return errorOf(std::move(result));
         }
@@ -1155,17 +1260,51 @@ ca::Result<void, AnalysisDbError> applyReferenceBatch(
             result.is_err()) {
             return errorOf(std::move(result));
         }
-        if (auto result = bindText(db, insertStatement.raw, 5, reference.targetClass.ref());
-            result.is_err()) {
-            return errorOf(std::move(result));
+        if (targetOnIds) {
+            if (auto result = bindInt(db, insertStatement.raw, 5, targetClassId.unwrap());
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (targetMemberId == 0) {
+                if (auto result = bindNull(db, insertStatement.raw, 6); result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+            }
+            else if (auto result = bindInt(db, insertStatement.raw, 6, targetMemberId);
+                     result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindNull(db, insertStatement.raw, 7); result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            // 文本三列清空（''非 NULL）：成员 id 行不携带名字与描述符文本，
+            // CHECK 拒绝混合行。
+            if (auto result = bindEmptyText(db, insertStatement.raw, 8); result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindEmptyText(db, insertStatement.raw, 9); result.is_err()) {
+                return errorOf(std::move(result));
+            }
         }
-        if (auto result = bindText(db, insertStatement.raw, 6, reference.targetName.ref());
-            result.is_err()) {
-            return errorOf(std::move(result));
-        }
-        if (auto result = bindText(db, insertStatement.raw, 7, reference.targetDescriptor.ref());
-            result.is_err()) {
-            return errorOf(std::move(result));
+        else {
+            if (auto result = bindNull(db, insertStatement.raw, 5); result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindNull(db, insertStatement.raw, 6); result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindText(db, insertStatement.raw, 7, reference.targetClass.ref());
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindText(db, insertStatement.raw, 8, reference.targetName.ref());
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindText(db, insertStatement.raw, 9, reference.targetDescriptor.ref());
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
         }
         auto done = step(db, insertStatement.raw);
         resetStatement(insertStatement);
@@ -1211,15 +1350,61 @@ DbReferenceRecord readReferenceRow(sqlite3_stmt* statement)
     return record;
 }
 
+/// @brief 引用查询输出投影：显示列 8 个（DbReferenceRecord 字段序）。
+///
+/// 目标 id 化（v5）：目标文本经两个 LEFT JOIN 从身份层重建，COALESCE 回退
+/// refs 内联文本列——id 行（文本三列清空）由 JOIN 补出名字，文本行（id 列
+/// NULL，JOIN 不命中）回退原文本；目标文本按字节语义透传，不做 UTF-8 解码。
 constexpr const char* kReferenceSelectSql =
     "SELECT c.internal_name, COALESCE(m.name, ''), COALESCE(m.descriptor, ''), "
-    "       r.insn_index, r.ref_kind, r.target_class, r.target_name, r.target_desc "
+    "       r.insn_index, r.ref_kind, "
+    "       COALESCE(tc.internal_name, r.target_class), "
+    "       COALESCE(tm.name, r.target_name), "
+    "       COALESCE(tm.descriptor, r.target_desc) "
     "FROM refs r "
     "JOIN classes c ON c.class_id=r.source_class_id "
-    "LEFT JOIN members m ON m.member_id=r.source_member_id ";
+    "LEFT JOIN members m ON m.member_id=r.source_member_id "
+    "LEFT JOIN classes tc ON tc.class_id=r.target_class_id "
+    "LEFT JOIN members tm ON tm.member_id=r.target_member_id ";
 
 constexpr const char* kReferenceOrderSql =
     "ORDER BY r.source_class_id, r.source_member_id, r.insn_index, r.ref_id";
+
+/// @brief 目标侧两分支共用的分支 select/join 形状（UNION ALL 各带一份）。
+///
+/// 显示列与 kReferenceSelectSql 同序同义，尾随 4 个排序键列；别名供外层
+/// 引用——复合 SELECT 的 ORDER BY 只能引用输出列，不能引用表别名限定名。
+constexpr const char* kReferenceTargetBranchSql =
+    "SELECT c.internal_name AS source_class, COALESCE(m.name, '') AS source_member, "
+    "       COALESCE(m.descriptor, '') AS source_descriptor, "
+    "       r.insn_index AS insn_index, r.ref_kind AS ref_kind, "
+    "       COALESCE(tc.internal_name, r.target_class) AS target_class, "
+    "       COALESCE(tm.name, r.target_name) AS target_name, "
+    "       COALESCE(tm.descriptor, r.target_desc) AS target_desc, "
+    "       r.source_class_id AS order_class, r.source_member_id AS order_member, "
+    "       r.insn_index AS order_insn, r.ref_id AS order_ref "
+    "FROM refs r "
+    "JOIN classes c ON c.class_id=r.source_class_id "
+    "LEFT JOIN members m ON m.member_id=r.source_member_id "
+    "LEFT JOIN classes tc ON tc.class_id=r.target_class_id "
+    "LEFT JOIN members tm ON tm.member_id=r.target_member_id ";
+
+constexpr const char* kReferenceUnionHeadSql =
+    "SELECT v.source_class, v.source_member, v.source_descriptor, v.insn_index, v.ref_kind, "
+    "       v.target_class, v.target_name, v.target_desc FROM (";
+
+constexpr const char* kReferenceUnionTailSql =
+    ") v ORDER BY v.order_class, v.order_member, v.order_insn, v.order_ref ";
+
+/// @brief 组装目标侧两分支 UNION ALL 查询：id 分支走 refs_target_id（解析
+///        id 后双列/前缀下探），文本分支走 refs_target_text——两分支按
+///        target_class_id 是否 NULL 互斥（任一行只会是 id 形状或文本形状），
+///        UNION ALL 不重不漏；外层按源侧同键排序，分页窗口追加在其后。
+std::string makeTargetReferenceSql(const char* idBranchWhere, const char* textBranchWhere)
+{
+    return std::string(kReferenceUnionHeadSql) + kReferenceTargetBranchSql + idBranchWhere +
+           "UNION ALL " + kReferenceTargetBranchSql + textBranchWhere + kReferenceUnionTailSql;
+}
 
 /// @brief 执行引用查询并按行序收集；@p pageLimit 非负时在 SQL 末尾追加
 ///        LIMIT/OFFSET 窗口（参数号紧跟既有绑定之后，绑 @p pageLimit /
@@ -1283,27 +1468,33 @@ ca::Result<ca::i64, AnalysisDbError> classIdByName(sqlite3*                     
     return ca::Ok(static_cast<ca::i64>(sqlite3_column_int64(statement.raw, 0)));
 }
 
-/// @brief (owner, name, descriptor) → member_id；未登记返回 0。
+/// @brief (owner, member kind, name, descriptor) → member_id；未登记返回 0。
 ///
-/// 字段与方法同名同描述符在合法 Java 里不可能（方法描述符带括号），单行
-/// 即足；未命中走空结果（与原 JOIN 形状语义一致）。
+/// 按源反查的两步走第一步（来源成员恒为方法）；目标侧 id 分支解析同用此
+/// 形状（kind 与写入侧 target memo 同源），字段与方法同名同描述符的病态
+/// 输入也解析到与引用 ref_kind 一致的成员行。
 ca::Result<ca::i64, AnalysisDbError> memberIdByName(sqlite3*                     db,
+                                                    DbMemberKind                 kind,
                                                     const ca::str::Utf8StringRef& owner,
                                                     const ca::str::Utf8StringRef& name,
                                                     const ca::str::Utf8StringRef& desc)
 {
     auto prepared = prepare(
         db, "SELECT m.member_id FROM members m JOIN classes c ON c.class_id=m.class_id "
-            "WHERE c.internal_name=?1 AND m.name=?2 AND m.descriptor=?3");
+            "WHERE c.internal_name=?1 AND m.kind=?2 AND m.name=?3 AND m.descriptor=?4");
     if (prepared.is_err()) return errorOf(std::move(prepared));
     auto statement = std::move(prepared).unwrap();
     if (auto result = bindText(db, statement.raw, 1, owner); result.is_err()) {
         return errorOf(std::move(result));
     }
-    if (auto result = bindText(db, statement.raw, 2, name); result.is_err()) {
+    if (auto result = bindInt(db, statement.raw, 2, static_cast<ca::i64>(kind));
+        result.is_err()) {
         return errorOf(std::move(result));
     }
-    if (auto result = bindText(db, statement.raw, 3, desc); result.is_err()) {
+    if (auto result = bindText(db, statement.raw, 3, name); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindText(db, statement.raw, 4, desc); result.is_err()) {
         return errorOf(std::move(result));
     }
     auto hasRow = step(db, statement.raw);
@@ -1359,20 +1550,37 @@ constexpr const char* kSchemaDdl[] = {
     "  access INTEGER NOT NULL DEFAULT 0,"
     "  UNIQUE(class_id, kind, name, descriptor)"
     ")",
+    // 引用目标 id 化（v5）：目标整体二元化——写入时 owner 与成员共解析则整
+    // 目标落 id（文本三列清空，target_class 为 NULL），任一未命中整体落文本
+    // （两个 id 列为 NULL）；三条 CHECK 与代码校验同源，混合行拒写。target_
+    // class_id / target_member_id 复用身份层既有稳定 id，不引入第三套 id。
     "CREATE TABLE refs("
     "  ref_id INTEGER PRIMARY KEY AUTOINCREMENT,"
     "  source_class_id INTEGER NOT NULL REFERENCES classes(class_id) ON DELETE CASCADE,"
     "  source_member_id INTEGER REFERENCES members(member_id) ON DELETE CASCADE,"
     "  insn_index INTEGER NOT NULL DEFAULT -1,"
     "  ref_kind INTEGER NOT NULL CHECK(ref_kind IN (0,1,2)),"
-    "  target_class TEXT NOT NULL,"
+    "  target_class_id INTEGER REFERENCES classes(class_id),"
+    "  target_member_id INTEGER REFERENCES members(member_id),"
+    "  target_class TEXT,"
     "  target_name TEXT NOT NULL DEFAULT '',"
-    "  target_desc TEXT NOT NULL DEFAULT ''"
+    "  target_desc TEXT NOT NULL DEFAULT '',"
+    "  CHECK((target_class_id IS NULL) != (target_class IS NULL)),"
+    "  CHECK(target_member_id IS NULL OR ref_kind != 0),"
+    "  CHECK(target_member_id IS NULL OR (target_name = '' AND target_desc = ''))"
     ")",
-    "CREATE INDEX refs_target ON refs(ref_kind, target_class, target_name, target_desc)",
+    // id 分支索引：目标登记行（基准语料稳态下的主体）按 (owner, member) 双列
+    // 精确下探；文本分支索引只携带未登记行——外部符号与对抗文本集中于此，
+    // 基准语料稳态下近似为空。
+    "CREATE INDEX refs_target_id ON refs(target_class_id, target_member_id) "
+    "  WHERE target_class_id IS NOT NULL",
+    "CREATE INDEX refs_target_text ON refs(ref_kind, target_class, target_name, target_desc) "
+    "  WHERE target_class_id IS NULL",
     "CREATE INDEX refs_source_member ON refs(source_member_id)",
     // 按源类反查（referencesFromClass）：无此索引时按 c.internal_name 驱动
-    // 只能全表扫 refs（B6 实测 rt.jar 语料 2.3M 行 565ms）。
+    // 只能全表扫 refs（B6 实测 rt.jar 语料 2.3M 行 565ms）。重建 refs 表时
+    // 两条 source 侧索引必须照抄——PoC 实测漏建后 referencesFromMember 从
+    // 0.575ms 退化为 1.672ms 全表扫。
     "CREATE INDEX refs_source_class ON refs(source_class_id)",
     "CREATE TABLE renames("
     "  target_kind INTEGER NOT NULL CHECK(target_kind IN (0,1)),"
@@ -3286,6 +3494,49 @@ ca::Result<std::vector<ca::str::Utf8String>, AnalysisDbError> AnalysisDb::implem
     return ca::Ok(std::move(names));
 }
 
+/// @brief 目标成员引用查询（referencesToMethod / referencesToField 共用）：
+///        先解析 id 再索引下探（同 referencesFrom* 的两步走）。id 分支
+///        refs_target_id 双列精确探（owner 与成员共登记的引用行），文本分支
+///        refs_target_text 四元组精确探（写入时未登记的存量行与始终未登记
+///        的外部符号）；id 解析未命中（0）时对应分支自然为空，文本分支兜底。
+template <DbReferenceKind kRefKind>
+ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> referencesToMemberTarget(
+    sqlite3* db, const ca::str::Utf8StringRef& owner, const ca::str::Utf8StringRef& name,
+    const ca::str::Utf8StringRef& descriptor, ca::i64 pageLimit, ca::i64 pageOffset)
+{
+    constexpr bool kIsMethod = kRefKind == DbReferenceKind::Method;
+    auto classId = classIdByName(db, owner);
+    if (classId.is_err()) return errorOf(std::move(classId));
+    auto memberId = memberIdByName(db, kIsMethod ? DbMemberKind::Method : DbMemberKind::Field,
+                                   owner, name, descriptor);
+    if (memberId.is_err()) return errorOf(std::move(memberId));
+
+    const std::string sql = makeTargetReferenceSql(
+        kIsMethod ? "WHERE r.ref_kind=2 AND r.target_class_id=?1 AND r.target_member_id=?2 "
+                  : "WHERE r.ref_kind=1 AND r.target_class_id=?1 AND r.target_member_id=?2 ",
+        kIsMethod ? "WHERE r.ref_kind=2 AND r.target_class_id IS NULL AND r.target_class=?3 "
+                    "AND r.target_name=?4 AND r.target_desc=?5 "
+                  : "WHERE r.ref_kind=1 AND r.target_class_id IS NULL AND r.target_class=?3 "
+                    "AND r.target_name=?4 AND r.target_desc=?5 ");
+    return runReferenceQuery(
+        db, sql, 5, pageLimit, pageOffset,
+        [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
+            if (auto result = bindInt(db, statement, 1, classId.unwrap()); result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindInt(db, statement, 2, memberId.unwrap()); result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindText(db, statement, 3, owner); result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindText(db, statement, 4, name); result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            return bindText(db, statement, 5, descriptor);
+        });
+}
+
 ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referencesToMethod(
     const ca::str::Utf8StringRef& owner, const ca::str::Utf8StringRef& name,
     const ca::str::Utf8StringRef& descriptor) const
@@ -3293,22 +3544,8 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referenc
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
     }
-    const std::string sql = std::string(kReferenceSelectSql) +
-                            "WHERE r.ref_kind=2 AND r.target_class=?1 AND r.target_name=?2 "
-                            "AND r.target_desc=?3 " +
-                            kReferenceOrderSql;
-    return runReferenceQuery(impl_->handle, sql, 3, -1, -1,
-                             [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
-                                 if (auto result = bindText(impl_->handle, statement, 1, owner);
-                                     result.is_err()) {
-                                     return errorOf(std::move(result));
-                                 }
-                                 if (auto result = bindText(impl_->handle, statement, 2, name);
-                                     result.is_err()) {
-                                     return errorOf(std::move(result));
-                                 }
-                                 return bindText(impl_->handle, statement, 3, descriptor);
-                             });
+    return referencesToMemberTarget<DbReferenceKind::Method>(impl_->handle, owner, name,
+                                                             descriptor, -1, -1);
 }
 
 ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referencesToMethodPaged(
@@ -3321,22 +3558,8 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referenc
     if (auto result = validatePageWindow(limit, offset); result.is_err()) {
         return errorOf(std::move(result));
     }
-    const std::string sql = std::string(kReferenceSelectSql) +
-                            "WHERE r.ref_kind=2 AND r.target_class=?1 AND r.target_name=?2 "
-                            "AND r.target_desc=?3 " +
-                            kReferenceOrderSql;
-    return runReferenceQuery(impl_->handle, sql, 3, limit, offset,
-                             [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
-                                 if (auto result = bindText(impl_->handle, statement, 1, owner);
-                                     result.is_err()) {
-                                     return errorOf(std::move(result));
-                                 }
-                                 if (auto result = bindText(impl_->handle, statement, 2, name);
-                                     result.is_err()) {
-                                     return errorOf(std::move(result));
-                                 }
-                                 return bindText(impl_->handle, statement, 3, descriptor);
-                             });
+    return referencesToMemberTarget<DbReferenceKind::Method>(impl_->handle, owner, name,
+                                                             descriptor, limit, offset);
 }
 
 ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referencesToField(
@@ -3346,22 +3569,8 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referenc
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
     }
-    const std::string sql = std::string(kReferenceSelectSql) +
-                            "WHERE r.ref_kind=1 AND r.target_class=?1 AND r.target_name=?2 "
-                            "AND r.target_desc=?3 " +
-                            kReferenceOrderSql;
-    return runReferenceQuery(impl_->handle, sql, 3, -1, -1,
-                             [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
-                                 if (auto result = bindText(impl_->handle, statement, 1, owner);
-                                     result.is_err()) {
-                                     return errorOf(std::move(result));
-                                 }
-                                 if (auto result = bindText(impl_->handle, statement, 2, name);
-                                     result.is_err()) {
-                                     return errorOf(std::move(result));
-                                 }
-                                 return bindText(impl_->handle, statement, 3, descriptor);
-                             });
+    return referencesToMemberTarget<DbReferenceKind::Field>(impl_->handle, owner, name,
+                                                            descriptor, -1, -1);
 }
 
 ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referencesToFieldPaged(
@@ -3374,36 +3583,34 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referenc
     if (auto result = validatePageWindow(limit, offset); result.is_err()) {
         return errorOf(std::move(result));
     }
-    const std::string sql = std::string(kReferenceSelectSql) +
-                            "WHERE r.ref_kind=1 AND r.target_class=?1 AND r.target_name=?2 "
-                            "AND r.target_desc=?3 " +
-                            kReferenceOrderSql;
-    return runReferenceQuery(impl_->handle, sql, 3, limit, offset,
-                             [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
-                                 if (auto result = bindText(impl_->handle, statement, 1, owner);
-                                     result.is_err()) {
-                                     return errorOf(std::move(result));
-                                 }
-                                 if (auto result = bindText(impl_->handle, statement, 2, name);
-                                     result.is_err()) {
-                                     return errorOf(std::move(result));
-                                 }
-                                 return bindText(impl_->handle, statement, 3, descriptor);
-                             });
+    return referencesToMemberTarget<DbReferenceKind::Field>(impl_->handle, owner, name,
+                                                            descriptor, limit, offset);
 }
 
+/// @brief 目标类引用查询：id 分支 refs_target_id 前缀探（owner 登记的全部
+///        type/field/method 引用行），文本分支 refs_target_text——文本分支
+///        承接始终未登记 owner（包括 owner 其后才登记的存量行，此时行仍是
+///        文本形状，身份只增不删不改既有编码）。
 ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referencesToClass(
     const ca::str::Utf8StringRef& owner) const
 {
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
     }
-    const std::string sql = std::string(kReferenceSelectSql) +
-                            "WHERE r.target_class=?1 " + kReferenceOrderSql;
-    return runReferenceQuery(impl_->handle, sql, 1, -1, -1,
-                             [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
-                                 return bindText(impl_->handle, statement, 1, owner);
-                             });
+    auto classId = classIdByName(impl_->handle, owner);
+    if (classId.is_err()) return errorOf(std::move(classId));
+    const std::string sql =
+        makeTargetReferenceSql("WHERE r.target_class_id=?1 ",
+                               "WHERE r.target_class_id IS NULL AND r.target_class=?2 ");
+    return runReferenceQuery(
+        impl_->handle, sql, 2, -1, -1,
+        [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
+            if (auto result = bindInt(impl_->handle, statement, 1, classId.unwrap());
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            return bindText(impl_->handle, statement, 2, owner);
+        });
 }
 
 ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referencesToClassPaged(
@@ -3415,12 +3622,20 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referenc
     if (auto result = validatePageWindow(limit, offset); result.is_err()) {
         return errorOf(std::move(result));
     }
-    const std::string sql = std::string(kReferenceSelectSql) +
-                            "WHERE r.target_class=?1 " + kReferenceOrderSql;
-    return runReferenceQuery(impl_->handle, sql, 1, limit, offset,
-                             [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
-                                 return bindText(impl_->handle, statement, 1, owner);
-                             });
+    auto classId = classIdByName(impl_->handle, owner);
+    if (classId.is_err()) return errorOf(std::move(classId));
+    const std::string sql =
+        makeTargetReferenceSql("WHERE r.target_class_id=?1 ",
+                               "WHERE r.target_class_id IS NULL AND r.target_class=?2 ");
+    return runReferenceQuery(
+        impl_->handle, sql, 2, limit, offset,
+        [&](sqlite3_stmt* statement) -> ca::Result<void, AnalysisDbError> {
+            if (auto result = bindInt(impl_->handle, statement, 1, classId.unwrap());
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            return bindText(impl_->handle, statement, 2, owner);
+        });
 }
 
 ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referencesFromMember(
@@ -3432,7 +3647,7 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referenc
     }
     // 两步走：先解析 member_id 再下探 refs_source_member 索引（JOIN 形状
     // 会让规划器全索引扫 refs，见 classIdByName 注）。
-    auto memberId = memberIdByName(impl_->handle, owner, name, descriptor);
+    auto memberId = memberIdByName(impl_->handle, DbMemberKind::Method, owner, name, descriptor);
     if (memberId.is_err()) return errorOf(std::move(memberId));
     if (memberId.unwrap() == 0) return ca::Ok(std::vector<DbReferenceRecord>());
     const std::string sql = std::string(kReferenceSelectSql) +
@@ -3455,7 +3670,7 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> AnalysisDb::referenc
         return errorOf(std::move(result));
     }
     // 两步走（同 referencesFromMember）：先解析 member_id 再下探索引。
-    auto memberId = memberIdByName(impl_->handle, owner, name, descriptor);
+    auto memberId = memberIdByName(impl_->handle, DbMemberKind::Method, owner, name, descriptor);
     if (memberId.is_err()) return errorOf(std::move(memberId));
     if (memberId.unwrap() == 0) return ca::Ok(std::vector<DbReferenceRecord>());
     const std::string sql = std::string(kReferenceSelectSql) +
