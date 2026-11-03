@@ -532,6 +532,18 @@ const char* batchKindToSql(DbBatchKind kind)
     return nullptr;
 }
 
+/// @brief batches.kind 词表 → 批次种类；词表外视为库损坏（CHECK 门内不应出现）。
+ca::Result<DbBatchKind, AnalysisDbError> batchKindFromSql(const std::string& text)
+{
+    if (text == "full_import") return ca::Ok(DbBatchKind::FullImport);
+    if (text == "refs_replace") return ca::Ok(DbBatchKind::RefsReplace);
+    if (text == "refs_slice_replace") return ca::Ok(DbBatchKind::RefsSliceReplace);
+    if (text == "renames_write") return ca::Ok(DbBatchKind::RenamesWrite);
+    if (text == "rules_write") return ca::Ok(DbBatchKind::RulesWrite);
+    return ca::Err(makeError(AnalysisDbErrorKind::Schema,
+                             "batches row has an unknown kind: " + text));
+}
+
 class Transaction
 {
 public:
@@ -953,9 +965,16 @@ ca::Result<void, AnalysisDbError> applyRenameBatch(
     return ca::Ok();
 }
 
-ca::Result<void, AnalysisDbError> applyClassBatch(sqlite3* db,
-                                                  const std::vector<DbClassInput>& classes)
+/// @brief 批量写入已校验的类输入；调用方负责事务边界。
+///
+/// @p classIdsOut 按输入序回收每个类的 class_id（作用域锚写入用；调用方
+/// 传 batchId != 0 时必读）。
+ca::Result<void, AnalysisDbError> applyClassBatch(sqlite3*                         db,
+                                                  const std::vector<DbClassInput>& classes,
+                                                  std::vector<ca::i64>&            classIdsOut)
 {
+    classIdsOut.clear();
+    classIdsOut.reserve(classes.size());
     // entry_id 语义：>0 设置链接（FK 校验失败整批回滚），0 = 未指定——
     // 已登记类保持既有链接，新登记类存 NULL。
     auto upsertClass = prepare(
@@ -1031,6 +1050,7 @@ ca::Result<void, AnalysisDbError> applyClassBatch(sqlite3* db,
         }
         const ca::i64 classId = sqlite3_column_int64(selectClassStatement.raw, 0);
         resetStatement(selectClassStatement);
+        classIdsOut.push_back(classId);
 
         if (auto result = bindInt(db, deleteInterfacesStatement.raw, 1, classId);
             result.is_err()) {
@@ -2361,6 +2381,101 @@ ca::Result<void, AnalysisDbError> AnalysisDb::replaceRenames(
     return txn.commit();
 }
 
+namespace {
+
+/// @brief 写入口的批次挂靠门（#143 批 3 fail-loud 拒绝面）：batchId 必须
+///        已注册且未收尾；调用方保证 batchId != 0（0 = 无批写入，不调本门）。
+///        在调用方事务内执行：BEGIN IMMEDIATE 持写锁后校验与写入原子。
+ca::Result<void, AnalysisDbError> validateOpenBatchForWrite(sqlite3* db, ca::i64 batchId)
+{
+    auto selected = prepare(db, "SELECT finished_at FROM batches WHERE batch_id=?1");
+    if (selected.is_err()) return errorOf(std::move(selected));
+    auto statement = std::move(selected).unwrap();
+    if (auto result = bindInt(db, statement.raw, 1, batchId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasRow = step(db, statement.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    if (!hasRow.unwrap()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "batch is not registered: " + std::to_string(batchId)));
+    }
+    if (!textColumn(statement.raw, 0).empty()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "batch is already closed: " + std::to_string(batchId)));
+    }
+    return ca::Ok();
+}
+
+/// @brief 单条作用域锚写入（INSERT OR IGNORE：作用域是集合语义，同批重复
+///        覆盖同一区间幂等，不是日志）。调用方负责事务边界。
+ca::Result<void, AnalysisDbError> writeScopeRow(sqlite3*        db,
+                                                sqlite3_stmt*   statement,
+                                                ca::i64         batchId,
+                                                DbBatchScopeKind scopeKind,
+                                                ca::i64         scopeId)
+{
+    // 语句批次内复用：上一轮 step 至 DONE 后必须 reset 才能重新绑定。
+    sqlite3_reset(statement);
+    sqlite3_clear_bindings(statement);
+    if (auto result = bindInt(db, statement, 1, batchId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(db, statement, 2, static_cast<ca::i64>(scopeKind));
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(db, statement, 3, scopeId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto done = step(db, statement);
+    if (done.is_err()) return errorOf(std::move(done));
+    return ca::Ok();
+}
+
+constexpr const char* kScopeRowInsertSql =
+    "INSERT OR IGNORE INTO batch_scopes(batch_id, scope_kind, scope_id) VALUES(?1, ?2, ?3)";
+
+/// @brief 归属解析的单前缀探取（#143 3.2）：(scope_kind, scope_id) 前缀下
+///        batch_id 最大的批次 + 生产者身份。走 batch_scopes_owner 覆盖索引
+///        前缀下探，ORDER BY batch_id DESC LIMIT 1 无排序；单条 OR 形态实测
+///        慢 2.8 倍，勿合并。
+constexpr const char* kScopeOwnershipProbeSql =
+    "SELECT s.batch_id, b.producer_id, p.key, b.kind "
+    "FROM batch_scopes s "
+    "JOIN batches b ON b.batch_id = s.batch_id "
+    "JOIN producers p ON p.producer_id = b.producer_id "
+    "WHERE s.scope_kind = ?1 AND s.scope_id = ?2 "
+    "ORDER BY s.batch_id DESC LIMIT 1";
+
+ca::Result<std::optional<DbOwnershipInfo>, AnalysisDbError> probeScopeOwnership(
+    sqlite3* db, DbBatchScopeKind scopeKind, ca::i64 scopeId)
+{
+    auto prepared = prepare(db, kScopeOwnershipProbeSql);
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindInt(db, statement.raw, 1, static_cast<ca::i64>(scopeKind));
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(db, statement.raw, 2, scopeId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasRow = step(db, statement.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    if (!hasRow.unwrap()) return ca::Ok(std::optional<DbOwnershipInfo>());
+
+    auto kind = batchKindFromSql(textColumn(statement.raw, 3));
+    if (kind.is_err()) return errorOf(std::move(kind));
+    DbOwnershipInfo info;
+    info.batchId    = sqlite3_column_int64(statement.raw, 0);
+    info.producerId = sqlite3_column_int64(statement.raw, 1);
+    info.producerKey = utf8Column(statement.raw, 2);
+    info.kind       = kind.unwrap();
+    return ca::Ok(std::optional<DbOwnershipInfo>(std::move(info)));
+}
+
+}   // namespace
 //-- 条目身份层（inputs / entries，schema v3） ------------------------------
 
 ca::Result<ca::i64, AnalysisDbError> AnalysisDb::ensureInput(
@@ -2432,7 +2547,7 @@ ca::Result<ca::i64, AnalysisDbError> AnalysisDb::ensureInput(
 }
 
 ca::Result<DbEntryIngestStats, AnalysisDbError> AnalysisDb::ingestEntries(
-    ca::i64 inputId, std::vector<DbEntryInput> entries)
+    ca::i64 batchId, ca::i64 inputId, std::vector<DbEntryInput> entries)
 {
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
@@ -2440,6 +2555,10 @@ ca::Result<DbEntryIngestStats, AnalysisDbError> AnalysisDb::ingestEntries(
     if (isReadOnly()) {
         return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
                                  "cannot write a read-only analysis database"));
+    }
+    if (batchId < 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "batch id must not be negative"));
     }
     if (inputId <= 0) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "input id must be positive"));
@@ -2485,6 +2604,21 @@ ca::Result<DbEntryIngestStats, AnalysisDbError> AnalysisDb::ingestEntries(
         if (!hasRow.unwrap()) {
             return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
                                      "input is not registered: " + std::to_string(inputId)));
+        }
+    }
+
+    if (batchId != 0) {
+        // 批次挂靠（#143 批 3）：门校验 + input 作用域行，与事实同事务。
+        if (auto result = validateOpenBatchForWrite(impl_->handle, batchId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto scopeInsert = prepare(impl_->handle, kScopeRowInsertSql);
+        if (scopeInsert.is_err()) return errorOf(std::move(scopeInsert));
+        auto scopeStatement = std::move(scopeInsert).unwrap();
+        if (auto result = writeScopeRow(impl_->handle, scopeStatement.raw, batchId,
+                                        DbBatchScopeKind::Input, inputId);
+            result.is_err()) {
+            return errorOf(std::move(result));
         }
     }
 
@@ -3209,6 +3343,7 @@ ca::Result<void, AnalysisDbError> AnalysisDb::recordMaskRuleHits(
 
 //-- producer 注册表（producers / batches / batch_scopes，schema v6） --------
 
+
 ca::Result<ca::i64, AnalysisDbError> AnalysisDb::registerProducer(const DbProducerInput& input)
 {
     if (!isOpen()) {
@@ -3479,10 +3614,261 @@ ca::Result<void, AnalysisDbError> AnalysisDb::closeBatch(ca::i64              ba
     return txn.commit();
 }
 
+ca::Result<std::vector<DbProducerInfo>, AnalysisDbError> AnalysisDb::listProducers() const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+
+    auto prepared = prepare(impl_->handle,
+                            "SELECT producer_id, key, name, tool_fingerprint, trust_level, "
+                            "created_at, updated_at FROM producers ORDER BY producer_id");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+
+    std::vector<DbProducerInfo> producers;
+    for (;;) {
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+        DbProducerInfo info;
+        info.producerId      = sqlite3_column_int64(statement.raw, 0);
+        info.key             = utf8Column(statement.raw, 1);
+        info.name            = utf8Column(statement.raw, 2);
+        info.toolFingerprint = utf8Column(statement.raw, 3);
+        info.trustLevel = sqlite3_column_int(statement.raw, 4) != 0
+                              ? DbProducerTrustLevel::Trusted
+                              : DbProducerTrustLevel::Untrusted;
+        info.createdAt  = utf8Column(statement.raw, 5);
+        info.updatedAt  = utf8Column(statement.raw, 6);
+        producers.push_back(std::move(info));
+    }
+    return ca::Ok(std::move(producers));
+}
+
+ca::Result<std::vector<DbBatchInfo>, AnalysisDbError> AnalysisDb::listBatches(
+    std::optional<ca::i64> producerId) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (producerId.has_value() && producerId.value() <= 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "producer id must be positive"));
+    }
+
+    if (producerId.has_value()) {
+        // 过滤键未注册与「已注册但无批」区分开：前者是调用方错误。
+        auto selected =
+            prepare(impl_->handle, "SELECT 1 FROM producers WHERE producer_id=?1");
+        if (selected.is_err()) return errorOf(std::move(selected));
+        auto existsStatement = std::move(selected).unwrap();
+        if (auto result = bindInt(impl_->handle, existsStatement.raw, 1, producerId.value());
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto hasProducer = step(impl_->handle, existsStatement.raw);
+        if (hasProducer.is_err()) return errorOf(std::move(hasProducer));
+        if (!hasProducer.unwrap()) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     "producer is not registered: " +
+                                         std::to_string(producerId.value())));
+        }
+    }
+
+    // 作用域数走 batch_scopes 聚合子查询（批数量级远小于作用域行量级）。
+    std::string sql =
+        "SELECT b.batch_id, b.producer_id, p.key, b.kind, b.started_at, b.finished_at, "
+        "       b.class_count, b.entry_count, b.member_count, b.ref_count, "
+        "       COALESCE(sc.scope_count, 0), b.note "
+        "FROM batches b "
+        "JOIN producers p ON p.producer_id = b.producer_id "
+        "LEFT JOIN (SELECT batch_id, COUNT(*) AS scope_count FROM batch_scopes "
+        "           GROUP BY batch_id) sc ON sc.batch_id = b.batch_id ";
+    if (producerId.has_value()) sql += "WHERE b.producer_id=?1 ";
+    sql += "ORDER BY b.batch_id";
+
+    auto prepared = prepare(impl_->handle, sql.c_str());
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (producerId.has_value()) {
+        if (auto result = bindInt(impl_->handle, statement.raw, 1, producerId.value());
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+    }
+
+    std::vector<DbBatchInfo> batches;
+    for (;;) {
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+        auto kind = batchKindFromSql(textColumn(statement.raw, 3));
+        if (kind.is_err()) return errorOf(std::move(kind));
+        DbBatchInfo info;
+        info.batchId     = sqlite3_column_int64(statement.raw, 0);
+        info.producerId  = sqlite3_column_int64(statement.raw, 1);
+        info.producerKey = utf8Column(statement.raw, 2);
+        info.kind        = kind.unwrap();
+        info.startedAt   = utf8Column(statement.raw, 4);
+        info.finishedAt  = utf8Column(statement.raw, 5);
+        info.classCount  = sqlite3_column_int64(statement.raw, 6);
+        info.entryCount  = sqlite3_column_int64(statement.raw, 7);
+        info.memberCount = sqlite3_column_int64(statement.raw, 8);
+        info.refCount    = sqlite3_column_int64(statement.raw, 9);
+        info.scopeCount  = sqlite3_column_int64(statement.raw, 10);
+        info.note        = utf8Column(statement.raw, 11);
+        batches.push_back(std::move(info));
+    }
+    return ca::Ok(std::move(batches));
+}
+
+ca::Result<std::vector<DbBatchScope>, AnalysisDbError> AnalysisDb::batchScopes(
+    ca::i64 batchId) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (batchId <= 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "batch id must be positive"));
+    }
+
+    {
+        // 批次不存在与「已登记但无作用域行」区分开：前者是调用方错误。
+        auto selected = prepare(impl_->handle, "SELECT 1 FROM batches WHERE batch_id=?1");
+        if (selected.is_err()) return errorOf(std::move(selected));
+        auto statement = std::move(selected).unwrap();
+        if (auto result = bindInt(impl_->handle, statement.raw, 1, batchId);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     "batch is not registered: " + std::to_string(batchId)));
+        }
+    }
+
+    auto prepared = prepare(impl_->handle,
+                            "SELECT scope_kind, scope_id FROM batch_scopes "
+                            "WHERE batch_id=?1 ORDER BY scope_kind, scope_id");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindInt(impl_->handle, statement.raw, 1, batchId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    std::vector<DbBatchScope> scopes;
+    for (;;) {
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+        DbBatchScope scope;
+        scope.batchId = batchId;
+        scope.kind    = static_cast<DbBatchScopeKind>(sqlite3_column_int(statement.raw, 0));
+        scope.scopeId = sqlite3_column_int64(statement.raw, 1);
+        scopes.push_back(std::move(scope));
+    }
+    return ca::Ok(std::move(scopes));
+}
+
+ca::Result<std::optional<DbOwnershipInfo>, AnalysisDbError> AnalysisDb::refSliceOwnership(
+    DbMemberKind kind, ca::i64 memberId) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto result = validateMemberKind(kind); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (memberId <= 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "member id must be positive"));
+    }
+
+    // 取大规则：成员级锚与 refs_all 锚两个前缀各探一次，batch_id 大者胜。
+    // 探测结果先 move 出 Result（optional 携带 Utf8String，只移不可拷，
+    // 左值 unwrap 的按值返回路径不可用）。
+    auto member = probeScopeOwnership(impl_->handle, DbBatchScopeKind::Member, memberId);
+    if (member.is_err()) return errorOf(std::move(member));
+    auto refsAll = probeScopeOwnership(impl_->handle, DbBatchScopeKind::RefsAll, 0);
+    if (refsAll.is_err()) return errorOf(std::move(refsAll));
+
+    std::optional<DbOwnershipInfo> memberInfo  = std::move(member).unwrap();
+    std::optional<DbOwnershipInfo> refsAllInfo = std::move(refsAll).unwrap();
+
+    if (!memberInfo.has_value() && !refsAllInfo.has_value()) {
+        return ca::Ok(std::optional<DbOwnershipInfo>());
+    }
+    if (!memberInfo.has_value()) return ca::Ok(std::move(refsAllInfo));
+    if (!refsAllInfo.has_value()) return ca::Ok(std::move(memberInfo));
+    if (memberInfo->batchId >= refsAllInfo->batchId) {
+        return ca::Ok(std::move(memberInfo));
+    }
+    return ca::Ok(std::move(refsAllInfo));
+}
+
+ca::Result<std::optional<DbOwnershipInfo>, AnalysisDbError> AnalysisDb::classOwnership(
+    ca::i64 classId) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (classId <= 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "class id must be positive"));
+    }
+
+    // 类事实归属只探 (2, class_id)：refs_all 不回退参与类事实归属（整库
+    // 引用替换不触碰类行）；缺逐类作用域行 = 类归属为空（契约，非回退）。
+    return probeScopeOwnership(impl_->handle, DbBatchScopeKind::Class, classId);
+}
+
+ca::Result<std::vector<DbProducerStats>, AnalysisDbError> AnalysisDb::producerStats() const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+
+    auto prepared = prepare(
+        impl_->handle,
+        "SELECT p.producer_id, p.key, p.name, p.trust_level, COUNT(b.batch_id), "
+        "       COALESCE(SUM(b.class_count), 0), COALESCE(SUM(b.entry_count), 0), "
+        "       COALESCE(SUM(b.member_count), 0), COALESCE(SUM(b.ref_count), 0), "
+        "       COALESCE(MIN(b.started_at), ''), COALESCE(MAX(NULLIF(b.finished_at, '')), '') "
+        "FROM producers p LEFT JOIN batches b ON b.producer_id = p.producer_id "
+        "GROUP BY p.producer_id ORDER BY p.producer_id");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+
+    std::vector<DbProducerStats> stats;
+    for (;;) {
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+        DbProducerStats row;
+        row.producerId  = sqlite3_column_int64(statement.raw, 0);
+        row.key         = utf8Column(statement.raw, 1);
+        row.name        = utf8Column(statement.raw, 2);
+        row.trustLevel  = sqlite3_column_int(statement.raw, 3) != 0
+                              ? DbProducerTrustLevel::Trusted
+                              : DbProducerTrustLevel::Untrusted;
+        row.batchCount  = sqlite3_column_int64(statement.raw, 4);
+        row.classCount  = sqlite3_column_int64(statement.raw, 5);
+        row.entryCount  = sqlite3_column_int64(statement.raw, 6);
+        row.memberCount = sqlite3_column_int64(statement.raw, 7);
+        row.refCount    = sqlite3_column_int64(statement.raw, 8);
+        row.firstBatchAt = utf8Column(statement.raw, 9);
+        row.lastBatchAt  = utf8Column(statement.raw, 10);
+        stats.push_back(std::move(row));
+    }
+    return ca::Ok(std::move(stats));
+}
+
 //-- 分析事实层（类/成员/继承/直接引用） ------------------------------------
 
 ca::Result<ca::usize, AnalysisDbError> AnalysisDb::ingestClasses(
-    std::vector<DbClassInput> classes)
+    ca::i64 batchId, std::vector<DbClassInput> classes)
 {
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
@@ -3490,6 +3876,10 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::ingestClasses(
     if (isReadOnly()) {
         return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
                                  "cannot write a read-only analysis database"));
+    }
+    if (batchId < 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "batch id must not be negative"));
     }
     if (auto result = validateClassInputs(classes); result.is_err()) {
         return errorOf(std::move(result));
@@ -3499,9 +3889,32 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::ingestClasses(
     if (transaction.is_err()) return errorOf(std::move(transaction));
     auto txn = std::move(transaction).unwrap();
 
-    if (auto result = applyClassBatch(impl_->handle, classes); result.is_err()) {
+    if (batchId != 0) {
+        if (auto result = validateOpenBatchForWrite(impl_->handle, batchId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+    }
+
+    std::vector<ca::i64> classIds;
+    if (auto result = applyClassBatch(impl_->handle, classes, classIds); result.is_err()) {
         return errorOf(std::move(result));
     }
+
+    if (batchId != 0) {
+        // 逐类作用域行（#143 3.6）：full_import 的 classOwnership 可答必需项。
+        // 成员登记的归属并入其所在类（成员不落独立作用域行）。
+        auto scopeInsert = prepare(impl_->handle, kScopeRowInsertSql);
+        if (scopeInsert.is_err()) return errorOf(std::move(scopeInsert));
+        auto scopeStatement = std::move(scopeInsert).unwrap();
+        for (const ca::i64 classId : classIds) {
+            if (auto result = writeScopeRow(impl_->handle, scopeStatement.raw, batchId,
+                                            DbBatchScopeKind::Class, classId);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+    }
+
     if (auto result = txn.commit(); result.is_err()) {
         return errorOf(std::move(result));
     }
@@ -3509,7 +3922,7 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::ingestClasses(
 }
 
 ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceReferences(
-    std::vector<DbReferenceRecord> references)
+    ca::i64 batchId, std::vector<DbReferenceRecord> references)
 {
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
@@ -3517,6 +3930,10 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceReferences(
     if (isReadOnly()) {
         return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
                                  "cannot write a read-only analysis database"));
+    }
+    if (batchId < 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "batch id must not be negative"));
     }
     if (auto result = validateReferences(references); result.is_err()) {
         return errorOf(std::move(result));
@@ -3526,9 +3943,29 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceReferences(
     if (transaction.is_err()) return errorOf(std::move(transaction));
     auto txn = std::move(transaction).unwrap();
 
+    if (batchId != 0) {
+        if (auto result = validateOpenBatchForWrite(impl_->handle, batchId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+    }
+
     if (auto result = exec(impl_->handle, "DELETE FROM refs"); result.is_err()) {
         return errorOf(std::move(result));
     }
+
+    if (batchId != 0) {
+        // refs_all 锚（scope_id 恒 0）：整库替换覆盖全部引用切片，此前的
+        // 成员级归属由解析规则取大后被本批盖过。
+        auto scopeInsert = prepare(impl_->handle, kScopeRowInsertSql);
+        if (scopeInsert.is_err()) return errorOf(std::move(scopeInsert));
+        auto scopeStatement = std::move(scopeInsert).unwrap();
+        if (auto result = writeScopeRow(impl_->handle, scopeStatement.raw, batchId,
+                                        DbBatchScopeKind::RefsAll, 0);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+    }
+
     if (auto result = applyReferenceBatch(impl_->handle, references); result.is_err()) {
         return errorOf(std::move(result));
     }
@@ -3539,7 +3976,7 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceReferences(
 }
 
 ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceReferencesFromMember(
-    ca::i64 sourceMemberId, std::vector<DbReferenceRecord> references)
+    ca::i64 batchId, ca::i64 sourceMemberId, std::vector<DbReferenceRecord> references)
 {
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
@@ -3547,6 +3984,10 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceReferencesFromMember(
     if (isReadOnly()) {
         return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
                                  "cannot write a read-only analysis database"));
+    }
+    if (batchId < 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "batch id must not be negative"));
     }
     if (auto result = validateReferences(references); result.is_err()) {
         return errorOf(std::move(result));
@@ -3592,6 +4033,22 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceReferencesFromMember(
                     reference.sourceClass.to_std_string() + "." +
                     reference.sourceMethod.to_std_string() + "(" +
                     reference.sourceDescriptor.to_std_string() + ")"));
+        }
+    }
+
+    if (batchId != 0) {
+        // 成员切片锚（#143 批 3）：类事实未触碰，不落 class 作用域行——
+        // classOwnership 只认类事实 upsert 与 class 头引用切片。
+        if (auto result = validateOpenBatchForWrite(impl_->handle, batchId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto scopeInsert = prepare(impl_->handle, kScopeRowInsertSql);
+        if (scopeInsert.is_err()) return errorOf(std::move(scopeInsert));
+        auto scopeStatement = std::move(scopeInsert).unwrap();
+        if (auto result = writeScopeRow(impl_->handle, scopeStatement.raw, batchId,
+                                        DbBatchScopeKind::Member, sourceMemberId);
+            result.is_err()) {
+            return errorOf(std::move(result));
         }
     }
 

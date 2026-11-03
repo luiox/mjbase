@@ -429,6 +429,89 @@ struct DbBatchCounts
     ca::i64 refCount    = 0;
 };
 
+/// @brief 作用域种类（batch_scopes.scope_kind；CHECK IN (0,1,2,3) 同源）。
+///
+/// 0=refs_all（整库引用替换，scope_id 恒 0）、1=input（条目登记与重导入）、
+/// 2=class（类事实 upsert 与 class 头引用切片）、3=member（成员引用切片）。
+/// 成员登记的归属并入其所在类（ingestClasses 的 class 作用域行）。
+enum class DbBatchScopeKind : ca::u8
+{
+    RefsAll = 0, ///< 整库引用替换锚；scope_id 恒 0，覆盖全部引用切片
+    Input   = 1, ///< 条目登记与重导入锚；scope_id = input_id
+    Class   = 2, ///< 类事实锚；scope_id = class_id
+    Member  = 3, ///< 成员引用切片锚；scope_id = member_id
+};
+
+/// @brief 已登记的生产者（`listProducers` 输出，producer_id 升序）。
+struct DbProducerInfo
+{
+    ca::i64              producerId = 0;
+    ca::str::Utf8String  key;
+    ca::str::Utf8String  name;
+    ca::str::Utf8String  toolFingerprint;
+    DbProducerTrustLevel trustLevel = DbProducerTrustLevel::Trusted;
+    ca::str::Utf8String  createdAt;
+    ca::str::Utf8String  updatedAt;
+};
+
+/// @brief 一次作用域锚登记（`batchScopes` 输出，(scope_kind, scope_id) 升序）。
+struct DbBatchScope
+{
+    ca::i64          batchId = 0;
+    DbBatchScopeKind kind    = DbBatchScopeKind::RefsAll;
+    ca::i64          scopeId = 0; ///< refs_all 恒 0；input/class/member 对应 id
+};
+
+/// @brief 已登记的批次（`listBatches` 输出，batch_id 升序）。
+///
+/// `finishedAt` 为空串 = 未收尾的残批（失败/中断的写入运行，合法审计状态）。
+/// `scopeCount` 是 batch_scopes 里本批的作用域行数。
+struct DbBatchInfo
+{
+    ca::i64             batchId     = 0;
+    ca::i64             producerId  = 0;
+    ca::str::Utf8String producerKey;
+    DbBatchKind         kind        = DbBatchKind::FullImport;
+    ca::str::Utf8String startedAt;
+    ca::str::Utf8String finishedAt;
+    ca::i64             classCount  = 0;
+    ca::i64             entryCount  = 0;
+    ca::i64             memberCount = 0;
+    ca::i64             refCount    = 0;
+    ca::i64             scopeCount  = 0;
+    ca::str::Utf8String note;
+};
+
+/// @brief 归属解析结果（`refSliceOwnership` / `classOwnership` 输出）。
+///
+/// 回答「这份事实是哪次运行写的」：批次 + 生产者身份。无归属（nullopt）
+/// = 没有任何批次的作用域锚覆盖该事实。
+struct DbOwnershipInfo
+{
+    ca::i64             batchId     = 0;
+    ca::i64             producerId  = 0;
+    ca::str::Utf8String producerKey;
+    DbBatchKind         kind        = DbBatchKind::FullImport;
+};
+
+/// @brief 生产者聚合统计（`producerStats` 输出，producer_id 升序）。
+///
+/// 批次维度求和（含残批；从未收尾的批 finished_at 不计入 lastBatchAt）。
+struct DbProducerStats
+{
+    ca::i64              producerId = 0;
+    ca::str::Utf8String  key;
+    ca::str::Utf8String  name;
+    DbProducerTrustLevel trustLevel = DbProducerTrustLevel::Trusted;
+    ca::i64              batchCount = 0;
+    ca::i64              classCount  = 0; ///< 各批 class_count 求和
+    ca::i64              entryCount  = 0;
+    ca::i64              memberCount = 0;
+    ca::i64              refCount    = 0;
+    ca::str::Utf8String  firstBatchAt; ///< 各批 started_at 最小值；无批为空串
+    ca::str::Utf8String  lastBatchAt;  ///< 各批 finished_at 最大值（残批不计）；无批为空串
+};
+
 /// @brief 分析数据库连接（单文件、单连接、非线程安全）。
 class AnalysisDb
 {
@@ -560,10 +643,13 @@ public:
     /// - 处理顺序先墓碑后匹配：本批未出现的该输入既有活跃条目先标记
     ///   `tombstoned=1`，再逐条匹配/新建——同 path 内容变化必然让旧行进
     ///   墓碑、新内容拿新 id。
+    /// - `batchId` 首参挂靠批次（#143 批 3）：0 = 无批写入（不落作用域行，
+    ///   条目归属悬空）；非 0 必须是未收尾的已注册批次（否则 `Invalid`，
+    ///   不静默匿名写入），命中后落 (1, input_id) 作用域行。
     /// - 输入不存在、批内重复 path、path/kind 为空或含 NUL、sha256 非 64 位
     ///   小写 hex、size 为负 → `Invalid`，整批不写库。
     ca::Result<DbEntryIngestStats, AnalysisDbError> ingestEntries(
-        ca::i64 inputId, std::vector<DbEntryInput> entries);
+        ca::i64 batchId, ca::i64 inputId, std::vector<DbEntryInput> entries);
 
     /// @brief 全部已登记输入容器，按 path 升序。
     ca::Result<std::vector<DbInputInfo>, AnalysisDbError> listInputs() const;
@@ -667,6 +753,40 @@ public:
     /// 计数为负 → `Invalid`。只读连接 → `ReadOnly`。
     ca::Result<void, AnalysisDbError> closeBatch(ca::i64 batchId, const DbBatchCounts& counts);
 
+    /// @brief 全部已注册生产者，按 producer_id 升序。只读连接可用。
+    ca::Result<std::vector<DbProducerInfo>, AnalysisDbError> listProducers() const;
+
+    /// @brief 已登记批次，按 batch_id 升序（含计数、作用域数、生产者 key）。
+    ///
+    /// @p producerId 过滤单生产者；给出但未注册 → `Invalid`（与 listEntries
+    /// 对未知输入同口径，不静默返回空表）。只读连接可用。
+    ca::Result<std::vector<DbBatchInfo>, AnalysisDbError> listBatches(
+        std::optional<ca::i64> producerId) const;
+
+    /// @brief 批次的作用域锚行，按 (scope_kind, scope_id) 升序。
+    ///        批次不存在 → `Invalid`；已登记但无作用域行返回空表。
+    ca::Result<std::vector<DbBatchScope>, AnalysisDbError> batchScopes(ca::i64 batchId) const;
+
+    /// @brief 成员引用切片的归属解析（#143 3.2）。
+    ///
+    /// 在 batch_scopes 探 (3, member_id) 与 (0, 0) 两个前缀、取 batch_id 较大
+    /// 者（两次索引前缀探 + 取大，无全表扫；refs_all 锚覆盖全部引用切片，
+    /// 整库替换之后此前成员级归属被更新的 refs_all 批盖过）。两个前缀都无行
+    /// 返回 `std::nullopt`。@p memberId <= 0 → `Invalid`。只读连接可用。
+    ca::Result<std::optional<DbOwnershipInfo>, AnalysisDbError> refSliceOwnership(
+        DbMemberKind kind, ca::i64 memberId) const;
+
+    /// @brief 类事实的归属解析（#143 3.2）：只探 (2, class_id)——整库引用
+    ///        替换不触碰类行，refs_all 不回退参与类事实归属；full_import 缺
+    ///        逐类作用域行时类归属为空（负例即契约）。无行返回 nullopt。
+    ///        @p classId <= 0 → `Invalid`。只读连接可用。
+    ca::Result<std::optional<DbOwnershipInfo>, AnalysisDbError> classOwnership(
+        ca::i64 classId) const;
+
+    /// @brief 生产者聚合统计（批次数、累计写入计数、首末批时间），按
+    ///        producer_id 升序。只读连接可用。
+    ca::Result<std::vector<DbProducerStats>, AnalysisDbError> producerStats() const;
+
     //-- 分析事实层（类/成员/继承/直接引用） ------------------------------
 
     /// @brief 批量登记或更新类、接口与成员（单事务，预编译语句复用）。
@@ -675,19 +795,27 @@ public:
     /// - interfaces 整表替换（删除该类的旧行后按声明顺序重插）。
     /// - 成员按 (kind, name, descriptor) upsert access；库内已有但本批未提及的
     ///   成员保留（身份只增不删）。
+    /// - `batchId` 首参挂靠批次（#143 批 3）：0 = 无批写入（类事实归属悬空）；
+    ///   非 0 必须是未收尾的已注册批次（否则 `Invalid`），命中后逐类落
+    ///   (2, class_id) 作用域行——full_import 的逐类作用域行是 classOwnership
+    ///   可答的必需项而非审计细节（PoC 263 行/次导入量级）。
     /// - 批内类名重复、接口重复、成员重复或字段非法 → `Invalid`，不写库。
     ///
     /// @return 处理的类数。
-    ca::Result<ca::usize, AnalysisDbError> ingestClasses(std::vector<DbClassInput> classes);
+    ca::Result<ca::usize, AnalysisDbError> ingestClasses(
+        ca::i64 batchId, std::vector<DbClassInput> classes);
 
     /// @brief 原子替换全部直接引用事实（单事务：清空 refs 后批量插入）。
     ///
     /// 来源类/方法必须已在库中（先 `ingestClasses`），否则整批回滚并保留旧
     /// refs。适合整库重建；方法体局部变更后的增量替换由上层切片。
+    /// `batchId` 首参挂靠批次（#143 批 3）：0 = 无批写入；非 0 必须是未收尾
+    /// 的已注册批次（否则 `Invalid`），命中后落 (0, 0) refs_all 作用域行——
+    /// 该锚覆盖全部引用切片，此后此前一切成员级归属被本批盖过。
     ///
     /// @return 写入的引用条数。
     ca::Result<ca::usize, AnalysisDbError> replaceReferences(
-        std::vector<DbReferenceRecord> references);
+        ca::i64 batchId, std::vector<DbReferenceRecord> references);
 
     /// @brief 原子替换单个源成员的直接引用事实（单事务切片替换）。
     ///
@@ -697,10 +825,13 @@ public:
     /// → `Invalid`）。@p sourceMemberId 不存在或不是方法、记录形状非法 →
     /// `Invalid`，旧切片保持不动；空输入 = 清空该成员的引用切片。适合方法
     /// 体编辑后的增量替换；整库重建用 `replaceReferences`。
+    /// `batchId` 首参挂靠批次（#143 批 3）：0 = 无批写入；非 0 必须是未收尾
+    /// 的已注册批次（否则 `Invalid`），命中后落 (3, member_id) 作用域行（类
+    /// 事实未触碰，不落 class 作用域行）。
     ///
     /// @return 写入的引用条数。
     ca::Result<ca::usize, AnalysisDbError> replaceReferencesFromMember(
-        ca::i64 sourceMemberId, std::vector<DbReferenceRecord> references);
+        ca::i64 batchId, ca::i64 sourceMemberId, std::vector<DbReferenceRecord> references);
 
     /// @brief 按内部名查类事实；未登记返回 `std::nullopt`。
     ca::Result<std::optional<DbClassInfo>, AnalysisDbError> findClass(
