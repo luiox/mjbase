@@ -13,6 +13,7 @@
 #include "mjbase/asm/analyzer/alias_analysis.hpp"
 #include "mjbase/jasm/classfile_utf8.hpp"
 #include "mjbase/asm/analyzer/reflection_interpreter.hpp"
+#include "mjbase/util/annotation_depth.hpp"
 
 namespace mjbase::asm_remapper {
 namespace {
@@ -147,9 +148,15 @@ AttrSlot* findAttrByName(const ClassFile& cf, std::vector<AttrSlot>& attrs,
 }
 
 /// @brief 解码属性槽并取指定形态的已解码体（可变）；失败/形态不符返回 nullptr。
+///
+/// 注解族槽先过嵌套深度预检（util/annotation_depth.hpp）：libjbc attr_codec
+/// 的 readAnnotation/readElemValue 互递归无深度上限（上游条目挂账），敌意
+/// 深嵌注解会在 decodeAttr 内栈溢出。预检拒绝的槽按「解不开原样保真」
+/// fail-open 跳过——重映射面少改一条注解，进程不被打爆。
 template <typename AttrT>
 AttrT* decodedAttrOf(ClassFile& cf, AttrSlot& slot)
 {
+    if (!util::attrSafeToDecode(cf, slot)) return nullptr;
     if (cf.decodeAttr(slot).is_err()) return nullptr;
     return ca::core::tag_cast::cast<AttrT>(slot.body.get());
 }
@@ -1304,6 +1311,9 @@ bool remapCodeMetadata(const RemapCtx& ctx, MemberInfo& method)
     if (code == nullptr) return false;
     bool changed = false;
     for (AttrSlot& nested : code->attrs) {
+        // 嵌套属性同样先过注解族深度预检（Code 内可挂注解族，见
+        // TypeAnnotationsAttr 头注挂载点）；预检拒绝按解不开原样保真。
+        if (!util::attrSafeToDecode(ctx.cf, nested)) continue;
         if (ctx.cf.decodeAttr(nested).is_err()) continue;   // 解不开的嵌套属性原样保真
         const AttrBody* body = nested.peek();
         if (body == nullptr) continue;
