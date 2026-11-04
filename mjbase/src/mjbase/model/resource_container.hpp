@@ -6,8 +6,8 @@
 /// addResource 的入参视图在调用返回后即可释放；visitResources /
 /// duplicateResourceUris 发出的视图指向 arena，容器存活期内有效。
 ///
-/// 重复条目纪律：addResource 对已知 URI first-wins
-/// 保留首条目（对齐 JVM 类加载），后条目丢弃并记录；有意替换走
+/// 重复条目纪律：addResource 对已知 URI last-wins
+/// 保留末条目（对齐 JVM 类加载实测口径），重复出现记录在案；有意静默替换走
 /// replaceResource / getResources()。
 #pragma once
 
@@ -34,7 +34,7 @@ class IResourceContainer
 {
 public:
     virtual ~IResourceContainer() = default;
-    /// @brief 添加资源，按 URI 索引；重复 URI first-wins 并记录（见实现）。
+    /// @brief 添加资源，按 URI 索引；重复 URI last-wins 并记录（见实现）。
     virtual void addResource(std::string_view uri, std::unique_ptr<IResource> resource) = 0;
     /// @brief 检查 URI 对应的资源是否存在。
     virtual bool hasResource(std::string_view uri) const = 0;
@@ -92,10 +92,10 @@ public:
 
     /// @brief 导入期间重复出现的条目名，按出现顺序记录（issue #962）。
     ///
-    /// 重复条目按 JVM 类加载语义 first-wins 保留首条目，后条目丢弃并记录
-    /// 在此。此前 last-wins 导入会让「工具分析的对象」与「JVM 实际加载的
-    /// 对象」错配。导入方应检查此列表并向用户告警。每次导入开始时清空
-    /// （见 beginImport）。视图借用容器 arena，容器存活期内有效。
+    /// 重复条目按 JVM 类加载实测口径 last-wins 保留末条目（mini jar 对照实验
+    /// 钉死，JDK 17.0.8：CEN 末现生效），每次冲突在此记一条。导入方应检查此
+    /// 列表并向用户告警。每次导入开始时清空（见 beginImport）。视图借用容器
+    /// arena，容器存活期内有效。
     [[nodiscard]] const std::vector<std::string_view>& duplicateResourceUris() const noexcept
     {
         return duplicateResourceUris_;

@@ -1,6 +1,6 @@
 /// @file        resource_io_test.cpp
 /// @brief       资源导入导出测试，
-///              12 用例；末尾 3 个为本批新增的 Result 错误面用例）。
+///              14 用例；末尾 3 个为本批新增的 Result 错误面用例）。
 #include <gtest/gtest.h>
 
 #include <functional>
@@ -121,6 +121,62 @@ TEST(MjModelIoTest, NonClassEntryBecomesUnknownResource)
     ASSERT_NE(res, nullptr);
     EXPECT_EQ(res->getType(), ResourceType::Unknown);
     EXPECT_EQ(res->getLocation(), "Baz.txt");
+}
+
+// ── 同名重复条目：JVM 类加载实测口径 last-wins（CEN 末现生效）──────────────
+
+// SSTO 实证形态（手工最小罐，不取真样本）：同一 .class 名挂「垃圾(2B) →
+// 垃圾(31B) → 真实类」三条同面条目。末现保留让真实类整条存活；每次冲突各记
+// 一条 duplicateResourceUris（计数 = 冲突次数）；非 Dup 名不受影响。
+TEST(MjModelIoTest, DuplicateEntryGarbageFrontRealClassWins)
+{
+    const std::vector<ca::u8> garbage2B{0xDE, 0xAD};
+    const std::vector<ca::u8> garbage31B(31, 0x7F);
+    FakeJarReader reader({
+        {"app/Dup.class", garbage2B},
+        {"app/Dup.class", garbage31B},
+        {"app/Dup.class", classMagicBytes()},
+        {"app/Solo.class", classMagicBytes()},
+    });
+    JarFileImporter   importer(reader);
+    ResourceContainer container;
+
+    ASSERT_TRUE(importer.importResource(container).is_ok());
+
+    EXPECT_EQ(container.size(), 2u);   // Dup + Solo
+    ASSERT_EQ(container.duplicateResourceUris().size(), 2u);
+    EXPECT_EQ(container.duplicateResourceUris()[0], "app/Dup.class");
+    EXPECT_EQ(container.duplicateResourceUris()[1], "app/Dup.class");
+    auto* dup = container.getResource("app/Dup.class");
+    ASSERT_NE(dup, nullptr);
+    // 末现 = 真实类；垃圾前置不吞真实类（first-wins 旧口径在此整条丢失真类）。
+    EXPECT_EQ(dup->getType(), ResourceType::Class);
+    EXPECT_EQ(dup->getLocation(), "app/Dup.class");
+    auto* solo = container.getResource("app/Solo.class");
+    ASSERT_NE(solo, nullptr);
+    EXPECT_EQ(solo->getType(), ResourceType::Class);
+}
+
+// 镜像态：真实类在前、垃圾在末——JVM 实测读到的就是垃圾（对照实验「垃圾在
+// 后读垃圾」），末现保留如实镜像该行为，不悄悄挑好的；口径一致是目的本身。
+TEST(MjModelIoTest, DuplicateEntryGarbageLastAlsoWinsAsJvmDoes)
+{
+    const std::vector<ca::u8> garbage2B{0xDE, 0xAD};
+    FakeJarReader reader({
+        {"app/Dup.class", classMagicBytes()},
+        {"app/Dup.class", garbage2B},
+    });
+    JarFileImporter   importer(reader);
+    ResourceContainer container;
+
+    ASSERT_TRUE(importer.importResource(container).is_ok());
+
+    EXPECT_EQ(container.size(), 1u);
+    ASSERT_EQ(container.duplicateResourceUris().size(), 1u);
+    EXPECT_EQ(container.duplicateResourceUris()[0], "app/Dup.class");
+    auto* dup = container.getResource("app/Dup.class");
+    ASSERT_NE(dup, nullptr);
+    EXPECT_EQ(dup->getType(), ResourceType::Unknown);
 }
 
 // 混合条目：*.class/ 归一化、*.class 正常、未知资源各就各位，互不干扰。

@@ -151,13 +151,17 @@ ModelResult<std::unique_ptr<ResourceContainer>> MountedContainerSet::mergedView(
         ModelResult<void>         failure = ca::Ok();
         source->visitResources([&](std::string_view uri, const IResource& resource) {
             if (failure.is_err()) return;
+            // 跨容器遮蔽：解析序首位保留（类路径口径，与 resolve() 一致）。
+            // 容器 addResource 现为 JVM 类加载末现口径（单 jar 命名空间维度），
+            // 本折叠面显式钉住解析序 first-wins——跨容器遮蔽的记录由栈侧
+            // shadowedEntries 承载（含容器 id），合并视图不再借 addResource 记
+            // duplicateResourceUris。
+            if (merged->hasResource(uri)) return;
             auto copied = cloneResourceOf(resource);
             if (!copied) {
                 failure = ca::Err(ModelError::BadArgument);
                 return;
             }
-            // first-wins + 重复记录由容器自身承载（resource_container.hpp 现状
-            // 语义）；跨容器遮蔽在栈侧 shadowedEntries 另有容器 id 记录。
             merged->addResource(uri, std::move(copied));
         });
         if (failure.is_err()) return ca::Err(ModelError::BadArgument);

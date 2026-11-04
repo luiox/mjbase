@@ -188,7 +188,7 @@ TEST(MjModelContainerStackTest, visitRoleFiltersContainersByRole)
     EXPECT_EQ(runtimeUris[0], "java/lang/Object.class");
 }
 
-TEST(MjModelContainerStackTest, mergedViewClonesFirstWinsWithDuplicateRecord)
+TEST(MjModelContainerStackTest, mergedViewClonesFirstWinsShadowRecordedAtStack)
 {
     auto primary = containerWith({{"com/x/A.class", kPrimaryMark}});
     auto library = containerWith({{"com/x/A.class", kLibraryMark}, {"com/x/B.class", kLibraryMark}});
@@ -201,11 +201,16 @@ TEST(MjModelContainerStackTest, mergedViewClonesFirstWinsWithDuplicateRecord)
     ASSERT_FALSE(merged.is_err());
     auto view = std::move(merged).unwrap();
     EXPECT_EQ(view->size(), 2u);
-    // first-wins：A 取 primary 字节；重复记录进容器自身 duplicateResourceUris。
+    // first-wins：A 取 primary 字节（类路径口径，与 resolve() 一致）。容器
+    // addResource 已改 JVM 类加载末现口径（单 jar 命名空间维度），合并视图在
+    // 折叠面显式钉住解析序首位，跨容器遮蔽记录归栈侧 shadowedEntries。
     ASSERT_NE(view->getResource("com/x/A.class"), nullptr);
     EXPECT_EQ(classOf(view->getResource("com/x/A.class"))->get().back(), kPrimaryMark);
-    ASSERT_EQ(view->duplicateResourceUris().size(), 1u);
-    EXPECT_EQ(view->duplicateResourceUris()[0], "com/x/A.class");
+    EXPECT_TRUE(view->duplicateResourceUris().empty());
+    ASSERT_EQ(stack.shadowedEntries().size(), 1u);
+    EXPECT_EQ(toStdString(stack.shadowedEntries()[0].uri), "com/x/A.class");
+    EXPECT_EQ(toStdString(stack.shadowedEntries()[0].winnerId), "app");
+    EXPECT_EQ(toStdString(stack.shadowedEntries()[0].shadowedId), "lib");
     // 合并视图独立于源容器（值克隆，改视图不伤源）。
     view->getResource("com/x/A.class");
 }

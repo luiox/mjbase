@@ -10,8 +10,9 @@
 ///
 /// 解析序裁决（RFC §5.2 角色化容器栈）：primary > library（按挂载序）>
 /// runtime（按挂载序）；同 URI 多容器出现时 first-wins 保留解析序首位条目，
-/// 其余记录进 shadowedEntries（对齐 IResourceContainer 的 JVM first-wins 纪律
-/// 与 workspace analysisScanContainer 的「主容器 URI 优先」先例）。
+/// 其余记录进 shadowedEntries（类路径口径：JVM 跨 classpath 条目按先见先加载，
+/// 与单 jar 内同名条目的 CEN 末现口径分属两个维度；另对齐 workspace
+/// analysisScanContainer 的「主容器 URI 优先」先例）。
 ///
 /// 生命周期纪律：容器对象借用（IResourceContainer* 非拥有）——所有权归调用
 /// 方，调用方保证容器存活覆盖本栈使用期。
@@ -95,10 +96,11 @@ public:
     void visitRole(ContainerRole                                                   role,
                    const std::function<void(std::string_view, const IResource&)>& visitor) const;
 
-    /// @brief 合并视图：按解析序把条目克隆进新 ResourceContainer（addResource
-    ///        first-wins + duplicateResourceUris 记录，resource_container.hpp
-    ///        现状语义）；喂既有索引/扫描面（ReferenceIndex::build 等）即
-    ///        xref/索引跨容器归并。
+    /// @brief 合并视图：按解析序把条目克隆进新 ResourceContainer（解析序
+    ///        first-wins：先到先得，同 URI 后续容器不再覆盖——类路径口径与
+    ///        resolve() 一致；跨容器遮蔽记录在栈侧 shadowedEntries，合并视图
+    ///        不产 duplicateResourceUris）；喂既有索引/扫描面
+    ///        （ReferenceIndex::build 等）即 xref/索引跨容器归并。
     ///
     /// 克隆失败（未知资源类型）返回 BadArgument——合并视图是全量交付，半份
     /// 视图比失败更危险。
