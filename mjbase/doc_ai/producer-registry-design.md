@@ -1,6 +1,6 @@
 # analysis-db producer 注册表设计（G5）
 
-状态：草案，2026-11-02。待评审，未落地。analysis-db 总体设计与身份模型见 [analysis-database.md](analysis-database.md)；本设计是 G 批次长计划 P6 的 G5 项，长计划定案见 #121 的 G 批次评论，对应蓝图第 4 步（producer 注册表、dirty 队列、局部事实存储与出边替换）的入口面。只定事实溯源与归属模型，不动任何事实的内容语义。
+状态：已落地（2026-11-05 状态回填）。producers/batches/batch_scopes 按本文落地；版本号按当时主线顺延为 schema v6（草案标注的 v5 已被先行合入的 refs 目标侧 id 化占用）。原稿 2026-11-02。analysis-db 总体设计与身份模型见 [analysis-database.md](analysis-database.md)；本设计是 G 批次长计划 P6 的 G5 项，长计划定案见 #121 的 G 批次评论，对应蓝图第 4 步（producer 注册表、dirty 队列、局部事实存储与出边替换）的入口面。只定事实溯源与归属模型，不动任何事实的内容语义。
 
 ## 1. 现状
 
