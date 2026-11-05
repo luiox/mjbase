@@ -4,7 +4,9 @@
 ///              v3 条目身份层的输入/条目登记、重导入匹配与墓碑语义；
 ///              v5 引用目标侧 id 化的行形状、CHECK 门、登记时序等价、
 ///              字节语义与查询计划回归；v8 方法版本指纹层的记录/查询
-///              闭环、版本历史与当前指针唯一、批量原子性、指纹字节往返。
+///              闭环、版本历史与当前指针唯一、批量原子性、指纹字节往返；
+///              v9 版本门对 v8 库的 fail-loud 拒绝（闭包面单测见
+///              reachability_closure_test.cpp）。
 #include <gtest/gtest.h>
 
 #include <sqlite3.h>
@@ -1580,6 +1582,14 @@ TEST(MjAnalysisDbTest, RejectsForeignSchemaVersionDatabase)
         auto error = std::move(rejected).unwrap_err();
         EXPECT_EQ(AnalysisDbErrorKind::Schema, error.kind);
         EXPECT_NE(std::string::npos, error.message.to_std_string().find("version 7"));
+    }
+    patchHeaderField(v2Path, 60, 8);   // v8：方法版本指纹层一代（v9 的直接前代）
+    {
+        auto rejected = AnalysisDb::open(refOf(v2Path.string()));
+        ASSERT_TRUE(rejected.is_err());
+        auto error = std::move(rejected).unwrap_err();
+        EXPECT_EQ(AnalysisDbErrorKind::Schema, error.kind);
+        EXPECT_NE(std::string::npos, error.message.to_std_string().find("version 8"));
     }
 
     const auto foreignPath = freshDbPath("entries_foreign_app");

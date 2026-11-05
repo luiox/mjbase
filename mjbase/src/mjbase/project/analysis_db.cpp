@@ -551,6 +551,7 @@ const char* batchKindToSql(DbBatchKind kind)
     case DbBatchKind::RefsSliceReplace: return "refs_slice_replace";
     case DbBatchKind::RenamesWrite: return "renames_write";
     case DbBatchKind::RulesWrite: return "rules_write";
+    case DbBatchKind::ClosureWrite: return "closure_write";
     }
     return nullptr;
 }
@@ -563,6 +564,7 @@ ca::Result<DbBatchKind, AnalysisDbError> batchKindFromSql(const std::string& tex
     if (text == "refs_slice_replace") return ca::Ok(DbBatchKind::RefsSliceReplace);
     if (text == "renames_write") return ca::Ok(DbBatchKind::RenamesWrite);
     if (text == "rules_write") return ca::Ok(DbBatchKind::RulesWrite);
+    if (text == "closure_write") return ca::Ok(DbBatchKind::ClosureWrite);
     return ca::Err(makeError(AnalysisDbErrorKind::Schema,
                              "batches row has an unknown kind: " + text));
 }
@@ -1703,12 +1705,13 @@ constexpr const char* kSchemaDdl[] = {
     // 批次是逻辑写入运行，不是事务：openBatch 落 started 行，各写入口在各自
     // 事务内写事实与作用域行，closeBatch 收尾。finished_at 空串 = 未收尾的
     // 残批（失败/中断），是合法审计状态，可读可见。kind 词表与 DbBatchKind
-    // 同源；renames_write / rules_write 为覆盖层与规则面消费方预留。
+    // 同源；renames_write / rules_write 为覆盖层与规则面消费方预留，
+    // closure_write 为可达闭包派生事实写入（v9 #159）。
     "CREATE TABLE batches("
     "  batch_id     INTEGER PRIMARY KEY AUTOINCREMENT,"
     "  producer_id  INTEGER NOT NULL REFERENCES producers(producer_id),"
     "  kind         TEXT NOT NULL CHECK(kind IN ('full_import','refs_replace',"
-    "               'refs_slice_replace','renames_write','rules_write')),"
+    "               'refs_slice_replace','renames_write','rules_write','closure_write')),"
     "  started_at   TEXT NOT NULL,"
     "  finished_at  TEXT NOT NULL DEFAULT '',"
     "  class_count  INTEGER NOT NULL DEFAULT 0,"
@@ -1757,6 +1760,33 @@ constexpr const char* kSchemaDdl[] = {
     // 版本历史索引：listMethodVersions 按 method_version_id 升序（单调分配
     // 序 = 记录序）走索引扫描，不排序、不裸扫。
     "CREATE INDEX method_versions_member ON method_versions(member_id, method_version_id)",
+    // 全程序可达闭包（v9，#159）：派生事实 = 可达方法成员集，批次挂既有
+    // producer 注册表（kind=closure_write）。closure_batches 挂批次主键记
+    // 元数据：graph_fingerprint 是闭包输入图指纹（32 字节 SHA-256，载荷见
+    // closureFingerprintPayload；变更敏感聚合口径，非内容寻址），fp_version
+    // 盖闭包算法版本字节（仿 method_versions fp_version 模式，旧行自证版本
+    // 位），seed_mask/coverage_mask 是种子档位与输入覆盖度位词表，
+    // computed_at 与 renames/producers 同为 ISO-8601 UTC 文本。
+    "CREATE TABLE closure_batches("
+    "  batch_id          INTEGER PRIMARY KEY REFERENCES batches(batch_id),"
+    "  graph_fingerprint BLOB NOT NULL CHECK(length(graph_fingerprint)=32),"
+    "  fp_version        INTEGER NOT NULL CHECK(fp_version>=1),"
+    "  seed_mask         INTEGER NOT NULL DEFAULT 0,"
+    "  seed_count        INTEGER NOT NULL DEFAULT 0,"
+    "  coverage_mask     INTEGER NOT NULL DEFAULT 0,"
+    "  indy_edge_count   INTEGER NOT NULL DEFAULT 0,"
+    "  member_count      INTEGER NOT NULL DEFAULT 0,"
+    "  computed_at       TEXT NOT NULL"
+    ")",
+    // 可达成员集（闭包结果本体）：(batch_id, member_id) 主键即数据（WITHOUT
+    // ROWID，行 16B 量级）；删批级联与成员身份级联同既有事实表口径。
+    "CREATE TABLE closure_members("
+    "  batch_id  INTEGER NOT NULL REFERENCES batches(batch_id) ON DELETE CASCADE,"
+    "  member_id INTEGER NOT NULL REFERENCES members(member_id) ON DELETE CASCADE,"
+    "  PRIMARY KEY(batch_id, member_id)"
+    ") WITHOUT ROWID",
+    // member 反查索引：服务「哪些闭包含此成员」的反向查询；前向分页走主键。
+    "CREATE INDEX closure_members_member ON closure_members(member_id)",
 };
 
 /// @brief 全部后代闭包 SQL（allSubclasses / allSubclassesPaged 共用）；
@@ -5067,6 +5097,502 @@ ca::Result<DbMethodVersionRecordStats, AnalysisDbError> AnalysisDb::recordMethod
         return errorOf(std::move(result));
     }
     return ca::Ok(stats);
+}
+
+//-- 全程序可达闭包（closure_batches / closure_members，schema v9，#159）----------
+
+constexpr const char* kClosureBatchSelectSql =
+    "SELECT cb.batch_id, cb.graph_fingerprint, cb.fp_version, cb.seed_mask, cb.seed_count, "
+    "cb.coverage_mask, cb.indy_edge_count, cb.member_count, cb.computed_at "
+    "FROM closure_batches cb";
+
+/// @brief 读一行闭包批次事实（三处查询面共用；列序 = kClosureBatchSelectSql）。
+DbClosureBatchInfo readClosureBatchRow(sqlite3_stmt* statement)
+{
+    DbClosureBatchInfo row;
+    row.batchId = sqlite3_column_int64(statement, 0);
+    const auto* fingerprint =
+        static_cast<const ca::u8*>(sqlite3_column_blob(statement, 1));
+    const int fingerprintBytes = sqlite3_column_bytes(statement, 1);
+    if (fingerprint != nullptr && fingerprintBytes > 0) {
+        row.fingerprint.assign(fingerprint, fingerprint + fingerprintBytes);
+    }
+    row.fpVersion     = static_cast<ca::u32>(sqlite3_column_int64(statement, 2));
+    row.seedMask      = static_cast<ca::u32>(sqlite3_column_int64(statement, 3));
+    row.seedCount     = sqlite3_column_int64(statement, 4);
+    row.coverageMask  = static_cast<ca::u32>(sqlite3_column_int64(statement, 5));
+    row.indyEdgeCount = sqlite3_column_int64(statement, 6);
+    row.memberCount   = sqlite3_column_int64(statement, 7);
+    row.computedAt    = utf8Column(statement, 8);
+    return row;
+}
+
+/// @brief 闭包批凭证探取：closure_batches 主键行即「是闭包批」的凭证
+///        （storeClosureBatch 是唯一写入口）。不存在 → `Invalid`，查询面
+///        与 listEntries / listBatches 对未知 id 同口径。
+ca::Result<void, AnalysisDbError> requireClosureBatch(sqlite3* db, ca::i64 batchId)
+{
+    auto prepared = prepare(db, "SELECT 1 FROM closure_batches WHERE batch_id=?1");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindInt(db, statement.raw, 1, batchId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasRow = step(db, statement.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    if (!hasRow.unwrap()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "closure batch does not exist: " + std::to_string(batchId)));
+    }
+    return ca::Ok();
+}
+
+/// @brief 闭包批存在性校验 + 分页：member_id 升序 OFFSET 窗口（闭包行键唯一、
+///        排序确定，分页契约与引用分页一致）。
+ca::Result<std::vector<ca::i64>, AnalysisDbError> readClosureMembersPaged(
+    sqlite3* db, ca::i64 batchId, ca::i64 limit, ca::i64 offset)
+{
+    if (auto checked = requireClosureBatch(db, batchId); checked.is_err()) {
+        return errorOf(std::move(checked));
+    }
+    auto prepared = prepare(db, "SELECT member_id FROM closure_members WHERE batch_id=?1 "
+                                "ORDER BY member_id LIMIT ?2 OFFSET ?3");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindInt(db, statement.raw, 1, batchId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(db, statement.raw, 2, limit); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(db, statement.raw, 3, offset); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    std::vector<ca::i64> members;
+    while (true) {
+        auto hasRow = step(db, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+        members.push_back(sqlite3_column_int64(statement.raw, 0));
+    }
+    return ca::Ok(std::move(members));
+}
+
+/// @brief 载荷定宽编码：u32/i64 小端逐字节追加（canonical 序列化只需进程内
+///        确定性——载荷不持久化，库里只存哈希）。
+void appendU32Le(std::vector<ca::u8>& out, ca::u32 value)
+{
+    for (int i = 0; i < 4; ++i) {
+        out.push_back(static_cast<ca::u8>((value >> (8 * i)) & 0xFFu));
+    }
+}
+
+void appendI64Le(std::vector<ca::u8>& out, ca::i64 value)
+{
+    const auto bits = static_cast<ca::u64>(value);
+    for (int i = 0; i < 8; ++i) {
+        out.push_back(static_cast<ca::u8>((bits >> (8 * i)) & 0xFFu));
+    }
+}
+
+/// @brief 追加一张表的变更敏感聚合三元组（COUNT/MAX/SUM，空表 COALESCE 0）。
+ca::Result<void, AnalysisDbError> appendAggregateTriple(std::vector<ca::u8>& out,
+                                                        sqlite3*             db,
+                                                        const char*          sql)
+{
+    auto prepared = prepare(db, sql);
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    auto hasRow    = step(db, statement.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    if (!hasRow.unwrap()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Schema,
+                                 std::string("aggregate query returned no row: ") + sql));
+    }
+    for (int column = 0; column < 3; ++column) {
+        appendI64Le(out, sqlite3_column_int64(statement.raw, column));
+    }
+    return ca::Ok();
+}
+
+ca::Result<DbClosureBatchInfo, AnalysisDbError> AnalysisDb::storeClosureBatch(
+    const DbClosureBatchRecord& record)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+    if (record.producerId <= 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "producer id must be positive"));
+    }
+    if (record.fingerprint.size() != 32) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "closure graph fingerprint must be 32 bytes"));
+    }
+    if (record.fpVersion < 1) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "closure fp version must be positive"));
+    }
+    if (record.seedCount < 0 || record.indyEdgeCount < 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "closure counts must not be negative"));
+    }
+    for (ca::usize i = 0; i < record.memberIds.size(); ++i) {
+        if (record.memberIds[i] <= 0) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     "closure member ids must be positive"));
+        }
+        if (i > 0 && record.memberIds[i] <= record.memberIds[i - 1]) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     "closure member ids must be sorted and unique"));
+        }
+    }
+
+    // 开批（closure_write）：openBatch 承担注册校验与批次行落库。事实段
+    // 中途失败不回滚批次行——残批是合法审计状态（设计稿 §6）。
+    auto opened = openBatch(record.producerId, DbBatchKind::ClosureWrite);
+    if (opened.is_err()) return errorOf(std::move(opened));
+    const ca::i64 batchId = opened.unwrap();
+
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
+
+    {
+        auto inserted = prepare(impl_->handle,
+                                "INSERT INTO closure_batches(batch_id, graph_fingerprint, "
+                                "fp_version, seed_mask, seed_count, coverage_mask, "
+                                "indy_edge_count, member_count, computed_at) "
+                                "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)");
+        if (inserted.is_err()) return errorOf(std::move(inserted));
+        auto statement = std::move(inserted).unwrap();
+        if (auto result = bindInt(impl_->handle, statement.raw, 1, batchId);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindBlob(impl_->handle, statement.raw, 2,
+                                   record.fingerprint.data(),
+                                   static_cast<int>(record.fingerprint.size()));
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw, 3,
+                                  static_cast<ca::i64>(record.fpVersion));
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw, 4,
+                                  static_cast<ca::i64>(record.seedMask));
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw, 5, record.seedCount);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw, 6,
+                                  static_cast<ca::i64>(record.coverageMask));
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw, 7, record.indyEdgeCount);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw, 8,
+                                  static_cast<ca::i64>(record.memberIds.size()));
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result =
+                bindText(impl_->handle, statement.raw, 9,
+                         ca::str::Utf8StringRef::from_string_view(nowIso8601()));
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto done = step(impl_->handle, statement.raw);
+        if (done.is_err()) return errorOf(std::move(done));
+    }
+    {
+        // 成员集批量插入（预编译复用；未登记成员由 FK 在此拒绝，事务回滚留残批）。
+        auto inserted =
+            prepare(impl_->handle, "INSERT INTO closure_members(batch_id, member_id) VALUES(?1, ?2)");
+        if (inserted.is_err()) return errorOf(std::move(inserted));
+        auto statement = std::move(inserted).unwrap();
+        for (const ca::i64 memberId : record.memberIds) {
+            if (auto result = bindInt(impl_->handle, statement.raw, 1, batchId);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindInt(impl_->handle, statement.raw, 2, memberId);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            auto done = step(impl_->handle, statement.raw);
+            if (done.is_err()) return errorOf(std::move(done));
+            resetStatement(statement);
+        }
+    }
+    {
+        // 类域作用域行：从成员集经 members.class_id 派生（批内去重由
+        // batch_scopes 主键承担），不经输入携带、不可能与成员集漂移。
+        auto inserted = prepare(impl_->handle,
+                                "INSERT INTO batch_scopes(batch_id, scope_kind, scope_id) "
+                                "SELECT ?1, 2, m.class_id FROM closure_members cm "
+                                "JOIN members m ON m.member_id = cm.member_id "
+                                "WHERE cm.batch_id = ?1 GROUP BY m.class_id");
+        if (inserted.is_err()) return errorOf(std::move(inserted));
+        auto statement = std::move(inserted).unwrap();
+        if (auto result = bindInt(impl_->handle, statement.raw, 1, batchId);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto done = step(impl_->handle, statement.raw);
+        if (done.is_err()) return errorOf(std::move(done));
+    }
+
+    if (auto result = txn.commit(); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    DbBatchCounts counts;
+    counts.memberCount = static_cast<ca::i64>(record.memberIds.size());
+    if (auto result = closeBatch(batchId, counts); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    auto prepared = prepare(
+        impl_->handle,
+        (std::string(kClosureBatchSelectSql) + " WHERE cb.batch_id=?1").c_str());
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindInt(impl_->handle, statement.raw, 1, batchId);
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasRow = step(impl_->handle, statement.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    if (!hasRow.unwrap()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Schema,
+                                 "closure batch row vanished after insert: " +
+                                     std::to_string(batchId)));
+    }
+    return ca::Ok(readClosureBatchRow(statement.raw));
+}
+
+ca::Result<std::vector<DbClosureBatchInfo>, AnalysisDbError> AnalysisDb::listClosureBatches() const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    auto prepared = prepare(impl_->handle,
+                            (std::string(kClosureBatchSelectSql) + " ORDER BY cb.batch_id")
+                                .c_str());
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    std::vector<DbClosureBatchInfo> batches;
+    while (true) {
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+        batches.push_back(readClosureBatchRow(statement.raw));
+    }
+    return ca::Ok(std::move(batches));
+}
+
+ca::Result<std::optional<DbClosureBatchInfo>, AnalysisDbError> AnalysisDb::freshClosureBatch(
+    const std::vector<ca::u8>& fingerprint, ca::u32 seedMask) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (fingerprint.size() != 32) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "closure graph fingerprint must be 32 bytes"));
+    }
+    auto prepared = prepare(impl_->handle,
+                            (std::string(kClosureBatchSelectSql) +
+                             " JOIN batches b ON b.batch_id = cb.batch_id "
+                             "WHERE cb.graph_fingerprint=?1 AND cb.seed_mask=?2 "
+                             "AND b.finished_at != '' "
+                             "ORDER BY cb.batch_id DESC LIMIT 1")
+                                .c_str());
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindBlob(impl_->handle, statement.raw, 1, fingerprint.data(),
+                               static_cast<int>(fingerprint.size()));
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(impl_->handle, statement.raw, 2,
+                              static_cast<ca::i64>(seedMask));
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasRow = step(impl_->handle, statement.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    if (!hasRow.unwrap()) return ca::Ok(std::optional<DbClosureBatchInfo>());
+    return ca::Ok(std::optional<DbClosureBatchInfo>(readClosureBatchRow(statement.raw)));
+}
+
+ca::Result<std::vector<ca::i64>, AnalysisDbError> AnalysisDb::closureMembersPaged(
+    ca::i64 batchId, ca::i64 limit, ca::i64 offset) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto result = validatePageWindow(limit, offset); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    return readClosureMembersPaged(impl_->handle, batchId, limit, offset);
+}
+
+ca::Result<bool, AnalysisDbError> AnalysisDb::isClosureMember(ca::i64 batchId,
+                                                              ca::i64 memberId) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (memberId <= 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "member id must be positive"));
+    }
+    if (auto checked = requireClosureBatch(impl_->handle, batchId); checked.is_err()) {
+        return errorOf(std::move(checked));
+    }
+    auto prepared = prepare(impl_->handle,
+                            "SELECT 1 FROM closure_members WHERE batch_id=?1 AND member_id=?2 "
+                            "LIMIT 1");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindInt(impl_->handle, statement.raw, 1, batchId);
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(impl_->handle, statement.raw, 2, memberId);
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasRow = step(impl_->handle, statement.raw);
+    if (hasRow.is_err()) return errorOf(std::move(hasRow));
+    return ca::Ok(hasRow.unwrap());
+}
+
+ca::Result<DbClosureGraphEdges, AnalysisDbError> AnalysisDb::closureGraphEdges() const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    // 全量快照单查询（PoC M2 裁决：批量装载胜过 per-member 反查一个数量级）。
+    // 只收方法体行（source_member_id 非空）——class 级引用（类头声明）不触发
+    // JVM 初始化；文本分支行经 classes.internal_name 探取已登记 owner 类，
+    // 未登记目标不入闭包域（设计稿 §8）。行序 ref_id 升序（确定性）。
+    auto prepared = prepare(
+        impl_->handle,
+        "SELECT r.source_member_id, r.ref_kind, "
+        "COALESCE(r.target_member_id, 0), COALESCE(r.target_class_id, 0), "
+        "COALESCE((SELECT c.class_id FROM classes c "
+        "          WHERE c.internal_name = r.target_class), 0) "
+        "FROM refs r "
+        "WHERE r.source_member_id IS NOT NULL "
+        "AND (r.target_member_id IS NOT NULL OR r.target_class_id IS NOT NULL "
+        "     OR EXISTS (SELECT 1 FROM classes c WHERE c.internal_name = r.target_class)) "
+        "ORDER BY r.ref_id");
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+
+    DbClosureGraphEdges edges;
+    while (true) {
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+
+        const ca::i64 source  = sqlite3_column_int64(statement.raw, 0);
+        const ca::i64 refKind = sqlite3_column_int64(statement.raw, 1);
+        const ca::i64 target  = sqlite3_column_int64(statement.raw, 2);
+        const ca::i64 idTrigger   = sqlite3_column_int64(statement.raw, 3);
+        const ca::i64 textTrigger = sqlite3_column_int64(statement.raw, 4);
+
+        if (refKind == static_cast<ca::i64>(DbReferenceKind::Method) && target > 0) {
+            edges.methodEdges.emplace_back(source, target);
+        }
+        if (idTrigger > 0) edges.classTriggers.emplace_back(source, idTrigger);
+        if (textTrigger > 0) edges.textBranchClassTriggers.emplace_back(source, textTrigger);
+    }
+    return ca::Ok(std::move(edges));
+}
+
+ca::Result<std::vector<ca::u8>, AnalysisDbError> AnalysisDb::closureFingerprintPayload(
+    ca::u32 fpVersion) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+
+    std::vector<ca::u8> payload;
+    appendU32Le(payload, fpVersion);
+
+    {
+        // inputs 投影（input_id 升序）：(input_id, size, path 长度前缀 + 字节，
+        // sha256 ASCII)。path 长度前缀消除分隔符歧义（canonical 序列化）。
+        auto inputCount = queryScalarInt(impl_->handle, "SELECT COUNT(*) FROM inputs");
+        if (inputCount.is_err()) return errorOf(std::move(inputCount));
+        appendI64Le(payload, inputCount.unwrap());
+
+        auto prepared = prepare(impl_->handle,
+                                "SELECT input_id, size, path, sha256 FROM inputs "
+                                "ORDER BY input_id");
+        if (prepared.is_err()) return errorOf(std::move(prepared));
+        auto statement = std::move(prepared).unwrap();
+        while (true) {
+            auto hasRow = step(impl_->handle, statement.raw);
+            if (hasRow.is_err()) return errorOf(std::move(hasRow));
+            if (!hasRow.unwrap()) break;
+
+            appendI64Le(payload, sqlite3_column_int64(statement.raw, 0));
+            appendI64Le(payload, sqlite3_column_int64(statement.raw, 1));
+            const std::string path = textColumn(statement.raw, 2);
+            appendU32Le(payload, static_cast<ca::u32>(path.size()));
+            payload.insert(payload.end(), path.begin(), path.end());
+            const std::string sha256 = textColumn(statement.raw, 3);
+            payload.insert(payload.end(), sha256.begin(), sha256.end());
+        }
+    }
+
+    // 四表变更敏感聚合：refs 聚合含 SUM(ref_id)——ref_id 单调不复用，任何
+    // 整库/切片替换必改聚合（设计稿 §5 的 fail-safe 失效方向）。
+    if (auto result = appendAggregateTriple(
+            payload, impl_->handle,
+            "SELECT COUNT(*), COALESCE(MAX(class_id),0), COALESCE(SUM(class_id),0) "
+            "FROM classes");
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = appendAggregateTriple(
+            payload, impl_->handle,
+            "SELECT COUNT(*), COALESCE(MAX(class_id),0), COALESCE(SUM(class_id),0) "
+            "FROM interfaces");
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = appendAggregateTriple(
+            payload, impl_->handle,
+            "SELECT COUNT(*), COALESCE(MAX(member_id),0), COALESCE(SUM(member_id),0) "
+            "FROM members");
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = appendAggregateTriple(
+            payload, impl_->handle,
+            "SELECT COUNT(*), COALESCE(MAX(ref_id),0), COALESCE(SUM(ref_id),0) FROM refs");
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    return ca::Ok(std::move(payload));
 }
 
 }   // namespace mjbase::project

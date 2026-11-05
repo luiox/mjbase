@@ -924,3 +924,21 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   本就是体级分析件（只吃 analysis/cp_refs + asm/analyzer 面），整迁
   asm/analyzer/（ns reference→asm_analyzer），member_remapper 消费转模
   块内。终态真零环：asm⇏reference，唯一方向 reference⇒asm。
+- [x] #159 全程序方法可达闭包入分析库（CHA，schema v9，2026-11-05）：
+  闭包作为派生事实落分析库——refs 主图（整数对方法边 + id/文本两分支
+  clinit 触发行；class 级引用行不触发，类头声明不初始化）、保守族展开
+  （refs 无 opcode 位，方法边一律族展开；sibling default 冲突并集不做
+  most-specific）、clinit 首触（Type/Field/Method 引用「可能首触」）沿
+  super 链传递；种子三档 entry_points / keep_roots / 显式清单；落库
+  closure_batches + closure_members 两新表挂 producer 注册表
+  （closure_write 批，scope 类域从成员集派生）；复用判定 = 输入图指纹
+  （inputs 投影 + classes/interfaces/members/refs 变更敏感聚合，ref_id
+  单调保证任何 refs 重写必失效）+ seed_mask 双匹配，不匹配整体重算落
+  新批；v8→v9 fail-loud 不迁移。设计稿
+  doc_ai/reachability-closure-design.md（PR #161）含 PoC 全量数字
+  （混淆语料 A 4179 类：keep 档闭包 29999 行 / 62.9ms，保守口径差集
+  +3.1%，indy 补充边净增量 0，落库增量 +0.35MiB；refs 分块装载
+  627.7s，全容器 index build >20min 未收敛的规模观察归扫描面性能批）。
+  实现批全量 unittest 2224 例 2221 绿 3 既有跳过，对基线（2213 例
+  2210 绿 3 跳过 @7999684）零新增红。挂账：RTA 精度档（子树收窄、
+  实例化集合）后置批；indy 补充边射入（coverage bit1）随后置批。

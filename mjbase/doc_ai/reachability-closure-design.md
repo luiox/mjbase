@@ -73,7 +73,7 @@ F = SHA-256( fp_version ‖ inputs 投影 ‖ classes 聚合 ‖ interfaces 聚�
 - refs 聚合 = (COUNT(*), MAX(ref_id), SUM(ref_id))——refs 全部写入口（整库替换、成员切片替换）都是删后重插，AUTOINCREMENT 保证 ref_id 单调不复用：任一行增删必然改变三元组之一。同内容重写也会改变 ref_id 集（假阳性失效→重算，fail-safe 方向），假阴性（改了图而聚合不变）经公开写入口不可达。
 - 聚合口径是变更敏感而非碰撞抗性定位：指纹匹配 = 「输入状态自上次计算以来未动」，用于复用判定；不为内容寻址，不承诺密码学抗碰撞（重算代价低，误判方向是重算）。
 
-失效语义：指纹不匹配 → 拒复用，整体重算落新批次；不做增量修补（增量闭包修补需要脏传播面，成本与收益不匹配，整体重算在 PoC 规模秒级完成）。改名/编辑后类与成员身份稳定（id 只增不删），refs 与类事实的变更经聚合捕获；重命名覆盖层不参与指纹（显示名与可达性无关）。
+失效语义：指纹不匹配 → 拒复用，整体重算落新批次；不做增量修补（增量闭包修补需要脏传播面，成本与收益不匹配，整体重算在 PoC 规模秒级完成）。复用判定 = 指纹 + seed_mask 双匹配——种子档位是计算输入的一部分，同图不同档位的闭包集不同，不可互复用（档位落在 closure_batches.seed_mask 列，fresh 判定在批次行上比对）。改名/编辑后类与成员身份稳定（id 只增不删），refs 与类事实的变更经聚合捕获；重命名覆盖层不参与指纹（显示名与可达性无关）。
 
 schema 版本 v8 → v9，fail-loud 版本门纪律延续：`kAnalysisDbSchemaVersion = 9`，打开时 user_version 连同 application_id 与 meta.kind 一并校验，不识别的版本拒绝打开（旧 v8 库拒绝，给可诊断文案，对齐 0.0.14-0.0.17 的版本门风格），不提供自动迁移，旧库处置 = 重导入重建。closure 两表与 batches.kind 新词只进 v9 DDL，不 touch 既有表列序。
 
@@ -81,7 +81,7 @@ schema 版本 v8 → v9，fail-loud 版本门纪律延续：`kAnalysisDbSchemaVe
 
 计算面落 `mjbase/src/mjbase/project/reachability_closure.{hpp,cpp}`（与 analysis_db 同模块，消费其读取面与写入面；不新增 target）：
 
-- 入口 `computeAndStoreReachabilityClosure(db, producerId, options)`：指纹命中已收尾批 → 复用不重算（reused=true）；未命中 → 装载图、算闭包、落批。种子三档叠加（entry_points / keep_roots / 显式 member_id 清单，未知 id 拒绝），全空拒绝。
+- 入口 `computeAndStoreReachabilityClosure(db, producerId, options)`：指纹与 seed_mask 双匹配已收尾批 → 复用不重算（reused=true）；未命中 → 装载图、算闭包、落批。种子三档叠加（entry_points / keep_roots / 显式 member_id 清单，未知 id 拒绝），全空拒绝。
 - 主算法：worklist 闭包（BIFO）。层次等价族从 DB 类事实构建并查集（super 边 + 接口边合并同签名虚方法，同 MethodHierarchy override 族语义），族内具体方法按族缓存一次预算；方法边一律保守族展开（refs 无 opcode 位，静态/私有目标族退化为自身；M5 实测保守口径与带 opcode 口径差集 +927 行 / +3.1%，方向恒为超集，§7）；clinit 触发边按 §3 口径（Type/Field 引用 + 方法边，沿 super 链传递）。邻接获取按 PoC 数据裁决（§7 M2）：per-member 预编译 SQL 反查 vs 批量快照装载。
 - 确定性：种子升序入队、邻接按 target 升序去重、FIFO worklist、族展开升序去重——同输入双算成员集逐字节一致（验收项）。
 - 原子写：openBatch（closure_write 批）后，closure_batches / closure_members / batch_scopes 单事务落库，closeBatch 收尾；中途失败留残批不写事实行——批次是逻辑运行记录不是事务，残批合法。
