@@ -33,6 +33,7 @@
 #include "mjbase/pass/local_variable_annotator.hpp"
 #include "mjbase/pass/junk_code_inserter.hpp"
 #include "mjbase/pass/meta_info_remover.hpp"
+#include "mjbase/pass/method_inliner.hpp"
 #include "mjbase/pass/nop_remover.hpp"
 #include "mjbase/pass/pop_unused_local_variables.hpp"
 #include "mjbase/pass/redundant_jump_remover.hpp"
@@ -492,6 +493,15 @@ PassNameRegistry makeDefaultRegistry()
         "IdentityWrapperInliner",
         [] { return std::make_unique<mjbase::pass::IdentityWrapperInliner>(); },
         "Rewrite invokestatic call sites of pure forwarder shells to their final targets."));
+    // opt pass 波次（基础版小方法内联，C 方法级指令变换组 method_inliner
+    // 对位件）：预算内纯函数小方法体克隆进调用点（invokestatic 静态跨类 /
+    // invokespecial 同类 private），参数落 fresh 槽 + return 汇合统一出口。
+    // 纯度不可证/异常表/监视器/回边/递归/虚调用 fail-closed 拒收。标签：
+    // scope:global / action:inline / stability:opt-in（默认链不收，
+    // CLI -p 显式点名）。
+    seed(reg.registerGlobalPass(
+        "MethodInliner", [] { return std::make_unique<mjbase::pass::MethodInliner>(); },
+        "Inline provable-pure small static/private method bodies into their call sites."));
     return reg;
 }
 
