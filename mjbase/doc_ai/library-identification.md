@@ -1,5 +1,7 @@
 # 已知库识别（library identification）
 
+状态：部分落地（2026-11-05 状态回填）。L1 前缀分类已落地（census origin 列，library_origin jdk/known/unknown）；shape_fp 与 L2 形状匹配未落地，待批。原稿 2026-11-02。
+
 ## 要解决的问题
 
 拿到一个混淆过的 jar，现在没法回答「哪些类其实是 gson、kotlin-stdlib、JDK」。分不出来有三个代价：census 基线的数字被库代码污染；rename 连库符号一起改，映射文件全是噪音；分析查询被 JDK 内部调用淹没。
