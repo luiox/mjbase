@@ -9,6 +9,8 @@
 3. 代码面不得引用设计内容形态的 ``.md``。白名单只有流程文档（AGENTS/dev_plan/
    README/CHANGELOG）；跨仓出处必须带仓名标记（libjbc / mbase / mjt / 私有仓），
    带标记即视为 prose，不做存在性校验。
+4. RST 里「``X`` 头注」指向微观层：``X`` 必须是某个 ``@defgroup`` 组名或某个头文件名。
+   宏观规格不许指向不存在的组注释——那一半内容就失踪了。
 
 用法：python mjbase/doc/check_refs.py [仓库根]
 """
@@ -38,6 +40,23 @@ MD_MENTION = re.compile(r"[\w./-]*[\w-]\.md\b")
 REF_ROLE = re.compile(r":ref:`([^>`]+)`")
 DOC_ROLE = re.compile(r":doc:`([^>`]+)`")
 ANON_LINK = re.compile(r"`[^`]*\.(?:md|rst) <([^`>]+\.(?:md|rst))>`_{1,2}")
+HEADNOTE = re.compile(r"([A-Za-z_][\w.-]*)(?:\{[\w-]+\})? 头注")
+DEFGROUP = re.compile(r"@defgroup\s+([\w.-]+)")
+
+
+def micro_targets(src_root: Path):
+    """微观层可被「X 头注」点名的锚点：@defgroup 组名 + 头文件名/.stem。"""
+    groups, headers = set(), set()
+    if not src_root.is_dir():
+        return groups, headers
+    for p in src_root.rglob("*.hpp"):
+        headers.add(p.name)
+        headers.add(p.stem)
+        for _, line in iter_lines(p):
+            m = DEFGROUP.search(line)
+            if m:
+                groups.add(m.group(1))
+    return groups, headers
 
 
 def code_files(root: Path):
@@ -103,6 +122,7 @@ def check(root: Path):
     labels, rst_files, dup = collect_labels(doc_dir)
     problems += dup
     in_tree = toctree_entries(doc_dir / "index.rst")
+    groups, headers = micro_targets(root / "mjbase" / "src")
 
     # RST 侧：文档内链必须指向在册文件/已声明 label，匿名 md/rst 链接一律禁止。
     for p in sorted(doc_dir.rglob("*.rst")):
@@ -133,6 +153,14 @@ def check(root: Path):
                 target = m.group(1).split("<")[-1].strip().rstrip(">, ")
                 if target and Path(target).name not in rst_files and Path(target).stem not in {f[:-4] for f in rst_files}:
                     problems.append(f"{p.name}:{lineno}: :doc:`{target}` 指向不在册文件")
+            for m in HEADNOTE.finditer(line):
+                target = m.group(1)
+                if target in groups or target in headers:
+                    continue
+                problems.append(
+                    f"{p.name}:{lineno}: 「{target} 头注」在微观层无锚点——"
+                    f"应为 @defgroup 组名或头文件名（现有组：{', '.join(sorted(groups)) or '无'}）"
+                )
 
     # 代码面：只允许指向 RST 规格层的引用。
     for f in code_files(root):

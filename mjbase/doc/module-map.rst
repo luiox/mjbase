@@ -50,8 +50,8 @@ mjbase 模块地图
    * - asm/analyzer
      - ✅
      - asm/analyzer
-     - 常量域、来源域、可空性事实域、跳转走向事实（branch_facts）、跨路径整数约束事实（path_conditions：分支谓词贴边、must 交集、死分支修剪，见 path-conditions 头注）、字符串/常量流事实（string_flow：来源、逃逸、Base64/XOR/char 偏移管线）+ 入参常量种子 + slot 级 def-use（有界到达定义集、异常边、字段访问事实，见 slot-def-use 头注）
-     - jbc::analysis::DomainEngine + IValueDomain；引擎缺口挂账：分支条件钩子、CHECKCAST 族 operand-aware 钩子；string_flow 设计见 string-flow 头注
+     - 常量域、来源域、可空性事实域、跳转走向事实（branch_facts）、跨路径整数约束事实（path_conditions：分支谓词贴边、must 交集、死分支修剪，见 path_conditions 头注）、字符串/常量流事实（string_flow：来源、逃逸、Base64/XOR/char 偏移管线）+ 入参常量种子 + slot 级 def-use（有界到达定义集、异常边、字段访问事实，见 slot_def_use 头注）
+     - jbc::analysis::DomainEngine + IValueDomain；引擎缺口挂账：分支条件钩子、CHECKCAST 族 operand-aware 钩子；string_flow 设计见 string_flow 头注
    * - asm/tmatcher
      - ✅
      - asm/tmatcher
@@ -76,7 +76,7 @@ mjbase 模块地图
      - ✅
      - 新设计（issue #5）
      - 保守结构化语句层：块级 if/while/for/do-while、语句↔指令窗口双映射、叶子整窗写回
-     - asm_cfg 快照 + CodeEditor insert/eraseBatch；见 statement-ir 头注
+     - asm_cfg 快照 + CodeEditor insert/eraseBatch；见 statement_ir 头注
    * - asm/sem
      - ✅
      - 新设计（issue #115）
@@ -202,7 +202,7 @@ mjbase 模块地图
    * - reference
      - ✅（重设计）
      - reference
-     - reference_index（.ridx 缓存读写）/reflection_interpreter/reflection_binding_analyzer/global_reachability + asm/classpath/resolved_call_graph + field_access_graph（调用边传播的字段读写摘要，见 field-access-graph 头注）；根来源 provider 化（keep 规则/档位 + main 发现，共享 entry_points 谓词）
+     - reference_index（.ridx 缓存读写）/reflection_interpreter/reflection_binding_analyzer/global_reachability + asm/classpath/resolved_call_graph + field_access_graph（调用边传播的字段读写摘要，见 field_access_graph 头注）；根来源 provider 化（keep 规则/档位 + main 发现，共享 entry_points 谓词）
      - alias 经 aliasMemberKey 建键消费；.ridx 字节级保留；binding_analyzer fail-closed；类级引用扫描（NestHost/NestMembers/PermittedSubclasses/Record 组件描述符与嵌套 Signature/注解/ModuleMainClass+Module 的 mainClass·uses·provides）走 libjbc typed 解码面；provider 只读索引产值，无注册表/回调
    * - workspace
      - ✅

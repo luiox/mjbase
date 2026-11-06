@@ -275,7 +275,7 @@ WAL 依赖共享内存，不适合网络盘。第一版只支持本地盘；网�
      - render_fp
      - 反编译文本、伪代码、展示缓存
 
-这些 producer 的接口和数据形状见 slot-def-use 头注\ 、\ string-flow 头注\ 、\ path-conditions 头注\ 、\ statement-ir 头注\ 。
+这些 producer 的接口和数据形状见 slot_def_use 头注\ 、\ string_flow 头注\ 、\ path_conditions 头注\ 、\ statement_ir 头注\ 。
 
 全局事实跨方法，按 generation 提交：
 
@@ -302,7 +302,7 @@ WAL 依赖共享内存，不适合网络盘。第一版只支持本地盘；网�
      - 调用图
      - 按需计算的视图，不持久化
 
-调用图与 indy 解析的语义见 call-graph-views 头注\ 、\ indy-resolution 头注\ 、\ root-provider 头注\ 。
+调用图与 indy 解析的语义见 call_graph_views 头注\ 、\ indy_resolution 头注\ 、\ root_provider 头注\ 。
 
 6.2 变更失效规则
 ~~~~~~~~~~~~~~~~

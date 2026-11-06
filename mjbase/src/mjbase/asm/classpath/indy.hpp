@@ -1,3 +1,28 @@
+/// @defgroup indy_resolution indy / MethodHandle / VarHandle 解析
+///
+/// 背景：`invokedynamic` 的 callee 不在 CP 直接成员引用里，链接目标藏在
+/// BootstrapMethods 的静态参数中，`CallGraph` 只能记成 owner 为空的保守边，
+/// lambda 方法体、record getter 等真实调用因此缺失。VarHandle 同理：编译器
+/// 编码的是签名多态占位成员，被访问字段由运行时接收者决定。本层把 BSM 契约
+/// 读成指令级事实（IndyIndex / VarHandle 分类），CallGraph 消费可确定的目标补边。
+/// 不执行 BSM、不模拟类加载、不对未知家族猜目标。
+///
+/// 与 CallGraph 的织入口径：
+/// - 每条 indy 先产出保守边（owner 空、记家族），与能否展开无关；
+/// - 家族已知时再为可确定目标追加补充边，`kind` 由 reference_kind 折算，
+///   字段句柄不产调用边；
+/// - 展开出的 Virtual/Interface 边与普通虚分派同语义：本层不解析具体目标，
+///   留给层次分析层；
+/// - VarHandle 访问只记读/写/读写分类；字段归属需要接收者常量流，属字符串流
+///   分析层（见 @ref string_flow "字符串/常量流分析"）。
+/// - 未知家族保留 CP 可读的 name/desc，`targets` 恒空，CallGraph 只留保守边。
+///
+/// 缺失与畸形：BSM 参数缺失或类型不符时只丢对应字段，不伪造目标；CP 畸形、
+/// 缺 BootstrapMethods 属性等按 `Unknown` 交付，不抛错（fail-closed）。
+///
+/// 边界：不解析 ConstantDynamic——它是常量不是调用点；不展开 indy 的运行时
+/// 参数，只读静态参数。
+
 /// @file        indy.hpp
 /// @brief       invokedynamic / MethodHandle / VarHandle 载体解析（BSM 分族）。
 ///
@@ -10,7 +35,7 @@
 ///   实例化类型、函数接口与捕获参数；ObjectMethods 取全部 MethodHandle
 ///   参数（record getter）；StringConcatFactory / SwitchBootstraps 只有家族
 ///   事实、没有成员目标；ConstantBootstraps.invoke 取 MethodHandle 参数。
-/// - VarHandle：签名多态访问（invokevirtual java/lang/invoke/VarHandle.<mode>）
+/// - VarHandle：签名多态访问（invokevirtual java/lang/invoke/VarHandle.`<mode>`）
 ///   按访问模式表展开为读/写事实。
 ///
 /// 未知 BSM 家族只记 Unknown，不按名字猜目标（fail-closed）。展开目标只来自
