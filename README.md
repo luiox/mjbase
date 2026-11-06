@@ -32,7 +32,7 @@ Some cases need a JDK and `GTEST_SKIP` when one is missing. Artifacts land in th
 mjbase/src/mjbase/     library sources, one directory per module
 mjbase/test/           unit tests (gtest)
 mjbase/test_resource/  static test inputs
-mjbase/doc_ai/         design notes
+mjbase/doc/          design specs (RST)
 test_helper/           test scaffolding (gtest integration, JDK fixtures)
 ```
 

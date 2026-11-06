@@ -83,3 +83,5 @@ ref_samples/
 
 ### i18n 生成头回源同步（包导出源，构建产物勿提交） ###
 /mjbase/src/mjbase/i18n_mjbase_translations.generated.hpp
+### 文档构建产物 ###
+/mjbase/doc/_build/

@@ -2,7 +2,7 @@
 /// @brief       注解族嵌套深度预检测试：深嵌敌意注解拦下、合法注解放行、
 ///              歧义/截断 fail-open 与 libjbc 解码面错误通道相干。
 ///
-/// 背景（doc_ai/upstream-libjbc-annotation-recursion.md）：libjbc 0.4.22
+/// 背景（doc:upstream-annotation-recursion）：libjbc 0.4.22
 /// attr_codec 的 readAnnotation/readElemValue 互递归无界，AAC 壳 oo.class
 /// 的 2999 层 '@' 嵌套注解使 decodeAttr 栈溢出。本测试以字节夹具钉住
 /// util/annotation_depth.hpp 守卫的裁决口径；宿主进程被敌意输入打爆的

@@ -132,7 +132,7 @@ struct SymValue
 ///
 /// 身份纪律：参数按 local 槽命名（p<idx>），其余产值点按指令句柄命名
 /// （v<slot>）。同一产值点在方法内只有一个符号——回边处不同迭代的同名值
-/// 由 must 分析的入口边稀释处理（见 path-conditions.md 的可靠性一节）。
+/// 由 must 分析的入口边稀释处理（可靠性一节见本模块头注）。
 class SymDomain final : public jbc::analysis::IValueDomain<SymValue>
 {
 public:

@@ -19,7 +19,7 @@ namespace mjbase::project {
 ///        ProjectStore bundle 上的代际化落盘（flush）、压缩（手动/自动阈值）
 ///        与崩溃安全（manifest last、只删非活动代）。
 ///
-/// 设计定稿见 doc_ai/analysis-project-schema-v2.md §2..§5（上游 RFC 0001 §6.2/
+/// 设计定稿见 doc:schema-v2-ledger（上游 RFC 0001 §6.2/
 /// §6.4）。引擎工作在 uri + digest + 字节面：不知道容器对象，重放与状态物料化
 /// 由消费方在其载体上执行；引擎负责链完整性、载荷寻址、落盘协议与压缩不变量。
 /// 未绑定 bundle 时引擎是纯内存台账（flush 为 no-op），供无工程会话使用。

@@ -18,7 +18,7 @@ namespace mjbase::project {
 /// @brief 编辑台账的行级数据模型：三种行（事务/锚/书签）的严格解析与确定性
 ///        写出、条目 digest 与容器 canonical digest 口径、活动链校验。
 ///
-/// 设计定稿见 doc_ai/analysis-project-schema-v2.md §2/§3（上游 RFC 0001 §6.2/
+/// 设计定稿见 doc:schema-v2-ledger（上游 RFC 0001 §6.2/
 /// §6.4）。行模型是纯数据层：不知道容器对象，只认 uri + digest + overlay 引用；
 /// 重放与状态物料化由消费方（workspace）在其容器载体上执行。本模块与
 /// project_store 同为 libca 叶子，不依赖 model。

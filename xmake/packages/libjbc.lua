@@ -61,7 +61,7 @@ package("libjbc")
     add_versions("0.4.21", "4a782744447a862593218412c64b2fb9a7ea9967") -- PR #17 合入 main 头  2026-10-28
     -- 0.4.22 = 精确档异常边发射域放宽到范围内可达指令（JVM 保守口径，PR #18）+ 版本对齐（PR #19，main 合入头）。
     add_versions("0.4.22", "a408506203aaba7f74cdf588885187d3a49b0bd0") -- PR #19 合入 main 头  2026-10-28
-    -- 0.4.23 = 仓库瘦身（dev_plan/doc_ai/ergonomics 撤离，design.md 现状化）+ class_build_attrs_test 类构建挂载面契约收编（PR #20，main 合入头）；纯文档+测试面。
+    -- 0.4.23 = libjbc 仓瘦身（其开发计划与 ergonomics 文档撤离，design.md 现状化）+ class_build_attrs_test 类构建挂载面契约收编（PR #20，main 合入头）；纯文档+测试面。
     add_versions("0.4.23", "4228cf3650b2409a106511a3cf8ca7275ed5ed04") -- PR #21 合入 main 头  2026-10-29
 
     -- 嵌套 libca 直接钉到本仓单源版本：项目内联包定义不吃 deps.lua 的

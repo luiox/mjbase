@@ -45,7 +45,7 @@ namespace mjbase::spi {
 /// 移除 typeResolver 注入口（旧 ICommonSuperClassProvider 挂在 AM 上供 COMPUTE_FRAMES
 /// 写回取用）。libjbc 的写回面（lowerMethod relocation 契约 + writeClass copy-through）
 /// 不需要外部 resolver；公共父类求解改由 mjbase::spi::CommonSuperClassResolver 独立
-/// 供给（见 pass-contract.md），出现重算 StackMapTable 的 pass 时再经管线注入。
+/// 供给（见 doc:pass-contract-preserved），出现重算 StackMapTable 的 pass 时再经管线注入。
 template<class IRUnitT>
 class AnalysisManager
 {

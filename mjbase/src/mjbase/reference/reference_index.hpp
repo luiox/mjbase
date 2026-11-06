@@ -339,7 +339,7 @@ public:
     /// @brief Remove all collected references and target lookup tables.
     void clear();
 
-    /// @brief E2 局部重建：按 ChangeSet 对单个类做成员级补丁（design.md §35.4）。
+    /// @brief E2 局部重建：按 ChangeSet 对单个类做成员级补丁（libjbc design.md §35.4）。
     ///
     /// 与全量 build 的等价性是 E2 硬验收：同一批变换后，本入口补丁出的六张
     /// 主表与「变换后容器全量重扫」逐项一致（相等性由单元与管线测试钉死）。

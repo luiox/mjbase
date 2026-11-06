@@ -1,5 +1,5 @@
 -- mjbase：基于 libjbc 的跨类程序分析与变换库（mbase 的重写线，逐模块迁移）。
--- 边界（AGENTS.md / doc_ai/module-map.md）：libjbc 单类/单方法；mjbase 持
+-- 边界（AGENTS.md / doc:module-map）：libjbc 单类/单方法；mjbase 持
 -- 跨类身份（keys）、层次/调用图与指令工程（asm 域）。旧 mbase 冻结对拍。
 --
 -- 迁移期约定：源文件与测试文件走 glob 收编（多 agent 并行落文件），
@@ -59,7 +59,7 @@ target("mjbase")
     -- 分析数据库引擎：实现细节不对外暴露（analysis_db.hpp 不含 sqlite3.h）。
     add_packages("sqlite3")
     -- 迁移切片：按批次收编模块（消费方驱动，逐批验证；忌整库一次搬运）。
-    -- 见 doc_ai/module-map.md 的依赖图——批 1 只收零环的叶子与容器层，
+    -- 见 doc:module-map 的批次划分——批 1 只收零环的叶子与容器层，
     -- 字符串口径（util/mapping/jar 的标识符与路径面）在这一批定死。
     -- 后续批次（asm/hierarchy → reference/spi/pass/workspace → air/sir/jasm/cli）
     -- 按 mjt 与 mjt-py 的实际消费面追加，每批独立构建 + 独立测试。
@@ -85,7 +85,7 @@ target("mjbase")
     -- 批 3：analysis / reference / spi / pass，连同上面推迟的 resolved_call_graph
     -- 与 remapper。本批含两个实锤环（asm⇄analysis⇄reference 余下部分、
     -- pass⇄spi），单 target 内可构建；拆 target 前必须先破环，见
-    -- doc_ai/migration-boundary.md 的批次表。
+    -- doc:module-map 的批次表。
     add_files("src/mjbase/analysis/**.cpp")
     add_files("src/mjbase/reference/**.cpp")
     add_files("src/mjbase/spi/**.cpp")
@@ -151,9 +151,9 @@ target("mjbase_unittest")
     add_files("test/unittest/reference/*_test.cpp")
     add_files("test/unittest/spi/*_test.cpp")
     add_files("test/unittest/pass/*_test.cpp")
-    -- plugin：pass-pack 插件接口（doc_ai/plugin-api.md）。
+    -- plugin：pass-pack 插件接口（doc:plugin-api）。
     add_files("test/unittest/plugin/*_test.cpp")
-    -- golden 对拍子目录（旧栈 baseline 字节/指纹对拍机器，pass-golden-pipeline.md）。
+    -- golden 对拍子目录（旧栈 baseline 字节/指纹对拍机器，见私仓规格 pass-golden-pipeline，本仓无副本）。
     add_files("test/unittest/pass/golden/*_test.cpp")
     add_files("test/unittest/asm/remapper/*_test.cpp")
     -- 批 4：与上面 src 的 renamer/jasm/log 一一对应（workspace/cli 测试随模块退役）。

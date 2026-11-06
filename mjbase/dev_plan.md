@@ -1,6 +1,6 @@
 # mjbase 开发计划
 
-迁移状态总览见 [doc_ai/module-map.md](doc_ai/module-map.md)；本文件只记
+迁移状态总览见 [doc/module-map.rst](doc/module-map.rst)；本文件只记
 当前批次的待办项。
 
 ## opt pass 完整集波次（mjbase-pass-wave2）
@@ -653,11 +653,11 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     三试点全过：sorter 5/9 字节一致 + 4 声明（CLASSFILE_REENCODE）、tightener
     8/9 + 1 声明（TREE_SKIP_FRAMES_REENCODE）、cleaner 9/9 零声明。基线在
     `test_resource/pass_golden/`；管道说明与加新 pass 步骤见
-    [doc_ai/pass-golden-pipeline.md](doc_ai/pass-golden-pipeline.md)。
+    私仓规格 pass-golden-pipeline（本仓无副本）。
   - [x] 方法体小批四件（nop_remover / redundant_load_val_eliminator /
     char_arr_to_str_simplifier / unused_check_cleaner）：spi MethodPass 契约
     落成 + registry 种子注册 + 单测 + golden 对拍收口（详见
-    doc_ai/pass-golden-pipeline.md 结果表）；POP/POP2 折叠语义按 classfile
+    私仓规格 pass-golden-pipeline 结果表）；POP/POP2 折叠语义按 classfile
     可观测行为对齐（LDC2_W 装载的 cat2 参与 POP2 吸收）。
   - [x] 控制流首件 junk_code_inserter + 管线帧链接线：libjbc A1 链首个真实
     消费方（`PassPipelineOptions::typeResolver` 注入 → lower 前嵌套属性适配
@@ -682,7 +682,7 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     提交（ClassResourcePendingCommit）落成；keep 根策略（module 描述符 /
     Manifest 入口键 / services 文件名与内容 / main / clinit / 非 private /
     keep metadata）与旧栈逐条对齐。golden 走新 um 道（专用 mini 语料 +
-    services/Manifest keep 根，见 doc_ai/pass-golden-pipeline.md 结果表）；
+    services/Manifest keep 根，见 私仓规格 pass-golden-pipeline 结果表）；
     改写面 JVM 真跑门收口。普查砍单：meta_info_remover 家族（scope:class）
     归 B 批；tool_class_combiner 已迁成——宿主合并经 libjbc §34 adopt 面
     （字段 adoptField + ConstantValue 重建、方法 IR 重放、供体删除）+
@@ -935,7 +935,7 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   （inputs 投影 + classes/interfaces/members/refs 变更敏感聚合，ref_id
   单调保证任何 refs 重写必失效）+ seed_mask 双匹配，不匹配整体重算落
   新批；v8→v9 fail-loud 不迁移。设计稿
-  doc_ai/reachability-closure-design.md（PR #161）含 PoC 全量数字
+  doc/reachability-closure-design.rst（PR #161）含 PoC 全量数字
   （混淆语料 A 4179 类：keep 档闭包 29999 行 / 62.9ms，保守口径差集
   +3.1%，indy 补充边净增量 0，落库增量 +0.35MiB；refs 分块装载
   627.7s，全容器 index build >20min 未收敛的规模观察归扫描面性能批）。

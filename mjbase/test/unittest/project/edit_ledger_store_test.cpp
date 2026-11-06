@@ -4,7 +4,7 @@
 // （压缩前后重放一致、书签零失效、补链、手动显式丢弃列名、阈值边界、压缩
 // 中途崩溃可恢复）。
 //
-// 设计定稿见 doc_ai/analysis-project-schema-v2.md §3/§5（上游 RFC 0001 §6.2/
+// 设计定稿见 doc:schema-v2-ledger（上游 RFC 0001 §6.2/
 // §6.4）；崩溃语义对齐 project_store 既有恢复面（§8.1/§8.2）。
 #include <gtest/gtest.h>
 

@@ -55,7 +55,7 @@ namespace mjbase::pass {
 /// 删除返回 none()，否则 all()」相悖；本家族按声明的条件语义落地。
 ///
 /// 全家族 `opt-in`，不得进入默认优化链。golden 对拍见
-/// doc_ai/pass-golden-pipeline.md（tree 道，CLASSFILE_REENCODE 声明类目 +
+/// 私仓规格 pass-golden-pipeline（本仓无副本；tree 道，CLASSFILE_REENCODE 声明类目 +
 /// meta 语义矩阵替代断言）。
 /// @{
 

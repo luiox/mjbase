@@ -3,7 +3,7 @@
 // 容器 canonical 序列化与 digest 口径（容器 digest = 基线 section
 // content_hash，一口径两处验证）。
 //
-// 设计定稿见 doc_ai/analysis-project-schema-v2.md §1.6/§2（上游 RFC 0001
+// 设计定稿见 doc:schema-v2-project-json（上游 RFC 0001
 // §6.2/§6.4）。
 #include <gtest/gtest.h>
 

@@ -14,7 +14,7 @@ namespace mjbase::project {
 ///        section 命名校验、store.json 严格解析与确定性写出、section 内容
 ///        原子读写与 hash/size 校验原语。
 ///
-/// 设计源：`doc_ai/analysis-project-store-design.md`（R45 评审通过稿），
+/// 设计源：私仓规格 analysis-project-store-design（R45 评审通过稿，本仓无副本），
 /// 实现卡 **C1**（§12 卡表：bundle 常量/目录骨架、
 /// section 命名校验、store.json 严格解析与确定性写出；验收 §11-1 骨架、
 /// §11-7）+ **C2**（section 层可靠读写原语：单 section 原子写 staged tmp +
@@ -155,7 +155,7 @@ struct SectionDep
 };
 
 /// @brief 台账引擎配置（store.json 顶层可选字段 ledger_config；设计文档
-///        analysis-project-schema-v2.md §5.3）。
+///        doc:schema-v2-compaction）。
 ///
 /// 顶层只增不删纪律的加法演进：旧读者忽略该键，缺省 = 内置默认。结构内部
 /// 宽松（未知键忽略、写出丢弃）——引擎私有调参，不值得为旧键拒载整个清单。
