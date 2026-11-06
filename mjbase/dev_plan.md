@@ -653,7 +653,7 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
     三试点全过：sorter 5/9 字节一致 + 4 声明（CLASSFILE_REENCODE）、tightener
     8/9 + 1 声明（TREE_SKIP_FRAMES_REENCODE）、cleaner 9/9 零声明。基线在
     `test_resource/pass_golden/`；管道说明与加新 pass 步骤见
-    私仓规格 pass-golden-pipeline（本仓无副本）。
+    私仓规格 pass-golden-pipeline。
   - [x] 方法体小批四件（nop_remover / redundant_load_val_eliminator /
     char_arr_to_str_simplifier / unused_check_cleaner）：spi MethodPass 契约
     落成 + registry 种子注册 + 单测 + golden 对拍收口（详见

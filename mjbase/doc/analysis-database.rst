@@ -3,14 +3,14 @@
 分析数据库设计（analysis-db）
 =============================
 
-状态：设计稿 2026-10-21；引擎已落地（#117 起，0.0.13 定版为 schema v4，schema v5 起引用目标侧 id 化），已落地面见下节；方法语义指纹、增量流水线等章节仍为目标设计。
+schema 当前 v9（``PRAGMA user_version``\ ，不识别的版本拒绝打开，旧库由上层显式重建）。已落地面见下节；§6 增量分析流水线与全局事实 generation 仍为目标设计。
 
 本文定义 mjbase 分析数据库的存储模型、增量分析边界和编辑语义。目标是用一个可查询、可增量更新、崩溃安全的项目数据库替代 ``project_store`` 的整文件 section 模型；\ ``project_store`` 的可靠写入原语保留为自研引擎的备选实现和导入导出层。
 
-已落地面（截至 0.0.13）
+已落地面
 -----------------------
 
-引擎与 schema：单文件 SQLite 库 ``.mjdb``\ （#117 落地），\ ``PRAGMA user_version`` 载 schema 版本（当前 v5），\ ``application_id`` 固定 ASCII "MJDB"，\ ``meta.kind`` 自描述串防把别的 SQLite 库当分析库打开；打开分 ReadWrite（不存在则建库写 schema）与 ReadOnly（必须已存在且已 checkpoint，不创建、不写、不触发分析）；打开期 WAL/SHM 伴随，\ ``save()`` / ``close()`` 做 TRUNCATE checkpoint 收敛回单文件；打开面 PRAGMA 调优（WAL、synchronous=NORMAL、cache_size、temp_store=MEMORY）与 refs 按源类索引见 #128。SQL 只出现在 analysis_db.cpp，公开面是类型化 C++ API，错误统一 ``ca::Result<T, AnalysisDbError>``\ ；单连接非线程安全。
+引擎与 schema：单文件 SQLite 库 ``.mjdb``\ （#117 落地），\ ``PRAGMA user_version`` 载 schema 版本，\ ``application_id`` 固定 ASCII "MJDB"，\ ``meta.kind`` 自描述串防把别的 SQLite 库当分析库打开；打开分 ReadWrite（不存在则建库写 schema）与 ReadOnly（必须已存在且已 checkpoint，不创建、不写、不触发分析）；打开期 WAL/SHM 伴随，\ ``save()`` / ``close()`` 做 TRUNCATE checkpoint 收敛回单文件；打开面 PRAGMA 调优（WAL、synchronous=NORMAL、cache_size、temp_store=MEMORY）与 refs 按源类索引见 #128。SQL 只出现在 analysis_db.cpp，公开面是类型化 C++ API，错误统一 ``ca::Result<T, AnalysisDbError>``\ ；单连接非线程安全。
 
 身份与重命名覆盖层：\ ``classes`` / ``members`` 首次登记分配单调 ID，只增不删；重命名只写 ``renames`` 覆盖层（目标用稳定 ID 键控，token 为空或 8 位小写 hex），不改身份、不触发分析；批量入口 ``setRenames`` / ``replaceRenames`` 单事务、先整体校验后执行、任一行失败整批回滚；按 shadow 反查有单条与批量（预编译语句复用）两个变体。
 
@@ -28,10 +28,18 @@ library_origin 包前缀分类（#140）：类内部名按前缀段边界匹配�
 
 出口遮蔽层（schema v4，#126）：\ ``mask_rules`` 存出口遮蔽规则（priority 有序、先匹配先生效、hit_count 记账、整体替换语义），meta 存项目信任级别（Trusted 默认放行 / Untrusted 默认遮蔽）；规则写入面与求值器同源校验（条数上限 1024、pattern 编译性），编译不了的模式不入库。suspect 旗标扫描（controlChars / zeroWidthChars / anomalousUnicode / injectionPattern 四类）与 mask_evaluator 判定序（suspect 先行、超 256 字节走长度门按默认档、allow 命中被 suspect 旗标压制）为纯函数面，出口接线归上层。
 
+producer 注册表与批次归属（schema v6，#143）：``producers`` 登记向本库写事实的身份（稳定 key 幂等、id 单调只增不删、trust_level 两档），``batches`` 记录逻辑写入运行（一次整库导入、一次引用替换各一批；``finished_at`` 空串 = 未收尾的残批，合法审计状态），``batch_scopes`` 记录批次覆盖的事实区间（作用域锚）。事实表不加归属列，逐行归属经作用域解析回答；``renames`` 是覆盖层与配置型小表，行级归属即语义，走行级 ``renames.producer_id`` 列（写入口尾参盖章，缺省 0 = 匿名写入落 NULL，覆盖行为不变 last-write-wins，覆盖来源事后可查）。
+
+mask 配置面归属化（schema v7，#153）：``mask_rules`` 与 ``renames`` 同为覆盖层，走行级 \ ``mask_rules.producer_id`` 列（``replaceMaskRules`` 尾参盖章，口径同 renames）；meta 信任级别键的写入口 \ ``setMaskTrustLevel`` 同样尾参盖章，归属落伴随 meta 键 \ ``mask_trust_level_producer``\ （匿名写入时清除）。规则面写入挂批（rules_write）属消费方职责，本层只做行级归属。
+
+方法版本指纹层（schema v8，#152 / #154）：``method_versions`` 存方法语义指纹的版本历史——行 = 一次语义落库（method_version_id 单调只增不删；fingerprint 32 字节定长 BLOB + fp_version 算法版本字节 + recorded_at）。「当前指针」是 ``is_current`` 列 + (member_id) 部分唯一索引：同成员至多一行当前版本，不动 members 表（成员身份与指纹版本是两条独立的轴，指针挤进身份登记面会让没有版本行的方法背空指针）。「标脏」不另建脏表：当前指针变更本身可查询（旧指纹对不上当前行即脏），is_current=0 的历史行就是审计面。指纹引擎（semanticFp）在 analysis 层，本层只做版本事实的存储与查询，编辑流接线归上层。
+
+全程序可达闭包（schema v9，#159）：``closure_batches`` / ``closure_members`` 存可达方法成员集这份派生事实——批次元数据挂 producer 注册表（kind = closure_write），记录输入图指纹（32 字节 SHA-256 + fp_version 算法版本字节）、种子/覆盖度位词表与行数；closure_members 是结果本体（WITHOUT ROWID 主键即数据）。计算面与口径见 :ref:`reach-closure`。
+
 1. 背景与目标
 -------------
 
-mjbase 的分析结果目前全部驻留内存：def-use、string flow、路径条件、调用图、字段访问图和引用索引都没有持久化面，反编译文本和 IR 也只活在会话里。\ ``project`` 模块在输入登记、批注和 shadow sidecar 引用之外，已由分析数据库引擎（见上节）承载稳定身份、引用事实与普查投影；\ ``project_store`` 以整文件 section 为单位读写，适合归档，不适合在线查询和增量更新。\ ``ProjectStore::open/flush`` 仍未落地。
+mjbase 的分析结果目前全部驻留内存：def-use、string flow、路径条件、调用图、字段访问图和引用索引都没有持久化面，反编译文本和 IR 也只活在会话里。\ ``project`` 模块在输入登记、批注和 shadow sidecar 引用之外，已由分析数据库引擎（见上节）承载稳定身份、引用事实与普查投影；\ ``project_store`` 以整文件 section 为单位读写，适合归档，不适合在线查询和增量更新。\ ``ProjectStore`` 尚无 open/flush 生命周期面。
 
 目标：
 
@@ -365,7 +373,7 @@ WAL 依赖共享内存，不适合网络盘。第一版只支持本地盘；网�
 
 外部输入替换按类 diff：类名和类指纹都相同的复用；内容变化的类新建版本并重分析；名字变化但方法体可匹配的写 ``identity_map``\ ；匹配不了的类新建 ID，旧注释保留为 dangling。旧类版本和未引用事实不立即删除，用户确认后再 GC。
 
-工程版本轴复用现有 workspace 的 revision 和 savepoint 语义。每次保存产生一个 revision；工作副本的类 blob 和补丁入库；注释和重命名是当前覆盖层，不随 revision 回滚，除非用户显式做用户数据快照。内容寻址的局部事实在 undo 回到旧方法指纹时直接命中缓存，不需要重算。
+工程版本轴的 revision 与 savepoint 语义按 :ref:`schema-v2-workspace` 的换底契约落在工程库与编辑台账上。每次保存产生一个 revision；工作副本的类 blob 和补丁入库；注释和重命名是当前覆盖层，不随 revision 回滚，除非用户显式做用户数据快照。内容寻址的局部事实在 undo 回到旧方法指纹时直接命中缓存，不需要重算。
 
 8. 查询与 API
 -------------
@@ -400,30 +408,30 @@ MCP 层增加项目级工具：\ ``project_open``\ 、\ ``project_close``\ 、\ 
 
 ``analysis_project`` 的 v1 JSON 解析和写出保留为导入导出面，负责把旧 ``project.json`` 迁入数据库。批注、输入和 shadow 引用导入后，运行时以数据库为准；导出可以生成 v2 JSON 或保留 v1 兼容格式。
 
-``project_store`` 的 section/manifest 运行时退役。\ ``writeSectionBytes``\ 、锁、原子换名和恢复扫描只在自研 segment 引擎时保留；SQLite 路线不需要在它之上继续实现 ``ProjectStore::open/flush``\ 。本文替代其运行时存储部分。
+``project_store`` 是 store bundle 的 section/manifest 字节层：``writeSectionBytes``\ 、清单事务、恢复扫描、prune 与 ``StoreLock``\ ，被工程缓存与编辑台账复用。工程实体与局部/全局事实落 ``AnalysisDb``\ ；bundle 侧只放可丢弃的派生缓存（口径见 :ref:`container-cache`）与台账代际（见 :ref:`schema-v2-ledger`）。
 
 shadow alias 的 v1/v2 解析保留为导入导出；运行时的重命名事实进入 ``renames``\ ，sidecar 不再作为唯一事实源。\ ``.ridx`` 继续作为引用索引的整文件缓存，或者作为派生事实导入数据库；它不是用户数据，也不是主存储。
 
-workspace 的 revision、savepoint、undo/redo 和 export 语义映射到数据库的 revisions 和 working copy。类编辑仍然走现有的 ``CodeEditor`` 和会话写回路径；数据库只负责把编辑结果、版本和锚点持久化。
+工程版本轴（revision、savepoint、undo/redo）由编辑台账承担，库内不建 revisions 表；台账的代际与崩溃语义见 :ref:`schema-v2-ledger`\ ，与工程库的接线注意点见 :ref:`schema-v2-workspace`。类编辑仍然走 ``CodeEditor`` 和会话写回路径；数据库只负责把编辑结果、版本和锚点持久化。
 
-各个分析模块增加持久化适配层：producer 名字、版本、指纹类型、编码器和解码器注册到事实注册表。分析算法不感知数据库，数据库也不解释 payload 语义。\ :ref:`module-map` 中 ``project`` 的状态在实现落地后从“已迁”改为“存储重设计”，避免继续把原型当完成面。
+各个分析模块增加持久化适配层：producer 名字、版本、指纹类型、编码器和解码器注册到事实注册表。分析算法不感知数据库，数据库也不解释 payload 语义。
 
-10. 实施步骤与验收
-------------------
+10. 落地要求
+------------
 
-第一步，事实清单与查询负载。列出所有要持久化的 producer、作用域、指纹依赖、payload 体量、查询模式和更新频率；准备包含混淆 jar、大 jar 和多版本 jar 的基准语料。验收标准是每个事实都有明确的键、失效规则和查询入口。
+事实清单与查询负载：每个要持久化的 producer 都有明确的键、作用域、指纹依赖、payload 体量、查询模式和更新频率；基准语料覆盖混淆 jar、大 jar 与多版本 jar。
 
-第二步，存储引擎 spike。用 SQLite 建最小 schema，导入 shadow alias 和批注，写入一个局部事实（def-use）和一个全局边表（调用边），验证打开、查询、单方法编辑、GC、崩溃注入和 Windows 本地盘行为。验收标准是单方法编辑不重写全局表，打开不重新解码字节码，崩溃后数据库一致；同时记录库体积、打开时间和查询延迟，决定是否继续 SQLite。
+存储引擎：SQLite 单文件最小 schema，承载 shadow alias 与批注导入、一个局部事实（def-use）和一个全局边表（调用边）。硬要求是单方法编辑不重写全局表、打开不重新解码字节码、崩溃后数据库一致；打开、查询、GC、崩溃注入和 Windows 本地盘行为逐项有测试钉住，库体积、打开时间和查询延迟随基准语料记录。
 
-第三步，身份、指纹与锚点。实现稳定 ID、semantic_fp/render_fp、重命名覆盖和指令锚点。验收标准是常量池重排和无关方法重编码不改变指纹，改一条指令只有一个方法 dirty，重命名零重分析，注释在方法编辑后仍能定位或标记 dangling。
+身份、指纹与锚点：稳定 ID、semantic_fp/render_fp、重命名覆盖和指令锚点。常量池重排和无关方法重编码不改变指纹，改一条指令只有一个方法 dirty，重命名零重分析，注释在方法编辑后仍能定位或标记 dangling。
 
-第四步，局部事实与增量流水线。实现 producer 注册表、dirty 队列、局部事实存储和出边替换。验收标准是随机编辑序列下局部事实与全量重建一致，查询不会在未标记的情况下返回 stale 事实。
+局部事实与增量流水线：producer 注册表、dirty 队列、局部事实存储和出边替换。随机编辑序列下局部事实与全量重建一致，查询不会在未标记的情况下返回 stale 事实。
 
-第五步，全局事实与 generation。实现调用图/字段访问图的持久化、摘要传播、settle 和 generation 切换。验收标准是增量结果与全量重建逐事实一致，摘要未变化时传播提前截断，读者只看到完整 generation。
+全局事实与 generation：调用图/字段访问图的持久化、摘要传播、settle 和 generation 切换。增量结果与全量重建逐事实一致，摘要未变化时传播提前截断，读者只看到完整 generation。
 
-第六步，MCP 集成与迁移。实现项目打开/关闭/保存/导出/导入、旧 ``project.json`` 导入、shadow 导入和 MCP 工具接线。验收标准是端到端打开项目、查询、编辑、重开、导出单文件；注释和重命名在重分析、删除方法、undo 后仍可查询；GC 后无未引用 payload。
+工程面与外部接线：项目打开/关闭/保存/导出/导入、旧 ``project.json`` 导入与 shadow 导入。端到端打开项目、查询、编辑、重开、导出单文件；注释和重命名在重分析、删除方法、undo 后仍可查询；GC 后无未引用 payload。MCP 工具面归 mjt。
 
-构建和测试沿用仓库纪律：delete-then-rebuild，一次构建一个 target，测试输出不提交。分析数据库的测试需要覆盖崩溃注入、随机编辑、并发只读和旧格式导入，不能只测正常路径。
+分析数据库的测试覆盖崩溃注入、随机编辑、并发只读和旧格式导入，不只测正常路径。
 
 11. 开放问题
 ------------
@@ -435,15 +443,9 @@ workspace 的 revision、savepoint、undo/redo 和 export 语义映射到数据�
    * - 问题
      - 当前倾向
      - 需要确认
-   * - SQLite 依赖
-     - 首选，单文件 C 库，消费方是项目数据库
-     - 是否符合公开仓依赖政策
    * - 网络盘
      - 第一版不支持在线写
      - 是否需要只读副本或导出方案
-   * - 方法语义指纹
-     - 解析常量池操作数，indy/condy 纳入 bootstrap 参数
-     - 规范化细节和实现成本
    * - 全局增量
      - 第一版从缓存局部事实重建，后续 worklist
      - 重建延迟是否可接受
@@ -460,13 +462,13 @@ workspace 的 revision、savepoint、undo/redo 和 export 语义映射到数据�
      - 保留为 dangling，展示在孤立注释视图
      - UI 是否需要自动迁移
    * - schema 迁移
-     - ``user_version`` 加顺序迁移，不承诺降级
+     - 不识别版本拒绝打开，旧库由上层显式重建
      - 公开仓首个稳定版本的兼容窗口
    * - 事实编码归属
      - 各 producer 自带编码器和版本
      - 注册表接口和版本升级规则
 
-12. 验收不变量
---------------
+12. 不变量
+----------
 
 (1) 同一 revision、同一 config 下，增量分析结果等于全量重建结果。(2) 单方法编辑只重算该方法的局部事实；全局视图不重新扫描全部字节码。(3) 显示重命名不触发任何分析重算。(4) 用户注释和重命名在重分析、删除方法、undo 和外部输入替换后仍可查询，无法定位时保留为 dangling。(5) 崩溃注入后数据库要么是旧 generation，要么是新 generation，没有半提交。(6) 保存或关闭后主文件可独立打开；GC 后没有未引用的 payload。(7) 查询走索引，不解析整个事实集合；stale 结果必须显式标记。(8) 只读连接不获取写锁，不触发分析，能并发读取已提交 generation。

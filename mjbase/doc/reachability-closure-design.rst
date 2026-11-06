@@ -3,23 +3,23 @@
 全程序方法可达闭包入分析数据库设计（analysis-db schema v9，#159）
 =================================================================
 
-状态：草案，2026-11-05。待评审，未落地。analysis-db 总体设计与身份模型见 :ref:`analysis-db`\ ；本设计是 #159（全程序方法可达闭包，CHA 先行 / RTA 后置）的落地定案：闭包输入源、CHA 语义口径、落库形态、失效与版本门四个决策点全部裁决，PoC 数字见 §7。既有内存态可达性设施（reference 模块 GlobalReachability / ResolvedCallGraph）不动；本设计把闭包作为派生事实落入分析库，供 callgraph 类工具与普查投影扩展消费。
+状态：已落地（schema v9）——计算面 ``project/reachability_closure``\ ，落库面 ``AnalysisDb::storeClosureBatch``\ 。analysis-db 总体设计与身份模型见 :ref:`analysis-db`\ ；本文定下闭包输入源、CHA 语义口径、落库形态、失效与版本门四个口径，PoC 数字见 §7。既有内存态可达性设施（reference 模块 GlobalReachability / ResolvedCallGraph）不动；本设计把闭包作为派生事实落入分析库，供 callgraph 类工具与普查投影扩展消费。
 
-1. 现状与问题
--------------
+1. 背景：落地前的缺口
+---------------------
 
-分析库（schema v8）已具备三块地基：refs 目标侧 id 化（v5，target_class_id / target_member_id 可空外键，调用边是整数对，按源反查索引 refs_source_member 在位）、producer 注册表（v6，producers / batches / batch_scopes 三表与作用域锚语义）、方法版本指纹（v8，method_versions 的 fp_version 算法版本字节模式）。层次图（hierarchy 模块 ClassHierarchy / MethodHierarchy）提供 override 等价族展开，indy / MethodHandle 展开边在 asm/classpath call_graph 落地（#2 收口）。
+分析库（schema v8）已具备三块地基：refs 目标侧 id 化（v5，target_class_id / target_member_id 可空外键，调用边是整数对，按源反查索引 refs_source_member 在位）、producer 注册表（v6，producers / batches / batch_scopes 三表与作用域锚语义）、方法版本指纹（v8，method_versions 的 fp_version 算法版本字节模式）。层次图（hierarchy 模块 ClassHierarchy / MethodHierarchy）提供 override 等价族展开，indy / MethodHandle 展开边在 asm/classpath call_graph 落地。
 
 缺的是「全程序方法可达闭包」这份派生事实的持久落点。现有 GlobalReachability 是内存态、容器为输入的保守闭包，随进程消亡；mjt MCP 查询工具与普查投影要回答「哪些方法可达」时只能重新扫描字节码重建。#159 要求把闭包作为 producer 批次落入分析库：可达成员集 + 输入图指纹（失效判定）+ 输入覆盖度标记（known-gap 自报）。
 
-已知边界先行声明：分析库 refs 当前 direct-only，lambda / method_handle / reflection 形态的边在 refs 表无 kind 分类；闭包在这些点欠近似（结果批次必须带输入覆盖度标记，refs kind 分类线落地后闭包重算即收益，两线互喂——#159 票面原文）。
+已知边界先行声明：分析库 refs 当前 direct-only，lambda / method_handle / reflection 形态的边在 refs 表无 kind 分类；闭包在这些点欠近似（结果批次必须带输入覆盖度标记，refs kind 分类线落地后闭包重算即收益）。
 
 .. _reach-closure-input:
 
-2. 决策点 1：闭包输入源 = refs 为主图，indy 边为补充射入
+2. 闭包输入源 = refs 为主图，indy 边为补充射入
 --------------------------------------------------------
 
-两案：分析库 refs 表（持久、id 化、direct-only）vs classpath call_graph 视图（有 indy 展开边、内存态）。裁决：混合口径，refs 为主图，indy 展开边为补充射入，补充边在批次元数据中声明覆盖度。
+两个候选输入：分析库 refs 表（持久、id 化、direct-only）与 classpath call_graph 视图（有 indy 展开边、内存态）。取混合口径——refs 为主图，indy 展开边为补充射入，补充边在批次元数据中声明覆盖度。
 
 refs 为主图的理由：闭包的失效判定吃输入图指纹，指纹必须锚定持久状态（refs + inputs），内存态图没有可指纹化的持久身份；闭包批次是持久派生事实，输入源必须同为持久层，否则「指纹不匹配重算」的失效语义无从谈起。refs 的整数对图遍历不碰文本（v5 的既得收益），member 级邻接按 source_member_id 反查索引在位。
 
@@ -27,12 +27,12 @@ indy 补充边不进 refs 表：indy / MethodHandle 展开边是 call_graph 批�
 
 .. _reach-closure-cha:
 
-3. 决策点 3：CHA 语义口径
+3. CHA 语义口径
 -------------------------
 
 虚调用 / 接口调用的目标集 = 层次子树全部 override，hierarchy 模块展开，与既有 ResolvedCallGraph CHA 档同口径：
 
-- invokevirtual / invokeinterface：编码目标（owner, name, desc）先落解到声明者（沿 owner 的 super 链上溯首个声明；类链不中则接口闭包内声明者兜底），再按声明者的 override 等价族扩展，族内过滤出具体方法（非 abstract、非 static、非 private、非 ``<init>``/``<clinit>``\ ）。族内含祖先链声明是保守余量（运行时不会命中祖先声明，但可达性是单调集合，超集无害）；子树收窄属 RTA 精度档，本批不做。
+- invokevirtual / invokeinterface：编码目标（owner, name, desc）先落解到声明者（沿 owner 的 super 链上溯首个声明；类链不中则接口闭包内声明者兜底），再按声明者的 override 等价族扩展，族内过滤出具体方法（非 abstract、非 static、非 private、非 ``<init>``/``<clinit>``\ ）。族内含祖先链声明是保守余量（运行时不会命中祖先声明，但可达性是单调集合，超集无害）；子树收窄属 RTA 精度档，当前不做。
 - invokestatic / invokespecial：精确编码目标（special 的 super 调用沿链上溯落解）。
 - default 方法冲突：多接口 default 同签名冲突（JVM IncompatibleClassChangeError 场景）不做 most-specific 裁决，族内具体声明全部入目标集（保守并集，宁过近似不丢真实执行边；MethodHierarchy::virtualDispatch 的单继承链 Unresolved 口径不适用于闭包面，闭包不吃「唯一目标」语义）。
 - clinit 触发边进闭包口径：Type 引用（new/checkcast/instanceof/ldc class 全族）、Field 引用（get/put 家族）、直连方法引用（static/special）一律按「可能首触」保守处理——目标类的 ``<clinit>`` 入闭包，且按 JVM 初始化次序传递沿 super 链把祖先类 ``<clinit>`` 一并入闭包。refs 无 opcode 位，static 与 instance 首触不可分，宁可多收（refs kind 分类线的 opcode 位属于「两线互喂」的后续项，落地后可收窄）。虚分派族目标不触发 clinit（分派本身不触发初始化，实例创建面由 Type 引用承载）。
@@ -40,10 +40,10 @@ indy 补充边不进 refs 表：indy / MethodHandle 展开边是 call_graph 批�
 
 .. _reach-closure-store:
 
-4. 决策点 2：落库形态 = 可达成员集（member_id + 批次行），不存边路径
+4. 落库形态 = 可达成员集（member_id + 批次行），不存边路径
 --------------------------------------------------------------------
 
-「从哪个种子可达」不作为 scope 维度（基线口径）：per-seed 闭包是十万级方法 × 种子数的行膨胀，且消费面（callgraph 工具、普查投影）要的是整体可达集；种子级归属留待真实消费面提出需求再议。不存边路径：可达集是集合事实，路径重建是查询期遍历的职责。
+「从哪个种子可达」不作为 scope 维度（基线口径）：per-seed 闭包是十万级方法 × 种子数的行膨胀，且消费面（callgraph 工具、普查投影）要的是整体可达集；种子级归属无消费面需求，不建。不存边路径：可达集是集合事实，路径重建是查询期遍历的职责。
 
 两张新表 + 既有 producer 注册表承载：
 
@@ -77,14 +77,14 @@ indy 补充边不进 refs 表：indy / MethodHandle 展开边是 call_graph 批�
 
 .. _reach-closure-invalidate:
 
-5. 决策点 4：失效 = 指纹不匹配整体重算，schema v9 fail-loud
+5. 失效 = 指纹不匹配整体重算，schema v9 fail-loud
 -----------------------------------------------------------
 
 输入图指纹（32 字节 SHA-256）覆盖闭包计算的全部输入：
 
 F = SHA-256( fp_version ‖ inputs 投影 ‖ classes 聚合 ‖ interfaces 聚合 ‖ members 聚合 ‖ refs 聚合 )
 
-- inputs 投影 = (input_id, path, size, sha256) 逐行升序拼接（inputs revision，票面口径）。
+- inputs 投影 = (input_id, path, size, sha256) 逐行升序拼接（inputs revision）。
 - classes / members 聚合 = (COUNT(\*), MAX(id), SUM(id))——闭包的节点域与 CHA 层次基底（super/interfaces 事实随类行）。
 - refs 聚合 = (COUNT(\*), MAX(ref_id), SUM(ref_id))——refs 全部写入口（整库替换、成员切片替换）都是删后重插，AUTOINCREMENT 保证 ref_id 单调不复用：任一行增删必然改变三元组之一。同内容重写也会改变 ref_id 集（假阳性失效→重算，fail-safe 方向），假阴性（改了图而聚合不变）经公开写入口不可达。
 - 聚合口径是变更敏感而非碰撞抗性定位：指纹匹配 = 「输入状态自上次计算以来未动」，用于复用判定；不为内容寻址，不承诺密码学抗碰撞（重算代价低，误判方向是重算）。
@@ -99,7 +99,7 @@ schema 版本 v8 → v9，fail-loud 版本门纪律延续：\ ``kAnalysisDbSchem
 计算面落 ``mjbase/src/mjbase/project/reachability_closure.{hpp,cpp}``\ （与 analysis_db 同模块，消费其读取面与写入面；不新增 target）：
 
 - 入口 ``computeAndStoreReachabilityClosure(db, producerId, options)``\ ：指纹与 seed_mask 双匹配已收尾批 → 复用不重算（reused=true）；未命中 → 装载图、算闭包、落批。种子三档叠加（entry_points / keep_roots / 显式 member_id 清单，未知 id 拒绝），全空拒绝。
-- 主算法：worklist 闭包（BIFO）。层次等价族从 DB 类事实构建并查集（super 边 + 接口边合并同签名虚方法，同 MethodHierarchy override 族语义），族内具体方法按族缓存一次预算；方法边一律保守族展开（refs 无 opcode 位，静态/私有目标族退化为自身；M5 实测保守口径与带 opcode 口径差集 +927 行 / +3.1%，方向恒为超集，§7）；clinit 触发边按 §3 口径（Type/Field 引用 + 方法边，沿 super 链传递）。邻接获取按 PoC 数据裁决（§7 M2）：per-member 预编译 SQL 反查 vs 批量快照装载。
+- 主算法：worklist 闭包（BIFO）。层次等价族从 DB 类事实构建并查集（super 边 + 接口边合并同签名虚方法，同 MethodHierarchy override 族语义），族内具体方法按族缓存一次预算；方法边一律保守族展开（refs 无 opcode 位，静态/私有目标族退化为自身；M5 实测保守口径与带 opcode 口径差集 +927 行 / +3.1%，方向恒为超集，§7）；clinit 触发边按 §3 口径（Type/Field 引用 + 方法边，沿 super 链传递）。邻接获取按 PoC 数据选（§7 M2）：per-member 预编译 SQL 反查 vs 批量快照装载。
 - 确定性：种子升序入队、邻接按 target 升序去重、FIFO worklist、族展开升序去重——同输入双算成员集逐字节一致（验收项）。
 - 原子写：openBatch（closure_write 批）后，closure_batches / closure_members / batch_scopes 单事务落库，closeBatch 收尾；中途失败留残批不写事实行——批次是逻辑运行记录不是事务，残批合法。
 - 查询面（最小集，不做过）：\ ``listClosureBatches()``\ （批次 + 指纹 + seed/coverage 元数据 + member_count，即 stats 面；inputId 维度不预设——闭包批次是全库粒度，「最新有效批」取 batch_id 最大且已收尾者）、\ ``closureMembersPaged(batchId, limit, offset)``\ （member_id 升序分页，契约同既有引用分页）、\ ``isClosureMember(batchId, memberId)``\ 、\ ``freshClosureBatch(fingerprint)``\ （复用判定面）。
@@ -169,7 +169,7 @@ schema 版本 v8 → v9，fail-loud 版本门纪律延续：\ ``kAnalysisDbSchem
      - 无 opcode 全族展开 vs 带 opcode CHA；方向恒为超集，过近似可控
    * - M6 indy 补充边净增量
      - 0
-     - 2074 条展开边全部被 refs 编码 handle 行覆盖（§2 裁决的实测支撑）
+     - 2074 条展开边全部被 refs 编码 handle 行覆盖（§2 口径的实测支撑）
    * - M8 确定性
      - 双算逐成员一致
      - 同库双算成员集相等
@@ -178,7 +178,7 @@ schema 版本 v8 → v9，fail-loud 版本门纪律延续：\ ``kAnalysisDbSchem
      - §5 全部聚合的装载 + SHA-256
    * - M7 落库增量
      - +0.35 MiB / 29999 行
-     - v9 草案 DDL 干跑（closure_batches + closure_members + scopes）
+     - v9 DDL 干跑（closure_batches + closure_members + scopes）
 
 结论：闭包计算本身秒级以内（keep 档 63 ms），成本集中在 refs 装载（§8 规模观察，重导入动线由导入桥消化）；保守口径的过近似 +3.1% 可控；indy 补充射入在本语料净增量为零，coverage_mask bit1 缺省 0 的口径成立。
 
@@ -186,22 +186,20 @@ schema 版本 v8 → v9，fail-loud 版本门纪律延续：\ ``kAnalysisDbSchem
 -----------
 
 - refs direct-only：lambda / method_handle / reflection 形态的边在 refs 表无 kind 分类。BSM MethodHandle 的编码目标行已在 refs（ReferenceIndex 对 indy 指令的 handle 引用入库），但 lambda bridge/接口适配边与反射执行边缺失；闭包在这些点欠近似，结果批次带 coverage_mask 标记，refs kind 分类线落地后重算即收益。
-- 方法体外的控制流不敏感：闭包是集合级保守闭包，不做路径可行性、别名或反射字符串解算（reflection 数据流事实在 ReferenceIndex 有产出口，本批不接线，留 RTA 后置批与反射织入线）。
+- 方法体外的控制流不敏感：闭包是集合级保守闭包，不做路径可行性、别名或反射字符串解算（reflection 数据流事实在 ReferenceIndex 有产出口，当前不接线，归 RTA 线与反射织入线）。
 - 外部符号不入闭包：refs 文本分支的未登记目标（JDK、supporting jar）不是 members 行，无 member_id 节点；闭包域 = 库内已登记成员，文本分支只保留其已登记 owner 类的 clinit 触发（§6）。PoC 的文本分支行数与命中数（§7）给出该域的边界量级。
-- 虚分派族含祖先链声明的保守余量（§3）；子树收窄是 RTA 精度档的后续批。
+- 虚分派族含祖先链声明的保守余量（§3）；子树收窄是 RTA 精度档的后续项。
 - clinit 触发按「可能首触」保守处理（refs 无 opcode 位），宁多收不少收。
-- ReferenceIndex 全容器 build 的规模特征（PoC 实测观察，非本批改动项）：混淆语料 A（4179 类）全容器单次 build 超过 20 分钟未收敛（含 org/objectweb/asm/ClassReader 单类 20.8s 量级的病态大类），20 类/块分块（209 块）index build 累计 611.8 s、分块装载全流程 627.7 s（§7）——闭包批次的重算动线若走「重导入 + 重算」路径，重导入成本由导入桥（分块或增量切片）消化，闭包计算面本身秒级（§7）；该观察同时是 refs kind 分类线与扫描面性能批的输入。
+- ReferenceIndex 全容器 build 的规模特征（PoC 实测观察）：混淆语料 A（4179 类）全容器单次 build 超过 20 分钟未收敛（含 org/objectweb/asm/ClassReader 单类 20.8s 量级的病态大类），20 类/块分块（209 块）index build 累计 611.8 s、分块装载全流程 627.7 s（§7）——闭包批次的重算动线若走「重导入 + 重算」路径，重导入成本由导入桥（分块或增量切片）消化，闭包计算面本身秒级（§7）；该观察同时是 refs kind 分类线与扫描面性能线的输入。
 
 9. 不做什么
 -----------
 
-不做 RTA（票面明确后置）：实例化集合收窄、入口可达性驱动的边裁剪都是后续批。不改 refs 表：无 opcode/kind 扩列（两线互喂的独立批），闭包的 opcode 需求由计算面在装载期从 CG 旗标合并满足（PoC 口径）或全保守展开（无 CG 口径），schema 层不引入第三种事实形态。不做增量闭包修补：指纹不匹配整体重算。不做 per-seed 闭包维度：无消费面需求，行膨胀不成比例。不做原地迁移：v8 库 fail-loud 拒绝，重导入重建。不动 GlobalReachability / ResolvedCallGraph：内存态可达性设施与 DB 闭包并存，语义口径对齐（§3）但代码不分层复用——前者吃容器，后者吃库，输入域不同。
+不做 RTA：实例化集合收窄、入口可达性驱动的边裁剪都是后续项。不改 refs 表：无 opcode/kind 扩列（独立线），闭包的 opcode 需求由计算面在装载期从 CG 旗标合并满足（PoC 口径）或全保守展开（无 CG 口径），schema 层不引入第三种事实形态。不做增量闭包修补：指纹不匹配整体重算。不做 per-seed 闭包维度：无消费面需求，行膨胀不成比例。不做原地迁移：v8 库 fail-loud 拒绝，重导入重建。不动 GlobalReachability / ResolvedCallGraph：内存态可达性设施与 DB 闭包并存，语义口径对齐（§3）但代码不分层复用——前者吃容器，后者吃库，输入域不同。
 
-10. 验收
---------
+10. 测试面
+-----------
 
-- 闭包 producer 注册 + 批次落库 + 失效往返单测：指纹不匹配拒复用、匹配复用（同一库连算两次，第二次命中复用）。
-- 闭包 ⊇ 直接边传递闭包的一致性断言（运行时生成语料，jasm 汇编，不依赖外部语料文件）：同语料双算对照 + 虚分派展开差集断言（CHA 闭包 ⊇ 直接闭包，且差集非空用例）。
-- clinit 触发用例（new / static 首触 → 目标类与 super 链 clinit 入闭包）、default 方法冲突用例（冲突族全部入集）、指纹失效往返、版本门对 v8 库拒绝并给可诊断文案、producer 批次归属与 scope 对账、确定性（双算逐字节同）。
-- 全量 unittest 与基线红集合对比零新增红。
-- PoC 规模数字入本文档 §7（已完成）；schema 变更走版本门 fail-loud（v9）。
+计算面与落库面的契约由 ``test/unittest/project/reachability_closure_test.cpp`` 逐条钉住：种子为空与显式种子未登记拒绝、只读库拒绝、虚分派展开是直接闭包的超集（且差集非空）、clinit 触发走满 super 链与文本分支、default 冲突族保守并集、入口与 keep 根的种子投影、指纹命中复用与 refs 改写后失效、producer 归属与 scope 对账、跨库确定性、分页与成员判定契约、``storeClosureBatch`` 入参校验。
+
+v9 版本门对 v8 库的 fail-loud 拒绝在 ``analysis_db_test.cpp`` 的 ``RejectsForeignSchemaVersionDatabase`` 覆盖（就地改戳构造旧库）。全量 unittest 与基线红集合对比零新增红。

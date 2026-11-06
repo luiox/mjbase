@@ -3,8 +3,7 @@
 上游需求条目：libjbc attr_codec 注解族无界递归（栈溢出 / 进程击穿）
 ===================================================================
 
-- **提出批**\ ：mjbase fix/scan-heap-corruption（DeadMember 扫描路径堆损坏根因批，2026-11）
-- **目标仓**\ ：luiox/libjbc（mjbase 锁定 0.4.22 = a408506。\ **2026-11-04 复核**\ ： 上游 main 头 d287c5a（含 0.4.23 版本点及后续 domain/cp_rewrite 批次）的 ``src/jbc/core/attr_codec.cpp`` 仍无任何深度守卫——``readElemValue`` 前向声明 落在 :552，互递归体原样。注：0.4.24-0.4.26 为 luiox 侧本地包构建版本号， 公开仓 main/tag 历史不可见，其内容与本条无关）
+- **目标仓**\ ：luiox/libjbc（mjbase 锁定 0.4.22 = a408506。\ **2026-11-04 复核**\ ： 上游 main 头 d287c5a 的 ``src/jbc/core/attr_codec.cpp`` 仍无任何深度守卫——``readElemValue`` 前向声明 落在 :552，互递归体原样）
 - **严重级**\ ：高（敌意/畸形类可击穿宿主进程；catch(...)/SEH 均不可恢复）
 - **状态**\ ：待上游立项；mjbase 侧已落过渡守卫（见文末），上游修复合入后退役
 
@@ -36,7 +35,7 @@ AAC 保护壳产物 ``me/konsolas/aac/oo.class``\ （最小单类 jar，样本�
 结构证据（oo.class 实测，2026-11-04 全量复核）
 ----------------------------------------------
 
-- **除注解炸点外全类结构合法**\ ：CP 395 项、fields 1 项（无属性）、methods 3 项（Code 属性体 8+code_len+异常表+嵌套属性恰好对齐 attr len）、类属性表 3 项（Signature / SourceFile / RuntimeVisibleAnnotations）全部干净。 （批注：早前「类属性表含伪造属性 getProtectionDomain len=589834」一条系 字节扫描误报——``u2 #25 + u32 0x0009000A`` 的对位实为 field_info 的 ``access=0x0019`` 与 ``name/desc`` 相邻巧合，reader 可解析位置无伪造属性条目； 特此更正以免后来者追查。）
+- **除注解炸点外全类结构合法**\ ：CP 395 项、fields 1 项（无属性）、methods 3 项（Code 属性体 8+code_len+异常表+嵌套属性恰好对齐 attr len）、类属性表 3 项（Signature / SourceFile / RuntimeVisibleAnnotations）全部干净。
 - 实际炸点：类内 ``RuntimeVisibleAnnotations``\ ，载荷 off=48910 len=21006 （恰好吃满到文件尾 69916，无截断）：
 
   - ``num_annotations = 1``\ ，注解体单 pair，元素值 tag ``'@'`` 连嵌 **3000 层** （每层恰 7 字节：u2 element_name + 0x40 + u2 type_index + u2 num_pairs； 6 字节头 + 3000 × 7 = 21006 与载荷严丝合缝），最深层为 ``num_pairs = 0`` 的空注解收尾（无叶标量）；
@@ -68,22 +67,21 @@ a. **深度参数**\ （同 signature.cpp）：\ ``readAnnotation``/``readElemVa
 - 回归测试载体建议字节夹具（\ ``@`` 连嵌 255/256 两档边界 + 合法浅嵌对照）， 形态同 mjbase ``mjbase/test/unittest/util/annotation_depth_test.cpp``\ （可 直接搬）；
 - 附带检查：\ ``decodeBootstrapMethodsBody`` 等其余属性解码族均为表驱动循环， 无同类递归——本缺陷为点状，不成族。
 
-mjbase 侧过渡守卫（本批已落，上游修复合入后退役）
+mjbase 侧过渡守卫（已落地，上游修复合入后退役）
 -------------------------------------------------
 
 - ``mjbase/src/mjbase/util/annotation_depth.hpp``\ ：同一语法的\ **迭代**\ 走查 （显式栈），只在确证嵌套超限时拒绝；歧义/截断/未知 target_type 一律 fail-open（那些形态 libjbc Result 错误通道是优雅的）。
 - 接线：\ ``member_remapper.cpp`` 的 ``decodedAttrOf``\ （全注解族解码收口）与 Code 嵌套属性解码位——预检拒绝按「解不开原样保真」跳过。
 - 回归测试：\ ``mjbase/test/unittest/util/annotation_depth_test.cpp``\ （字节 夹具：五族深嵌拒绝、浅嵌放行 + 真解码、255/256 边界、截断 fail-open 与 libjbc Err 相干、敌意类 lazy 装载不炸）。
-- 挂账：mjbase 其余散点 decodeAttr 调用位（meta_info_remover 的注解族 槽位等）未逐点接线守卫——上游修复是正解，守卫接线随退役条目一起清理。
+- 未接线：mjbase 其余散点 decodeAttr 调用位（meta_info_remover 的注解族 槽位等）未逐点接线守卫——上游修复是正解，守卫接线随退役条目一起清理。
 
 复现件索引
 ----------
 
 - 样本：\ ``E:/corpus-ws/aac-oo-repro.jar``\ （不进仓）；类文件结构证据见上文， 可由 ``mjbase/test/unittest/util/annotation_depth_test.cpp`` 的夹具形态 完全重建（无需样本）。
-- **取证复跑（2026-11-04，续做批）**\ ：libjbc a408506 /tmp 克隆（xmake.lua 全局 追加 ``/fsanitize=address``\ ）+ libca 0.0.13 同法插桩 + 最小 harness（readClass → 找 RuntimeVisibleAnnotations 槽 → decodeAttr），MSVC 2022：
+- **取证复跑（2026-11-04）**\ ：libjbc a408506 /tmp 克隆（xmake.lua 全局 追加 ``/fsanitize=address``\ ）+ libca 0.0.13 同法插桩 + 最小 harness（readClass → 找 RuntimeVisibleAnnotations 槽 → decodeAttr），MSVC 2022：
 
   - 非 ASAN 直跑：\ ``decodeAttr`` 内 **``0xC00000FD``\ （STATUS_STACK_OVERFLOW）**\ ， ``readClass`` 骨架装载无恙（lazy 面不炸的直证）；
   - ASAN 直跑：\ ``ERROR: AddressSanitizer: stack-overflow``\ （首发现场与递归炸点 一致；MSVC ASAN 对栈深极值帧栈展开为空属正常）；
   - 取证环境一次性未留仓（克隆即弃），复现步骤即本节文字。
 
-- 上一批的 ASAN 首现场记录与本节复跑结论一致（同路径 stack-overflow）。
