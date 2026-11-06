@@ -1,6 +1,6 @@
-//pipeline_builder / pass_registry：§9 装配层单元测试。
+//pipeline_builder / pass_registry：装配层单元测试。
 //
-//验收口径：装配序（净化门 head → global → adaptor 嵌套 → post-class）、
+//覆盖面：装配序（净化门 head → global → adaptor 嵌套 → post-class）、
 //applyTo 按 scope 分派 + Cf fail-loud、工厂每次构建产新实例、注册表
 //roundtrip（幂等注册、getPipeline 稳定序、default-optimize 默认链组成）。
 

@@ -1,14 +1,14 @@
 /// EmptyClassRemoverTest / UnusedClassRemoverTest / UnusedFieldRemoverTest /
-/// GlobalUnusedMethodRemoverTest / GlobalUnusedPassContractTest 段（批 A：
-/// 未使用成员清理家族，容器级四件）。夹具经
+/// GlobalUnusedMethodRemoverTest / GlobalUnusedPassContractTest 段
+/// （未使用成员清理家族，容器级四件）。夹具经
 /// shared/structural_pass_util.hpp 的 FixtureBuilder；注解 / 签名 / Module /
 /// ModuleMainClass 等属性面经 libjbc DOM 补槽（AttrSlot::makeNew + RawAttr /
 /// AnnotationsAttr）后写回——属性字节受控且不依赖本地语料。
 ///
-/// 与形态差（均已在注释逐用例声明）：
+/// 形态差（均已在注释逐用例声明）：
 ///   - 间接引用保持（MethodHandle / invokedynamic / Class.forName 字符串）的
 ///     扫描面属 reference 模块自身用例钉死的范围（reference/global_reachability_
-///     test.cpp 结构元数据用例 + reference_index_test），本文件只移植类注解 /
+///     test.cpp 结构元数据用例 + reference_index_test），本文件只覆盖类注解 /
 ///     字段签名两个 DOM 可构造面，间接调用面不在此重复建桩。
 ///   - LVT/LVTT keep 判定（方法局部变量注解）在 libjbc 同属
 ///     Runtime*TypeAnnotations 属性（在场即 keep），「局部注解行过滤」
@@ -313,7 +313,7 @@ Bytes buildModuleInfo()
     return writeDom(*cf, "module-info");
 }
 
-// ── 非私有档位 / fail-closed / 悬垂防护夹具（本批新增，新栈策略面）──────────
+// ── 非私有档位 / fail-closed / 悬垂防护夹具 ──────────────────────────────────────
 
 /// 档位夹具：private live/dead + package-private/protected/public 四档死成员 +
 /// main 使用 live 侧（dead 全部无引用；字段面 protected 为实例字段、无 clinit
@@ -717,7 +717,7 @@ TEST(MjPassUnusedClassRemoverTest, MalformedClassFailsClosedWithoutPartialDeleti
     EXPECT_EQ(classBytesOf(container, "broken.class"), garbage);
 }
 
-// 缩减移植（形态差见文件头）：类注解 + 字段签名引用的类保持可达（结构元数据
+// 缩减覆盖（形态差见文件头）：类注解 + 字段签名引用的类保持可达（结构元数据
 // 面）；MethodHandle / indy / 反射字符串三个间接面由 reference 模块用例钉死。
 TEST(MjPassUnusedClassRemoverTest, KeepsMetadataReferencedClasses)
 {
@@ -840,7 +840,7 @@ TEST(MjPassUnusedFieldRemoverTest, MalformedClassFailsClosedWithoutPartialRewrit
     EXPECT_EQ(classBytesOf(container, "App.class"), before);
 }
 
-// 缩减移植（形态差见文件头）：注解是 private 字段的保留元数据（字段不可达仍
+// 缩减覆盖（形态差见文件头）：注解是 private 字段的保留元数据（字段不可达仍
 // keep）；无注解的 dead 字段照删。
 TEST(MjPassUnusedFieldRemoverTest, KeepsAnnotatedPrivateField)
 {
@@ -912,7 +912,7 @@ TEST(MjPassGlobalUnusedMethodRemoverTest, MalformedClassFailsClosedWithoutPartia
     EXPECT_EQ(classBytesOf(container, "App.class"), before);
 }
 
-// 缩减移植（形态差见文件头）：注解是 private 方法的保留元数据（方法不可达仍
+// 缩减覆盖（形态差见文件头）：注解是 private 方法的保留元数据（方法不可达仍
 // keep）；无注解的 dead 方法照删。
 TEST(MjPassGlobalUnusedMethodRemoverTest, KeepsAnnotatedPrivateMethod)
 {
@@ -1003,7 +1003,7 @@ TEST(MjPassUnusedMemberInvalidationTest, ChangedResultInvalidatesGlobalAnalyses)
     }
 }
 
-// ── keep 规则集成（审计 P0-1/P0-2）─────────────────────────────────────────────
+// ── keep 规则集成 ────────────────────────────────────────────────────────────
 
 namespace {
 
@@ -1226,7 +1226,7 @@ TEST(MjPassKeepRuleTest, NonMatchingRuleKeepsBaselineBehavior)
     EXPECT_TRUE(hasMethod(reload(container, "App.class"), "livePrivateMethod", "()V"));
 }
 
-// ── 可见性档位（本批放开面：非私有死成员删除）────────────────────────────────
+// ── 可见性档位（非私有死成员删除档面）────────────────────────────────
 //
 // 档位语义见 unused_member_remover.hpp 模块头注：NonPublic（默认）候选全部非
 // public 死成员、public 面 fail-closed 保守；PrivateOnly 是旧策略回归档；

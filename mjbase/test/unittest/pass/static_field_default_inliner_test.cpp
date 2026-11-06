@@ -1,4 +1,4 @@
-/// 静态字段默认值内联（scope:class 首件）单测：mbase 治理版语义对齐
+/// 静态字段默认值内联（scope:class）单测：mbase 治理版语义对齐
 /// （单次写内联 / 多次写保守跳过 / owner 校验）+ 新载体特有面
 /// （ConstantValue RawAttr 槽与 CP 值条目类型、clinit 指令重编码字节、
 /// 无操作路径 writeClass 字节恒等、注册面 scope:class 种子）。

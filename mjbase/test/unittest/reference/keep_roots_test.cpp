@@ -1,5 +1,5 @@
 /// @file        keep_roots_test.cpp
-/// @brief       keep 配置 → 可达性根三槽的翻译面用例（审计 P0#1）。
+/// @brief       keep 配置 → 可达性根三槽的翻译面用例。
 ///
 /// 覆盖：class 规则/成员规则/两档档位/规则与档位的并集/既有根保留/空规格
 /// 恒等/视图指向索引池（生命周期契约）。档位与规则都是纯加法，不关闭任何
@@ -288,7 +288,7 @@ TEST(MjKeepRootsTest, memberRuleOverridesTierOwnerGate)
     EXPECT_TRUE(hasMethodRoot(options, "p/Pub", "pubMethod", "()V"));   // 档位照常
 }
 
-// ── 预设 → 三槽（P0-2 接 P0-1 的匹配面）───────────────────────────
+// ── 预设 → 三槽（与手写规则同一个匹配面）──────────────────────────
 
 // 预设不是另一条通路：它展开成规则后与手写 class/member 行走同一个匹配面。
 // 本用例钉死「preset 文本 → KeepRuleSet → 三槽根 → 可达性闭包」的整链。

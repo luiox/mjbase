@@ -93,7 +93,7 @@ MaskDecision MaskEvaluator::evaluate(std::string_view text) const
     const Impl& impl   = *impl_;
     const MaskAction fallback = defaultActionFor(impl.trust);
 
-    // 长度门：超门文本不进任何正则（引擎纪律 §3），直接 default_action。
+    // 长度门：超门文本不进任何正则（mask_regex_engine 的长度门纪律），直接 default_action。
     if (text.size() > kMaskMaxEvaluatedBytes) {
         decision.action = fallback;
         decision.via    = MaskDecisionVia::LengthGate;

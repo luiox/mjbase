@@ -11,7 +11,7 @@
 ///   状态，操作数全程可见）；有分支方法以 libjbc DomainEngine 跑别名事实域
 ///   （AliasValue 即域载荷，join 即 mergeAliasValues），操作数依赖的产点
 ///   （GETFIELD/CHECKCAST/invoke 结果）经「探测帧注入」补齐——引擎产点钩子
-///   看不到操作数栈，这是 libjbc DomainEngine 的能力缺口（挂账项）。
+///   看不到操作数栈，这是 libjbc DomainEngine 的能力缺口。
 /// - 跨类固定点：Jacobi 全量重算；摘要持调用点绑定 + 惰性展开
 ///   （测试钉死）。
 /// - Andersen 字节码约束：约束图求解为纯算法件（andersen_points_to）；

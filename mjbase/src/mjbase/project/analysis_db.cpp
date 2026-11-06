@@ -1525,7 +1525,7 @@ ca::Result<std::vector<DbReferenceRecord>, AnalysisDbError> runReferenceQuery(
 /// @brief 内部名 → class_id；未登记返回 0。
 ///
 /// 按源反查的两步走第一步：直接以 c.internal_name 过滤 refs 的 JOIN 形状
-/// 会让规划器为免排序选「全索引扫 refs + 逐行回表探 classes」（B6 实测
+/// 会让规划器为免排序选「全索引扫 refs + 逐行回表探 classes」（实测
 /// rt.jar 2.3M 行 565ms）；先解析 id 再下探 refs_source_class 索引。
 ca::Result<ca::i64, AnalysisDbError> classIdByName(sqlite3*                     db,
                                                    const ca::str::Utf8StringRef& owner)
@@ -1652,11 +1652,11 @@ constexpr const char* kSchemaDdl[] = {
     "  WHERE target_class_id IS NULL",
     "CREATE INDEX refs_source_member ON refs(source_member_id)",
     // 按源类反查（referencesFromClass）：无此索引时按 c.internal_name 驱动
-    // 只能全表扫 refs（B6 实测 rt.jar 语料 2.3M 行 565ms）。重建 refs 表时
-    // 两条 source 侧索引必须照抄——PoC 实测漏建后 referencesFromMember 从
+    // 只能全表扫 refs（实测 rt.jar 语料 2.3M 行 565ms）。重建 refs 表时
+    // 两条 source 侧索引必须照抄——实测漏建后 referencesFromMember 从
     // 0.575ms 退化为 1.672ms 全表扫。
     "CREATE INDEX refs_source_class ON refs(source_class_id)",
-    // renames 行级归属（v6 #143 3.4）：覆盖层与配置型小表，行级归属即语义
+    // renames 行级归属（v6）：覆盖层与配置型小表，行级归属即语义
     // （「这条覆盖是谁、何时设置的」就是行问题）。可空外键追加在列序末位，
     // 既有列序与两条索引保持不动；NULL = 匿名写入（写入口 producerId 缺省
     // 0），覆盖行为不变 last-write-wins，producer_id 随覆盖整体刷新。
@@ -1674,7 +1674,7 @@ constexpr const char* kSchemaDdl[] = {
     // 出口遮蔽层（v4）：规则是项目级配置（整体替换、rule_id 单调分配），
     // hit_count 是命中记账（含被 suspect 压制的 allow 命中），查询序与
     // 求值器装载序同源：(priority, rule_id) 升序。
-    // 行级归属（v7 #143 遗留回填）：与 renames 同为覆盖层与配置型小表，
+    // 行级归属（v7）：与 renames 同为覆盖层与配置型小表，
     // 行级归属即语义。可空外键追加在列序末位，既有列序与既有索引保持
     // 不动；NULL = 匿名写入（写入口 producerId 缺省 0），整体替换后新行
     // 统一盖章，覆盖来源事后可查。
@@ -1688,7 +1688,7 @@ constexpr const char* kSchemaDdl[] = {
     "  producer_id INTEGER REFERENCES producers(producer_id)"
     ")",
     "CREATE INDEX mask_rules_order ON mask_rules(priority, rule_id)",
-    // producer 注册表（v6，#143）：登记向本库写事实的身份与逻辑写入运行。
+    // producer 注册表（v6）：登记向本库写事实的身份与逻辑写入运行。
     // producers 注册幂等（key 唯一）、id 单调只增不删；trust_level 两档，
     // 词表对齐 MaskTrustLevel 但语义独立（事实来源可信级别 vs 项目出口默认
     // 动作），不复用同一 C++ 枚举。tool_fingerprint 由注册方自报，mjbase
@@ -1706,7 +1706,7 @@ constexpr const char* kSchemaDdl[] = {
     // 事务内写事实与作用域行，closeBatch 收尾。finished_at 空串 = 未收尾的
     // 残批（失败/中断），是合法审计状态，可读可见。kind 词表与 DbBatchKind
     // 同源；renames_write / rules_write 为覆盖层与规则面消费方预留，
-    // closure_write 为可达闭包派生事实写入（v9 #159）。
+    // closure_write 为可达闭包派生事实写入（v9）。
     "CREATE TABLE batches("
     "  batch_id     INTEGER PRIMARY KEY AUTOINCREMENT,"
     "  producer_id  INTEGER NOT NULL REFERENCES producers(producer_id),"
@@ -1720,7 +1720,7 @@ constexpr const char* kSchemaDdl[] = {
     "  ref_count    INTEGER NOT NULL DEFAULT 0,"
     "  note         TEXT NOT NULL DEFAULT ''"
     ")",
-    // 作用域锚（v6 #143 3.2）：归属单位是写入运行，作用域锚记录这次运行
+    // 作用域锚（v6）：归属单位是写入运行，作用域锚记录这次运行
     // 覆盖的事实区间；逐行归属经作用域解析回答，事实表不加归属列。
     // scope_kind：0=refs_all（scope_id 恒 0）、1=input、2=class、3=member；
     // 成员登记的归属并入其所在类（ingestClasses 的 class 作用域行）。
@@ -1733,7 +1733,7 @@ constexpr const char* kSchemaDdl[] = {
     // 归属解析的反向探取索引：按 (scope_kind, scope_id) 前缀取最大 batch_id
     // （两次索引前缀探 + 取大，无全表扫；单条 OR 形态实测慢 2.8 倍）。
     "CREATE INDEX batch_scopes_owner ON batch_scopes(scope_kind, scope_id, batch_id)",
-    // 方法版本指纹层（v8，#132「怎么接进数据库」）：行 = 方法语义面的一次
+    // 方法版本指纹层（v8）：行 = 方法语义面的一次
     // 落库版本（编辑流在方法体变更后 record），method_version_id 单调只增
     // 不删；fingerprint 是 32 字节 SHA-256 定长 BLOB（CHECK 锁定长度），
     // fp_version 盖 kSemanticFpVersion 算法版本字节（算法升级后旧行自证
@@ -1760,7 +1760,7 @@ constexpr const char* kSchemaDdl[] = {
     // 版本历史索引：listMethodVersions 按 method_version_id 升序（单调分配
     // 序 = 记录序）走索引扫描，不排序、不裸扫。
     "CREATE INDEX method_versions_member ON method_versions(member_id, method_version_id)",
-    // 全程序可达闭包（v9，#159）：派生事实 = 可达方法成员集，批次挂既有
+    // 全程序可达闭包（v9）：派生事实 = 可达方法成员集，批次挂既有
     // producer 注册表（kind=closure_write）。closure_batches 挂批次主键记
     // 元数据：graph_fingerprint 是闭包输入图指纹（32 字节 SHA-256，载荷见
     // closureFingerprintPayload；变更敏感聚合口径，非内容寻址），fp_version
@@ -2057,7 +2057,7 @@ ca::Result<AnalysisDb, AnalysisDbError> AnalysisDb::open(const ca::str::Utf8Stri
             return errorOf(std::move(result));
         }
         // 默认 2MB page cache 在整库导入（数百万行引用、二级索引随机落页）
-        // 下持续颠簸：B6 基线 ref_ingest 占整库导入 78-84%。给到 256MB 后
+        // 下持续颠簸：基线 ref_ingest 占整库导入 78-84%。给到 256MB 后
         // 索引维护基本全内存。temp_store 同理服务排序与临时 B-tree。
         if (auto result = exec(handle, "PRAGMA cache_size=-262144"); result.is_err()) {
             return errorOf(std::move(result));
@@ -2641,7 +2641,7 @@ ca::Result<void, AnalysisDbError> AnalysisDb::replaceRenames(
 
 namespace {
 
-/// @brief 写入口的批次挂靠门（#143 批 3 fail-loud 拒绝面）：batchId 必须
+/// @brief 写入口的批次挂靠门（fail-loud 拒绝面）：batchId 必须
 ///        已注册且未收尾；调用方保证 batchId != 0（0 = 无批写入，不调本门）。
 ///        在调用方事务内执行：BEGIN IMMEDIATE 持写锁后校验与写入原子。
 ca::Result<void, AnalysisDbError> validateOpenBatchForWrite(sqlite3* db, ca::i64 batchId)
@@ -2694,7 +2694,7 @@ ca::Result<void, AnalysisDbError> writeScopeRow(sqlite3*        db,
 constexpr const char* kScopeRowInsertSql =
     "INSERT OR IGNORE INTO batch_scopes(batch_id, scope_kind, scope_id) VALUES(?1, ?2, ?3)";
 
-/// @brief 归属解析的单前缀探取（#143 3.2）：(scope_kind, scope_id) 前缀下
+/// @brief 归属解析的单前缀探取：(scope_kind, scope_id) 前缀下
 ///        batch_id 最大的批次 + 生产者身份。走 batch_scopes_owner 覆盖索引
 ///        前缀下探，ORDER BY batch_id DESC LIMIT 1 无排序；单条 OR 形态实测
 ///        慢 2.8 倍，勿合并。
@@ -2866,7 +2866,7 @@ ca::Result<DbEntryIngestStats, AnalysisDbError> AnalysisDb::ingestEntries(
     }
 
     if (batchId != 0) {
-        // 批次挂靠（#143 批 3）：门校验 + input 作用域行，与事实同事务。
+        // 批次挂靠：门校验 + input 作用域行，与事实同事务。
         if (auto result = validateOpenBatchForWrite(impl_->handle, batchId); result.is_err()) {
             return errorOf(std::move(result));
         }
@@ -3124,7 +3124,7 @@ ca::Result<std::vector<DbEntryInfo>, AnalysisDbError> AnalysisDb::listEntries(
     return ca::Ok(std::move(entries));
 }
 
-//-- 普查投影层（census，#121 §5 B4） ------------------------------------------
+//-- 普查投影层（census） ------------------------------------------
 
 namespace {
 
@@ -3542,7 +3542,7 @@ ca::Result<void, AnalysisDbError> AnalysisDb::setMaskTrustLevel(MaskTrustLevel l
         return errorOf(std::move(result));
     }
 
-    // 信任级别值与归属伴随键（v7 #143）同事务落库：归属随每次设置整体刷新
+    // 信任级别值与归属伴随键（v7）同事务落库：归属随每次设置整体刷新
     // （last-write-wins 口径同 renames），匿名写入清除伴随键。
     auto transaction = Transaction::begin(impl_->handle);
     if (transaction.is_err()) return errorOf(std::move(transaction));
@@ -4205,7 +4205,7 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::ingestClasses(
     }
 
     if (batchId != 0) {
-        // 逐类作用域行（#143 3.6）：full_import 的 classOwnership 可答必需项。
+        // 逐类作用域行：full_import 的 classOwnership 可答必需项。
         // 成员登记的归属并入其所在类（成员不落独立作用域行）。
         auto scopeInsert = prepare(impl_->handle, kScopeRowInsertSql);
         if (scopeInsert.is_err()) return errorOf(std::move(scopeInsert));
@@ -4341,7 +4341,7 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceReferencesFromMember(
     }
 
     if (batchId != 0) {
-        // 成员切片锚（#143 批 3）：类事实未触碰，不落 class 作用域行——
+        // 成员切片锚：类事实未触碰，不落 class 作用域行——
         // classOwnership 只认类事实 upsert 与 class 头引用切片。
         if (auto result = validateOpenBatchForWrite(impl_->handle, batchId); result.is_err()) {
             return errorOf(std::move(result));
@@ -4939,7 +4939,7 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::referenceCount() const
     return ca::Ok(static_cast<ca::usize>(count.unwrap()));
 }
 
-//-- 方法版本指纹层（method_versions，schema v8，#132）--------------------------
+//-- 方法版本指纹层（method_versions，schema v8）--------------------------
 
 ca::Result<ca::i64, AnalysisDbError> AnalysisDb::recordMethodVersion(
     ca::i64 classId, ca::i64 memberId, const analysis::SemanticFp& fingerprint)
@@ -5099,7 +5099,7 @@ ca::Result<DbMethodVersionRecordStats, AnalysisDbError> AnalysisDb::recordMethod
     return ca::Ok(stats);
 }
 
-//-- 全程序可达闭包（closure_batches / closure_members，schema v9，#159）----------
+//-- 全程序可达闭包（closure_batches / closure_members，schema v9）----------
 
 constexpr const char* kClosureBatchSelectSql =
     "SELECT cb.batch_id, cb.graph_fingerprint, cb.fp_version, cb.seed_mask, cb.seed_count, "
@@ -5253,7 +5253,7 @@ ca::Result<DbClosureBatchInfo, AnalysisDbError> AnalysisDb::storeClosureBatch(
     }
 
     // 开批（closure_write）：openBatch 承担注册校验与批次行落库。事实段
-    // 中途失败不回滚批次行——残批是合法审计状态（设计稿 §6）。
+    // 中途失败不回滚批次行——残批是合法审计状态。
     auto opened = openBatch(record.producerId, DbBatchKind::ClosureWrite);
     if (opened.is_err()) return errorOf(std::move(opened));
     const ca::i64 batchId = opened.unwrap();
@@ -5487,10 +5487,10 @@ ca::Result<DbClosureGraphEdges, AnalysisDbError> AnalysisDb::closureGraphEdges()
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
     }
-    // 全量快照单查询（PoC M2 裁决：批量装载胜过 per-member 反查一个数量级）。
+    // 全量快照单查询（批量装载胜过 per-member 反查一个数量级）。
     // 只收方法体行（source_member_id 非空）——class 级引用（类头声明）不触发
     // JVM 初始化；文本分支行经 classes.internal_name 探取已登记 owner 类，
-    // 未登记目标不入闭包域（设计稿 §8）。行序 ref_id 升序（确定性）。
+    // 未登记目标不入闭包域。行序 ref_id 升序（确定性）。
     auto prepared = prepare(
         impl_->handle,
         "SELECT r.source_member_id, r.ref_kind, "
@@ -5564,7 +5564,7 @@ ca::Result<std::vector<ca::u8>, AnalysisDbError> AnalysisDb::closureFingerprintP
     }
 
     // 四表变更敏感聚合：refs 聚合含 SUM(ref_id)——ref_id 单调不复用，任何
-    // 整库/切片替换必改聚合（设计稿 §5 的 fail-safe 失效方向）。
+    // 整库/切片替换必改聚合（fail-safe 失效方向）。
     if (auto result = appendAggregateTriple(
             payload, impl_->handle,
             "SELECT COUNT(*), COALESCE(MAX(class_id),0), COALESCE(SUM(class_id),0) "

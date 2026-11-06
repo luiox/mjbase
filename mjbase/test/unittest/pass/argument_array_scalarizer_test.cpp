@@ -1,4 +1,4 @@
-// ArgumentArrayScalarizer（#37 切片 1）：装箱签名 [Ljava/lang/Object; 参数
+// ArgumentArrayScalarizer：装箱签名 [Ljava/lang/Object; 参数
 // 标量化——被调方取参窗改直接参数槽 + 局部平移、调用方装箱窗拆直接传参、
 // 描述符全局同步；守卫面（实参类型失配/数组逃逸/下标缺口/非窗调用位点/
 // null 实参/重复取参）+ 注册面。夹具经 shared/structural_pass_util.hpp 手拼
@@ -165,7 +165,7 @@ Bytes buildCallerBoxed(FixtureBuilder& b)
 
 }   // namespace
 
-// ── 切片 2 件：被调方单取参窗（元素 0 checkcast Ti）──
+// ── 夹具：被调方单取参窗（元素 0 checkcast Ti）──
 Bytes buildCalleeTi(const std::string& tiInternal)
 {
     FixtureBuilder b("Svc");
@@ -188,7 +188,7 @@ Bytes buildCaller1(FixtureBuilder& b, const Bytes& arg)
     return code;
 }
 
-// ── 切片 2 正面：ldc Class 常量按常量类对齐 ──
+// ── ：ldc Class 常量按常量类对齐 ──
 TEST(ArgumentArrayScalarizerTest, classConstArgScalarized)
 {
     mjbase::model::ResourceContainer container;
@@ -208,7 +208,7 @@ TEST(ArgumentArrayScalarizerTest, classConstArgScalarized)
     EXPECT_EQ(cops[0], jbc::core::Op::LDC_W);
 }
 
-// ── 切片 2 拒绝：Class 常量与 Ti 失配 ──
+// ── ：Class 常量与 Ti 失配 ──
 TEST(ArgumentArrayScalarizerTest, classConstMismatchRejected)
 {
     mjbase::model::ResourceContainer container;
@@ -225,7 +225,7 @@ TEST(ArgumentArrayScalarizerTest, classConstMismatchRejected)
     EXPECT_EQ(methodDesc(callee->get(), "go"), "([Ljava/lang/Object;)V");
 }
 
-// ── 切片 2 正面：调用方入参槽类型提升（static 入参直传）──
+// ── ：调用方入参槽类型提升（static 入参直传）──
 TEST(ArgumentArrayScalarizerTest, callerParamPassthroughScalarized)
 {
     mjbase::model::ResourceContainer container;
@@ -247,7 +247,7 @@ TEST(ArgumentArrayScalarizerTest, callerParamPassthroughScalarized)
     EXPECT_EQ(cops[0], jbc::core::Op::ALOAD_0);
 }
 
-// ── 切片 2 拒绝：槽被重存储，入参定值证据失效 ──
+// ── ：槽被重存储，入参定值证据失效 ──
 TEST(ArgumentArrayScalarizerTest, callerParamRestoredRejected)
 {
     mjbase::model::ResourceContainer container;
@@ -262,7 +262,7 @@ TEST(ArgumentArrayScalarizerTest, callerParamRestoredRejected)
     EXPECT_FALSE(runPass(container).changed());
 }
 
-// ── 切片 2 正面：实例调用方 this 直传（槽 0 = 调用方类）──
+// ── ：实例调用方 this 直传（槽 0 = 调用方类）──
 TEST(ArgumentArrayScalarizerTest, thisAliasPassthroughScalarized)
 {
     mjbase::model::ResourceContainer container;
@@ -280,7 +280,7 @@ TEST(ArgumentArrayScalarizerTest, thisAliasPassthroughScalarized)
     EXPECT_EQ(methodDesc(callee->get(), "go"), "(LCaller;)V");
 }
 
-// ── 切片 3 正面：双指令装箱链实参（iconst_5; Integer.valueOf）──
+// ── ：双指令装箱链实参（iconst_5; Integer.valueOf）──
 TEST(ArgumentArrayScalarizerTest, boxValueOfArgScalarized)
 {
     mjbase::model::ResourceContainer container;
@@ -301,7 +301,7 @@ TEST(ArgumentArrayScalarizerTest, boxValueOfArgScalarized)
     EXPECT_EQ(cops[1], jbc::core::Op::INVOKESTATIC);
 }
 
-// ── 切片 3 拒绝：装箱链产出型与 Ti 失配 ──
+// ── ：装箱链产出型与 Ti 失配 ──
 TEST(ArgumentArrayScalarizerTest, boxValueOfMismatchRejected)
 {
     mjbase::model::ResourceContainer container;
@@ -315,7 +315,7 @@ TEST(ArgumentArrayScalarizerTest, boxValueOfMismatchRejected)
     EXPECT_FALSE(runPass(container).changed());
 }
 
-// ── 切片 3 正面：实例形态（槽 1 取参 + invokevirtual 位点）──
+// ── ：实例形态（槽 1 取参 + invokevirtual 位点）──
 TEST(ArgumentArrayScalarizerTest, instanceCalleeScalarized)
 {
     mjbase::model::ResourceContainer container;

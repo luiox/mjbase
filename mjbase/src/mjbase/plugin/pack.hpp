@@ -107,12 +107,12 @@ inline PackError makePackError(PackErrorKind kind, std::string_view detail)
 }
 
 /// @brief 宿主唯一装配入口：同源门 → manifest 校验 → 委托注册 → 非空与命名
-///        空间验收。任何一关不过即 Err；注册表可能已留下部分注册条目，宿主
+///        空间前缀校验。任何一关不过即 Err；注册表可能已留下部分注册条目，宿主
 ///        应丢弃整表重建，不做单 pass 回滚。
 ///
 /// 同源门：pack 声明的 mjbaseCommit 与宿主自身 buildCommit() 不一致即拒绝
 /// ——接口不设人工版本号，注入面的任何变化都体现为 mjbase 提交变化，异源
-/// 构建在此处 fail-closed。前缀验收机械执行：装配前后 registry.list() 的
+/// 构建在此处 fail-closed。前缀校验机械执行：装配前后 registry.list() 的
 /// 差集里每个新名字必须以 "<name>." 开头，不依赖 pack 自觉。
 inline Result<void, PackError> installPack(IPassPack& pack, spi::PassNameRegistry& registry,
                                            std::string_view config = {})

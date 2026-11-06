@@ -7,18 +7,12 @@
 namespace mjbase::project {
 
 /// @file entry_shape.hpp
-/// @brief jar 条目路径形态判定（硬壳容器形态切面，#39 / #121 B4）。
+/// @brief jar 条目路径形态判定（硬壳容器形态切面）。
 ///
 /// 纯字节级扫描：路径按 jar 条目路径的结构约定（'/' 分隔段、字节透传、
 /// 无编码假设）逐 facet 检查，无正则。每条路径命中恰一个 facet（固定
 /// 优先序，见 classifyEntryPathShape）；`regular` 旗标的登记口径 =
 /// `isRegularEntryPath`（即 shape == Regular）。
-///
-/// B1 的 regular 最小口径原是 mjt 导入桥的内部函数（#121 B4 钩子），本
-/// 头把它上提为公共面。B4 实测空格名混淆样本（全空格路径 21845 字节）
-/// 暴露最小口径空洞——空白与超长形态全部漏判 Regular——故在 B1 六项
-/// 之上补 Overlong / WhitespaceEdge 两项；判定从 B1 口径演进而来，历史
-/// 库重导入后相关条目的 regular 翻转属预期，不构成登记面漂移。
 
 /// @brief 条目路径形态 facet。
 enum class EntryPathShape : ca::u8
@@ -52,7 +46,6 @@ EntryPathShape classifyEntryPathShape(std::string_view path) noexcept;
 ///
 /// 口径：非空、无控制字符/DEL、无反斜杠、非前导或尾随 '/'、无空段
 /// （连续斜杠）、无 "." / ".." 段、无超长段/路径、段首尾无空格。
-/// B1 最小口径 + B4 补充两项（见文件头说明）。
 bool isRegularEntryPath(std::string_view path) noexcept;
 
 /// @brief 形态 facet 稳定名（census 汇总面列值："regular"/"empty"/...

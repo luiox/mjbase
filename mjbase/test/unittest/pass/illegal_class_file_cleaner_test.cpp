@@ -1,8 +1,7 @@
-/// IllegalClassFileCleaner
-/// 段（889 行起），并补齐独立直接用例。断言口径：
+/// IllegalClassFileCleaner 独立直接用例。断言口径：
 /// 不可解析字节原样保留；可解析资源清洗后仍可解析；改动走两阶段提交；
 /// PA 与实际改动一致。
-/// F 线清洗批起规则面为两级流水全量：libjclassfile 前置级 5 条挂账规则
+/// 规则面为两级流水全量：libjclassfile 前置级 5 条规则
 /// （属性级 CP 校验剔除 / 越界跳转与 LDC 桩替 / LVT·LVTT·LNT 修剪 / BSM 压缩
 /// 与 condy 手术 / 无效句柄出池）+ libjbc 级 2 条结构规则；craft 畸形样本
 /// 逐规则验收 + 合法输入字节逐位不动断言，载体见文件尾部 CraftBuilder。
@@ -113,7 +112,7 @@ TEST(MjPassIllegalClassFileCleanerTest, PreservesUnparseableClassBytes)
     EXPECT_EQ(res->get(), invalidBytes);
 }
 
-// 补齐直接用例：非法描述符成员整条剔除，合法成员保留；PA none()；产物可重读。
+// 非法描述符成员整条剔除，合法成员保留；PA none()；产物可重读。
 TEST(MjPassIllegalClassFileCleanerTest, StripsIllegalDescriptorMembers)
 {
     FixtureBuilder builder("T");
@@ -148,7 +147,7 @@ TEST(MjPassIllegalClassFileCleanerTest, StripsIllegalDescriptorMembers)
     EXPECT_EQ(cf.nameOf(cf.methods[0]), "goodMethod");
 }
 
-// 补齐直接用例：越界/空区间异常表条目剪除，合法条目保留。
+// 越界/空区间异常表条目剪除，合法条目保留。
 // 注意：合法条目取 (0,1,1)——前置级语义以「最后一条指令起始偏移」为
 // startPc/endPc/handlerPc 上界（endPc==code_length 越过该上界的条目也会被
 // 剪），夹具取两边界语义下都合法的形态，验证「垃圾剪除、合法保留」本身。
@@ -184,7 +183,7 @@ TEST(MjPassIllegalClassFileCleanerTest, PrunesJunkExceptionTableEntries)
     EXPECT_EQ(parsed.code->excTable[0].handlerPc, 1u);
 }
 
-// 补齐直接用例：结构本就干净的可解析类 → 字节逐位不变、PA all()。
+// 结构本就干净的可解析类 → 字节逐位不变、PA all()。
 TEST(MjPassIllegalClassFileCleanerTest, LeavesValidClassUntouched)
 {
     FixtureBuilder builder("T");
@@ -209,7 +208,7 @@ TEST(MjPassIllegalClassFileCleanerTest, LeavesValidClassUntouched)
     EXPECT_EQ(res->get(), bytes);
 }
 
-// 补齐直接用例：非 class 资源不触碰（旧契约「非 class 资源不触碰」的直接验收）。
+// 非 class 资源不触碰。
 TEST(MjPassIllegalClassFileCleanerTest, SkipsNonClassResources)
 {
     mjbase::model::ResourceContainer container;
@@ -232,7 +231,7 @@ TEST(MjPassIllegalClassFileCleanerTest, SkipsNonClassResources)
 
 // 用例（proguard 真实样本冒烟）：逐资源断言「字节未动或改后仍可解析」
 // 与 PA 一致性。changed>0 断言绑全量 IllegalStrippingTransformer 规则集
-// （属性级清洗），不在本批对齐子集的保证面内，故不照搬。
+// （属性级清洗），不在本用例的保证面内，故不断言。
 TEST(MjPassIllegalClassFileCleanerTest, ProguardFixtureStaysParseable)
 {
     const auto root = std::filesystem::path("libs/libjclassfile/test_resource/obfuscated/proguard");
@@ -279,7 +278,7 @@ TEST(MjPassIllegalClassFileCleanerTest, ProguardFixtureStaysParseable)
     EXPECT_EQ(changed, pa.changed());
 }
 
-// ==================== F 线清洗批：libjclassfile 前置级 5 条挂账规则 ====================
+// ==================== libjclassfile 前置级 5 条规则 ====================
 // craft 畸形样本逐规则验收 + 合法输入字节不动。craft 载体为文件局部的
 // CraftBuilder（共享 structural_pass_util 不建模属性级/BSM/condy 形态），
 // 产物级断言经 libjclassfile 模型重读 + libjbc 可重读双面验收。

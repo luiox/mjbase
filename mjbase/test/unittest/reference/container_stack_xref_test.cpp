@@ -1,5 +1,4 @@
-// 多容器合并视图喂索引面的跨容器归并验收（RFC 0001 §10-P5「多容器 xref 归并
-// 测试」）：MountedContainerSet::mergedView 的产出直接进 ReferenceIndex::build
+// 多容器合并视图喂索引面的跨容器归并验收：MountedContainerSet::mergedView 的产出直接进 ReferenceIndex::build
 // （既有扫描面不感知容器边界），断言三件事——两容器的事实并存归并、同 FQN
 // 冲突按 first-wins 取解析序首位容器的事实面、卸载容器后索引重扫的引用一致。
 // 夹具沿用本目录 class_bytes_builder（手拼 classfile，字节受控）。

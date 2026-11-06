@@ -1,12 +1,12 @@
 /// @file        shadow_token_test.cpp
-/// @brief       #1156 shadow 引用 token T2：resolve(s, pos) 单一收口 + name 槽
-///              文法专测（mjbase 移植版；表/条目 API 为驻留视图口径）。
+/// @brief       shadow 引用 token 文法专测：resolve(s, pos) 单一收口点 + name 槽
+///              二选一；表/条目 API 为驻留视图口径。
 ///
-/// 钉扎面（规范私仓规格 shadow-reference-token-spec §2/§3/§6，本仓无副本）：
-/// - §2 文法唯一形态：ClassRef/MemberRef 形状矩阵 + $${ 转义；
-/// - §3 位置三分：name 槽整串二选一、无子串扫描；字符串常量恒等（含 ${...}
+/// 钉扎面：
+/// - 文法唯一形态：ClassRef/MemberRef 形状矩阵 + $${ 转义；
+/// - 位置三分：name 槽整串二选一、无子串扫描；字符串常量恒等（含 ${...}
 ///   的常量文本永不判为 Ref —— 文法性质，非运行时功能）；
-/// - §6 错误四分类全分支 + 缺 sidecar 硬报错；两错误码永不 fall-through
+/// - 错误四分类全分支 + 缺 sidecar 硬报错；两错误码永不 fall-through
 ///   （同一输入两码互斥，矩阵级专测）；
 /// - MemberRef 二元 handle：类/成员 token 都要验；重载歧义 → ambiguous-member。
 /// 测试全部自造字符串，零样本字节（法务红线）。
@@ -72,7 +72,7 @@ constexpr const char* kMemberRef = "${Class_1.11111111.m_1.22222222}";
 
 }   // namespace
 
-// ───────────────────────── §2 文法形状（纯词法） ─────────────────────────
+// ───────────────────────── 文法形状（纯词法） ────────────────────────────
 
 TEST(MjShadowTokenTest, ParseShapeClassificationMatrix)
 {
@@ -90,7 +90,7 @@ TEST(MjShadowTokenTest, ParseShapeClassificationMatrix)
         {"${Class_12.abcdef01}", ShadowRefForm::ClassRef},
         {kMemberRef, ShadowRefForm::MemberRef},
         {"${Class_1.11111111.handle_3.9a1b2c3d}", ShadowRefForm::MemberRef},
-        // 形状违约（§6 malformed-handle 语义域）：
+        // 形状违约（malformed-handle 语义域）：
         {"${Class_1}", ShadowRefForm::Malformed},                       // 缺 token 后缀
         {"${Class_1.1111111}", ShadowRefForm::Malformed},               // 7 位 token
         {"${Class_1.111111111}", ShadowRefForm::Malformed},             // 9 位 token
@@ -113,13 +113,13 @@ TEST(MjShadowTokenTest, ParseShapeClassificationMatrix)
 
 TEST(MjShadowTokenTest, MidStringDollarBraceIsRawNotRef)
 {
-    // §3 name 槽无子串扫描：`${` 不在串首只是裸名字节，绝不离析出 Ref。
+    // name 槽无子串扫描：`${` 不在串首只是裸名字节，绝不离析出 Ref。
     EXPECT_EQ(ShadowRefForm::Raw, parseShadowRef("ldc \"${Class_1.11111111}\"").form);
     EXPECT_EQ(ShadowRefForm::Raw, parseShadowRef("a${Class_1.11111111}").form);
     EXPECT_EQ(ShadowRefForm::Raw, parseShadowRef("prefix ${var} suffix").form);
 }
 
-// ───────────────────────── §3 name 槽解析全分支 ─────────────────────────
+// ───────────────────────── name 槽解析全分支 ────────────────────────────
 
 TEST(MjShadowTokenTest, ClassRefResolvesToRawInternalName)
 {
@@ -162,7 +162,7 @@ TEST(MjShadowTokenTest, RawMemberSlotIsOwnerScoped)
 
     const auto miss = resolveMember(makeTable(), "a/b/Beta", "fly");
     EXPECT_EQ(ShadowSlotError::RawNotFound, miss.error);
-    // owner 上下文进诊断（§6 可诊断要求）。
+    // owner 上下文进诊断（可诊断要求）。
     EXPECT_NE(std::string::npos, text(miss).find("a/b/Beta"));
 }
 
@@ -200,7 +200,7 @@ TEST(MjShadowTokenTest, EmptyTableAnyReferenceShapeIsMissingSidecarHardError)
         const auto result = resolve(empty, input);
         EXPECT_EQ(ShadowSlotError::MissingSidecar, result.error) << input;
         EXPECT_NE(std::string::npos, text(result).find("missing-sidecar")) << input;
-        // 硬报错带修复动作（§6：提示需加载 sidecar）。
+        // 硬报错带修复动作（提示需加载 sidecar）。
         EXPECT_NE(std::string::npos, text(result).find("shadow_generate")) << input;
     }
 }
@@ -224,7 +224,7 @@ TEST(MjShadowTokenTest, NonNamePositionsDispatch)
     EXPECT_TRUE(jasm.fromHandle);
 }
 
-// ───────────────────────── §6 错误四分类（Ref 面） ─────────────────────────
+// ───────────────────────── 错误四分类（Ref 面） ────────────────────────────
 
 TEST(MjShadowTokenTest, ClassRefTokenMismatchAndUnknownIndexAreUnknownHandle)
 {
@@ -275,12 +275,12 @@ TEST(MjShadowTokenTest, AmbiguousOverloadsDemandDescriptor)
     const auto result = resolveMember(makeAmbiguousTable(), "a/b/Alpha", kMemberRef);
     EXPECT_EQ(ShadowSlotError::AmbiguousMember, result.error);
     EXPECT_NE(std::string::npos, text(result).find("ambiguous-member"));
-    // 修复动作指引补 desc（§6），并说明本卡只收 raw desc。
+    // 修复动作指引补 desc，并说明本用例只收 raw desc。
     EXPECT_NE(std::string::npos, text(result).find("descriptor"));
     EXPECT_NE(std::string::npos, text(result).find("raw descriptor"));
 }
 
-// ───────────────────── 不 fall-through 专测（§3 红线） ─────────────────────
+// ───────────────────── 不 fall-through 专测（红线） ────────────────────────
 
 TEST(MjShadowTokenTest, ErrorCodesNeverFallThroughMutualExclusionMatrix)
 {
@@ -391,7 +391,7 @@ TEST(MjShadowTokenTest, HandleIssuanceSkipsTokenlessAndManualNames)
 }
 
 
-// ── Descriptor 槽（A 批 A1：类型位展开）──────────────────────────
+// ── Descriptor 槽：类型位展开──────────────────────────
 
 namespace {
 
@@ -528,7 +528,7 @@ TEST(MjShadowTokenTest, DescriptorEscapedLiteralKeepsLiteralBraces)
 }
 
 
-// ── JasmBody 槽（A 批 A2：引用型操作数展开）──────────────────────
+// ── JasmBody 槽：引用型操作数展开──────────────────────
 
 namespace {
 
@@ -662,7 +662,7 @@ TEST(MjShadowTokenTest, JasmBodyGrammarGarbageFailsLoud)
     EXPECT_EQ(r.raw, "");
 }
 
-// ── §4 中段裁定（${ 不在段首：不展开、不静默）────────────────────
+// ── 中段裁定（${ 不在段首：不展开、不静默）───────────────────────
 
 TEST(MjShadowTokenTest, MidSegmentBracesInDescriptorFailLoud)
 {
@@ -685,7 +685,7 @@ TEST(MjShadowTokenTest, MidSegmentBracesInDescriptorFailLoud)
 TEST(MjShadowTokenTest, NameSlotMidSegmentStaysRawZeroDrift)
 {
     const auto table = makeTable();
-    // name 槽整串二选一（§3）：${ 不在串首 → 整串 Raw（无中段扫描），
+    // name 槽整串二选一：${ 不在串首 → 整串 Raw（无中段扫描），
     // 解析层不展开、不判 malformed；响亮路径只来自核表位（verifyRaw）：
     // 默认查询核表 → raw-not-found；直通位（verifyRaw=false）恒等回显。
     const auto checked = resolve(table, "foo${Class_1.11111111}");
@@ -715,7 +715,7 @@ TEST(MjShadowTokenTest, JasmBodyMidSegmentBracesFailLoud)
     EXPECT_FALSE(escaped.fromHandle);
 }
 
-// ── §4 补钉：中段 guard × 合法嵌套形态矩阵 + owner 内点形状钉扎 ──────
+// ── 中段 guard × 合法嵌套形态矩阵 + owner 内点形状钉扎 ────────────
 
 TEST(MjShadowTokenTest, JasmBodyCompositeOperandMatrix)
 {

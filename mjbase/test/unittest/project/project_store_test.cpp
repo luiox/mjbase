@@ -1,34 +1,18 @@
-// 分析工程存取层（实现卡 C1+C2+C3+C4+C5）：bundle 常量/目录
-// 骨架 + create 的目录判别 + store.json 严格解析逐类拒载 + 确定性逐字节写出
-// + section 命名规则 + 未知 format 收容（P1：清单拒载≠删数据）（C1）；
-// section 内容原子读写原语：staged tmp + 换名单 section 原子写、
-// content_hash/byte_size 双登记、先 size 后 hash 的 Damaged 判定材料（C2）；
-// store.json manifest 读-改-写事务：staged tmp + 单次换名 + 重试、CP-1 首个
-// 消费方（拒载即拒绝事务，P1 红线不绕行）、墓碑删除、upsert 与发布字节
-// 复核（C3，成功/中断/损坏/重试耗尽各态）；§8.2 恢复扫描：sections/+
-// store.json+tmp/ 全量盘点分类账（Ok/Damaged/孤儿两档）、扫描只读性、
-// unloadable-manifest 孤儿零 prune 路径专测、CP-1 终裁（Io 入降级触发面）
-// 的 Io 保守两断言（清单侧 + Damaged 侧）（C4）；§7.1 单写者锁 store.lock
-// 全路径：独占创建获取/二次获取 Lock 报 owner 三元组/释放清场、死 pid 手写
-// 锁的自动接管（§11-3 spawn→取 pid→kill 构造法）、不可解析 fail-closed
-// （禁止自动接管）、stealLock 抢占 + 诊断记录、删除受阻 fail-closed、
-// PID 探测纪律（daemon_state.cpp:348-368 平移）、恢复扫描与锁互不越界
-// （C5）；R64 N1/N2 落刀：POSIX 释放属主核验（fstat/stat inode 比对后再删，
-// 手造 inode 错位断言不误删抢占者新锁）、unreadable 分支放行 stealLock
-// （unreadable fixture：无 stealLock 仍 fail-closed，有 stealLock 出口可达）
-// （R64 收口）；R62 N1/N2 加固：flush 后孤儿 prune 动作面（工作清单现扫现验——
-// 清单现读 fail-closed / 认领现验 / exists·可读 ec 全尊重 / 删除 ec 上浮，
-// Never 档零触碰）+ 收容词根匹配平台分叉（Windows 大小写不敏感对齐 Win32
-// 路径语义 / POSIX 敏感）双平台测试钉。
-// 验收口径：私仓规格 analysis-project-store-design §11-1（骨架）、§11-7（C1）（本仓无副本）；
-// §11 清单中归属 section 读写的写读往返/hash 损坏检测/tmp 半提交隔离/字节级
-// 确定性（C2）；§6.3/§8.1 事务语义与 §11-1/11 的 flush 面（C3）；§8.2/§8.3
-// 恢复扫描与 §11-4/5/6 的分类账面（C4，扫描只报告不改动）；§7.1/§7.2/§11-3
-// 的锁面（C5）。
+// 分析工程存取层（project_store）的行为钉扎：bundle 常量与目录骨架、create
+// 的目录判别、store.json 严格解析的逐类拒载与确定性逐字节写出、section 命名
+// 规则、未知 format 收容（清单拒载不等于删数据）；section 内容原子读写（staged
+// tmp + 换名、content_hash/byte_size 双登记、先 size 后 hash 的 Damaged 判定
+// 材料）；store.json 读-改-写事务（不可载即拒绝事务、墓碑删除、upsert 与发布
+// 字节复核，成功/中断/损坏/重试耗尽各态）；恢复扫描（sections/ + store.json +
+// tmp/ 全量盘点分类账、扫描只读性、清单不可载时零 prune、Io 读失败的保守两侧
+// 断言）；单写者锁（独占创建、二次获取报 owner 三元组、释放清场、死 pid 锁的
+// 自动接管、不可解析按活锁 fail-closed、stealLock 抢占留诊断、POSIX 释放前
+// inode 属主核验）；flush 后孤儿 prune 的动作面（现扫现验：清单现读 / 认领
+// 现验 / exists 与可读 ec 全尊重 / 删除 ec 上浮，Never 档零触碰）与收容词根
+// 匹配的平台分叉（Windows 大小写不敏感对齐 Win32 路径语义、POSIX 保持敏感）
+// 双平台钉。
 //
-// 41 用例断言逐一
-// 对应、语义与时序假设不变；仅命名空间（mjbase::project）与 gtest 套件名
-// 随 mjbase 约定调整。
+// 契约面以 project_store.hpp 头注为准，这里只钉可观察行为。
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -93,7 +77,7 @@ std::string hashOf(char fill)
     return "sha256:" + std::string(64, fill);
 }
 
-/// 合法 jsonl 条目（字段取 §4.2 示例口径）。
+/// 合法 jsonl 条目（字段取 示例口径）。
 StoreSectionEntry makeJsonlEntry(const char* name, char hashFill)
 {
     StoreSectionEntry entry;
@@ -176,7 +160,7 @@ std::string expectParseError(const std::string& text, ProjectStoreErrorKind kind
     return {};
 }
 
-//-- C2 辅助 -------------------------------------------------------------------
+//-- 辅助 ----------------------------------------------------------------------
 
 /// 独立计算 "sha256:" + 64 hex（不经被测代码的参照实现，双登记核对基准；
 /// 小写 canonical）。
@@ -196,7 +180,7 @@ std::string independentHash(const std::string& bytes)
     return independentHash(bytes.data(), bytes.size());
 }
 
-/// 从写结果构造真实清单条目（C3 flush 登记路径的最小手工模拟）。
+/// 从写结果构造真实清单条目（flush 登记路径的最小手工模拟）。
 StoreSectionEntry entryFrom(const char* name, SectionFormat format,
                             const SectionWriteResult& written, ca::u64 recordCount = 0)
 {
@@ -246,7 +230,7 @@ std::size_t tmpEntryCount(const std::filesystem::path& dir)
     return count;
 }
 
-//-- C5 辅助 -------------------------------------------------------------------
+//-- 辅助 ----------------------------------------------------------------------
 
 /// 当前进程 pid（锁内容与"锁被自己持有"场景构造用）。
 long long currentProcessPid()
@@ -258,14 +242,14 @@ long long currentProcessPid()
 #endif
 }
 
-/// §7.1 锁内容形状（手写 lock 文件用；三字段 + 尾随 LF，与引擎写出同形）。
+/// 锁内容形状（手写 lock 文件用；三字段 + 尾随 LF，与引擎写出同形）。
 std::string lockJson(long long pid, const char* createdAt, const char* owner)
 {
     return std::string("{\"pid\":") + std::to_string(pid) + ",\"created_at\":\"" + createdAt +
            "\",\"owner\":\"" + owner + "\"}\n";
 }
 
-/// 手写 store.lock（走正常文件 API，§11 平台注意）。
+/// 手写 store.lock（走正常文件 API，平台注意）。
 std::string writeLockOrDie(const std::filesystem::path& dir, const std::string& content)
 {
     const auto path = dir / kProjectStoreLockName;
@@ -284,8 +268,8 @@ std::string joinDiagnostics(const std::vector<ca::str::Utf8String>& diagnostics)
     return joined;
 }
 
-/// §11-3 死 pid 构造法（主法）：spawn 子进程 → 取 pid → kill。返回 ≤ 0 表示
-/// 构造失败（调用方 GTEST_SKIP——§11-3 允许的备选法是极不可能 pid + skip）。
+/// 死 pid 构造法（主法）：spawn 子进程 → 取 pid → kill。返回 ≤ 0 表示
+/// 构造失败（调用方 GTEST_SKIP——允许的备选法是极不可能 pid + skip）。
 /// 杀完后进程对象已完全回收（Windows 等待句柄、POSIX waitpid 收尸），探测面
 /// 上不再有该 pid 的活进程。
 long long spawnAndKillChildProcess()
@@ -328,7 +312,7 @@ long long spawnAndKillChildProcess()
 
 }   // namespace
 
-//-- §11-1 骨架：create 布局 + #1096 零破坏 + 重开逐字节 -----------------------
+//-- 骨架：create 布局 + 零破坏 + 重开逐字节 -----------------------------------
 
 TEST(MjProjectStoreTest, createBundleSkeletonLaysOutBundleAndStaysAnalysisProjectReadable)
 {
@@ -336,13 +320,13 @@ TEST(MjProjectStoreTest, createBundleSkeletonLaysOutBundleAndStaysAnalysisProjec
 
     ASSERT_FALSE(createBundleSkeleton(refOf(dir.string())).is_err());
 
-    // 目录骨架：sections/ + tmp/ + project.json + store.json（§3.2）。
+    // 目录骨架：sections/ + tmp/ + project.json + store.json。
     EXPECT_TRUE(std::filesystem::is_directory(dir / "sections"));
     EXPECT_TRUE(std::filesystem::is_directory(dir / "tmp"));
     EXPECT_TRUE(std::filesystem::is_regular_file(dir / "store.json"));
     EXPECT_TRUE(std::filesystem::is_regular_file(dir / "project.json"));
 
-    // store.json：v1 空白清单；重开重写逐字节一致（§11-1 骨架口径）。
+    // store.json：v1 空白清单；重开重写逐字节一致（骨架口径）。
     const auto  fileBytes = readFileOrDie(dir / "store.json");
     auto reloaded = readStoreManifestFile(refOf(dir.string()));
     ASSERT_FALSE(reloaded.is_err());
@@ -355,8 +339,8 @@ TEST(MjProjectStoreTest, createBundleSkeletonLaysOutBundleAndStaysAnalysisProjec
     ASSERT_FALSE(rewritten.is_err());
     EXPECT_EQ(fileBytes, std::move(rewritten).unwrap().to_std_string());
 
-    // project.json：字节 = writeAnalysisProjectText 产出；#1096 读者照常工作
-    // （§4.3 零破坏线：bundle 内实体对旧库完全可见）。
+    // project.json：字节 = writeAnalysisProjectText 产出；读者照常工作
+    // （零破坏线：bundle 内实体对旧库完全可见）。
     auto entity = readAnalysisProjectFile(refOf((dir / "project.json").string()));
     ASSERT_FALSE(entity.is_err());
     EXPECT_TRUE(std::move(entity).unwrap().empty());
@@ -387,13 +371,13 @@ TEST(MjProjectStoreTest, classifyStorePathDiscriminatesDirectoryBareAndMissing)
     ASSERT_FALSE(createBundleSkeleton(refOf(dir.string())).is_err());
     EXPECT_EQ(StorePathKind::Directory, classifyStorePath(refOf(dir.string())));
 
-    // 对裸文件路径 create → Open 错（bundle 是目录；裸文件模式归 C2）。
+    // 对裸文件路径 create → Open 错（bundle 是目录；裸文件模式归）。
     auto onBare = createBundleSkeleton(refOf(bare.string()));
     ASSERT_TRUE(onBare.is_err());
     EXPECT_EQ(ProjectStoreErrorKind::Open, std::move(onBare).unwrap_err().kind);
 }
 
-//-- §4.2 确定性：任意构建序 → 逐字节一致；重开重写 → 逐字节一致 --------------
+//-- 确定性：任意构建序 → 逐字节一致；重开重写 → 逐字节一致 -------------------
 
 TEST(MjProjectStoreTest, manifestWriteIsDeterministicAndRoundtripsFieldExact)
 {
@@ -435,7 +419,7 @@ TEST(MjProjectStoreTest, manifestWriteIsDeterministicAndRoundtripsFieldExact)
     const auto  secondText = writeOrDie(second);
     EXPECT_EQ(firstText, secondText);
 
-    // 写出键序固定（§4.2 表序），sections 按 name 字典序。
+    // 写出键序固定（表序），sections 按 name 字典序。
     const auto  factsAt = firstText.find("\"facts.alias\"");
     const auto  decodeAt = firstText.find("\"decode.string\"");
     ASSERT_NE(std::string::npos, factsAt);
@@ -477,7 +461,7 @@ TEST(MjProjectStoreTest, manifestWriteIsDeterministicAndRoundtripsFieldExact)
 
     EXPECT_EQ(firstText, writeOrDie(back));
 
-    // 文件级闭环：落盘 → readStoreManifestFile → 重写一致（§11-1 骨架）。
+    // 文件级闭环：落盘 → readStoreManifestFile → 重写一致（骨架）。
     const auto  dir = freshTempDir("project_store_c1_manifest_roundtrip.mjt-project");
     ASSERT_FALSE(createBundleSkeleton(refOf(dir.string())).is_err());
     // 骨架为空清单；把带条目的清单写进 store.json（模拟 flush 后状态）。
@@ -487,7 +471,7 @@ TEST(MjProjectStoreTest, manifestWriteIsDeterministicAndRoundtripsFieldExact)
     EXPECT_EQ(firstText, writeOrDie(std::move(fromDisk).unwrap()));
 }
 
-//-- §11-7 严格性：逐类违约拒载 -------------------------------------------------
+//-- 严格性：逐类违约拒载 -------------------------------------------------------
 
 TEST(MjProjectStoreTest, strictParseEnforcesManifestDiscipline)
 {
@@ -497,7 +481,7 @@ TEST(MjProjectStoreTest, strictParseEnforcesManifestDiscipline)
     const auto  base = writeOrDie(manifest);
     ASSERT_NE(std::string::npos, base.find("\"record_count\": 100"));
 
-    // 顶层未知字段**忽略**（加法演进，§4.2 演进规则）：解析成功、无诊断。
+    // 顶层未知字段**忽略**（加法演进，演进规则）：解析成功、无诊断。
     std::string tolerant = base;
     tolerant.replace(tolerant.find("\"kind\""), 0, "\"future_knob\": {\"deep\": [1, 2]}, ");
     auto okParsed = parseStoreManifestText(refOf(tolerant));
@@ -522,13 +506,13 @@ TEST(MjProjectStoreTest, strictParseEnforcesManifestDiscipline)
     unknownDup.replace(unknownDup.find("\"kind\""), 0, "\"future_knob\": 1, \"future_knob\": 2, ");
     expectParseError(unknownDup, ProjectStoreErrorKind::Schema);
 
-    // kind 喂错拒载（Open；与 project.json 双向互斥，§4.2）。
+    // kind 喂错拒载（Open；与 project.json 双向互斥）。
     std::string wrongKind = base;
     const std::string kindAnchor = "\"mjt-project-store\"";
     wrongKind.replace(wrongKind.find(kindAnchor), kindAnchor.size(), "\"mjt-analysis-project\"");
     expectParseError(wrongKind, ProjectStoreErrorKind::Open);
 
-    // 版本不识别拒载（Open；C4 打开期降级为全孤儿，不自动 prune）。
+    // 版本不识别拒载（Open；打开期降级为全孤儿，不自动 prune）。
     std::string version2 = base;
     const std::string versionAnchor = "\"version\": 1";
     version2.replace(version2.find(versionAnchor), versionAnchor.size(), "\"version\": 2");
@@ -553,7 +537,7 @@ TEST(MjProjectStoreTest, strictParseEnforcesManifestDiscipline)
     // JSON 语法坏（Open）。
     expectParseError("{ not json ", ProjectStoreErrorKind::Open);
 
-    // record_count 相容（§4.2）：jsonl 必有；json/opaque 禁止。
+    // record_count 相容：jsonl 必有；json/opaque 禁止。
     std::string jsonlNoCount = base;
     const auto  countAt      = jsonlNoCount.find("\"record_count\"");
     ASSERT_NE(std::string::npos, countAt);
@@ -618,7 +602,7 @@ TEST(MjProjectStoreTest, strictParseEnforcesManifestDiscipline)
         "\"updated_at\":\"t\"}]}";
     expectParseError(unknownDepJson, ProjectStoreErrorKind::Schema);
 
-    // 条目内 section 名非法 → Schema 且 error.section 指名（§6.1）。
+    // 条目内 section 名非法 → Schema 且 error.section 指名。
     const std::string badNameJson =
         "{\"version\":1,\"kind\":\"mjt-project-store\",\"sections\":[{\"name\":\"Bad.Name\","
         "\"format\":\"json\",\"section_version\":1,\"content_hash\":\"sha256:"
@@ -631,7 +615,7 @@ TEST(MjProjectStoreTest, strictParseEnforcesManifestDiscipline)
     EXPECT_EQ(ProjectStoreErrorKind::Schema, badNameError.kind);
     EXPECT_EQ("Bad.Name", badNameError.section.to_std_string());
 
-    // 双向互斥的另一向：store.json 喂给 #1096 实体解析器 → 拒（零破坏线）。
+    // 双向互斥的另一向：store.json 喂给 实体解析器 → 拒（零破坏线）。
     auto asEntity = parseAnalysisProjectText(refOf(base));
     ASSERT_TRUE(asEntity.is_err());
     EXPECT_NE(std::string::npos,
@@ -644,7 +628,7 @@ TEST(MjProjectStoreTest, strictParseEnforcesManifestDiscipline)
     expectParseError(entityBody, ProjectStoreErrorKind::Open);
 }
 
-//-- §11-7 收容：format 值不识别 → opaque 保留，原载串原样回写（P1/§9.3）--------
+//-- 收容：format 值不识别 → opaque 保留，原载串原样回写 ----------------------
 
 TEST(MjProjectStoreTest, unknownFormatValueIsRetainedVerbatimAsOpaque)
 {
@@ -659,7 +643,7 @@ TEST(MjProjectStoreTest, unknownFormatValueIsRetainedVerbatimAsOpaque)
     auto parsed = parseStoreManifestText(refOf(foreignJson));
     if (parsed.is_err()) {
         FAIL() << std::move(parsed).unwrap_err().message.to_std_string();
-    }   // 不拒载（§4.2）
+    }   // 不拒载
     auto manifest = std::move(parsed).unwrap();
     ASSERT_EQ(1U, manifest.sections.size());
     const auto& entry = manifest.sections[0];
@@ -672,7 +656,7 @@ TEST(MjProjectStoreTest, unknownFormatValueIsRetainedVerbatimAsOpaque)
     EXPECT_NE(std::string::npos, manifest.diagnostics[0].to_std_string().find("future.thing"));
     EXPECT_NE(std::string::npos, manifest.diagnostics[0].to_std_string().find("cbor"));
 
-    // 重写：原载 format 串原样回写（不解释、不降级改写——§9.3 只保留）。
+    // 重写：原载 format 串原样回写（不解释、不降级改写——只保留）。
     const auto  first = writeOrDie(manifest);
     EXPECT_NE(std::string::npos, first.find("\"format\": \"cbor\""));
     EXPECT_NE(std::string::npos, first.find("\"record_count\": 3"));
@@ -700,7 +684,7 @@ TEST(MjProjectStoreTest, unknownFormatValueIsRetainedVerbatimAsOpaque)
     EXPECT_EQ(std::string::npos, plainWritten.find("record_count"));
 }
 
-//-- §3.3 命名规则（§11-12 的 C1 函数侧预覆盖；C7 收尾边界）---------------------
+//-- 命名规则（validateSectionName 的函数侧钉） -----------------------------------
 
 TEST(MjProjectStoreTest, sectionNameRulesRejectInvalidNames)
 {
@@ -743,7 +727,7 @@ TEST(MjProjectStoreTest, sectionNameRulesRejectInvalidNames)
         }
     }
 
-    // 扩展名映射（§3.3）：json → .json、jsonl → .jsonl、opaque → .bin。
+    // 扩展名映射：json → .json、jsonl → .jsonl、opaque → .bin。
     EXPECT_STREQ(".json", sectionFileExtension(SectionFormat::Json));
     EXPECT_STREQ(".jsonl", sectionFileExtension(SectionFormat::Jsonl));
     EXPECT_STREQ(".bin", sectionFileExtension(SectionFormat::Opaque));
@@ -751,7 +735,7 @@ TEST(MjProjectStoreTest, sectionNameRulesRejectInvalidNames)
               sectionFileName(S("facts.alias"), SectionFormat::Jsonl).to_std_string());
 }
 
-//-- Open kind 路由：缺失/坏清单 → Open（C4 恢复扫描的降级依据）-----------------
+//-- Open kind 路由：缺失/坏清单 → Open（恢复扫描的降级依据） -------------------
 
 TEST(MjProjectStoreTest, readStoreManifestFileReportsMissingAndCorruptAsOpen)
 {
@@ -778,7 +762,7 @@ TEST(MjProjectStoreTest, readStoreManifestFileReportsMissingAndCorruptAsOpen)
                   ca::fs::PathUtil::to_unix_separators(dir.string())));
 }
 
-//-- C2 §5.1/§5.2/§6.3：写读往返 + 双登记字段（三格式、覆盖写）------------------
+//-- 写读往返 + 双登记字段（三格式、覆盖写） -----------------------------------
 
 TEST(MjProjectStoreTest, sectionWriteReadRoundtripRegistersExactHashAndSize)
 {
@@ -786,18 +770,18 @@ TEST(MjProjectStoreTest, sectionWriteReadRoundtripRegistersExactHashAndSize)
     const std::string dirStr = dir.string();
     ASSERT_FALSE(createBundleSkeleton(refOf(dirStr)).is_err());
 
-    // jsonl（§5.1 默认格式）：两记录、末行 LF——字节纪律由生产者保证，此处
+    // jsonl（默认格式）：两记录、末行 LF——字节纪律由生产者保证，此处
     // 即最终字节；原语透传不改写。
     const std::string jsonl = "{\"id\":1,\"name\":\"a\"}\n{\"id\":2,\"name\":\"b\"}\n";
     const auto        written =
         writeSectionOrDie(dirStr, "facts.alias", SectionFormat::Jsonl, jsonl);
 
-    // 双登记字段（§6.3/D3）：对发布精确字节的 SHA-256 + byte_size。
+    // 双登记字段：对发布精确字节的 SHA-256 + byte_size。
     EXPECT_EQ(jsonl.size(), written.byteSize);
     EXPECT_EQ(independentHash(jsonl), written.contentHash.to_std_string());
     EXPECT_EQ(7U + 64U, written.contentHash.byte_length());
 
-    // 发布位置与字节（§3.2：sections/<name>.<ext>，扩展名随 format）。
+    // 发布位置与字节（sections/<name>.<ext>，扩展名随 format）。
     ASSERT_TRUE(std::filesystem::is_regular_file(dir / "sections" / "facts.alias.jsonl"));
     EXPECT_EQ(jsonl, readFileOrDie(dir / "sections" / "facts.alias.jsonl"));
 
@@ -821,7 +805,7 @@ TEST(MjProjectStoreTest, sectionWriteReadRoundtripRegistersExactHashAndSize)
     EXPECT_EQ(json, std::move(jsonRead).unwrap().to_std_string());
 
     // opaque：字节容器语义——from_data_unchecked 不做 UTF-8 校验、不 mangling
-    // （§5.1 任意字节原样；§6.2 readBytes 返回 Utf8String 仅作容器）。
+    // （任意字节原样；readBytes 返回 Utf8String 仅作容器）。
     const ca::u8 blob[] = {0x00, 0xFF, 0x10, 0xC3, 0x28, 0x01, 0xAB, 0x7F, 0x80, 0xFE};
     const auto   opaqueWritten =
         writeSectionOrDie(dirStr, "cache.blob", SectionFormat::Opaque,
@@ -835,8 +819,8 @@ TEST(MjProjectStoreTest, sectionWriteReadRoundtripRegistersExactHashAndSize)
     ASSERT_EQ(sizeof(blob), blobBack.byte_length());
     EXPECT_EQ(0, std::memcmp(blob, blobBack.data(), sizeof(blob)));
 
-    // 覆盖写 = 写即替换（§6.3）：文件整体换新、新登记通过、旧登记漂移成
-    // Damaged 材料（§8.1 崩溃表"同名 section 已是新字节、旧清单 hash 失配"）。
+    // 覆盖写 = 写即替换：文件整体换新、新登记通过、旧登记漂移成
+    // Damaged 材料（崩溃表"同名 section 已是新字节、旧清单 hash 失配"）。
     const std::string v2 = "{\"id\":9}\n";
     writeSectionOrDie(dirStr, "facts.alias", SectionFormat::Jsonl, v2);
     EXPECT_EQ(v2, readFileOrDie(dir / "sections" / "facts.alias.jsonl"));
@@ -845,7 +829,7 @@ TEST(MjProjectStoreTest, sectionWriteReadRoundtripRegistersExactHashAndSize)
     EXPECT_EQ(ProjectStoreErrorKind::Section, std::move(stale).unwrap_err().kind);
 }
 
-//-- C2 §5.2/§8.3：先 size 后 hash 的损坏判定（§11-4 判定材料）------------------
+//-- 先 size 后 hash 的损坏判定（判定材料） ------------------------------------
 
 TEST(MjProjectStoreTest, verifySectionDetectsTruncationAppendCorruptionAndMissing)
 {
@@ -859,7 +843,7 @@ TEST(MjProjectStoreTest, verifySectionDetectsTruncationAppendCorruptionAndMissin
     const auto  sectionFile = dir / "sections" / "facts.alias.jsonl";
     EXPECT_FALSE(verifySectionBytes(refOf(dirStr), entry).is_err());
 
-    // 截断：§5.2 先验 size 再验 hash——size 面先拦，消息含期望/实际字节数。
+    // 截断：先验 size 再验 hash——size 面先拦，消息含期望/实际字节数。
     const std::string truncated = payload.substr(0, payload.size() - 3);
     ASSERT_FALSE(ca::fs::FileUtil::write_text(sectionFile.string(), truncated).is_err());
     auto truncVerdict = verifySectionBytes(refOf(dirStr), entry);
@@ -874,7 +858,7 @@ TEST(MjProjectStoreTest, verifySectionDetectsTruncationAppendCorruptionAndMissin
     EXPECT_NE(std::string::npos,
               truncMessage.find("got " + std::to_string(truncated.size())));
 
-    // 追加污染：同样 size 面先拦（截断/追加都能检出，§4.2 双登记理由）。
+    // 追加污染：同样 size 面先拦（截断/追加都能检出，双登记理由）。
     ASSERT_FALSE(ca::fs::FileUtil::write_text(sectionFile.string(), payload + "pollut\n").is_err());
     auto appended = verifySectionBytes(refOf(dirStr), entry);
     ASSERT_TRUE(appended.is_err());
@@ -882,7 +866,7 @@ TEST(MjProjectStoreTest, verifySectionDetectsTruncationAppendCorruptionAndMissin
     EXPECT_EQ(ProjectStoreErrorKind::Section, appendedError.kind);
     EXPECT_NE(std::string::npos, appendedError.message.to_std_string().find("byte_size mismatch"));
 
-    // 同长字节翻转：size 面通过、hash 面拦截（§8.3：消息含期望/实际 hash 前缀）。
+    // 同长字节翻转：size 面通过、hash 面拦截（消息含期望/实际 hash 前缀）。
     std::string flipped = payload;
     ASSERT_EQ('1', flipped[5]);
     flipped[5] = '2';
@@ -896,12 +880,12 @@ TEST(MjProjectStoreTest, verifySectionDetectsTruncationAppendCorruptionAndMissin
     EXPECT_NE(std::string::npos, flippedMessage.find("expected sha256:"));
     EXPECT_NE(std::string::npos, flippedMessage.find("actual sha256:"));
 
-    // 读路径同判（§6.3：Damaged 读必败并带原因）。
+    // 读路径同判（Damaged 读必败并带原因）。
     auto damagedRead = readSectionBytes(refOf(dirStr), entry);
     ASSERT_TRUE(damagedRead.is_err());
     EXPECT_EQ(ProjectStoreErrorKind::Section, std::move(damagedRead).unwrap_err().kind);
 
-    // 文件缺失：与真损坏同落 Damaged 一条路径（§8.1 崩溃表/R45-P3，不区分）。
+    // 文件缺失：与真损坏同落 Damaged 一条路径（崩溃表/，不区分）。
     std::error_code ec;
     std::filesystem::remove(sectionFile, ec);
     auto missing = verifySectionBytes(refOf(dirStr), entry);
@@ -922,7 +906,7 @@ TEST(MjProjectStoreTest, verifySectionDetectsTruncationAppendCorruptionAndMissin
               driftError.message.to_std_string().find("content_hash mismatch"));
 }
 
-//-- C2 §8.1/§8.2：txn 半提交隔离 + 自清扫（§11 清单"tmp 半提交隔离"）-----------
+//-- txn 半提交隔离 + 自清扫（清单"tmp 半提交隔离"） ---------------------------
 
 TEST(MjProjectStoreTest, stagedHalfCommitResidueIsolatedFromPublishedState)
 {
@@ -934,8 +918,8 @@ TEST(MjProjectStoreTest, stagedHalfCommitResidueIsolatedFromPublishedState)
     const auto  written = writeSectionOrDie(dirStr, "facts.alias", SectionFormat::Jsonl, v1);
     const auto  entry1  = entryFrom("facts.alias", SectionFormat::Jsonl, written, 1);
 
-    // 手植崩溃残留：模拟 §8.1-4 中途崩溃（staged section 半成品 + 半截清单，
-    // §8.1-6 窗形态）。正常路径到达不了这里，走正常文件 API（§11 平台注意）。
+    // 手植崩溃残留：模拟 中途崩溃（staged section 半成品 + 半截清单，
+    // 窗形态）。正常路径到达不了这里，走正常文件 API（平台注意）。
     const auto staleTxn = dir / "tmp" / "txn-999-stale";
     std::error_code ec;
     std::filesystem::create_directories(staleTxn / "sections", ec);
@@ -958,7 +942,7 @@ TEST(MjProjectStoreTest, stagedHalfCommitResidueIsolatedFromPublishedState)
     ASSERT_TRUE(staleVerdict.is_err());
     EXPECT_EQ(ProjectStoreErrorKind::Section, std::move(staleVerdict).unwrap_err().kind);
 
-    // 写原语只清**自己的** txn：他人/开期残留原样保留（清扫归 C4 §8.2-1），
+    // 写原语只清**自己的** txn：他人/开期残留原样保留（清扫归），
     // 且自己不留新 txn——tmp/ 下始终只有手植的那一个。
     EXPECT_TRUE(std::filesystem::is_directory(staleTxn));
     EXPECT_EQ(1U, tmpEntryCount(dir));
@@ -971,7 +955,7 @@ TEST(MjProjectStoreTest, stagedHalfCommitResidueIsolatedFromPublishedState)
     EXPECT_EQ(v2, readFileOrDie(dir / "sections" / "facts.alias.jsonl"));
 }
 
-//-- C2 §6.3/D3：字节级确定性 + 同名重写恢复 -----------------------------------
+//-- 字节级确定性 + 同名重写恢复 ----------------------------------------------
 
 TEST(MjProjectStoreTest, sectionWriteIsByteDeterministicAndSelfHealing)
 {
@@ -986,12 +970,12 @@ TEST(MjProjectStoreTest, sectionWriteIsByteDeterministicAndSelfHealing)
     const auto  first  = writeSectionOrDie(dirAStr, "facts.alias", SectionFormat::Jsonl, payload);
     const auto  second = writeSectionOrDie(dirAStr, "facts.alias", SectionFormat::Jsonl, payload);
 
-    // 同 bundle 重复写：登记恒等、文件逐字节恒等（幂等覆盖，§8.1 重试语义）。
+    // 同 bundle 重复写：登记恒等、文件逐字节恒等（幂等覆盖，重试语义）。
     EXPECT_EQ(first.contentHash.to_std_string(), second.contentHash.to_std_string());
     EXPECT_EQ(first.byteSize, second.byteSize);
     EXPECT_EQ(payload, readFileOrDie(dirA / "sections" / "facts.alias.jsonl"));
 
-    // 跨 bundle 内容寻址（D3）：同字节同 hash——发布身份只由字节决定，无环境盐。
+    // 跨 bundle 内容寻址：同字节同 hash——发布身份只由字节决定，无环境盐。
     const auto elsewhere = writeSectionOrDie(dirBStr, "facts.alias", SectionFormat::Jsonl, payload);
     EXPECT_EQ(first.contentHash.to_std_string(), elsewhere.contentHash.to_std_string());
 
@@ -1000,10 +984,8 @@ TEST(MjProjectStoreTest, sectionWriteIsByteDeterministicAndSelfHealing)
     const auto  third = writeSectionOrDie(dirAStr, "facts.alias", SectionFormat::Jsonl, other);
     EXPECT_NE(first.contentHash.to_std_string(), third.contentHash.to_std_string());
 
-    // 损坏后同名重写恢复（§8.3"同名 sectionWriter 重写 → flush → 转 Ok"的
-    // 判定材料；本卡口径：字节发布后校验即恢复 Ok）。（R53-N1：原此处对同
-    // 一 payload 冗余双写，删去结果被丢弃的一次，保留被 entryFrom 消费的登记
-    // 来源这次写。）
+    // 损坏后同名重写恢复：字节发布后重新校验即转 Ok，这里取的是重写后的
+    // 双登记材料。
     ASSERT_FALSE(ca::fs::FileUtil::write_text((dirA / "sections" / "facts.alias.jsonl").string(),
                                               "x").is_err());
     auto healed = entryFrom("facts.alias", SectionFormat::Jsonl,
@@ -1011,13 +993,13 @@ TEST(MjProjectStoreTest, sectionWriteIsByteDeterministicAndSelfHealing)
     EXPECT_FALSE(verifySectionBytes(refOf(dirAStr), healed).is_err());
     EXPECT_EQ(payload, readFileOrDie(dirA / "sections" / "facts.alias.jsonl"));
 
-    // 透传：无尾 LF 的 jsonl 字节原样发布——LF 纪律归生产者/C3，引擎不改写。
+    // 透传：无尾 LF 的 jsonl 字节原样发布——LF 纪律归生产者/，引擎不改写。
     const std::string noTrailingLf = "{\"a\":1}";
     writeSectionOrDie(dirAStr, "facts.raw", SectionFormat::Jsonl, noTrailingLf);
     EXPECT_EQ(noTrailingLf, readFileOrDie(dirA / "sections" / "facts.raw.jsonl"));
 }
 
-//-- R52/CP-2：section_version 上界与 u32 对齐 ---------------------------------
+//-- section_version 上界与 u32 对齐 ------------------------------------------
 
 TEST(MjProjectStoreTest, sectionVersionBoundIsU32Aligned)
 {
@@ -1041,13 +1023,13 @@ TEST(MjProjectStoreTest, sectionVersionBoundIsU32Aligned)
     const auto overMessage = expectParseError(withOver, ProjectStoreErrorKind::Schema);
     EXPECT_NE(std::string::npos, overMessage.find("u32"));
 
-    // 0 → Schema（下界 >= 1，§4.2）。
+    // 0 → Schema（下界 >= 1）。
     std::string withZero = base;
     withZero.replace(withZero.find(anchor), anchor.size(), "\"section_version\": 0");
     expectParseError(withZero, ProjectStoreErrorKind::Schema);
 }
 
-//-- R52/CP-3：空串 engine/profile 归一化为不携带 -------------------------------
+//-- 空串 engine/profile 归一化为不携带 ----------------------------------------
 
 TEST(MjProjectStoreTest, emptyEngineAndProfileNormalizeToAbsent)
 {
@@ -1061,12 +1043,12 @@ TEST(MjProjectStoreTest, emptyEngineAndProfileNormalizeToAbsent)
     auto parsed = parseStoreManifestText(refOf(raw));
     ASSERT_FALSE(parsed.is_err());
     auto manifest = std::move(parsed).unwrap();
-    // 空串 ≡ 未设置（R52/CP-3 归一化口径）：字段层不携带、非诊断事件。
+    // 空串 ≡ 未设置（/ 归一化口径）：字段层不携带、非诊断事件。
     EXPECT_TRUE(manifest.engine.is_empty());
     EXPECT_FALSE(manifest.sections[0].profile.has_value());
     EXPECT_TRUE(manifest.diagnostics.empty());
 
-    // 写出不携带两键；重开重写逐字节一致（canonical 稳定，§4.2 确定性）。
+    // 写出不携带两键；重开重写逐字节一致（canonical 稳定，确定性）。
     const auto  first = writeOrDie(manifest);
     EXPECT_EQ(std::string::npos, first.find("\"engine\""));
     EXPECT_EQ(std::string::npos, first.find("\"profile\""));
@@ -1083,7 +1065,7 @@ TEST(MjProjectStoreTest, emptyEngineAndProfileNormalizeToAbsent)
     EXPECT_NE(std::string::npos, populated.find("\"profile\": \"cha\""));
 }
 
-//-- C3 §6.3/§8.1 事务成功态：三格式登记提交 + 自清扫 + 幂等 + 写即替换 ----------
+//-- 事务成功态：三格式登记提交 + 自清扫 + 幂等 + 写即替换 -----------------------
 
 TEST(MjProjectStoreTest, manifestTransactionCommitsRegistrationsIdempotently)
 {
@@ -1091,7 +1073,7 @@ TEST(MjProjectStoreTest, manifestTransactionCommitsRegistrationsIdempotently)
     const std::string dirStr = dir.string();
     ASSERT_FALSE(createBundleSkeleton(refOf(dirStr)).is_err());
 
-    // 三格式发布（C2 原语在先）→ 登记（C3 事务挂接）。
+    // 三格式发布（原语在先）→ 登记（事务挂接）。
     const std::string jsonl = "{\"id\":1,\"name\":\"a\"}\n{\"id\":2,\"name\":\"b\"}\n";
     const auto  jsonlWritten = writeSectionOrDie(dirStr, "facts.alias", SectionFormat::Jsonl, jsonl);
     const std::string json   = "{\n  \"peak\": true\n}\n";
@@ -1126,17 +1108,17 @@ TEST(MjProjectStoreTest, manifestTransactionCommitsRegistrationsIdempotently)
     EXPECT_FALSE(alias.createdAt.is_empty());
     EXPECT_FALSE(alias.updatedAt.is_empty());
 
-    // 事务自清扫：tmp/ 无残迹（§8.1-7）。
+    // 事务自清扫：tmp/ 无残迹。
     EXPECT_EQ(0U, tmpEntryCount(dir));
 
-    // 幂等（§6.3 no-op 口径的同状态重写）：同一变更重提 → Ok、逐字节一致。
+    // 幂等（no-op 口径的同状态重写）：同一变更重提 → Ok、逐字节一致。
     const auto  bytesAfterFirst = readFileOrDie(dir / "store.json");
     auto again = commitStoreManifestTransaction(refOf(dirStr), first);
     ASSERT_FALSE(again.is_err()) << std::move(again).unwrap_err().message.to_std_string();
     EXPECT_EQ(bytesAfterFirst, readFileOrDie(dir / "store.json"));
     EXPECT_EQ(0U, tmpEntryCount(dir));
 
-    // 重复 upsert（§6.3：一次 flush 周期内每名至多一个 writer）：同一变更集
+    // 重复 upsert（一次 flush 周期内每名至多一个 writer）：同一变更集
     // 同名双 push → 校验面前置 Schema 拒绝（指名），且零触盘——store.json
     // 逐字节不变、tmp/ 零残迹。
     StoreManifestMutation duplicateUpsert;
@@ -1154,7 +1136,7 @@ TEST(MjProjectStoreTest, manifestTransactionCommitsRegistrationsIdempotently)
     EXPECT_EQ(bytesAfterFirst, readFileOrDie(dir / "store.json"));
     EXPECT_EQ(0U, tmpEntryCount(dir));
 
-    // 写即替换（§6.3）：v2 发布 + 新登记 → 同名条目整体替换，其余不动。
+    // 写即替换：v2 发布 + 新登记 → 同名条目整体替换，其余不动。
     const std::string v2 = "{\"id\":9}\n";
     const auto  v2Written = writeSectionOrDie(dirStr, "facts.alias", SectionFormat::Jsonl, v2);
     StoreManifestMutation second;
@@ -1174,7 +1156,7 @@ TEST(MjProjectStoreTest, manifestTransactionCommitsRegistrationsIdempotently)
     EXPECT_EQ(0U, tmpEntryCount(dir));
 }
 
-//-- C3 损坏态：清单拒载 → 事务拒绝（CP-1 消费）+ P1（零触盘、永不 prune）--------
+//-- 损坏态：清单拒载 → 事务拒绝（零触盘、降级孤儿永不 prune） -------------------
 
 TEST(MjProjectStoreTest, manifestTransactionRefusesUnloadableManifestAndNeverTouchesData)
 {
@@ -1234,7 +1216,7 @@ TEST(MjProjectStoreTest, manifestTransactionRefusesUnloadableManifestAndNeverTou
     EXPECT_NE(std::string::npos, errorC.message.to_std_string().find("never auto-pruned"));
     EXPECT_EQ(version2, readFileOrDie(dir / "store.json"));
 
-    // 变体 d：条目未知字段（解析期 Schema 整笔拒载——CP-1 与 Open 同权触发，
+    // 变体 d：条目未知字段（解析期 Schema 整笔拒载——与 Open 同权触发，
     // kind 保持 Schema 上抛，分类不降级不吞并）。
     std::string entryUnknown = goodBytes;
     entryUnknown.replace(entryUnknown.find("\"name\""), 0, "\"nope\": 1, ");
@@ -1263,9 +1245,8 @@ TEST(MjProjectStoreTest, manifestTransactionRefusesUnloadableManifestAndNeverTou
     EXPECT_EQ(0U, tmpEntryCount(dir));
 
 #ifdef _WIN32
-    // 变体 f：清单在而读不出（Io）——fail-closed 拒绝、kind 保持 Io（CP-1
-    // C4 终裁已落地：Io 入降级触发面；本用例 pin 事务侧行为——拒绝 + kind
-    // 不吞并，裁定文本见 isManifestUnloadableKind 注释）。
+    // 变体 f：清单在而读不出（Io）——拒绝事务、kind 原样上浮不吞并
+    // （Io 属降级触发面，裁定见 isManifestUnloadableKind 注释）。
     ASSERT_FALSE(ca::fs::FileUtil::write_text((dir / "store.json").string(), goodBytes).is_err());
     FILE* held = _fsopen((dir / "store.json").string().c_str(), "r", _SH_DENYRD);
     ASSERT_NE(nullptr, held);
@@ -1288,7 +1269,7 @@ TEST(MjProjectStoreTest, manifestTransactionRefusesUnloadableManifestAndNeverTou
     EXPECT_EQ(2U, std::move(healed).unwrap().sections.size());
 }
 
-//-- C3 中断态：txn 残留隔离 + 自清扫不碰他人残留 --------------------------------
+//-- 中断态：txn 残留隔离 + 自清扫不碰他人残留 -----------------------------------
 
 TEST(MjProjectStoreTest, manifestTransactionSurvivesInterruptedTxnResidue)
 {
@@ -1302,7 +1283,7 @@ TEST(MjProjectStoreTest, manifestTransactionSurvivesInterruptedTxnResidue)
     first.upserts.push_back(entryFrom("facts.alias", SectionFormat::Jsonl, written, 1));
     ASSERT_FALSE(commitStoreManifestTransaction(refOf(dirStr), first).is_err());
 
-    // 手植中断残留：§8.1-6 崩溃窗形态（staged 半截清单 + 半截 section）。
+    // 手植中断残留：崩溃窗形态（staged 半截清单 + 半截 section）。
     const auto staleTxn = dir / "tmp" / "txn-999-stale";
     std::error_code ec;
     std::filesystem::create_directories(staleTxn / "sections", ec);
@@ -1326,13 +1307,13 @@ TEST(MjProjectStoreTest, manifestTransactionSurvivesInterruptedTxnResidue)
     EXPECT_EQ(v2Written.contentHash.to_std_string(), onDisk.sections[0].contentHash.to_std_string());
     EXPECT_EQ(v2, readFileOrDie(dir / "sections" / "facts.alias.jsonl"));
 
-    // 事务只清自己的 txn：他人/开期残留原样保留（清扫归 C4 §8.2-1），
+    // 事务只清自己的 txn：他人/开期残留原样保留（清扫归），
     // 且自己不留新 txn——tmp/ 下始终只有手植的那一个。
     EXPECT_TRUE(std::filesystem::is_directory(staleTxn));
     EXPECT_EQ(1U, tmpEntryCount(dir));
 }
 
-//-- C3 重试耗尽态：换名撞句柄 3×50ms → Io、旧清单完好、修因重试成功 --------------
+//-- 重试耗尽态：换名撞句柄 3×50ms → Io、旧清单完好、修因重试成功 -----------------
 
 TEST(MjProjectStoreTest, manifestTransactionRenameRetryExhaustionReportsIoAndRecovers)
 {
@@ -1349,7 +1330,7 @@ TEST(MjProjectStoreTest, manifestTransactionRenameRetryExhaustionReportsIoAndRec
     const std::string before = readFileOrDie(dir / "store.json");
 
     // 握住 store.json 句柄（CRT fopen：无 FILE_SHARE_DELETE）→ 提交换名撞
-    // sharing violation → 3 次 × 50ms 重试耗尽 = Io（§8.1 既有口径）。
+    // sharing violation → 3 次 × 50ms 重试耗尽 = Io（既有口径）。
     FILE* held = _fsopen((dir / "store.json").string().c_str(), "r", _SH_DENYNO);
     ASSERT_NE(nullptr, held);
     auto exhausted = commitStoreManifestTransaction(refOf(dirStr), mutation);
@@ -1359,13 +1340,13 @@ TEST(MjProjectStoreTest, manifestTransactionRenameRetryExhaustionReportsIoAndRec
     EXPECT_NE(std::string::npos, error.message.to_std_string().find("store manifest"));
     EXPECT_NE(std::string::npos, error.message.to_std_string().find("3 attempts"));
 
-    // 提交点未过：旧清单逐字节完好；重试不依赖 staged 残留（R45/P2）——
+    // 提交点未过：旧清单逐字节完好；重试不依赖 staged 残留——
     // 耗尽后 txn 自清扫，tmp/ 无残迹。
     EXPECT_EQ(before, readFileOrDie(dir / "store.json"));
     EXPECT_EQ(0U, tmpEntryCount(dir));
     std::fclose(held);
 
-    // 修因重试（§6.3）：句柄释放后同一变更重跑全序列 → 成功。
+    // 修因重试：句柄释放后同一变更重跑全序列 → 成功。
     auto recovered = commitStoreManifestTransaction(refOf(dirStr), mutation);
     ASSERT_FALSE(recovered.is_err())
         << std::move(recovered).unwrap_err().message.to_std_string();
@@ -1380,7 +1361,7 @@ TEST(MjProjectStoreTest, manifestTransactionRenameRetryExhaustionReportsIoAndRec
 #endif
 }
 
-//-- C3 挂接面：upsert 与发布字节复核（Damaged 当场拦截）+ 收容段不可覆写 ---------
+//-- 挂接面：upsert 与发布字节复核（Damaged 当场拦截）+ 收容段不可覆写 ------------
 
 TEST(MjProjectStoreTest, manifestTransactionVerifiesUpsertsAgainstPublishedBytes)
 {
@@ -1408,7 +1389,7 @@ TEST(MjProjectStoreTest, manifestTransactionVerifiesUpsertsAgainstPublishedBytes
     EXPECT_EQ(before, readFileOrDie(dir / "store.json"));
     EXPECT_EQ(0U, tmpEntryCount(dir));
 
-    // size 谎报 → §5.2 先 size 后 hash，size 面先拦。
+    // size 谎报 → 先 size 后 hash，size 面先拦。
     auto driftSize     = entryFrom("facts.alias", SectionFormat::Jsonl, written, 2);
     driftSize.byteSize = written.byteSize + 1;
     StoreManifestMutation sizeLie;
@@ -1420,7 +1401,7 @@ TEST(MjProjectStoreTest, manifestTransactionVerifiesUpsertsAgainstPublishedBytes
     EXPECT_NE(std::string::npos, sizeError.message.to_std_string().find("byte_size mismatch"));
     EXPECT_EQ(before, readFileOrDie(dir / "store.json"));
 
-    // 发布中断形态（文件缺失）→ 同落 Damaged 一条路径（§8.1 崩溃表/R45-P3）。
+    // 发布中断形态（文件缺失）→ 同落 Damaged 一条路径（崩溃表）。
     std::error_code ec;
     std::filesystem::remove(dir / "sections" / "facts.alias.jsonl", ec);
     StoreManifestMutation missing;
@@ -1433,7 +1414,7 @@ TEST(MjProjectStoreTest, manifestTransactionVerifiesUpsertsAgainstPublishedBytes
     EXPECT_NE(std::string::npos, missingError.message.to_std_string().find("missing"));
     EXPECT_EQ(before, readFileOrDie(dir / "store.json"));
 
-    // §9.3 收容段不可覆写：清单载有不识别 format 的条目 → 同名 upsert = Schema。
+    // 收容段不可覆写：清单载有不识别 format 的条目 → 同名 upsert = Schema。
     const std::string retainedJson =
         "{\"version\":1,\"kind\":\"mjt-project-store\",\"engine\":\"future-engine/9\","
         "\"sections\":[{\"name\":\"future.thing\",\"format\":\"cbor\",\"section_version\":2,"
@@ -1457,7 +1438,7 @@ TEST(MjProjectStoreTest, manifestTransactionVerifiesUpsertsAgainstPublishedBytes
     EXPECT_EQ(0U, tmpEntryCount(dir));
 }
 
-//-- C3 墓碑：removeSection 生效 + 未知名 Schema + Damaged 段显式删除恢复 ---------
+//-- 墓碑：removeSection 生效 + 未知名 Schema + Damaged 段显式删除恢复 ------------
 
 TEST(MjProjectStoreTest, manifestTransactionRemovesSectionsByTombstone)
 {
@@ -1487,7 +1468,7 @@ TEST(MjProjectStoreTest, manifestTransactionRemovesSectionsByTombstone)
     EXPECT_TRUE(std::filesystem::is_regular_file(dir / "sections" / "decode.string.json"));
     EXPECT_EQ(0U, tmpEntryCount(dir));
 
-    // 未知名墓碑 → Schema（§6.3），清单不动。
+    // 未知名墓碑 → Schema，清单不动。
     StoreManifestMutation removeUnknown;
     removeUnknown.removals.push_back(makeStr("nope.section"));
     auto unknownRefused = commitStoreManifestTransaction(refOf(dirStr), removeUnknown);
@@ -1538,7 +1519,7 @@ TEST(MjProjectStoreTest, manifestTransactionRemovesSectionsByTombstone)
     EXPECT_EQ(0U, tmpEntryCount(dir));
 }
 
-//-- C4 §8.2 恢复扫描：分类账 + 只读 + 孤儿两档 + CP-1 终裁 Io 保守 ------------
+//-- 恢复扫描：分类账 + 只读 + 孤儿两档 + Io 保守 --------------------
 
 namespace {
 
@@ -1600,7 +1581,7 @@ const StoreOrphanRow* findOrphan(const std::vector<StoreOrphanRow>& rows, const 
 
 }   // namespace
 
-//-- C4 §8.2-3/4：Loadable 清单下的分类账（Ok/Damaged/孤儿/txn 盘点）------------
+//-- Loadable 清单下的分类账（Ok/Damaged/孤儿/txn 盘点） -----------------------
 
 TEST(MjProjectStoreTest, recoveryScanClassifiesOkDamagedAndTwoTierOrphans)
 {
@@ -1635,7 +1616,7 @@ TEST(MjProjectStoreTest, recoveryScanClassifiesOkDamagedAndTwoTierOrphans)
     ASSERT_FALSE(scanned.is_err()) << std::move(scanned).unwrap_err().message.to_std_string();
     auto report = std::move(scanned).unwrap();
 
-    // 清单态与登记面（§8.2-3：条目保留、状态上屏）。
+    // 清单态与登记面（条目保留、状态上屏）。
     EXPECT_EQ(ManifestLoadState::Loadable, report.manifestState);
     ASSERT_EQ(1U, report.okSections.size());
     EXPECT_EQ("facts.alias", report.okSections[0].name.to_std_string());
@@ -1650,7 +1631,7 @@ TEST(MjProjectStoreTest, recoveryScanClassifiesOkDamagedAndTwoTierOrphans)
     EXPECT_NE(std::string::npos,
               report.damagedReasons[0].message.to_std_string().find("byte_size mismatch"));
 
-    // 孤儿（清单可载档 → AfterFirstFlush，§8.2-4）+ txn 盘点（§8.2-1 只报告）。
+    // 孤儿（清单可载档 → AfterFirstFlush）+ txn 盘点（只报告）。
     ASSERT_EQ(1U, report.orphans.size());
     EXPECT_EQ("extra.jsonl", report.orphans[0].fileName.to_std_string());
     EXPECT_EQ(OrphanPrunePolicy::AfterFirstFlush, report.orphans[0].prunePolicy);
@@ -1662,10 +1643,10 @@ TEST(MjProjectStoreTest, recoveryScanClassifiesOkDamagedAndTwoTierOrphans)
     for (const auto& diagnostic : report.diagnostics) allDiag += diagnostic.to_std_string() + "\n";
     EXPECT_NE(std::string::npos, allDiag.find("damaged section 'decode.string'"));
     EXPECT_NE(std::string::npos, allDiag.find("orphan section file 'extra.jsonl'"));
-    EXPECT_NE(std::string::npos, allDiag.find("8.2-4"));
+    EXPECT_NE(std::string::npos, allDiag.find("prunable after first successful flush"));
 }
 
-//-- C4 扫描只读性（专测）：两种清单态下零触盘、txn 残留不代清 ------------------
+//-- 扫描只读性（专测）：两种清单态下零触盘、txn 残留不代清 ---------------------
 
 TEST(MjProjectStoreTest, recoveryScanIsReadOnlyInBothManifestStates)
 {
@@ -1692,7 +1673,7 @@ TEST(MjProjectStoreTest, recoveryScanIsReadOnlyInBothManifestStates)
     EXPECT_EQ(ManifestLoadState::Loadable, std::move(scanned).unwrap().manifestState);
     expectSnapshotEqual(before, snapshotBundle(dir));
 
-    // Unloadable 态扫描：降级孤儿与 txn 残留同样零触碰（P1 的物理面）。
+    // Unloadable 态扫描：降级孤儿与 txn 残留同样零触碰。
     ASSERT_FALSE(
         ca::fs::FileUtil::write_text((dir / "store.json").string(), "{ not json ").is_err());
     const auto beforeU = snapshotBundle(dir);
@@ -1703,7 +1684,7 @@ TEST(MjProjectStoreTest, recoveryScanIsReadOnlyInBothManifestStates)
     EXPECT_TRUE(std::filesystem::is_directory(dir / "tmp" / "txn-42-stale"));   // 不代清
 }
 
-//-- C4 P1 红线专测：unloadable-manifest 孤儿零 prune 路径（含 CP-1 终裁 Io）----
+//-- 底线专测：清单不可载孤儿零 prune 路径（含 Io） ---------
 
 TEST(MjProjectStoreTest, unloadableManifestOrphansAreAlwaysNeverPrune)
 {
@@ -1771,7 +1752,7 @@ TEST(MjProjectStoreTest, unloadableManifestOrphansAreAlwaysNeverPrune)
     scanUnloadable(ProjectStoreErrorKind::Schema);
 
 #ifdef _WIN32
-    // 变体 e：清单在而读不出（Io）——CP-1 终裁的直接断言：Io 同落 Unloadable，
+    // 变体 e：清单在而读不出（Io）——直接断言 Io 同落 Unloadable，
     // 孤儿恒 Never（宁可错判不可误 prune）。
     ASSERT_FALSE(ca::fs::FileUtil::write_text((dir / "store.json").string(), goodBytes).is_err());
     FILE* held = _fsopen((dir / "store.json").string().c_str(), "r", _SH_DENYRD);
@@ -1794,7 +1775,7 @@ TEST(MjProjectStoreTest, unloadableManifestOrphansAreAlwaysNeverPrune)
     EXPECT_EQ(OrphanPrunePolicy::AfterFirstFlush, healedReport.orphans[0].prunePolicy);
 }
 
-//-- C4 §9.3 收容段：未知扩展名字节永不落 prune 档 -------------------------------
+//-- 收容段：未知扩展名字节永不落 prune 档 ---------------------------------------
 
 TEST(MjProjectStoreTest, recoveryScanKeepsRetainedBytesOutOfPrunableOrphans)
 {
@@ -1803,7 +1784,7 @@ TEST(MjProjectStoreTest, recoveryScanKeepsRetainedBytesOutOfPrunableOrphans)
     ASSERT_FALSE(createBundleSkeleton(refOf(dirStr)).is_err());
 
     // 正常段走事务登记；收容段手植未知扩展名文件（本引擎无 cbor 写路径——
-    // 正常路径到达不了这里，走正常文件 API，§11 平台注意）。
+    // 正常路径到达不了这里，走正常文件 API，平台注意）。
     const std::string aliasBytes = "{\"id\":1}\n";
     const auto aliasWritten =
         writeSectionOrDie(dirStr, "facts.alias", SectionFormat::Jsonl, aliasBytes);
@@ -1815,7 +1796,7 @@ TEST(MjProjectStoreTest, recoveryScanKeepsRetainedBytesOutOfPrunableOrphans)
     ASSERT_FALSE(ca::fs::FileUtil::write_text((dir / "sections" / "future.thing.cbor").string(),
                                               retainedBytes).is_err());
 
-    // 清单追加收容条目（format "cbor"，原载串 + §9.3 收容语义）。
+    // 清单追加收容条目（format "cbor"，原载串 + 收容语义）。
     auto loaded = readStoreManifestFile(refOf(dirStr));
     ASSERT_FALSE(loaded.is_err());
     auto manifest = std::move(loaded).unwrap();
@@ -1879,7 +1860,7 @@ TEST(MjProjectStoreTest, recoveryScanKeepsRetainedBytesOutOfPrunableOrphans)
     EXPECT_TRUE(findEntry(missingReport.okSections, "facts.alias") != nullptr);
 }
 
-//-- C4 Damaged 面的 Io 保守（宁可错报不可漏报）---------------------------------
+//-- Damaged 面的 Io 保守（宁可错报不可漏报） -----------------------------------
 
 TEST(MjProjectStoreTest, recoveryScanReportsDamagedOnIoReadFailureInsteadOfOk)
 {
@@ -1896,7 +1877,7 @@ TEST(MjProjectStoreTest, recoveryScanReportsDamagedOnIoReadFailureInsteadOfOk)
     ASSERT_FALSE(commitStoreManifestTransaction(refOf(dirStr), setup).is_err());
 
     // 握住已登记 section 文件的读句柄：扫描读不出 = 不能证明 Ok → Damaged 行
-    // （reason kind 保持 Io，与 CP-1 同款"宁可错报不可漏报"保守）。
+    // （reason kind 保持 Io，与 同款"宁可错报不可漏报"保守）。
     FILE* held =
         _fsopen((dir / "sections" / "facts.alias.jsonl").string().c_str(), "r", _SH_DENYRD);
     ASSERT_NE(nullptr, held);
@@ -1924,7 +1905,7 @@ TEST(MjProjectStoreTest, recoveryScanReportsDamagedOnIoReadFailureInsteadOfOk)
 #endif
 }
 
-//-- C4 prune 政策边界：登记面/损坏面绝不混入可 prune 工作清单 -------------------
+//-- prune 政策边界：登记面/损坏面绝不混入可 prune 工作清单 ----------------------
 
 TEST(MjProjectStoreTest, prunePolicyBoundaryRegisteredAndDamagedNeverMixIntoOrphans)
 {
@@ -1982,7 +1963,7 @@ TEST(MjProjectStoreTest, prunePolicyBoundaryRegisteredAndDamagedNeverMixIntoOrph
     EXPECT_TRUE(findOrphan(report.orphans, "decode.string.json") == nullptr);
 }
 
-//-- C5 §7.1 获取/二次获取报 owner 三元组/释放清场 + Io 失败面 -------------------
+//-- 获取/二次获取报 owner 三元组/释放清场 + Io 失败面 ---------------------------
 
 TEST(MjProjectStoreTest, storeLockAcquireHoldsExclusiveReportsOwnerAndRemovesOnRelease)
 {
@@ -2002,13 +1983,13 @@ TEST(MjProjectStoreTest, storeLockAcquireHoldsExclusiveReportsOwnerAndRemovesOnR
     EXPECT_NE(std::string::npos, lockBytes.find("\"pid\":" + std::to_string(currentProcessPid())));
     EXPECT_NE(std::string::npos, lockBytes.find("\"created_at\":\""));
     EXPECT_NE(std::string::npos, lockBytes.find("\"owner\":\"mjt project open\""));
-    // 单行：唯一 LF 是尾随（§7.1 内容单行 JSON）。
+    // 单行：唯一 LF 是尾随（内容单行 JSON）。
     const std::size_t firstLf = lockBytes.find('\n');
     ASSERT_NE(std::string::npos, firstLf);
     EXPECT_EQ(lockBytes.size() - 1, firstLf);
 
     // 二次获取（同 bundle）= Lock 错，消息含 pid/created_at/owner 与路径
-    // （§7.1 IDA "database is locked by" 同款体验；§11-3：消息含 pid）。
+    // （IDA "database is locked by" 同款体验；：消息含 pid）。
     auto again = acquireStoreLock(refOf(dirStr));
     ASSERT_TRUE(again.is_err());
     const auto  againError = std::move(again).unwrap_err();
@@ -2022,7 +2003,7 @@ TEST(MjProjectStoreTest, storeLockAcquireHoldsExclusiveReportsOwnerAndRemovesOnR
     // 失败不留残迹：原锁原样（内容逐字节未动）。
     EXPECT_EQ(lockBytes, readFileOrDie(lockPath));
 
-    // 释放：锁文件消失（§11-3 close 后 lock 文件消失）；release 幂等。
+    // 释放：锁文件消失（close 后 lock 文件消失）；release 幂等。
     lock.release();
     EXPECT_FALSE(lock.holdsLock());
     EXPECT_FALSE(std::filesystem::exists(lockPath));
@@ -2043,7 +2024,7 @@ TEST(MjProjectStoreTest, storeLockAcquireHoldsExclusiveReportsOwnerAndRemovesOnR
     EXPECT_NE(std::string::npos, missingError.message.to_std_string().find("store.lock"));
 }
 
-//-- C5 §11-3 死 pid 手写锁的自动接管（spawn→取 pid→kill 构造法）------------------
+//-- 死 pid 手写锁的自动接管（spawn→取 pid→kill 构造法） --------------------------
 
 TEST(MjProjectStoreTest, storeLockAutoTakeoverSucceedsExactlyOnceOnDeadPidLockFile)
 {
@@ -2051,15 +2032,15 @@ TEST(MjProjectStoreTest, storeLockAutoTakeoverSucceedsExactlyOnceOnDeadPidLockFi
     const std::string dirStr = dir.string();
     ASSERT_FALSE(createBundleSkeleton(refOf(dirStr)).is_err());
 
-    // §11-3 死 pid 构造法（主法）：spawn 子进程 → 取 pid → kill。
+    // 死 pid 构造法（主法）：spawn 子进程 → 取 pid → kill。
     const long long deadPid = spawnAndKillChildProcess();
-    ASSERT_GT(deadPid, 0) << "spawn failed; §11-3 fallback is improbable-pid + skip";
+    ASSERT_GT(deadPid, 0) << "spawn failed; falling back to improbable-pid + skip";
     if (storeLockPidAlive(deadPid)) {
         GTEST_SKIP() << "cannot prove child pid " << deadPid
                      << " death (fail-closed probe says alive); skip per section 11-3";
     }
 
-    // 以死 pid 手写 lock 文件（正常文件 API，§11 平台注意）。
+    // 以死 pid 手写 lock 文件（正常文件 API，平台注意）。
     const std::string ghost =
         writeLockOrDie(dir, lockJson(deadPid, "2026-01-01T00:00:00Z", "ghost-process"));
 
@@ -2068,7 +2049,7 @@ TEST(MjProjectStoreTest, storeLockAutoTakeoverSucceedsExactlyOnceOnDeadPidLockFi
     ASSERT_FALSE(takeover.is_err()) << std::move(takeover).unwrap_err().message.to_std_string();
     auto lock = std::move(takeover).unwrap();
 
-    // 接管诊断记录事实（§7.1：死锁接管记 owner 全文 + 判死依据）。
+    // 接管诊断记录事实（死锁接管记 owner 全文 + 判死依据）。
     const std::string diag = joinDiagnostics(lock.diagnostics());
     EXPECT_NE(std::string::npos, diag.find("taken over"));
     EXPECT_NE(std::string::npos, diag.find("ghost-process"));
@@ -2090,7 +2071,7 @@ TEST(MjProjectStoreTest, storeLockAutoTakeoverSucceedsExactlyOnceOnDeadPidLockFi
     EXPECT_FALSE(std::filesystem::exists(lockPath));
 }
 
-//-- C5 R45/P5 不可解析 fail-closed：禁止自动接管 --------------------------------
+//-- 不可解析 fail-closed：禁止自动接管 ------------------------------------------
 
 TEST(MjProjectStoreTest, storeLockUnparseableContentIsFailClosedLiveLockRefusingAutoTakeover)
 {
@@ -2099,7 +2080,7 @@ TEST(MjProjectStoreTest, storeLockUnparseableContentIsFailClosedLiveLockRefusing
     ASSERT_FALSE(createBundleSkeleton(refOf(dirStr)).is_err());
     const auto lockPath = dir / kProjectStoreLockName;
 
-    // 不可解析变体全集（§7.1 崩溃窗的空/半截文件 + 形状违约）：任一都按活锁
+    // 不可解析变体全集（崩溃窗的空/半截文件 + 形状违约）：任一都按活锁
     // fail-closed，注明 unparseable + 指路 stealLock，禁止自动接管。
     const std::vector<std::string> cases = {
         "",                                                  // 空文件（内容写完前崩溃）
@@ -2137,7 +2118,7 @@ TEST(MjProjectStoreTest, storeLockUnparseableContentIsFailClosedLiveLockRefusing
     EXPECT_FALSE(std::filesystem::exists(lockPath));
 }
 
-//-- C5 §7.1 stealLock 抢占活持有者 + 诊断必须记录抢占事实 ------------------------
+//-- stealLock 抢占活持有者 + 诊断必须记录抢占事实 --------------------------------
 
 TEST(MjProjectStoreTest, storeLockStealLockPreemptsLiveOwnerAndRecordsPreemptionDiagnostic)
 {
@@ -2146,7 +2127,7 @@ TEST(MjProjectStoreTest, storeLockStealLockPreemptsLiveOwnerAndRecordsPreemption
     ASSERT_FALSE(createBundleSkeleton(refOf(dirStr)).is_err());
     const auto lockPath = dir / kProjectStoreLockName;
 
-    // 活持有者场景：本进程 pid（探测必为活——§7.2 证明不了的才按活，本 pid
+    // 活持有者场景：本进程 pid（探测必为活——证明不了的才按活，本 pid
     // 正在跑测试本身，探测恒活）。
     const long long holderPid = currentProcessPid();
     ASSERT_TRUE(storeLockPidAlive(holderPid));
@@ -2165,7 +2146,7 @@ TEST(MjProjectStoreTest, storeLockStealLockPreemptsLiveOwnerAndRecordsPreemption
     EXPECT_EQ(liveOwner, readFileOrDie(lockPath));
 
     // stealLock = true → 跳探测直接删旧重试一次，成功；诊断必须记录抢占事实
-    // （§7.1）。
+    //。
     auto preempted = acquireStoreLock(refOf(dirStr), StoreLockOptions{true});
     ASSERT_FALSE(preempted.is_err())
         << std::move(preempted).unwrap_err().message.to_std_string();
@@ -2183,7 +2164,7 @@ TEST(MjProjectStoreTest, storeLockStealLockPreemptsLiveOwnerAndRecordsPreemption
     lock.release();
     EXPECT_FALSE(std::filesystem::exists(lockPath));
 
-    // stealLock 对不可解析旧锁同样直接换掉（人工决策出口，§7.1）——诊断注明
+    // stealLock 对不可解析旧锁同样直接换掉（人工决策出口）——诊断注明
     // 旧内容读不出（不虚构 owner 三元组）。
     writeLockOrDie(dir, "{\"pid\":");
     auto stolenUnparseable = acquireStoreLock(refOf(dirStr), StoreLockOptions{true});
@@ -2197,7 +2178,7 @@ TEST(MjProjectStoreTest, storeLockStealLockPreemptsLiveOwnerAndRecordsPreemption
     EXPECT_FALSE(std::filesystem::exists(lockPath));
 }
 
-//-- C5 接管的删除受阻面：fail-closed 不破坏、受阻解除后恢复 ----------------------
+//-- 接管的删除受阻面：fail-closed 不破坏、受阻解除后恢复 -------------------------
 
 TEST(MjProjectStoreTest, storeLockRemovalFailureFailsClosedAndRecoversAfterBlockerCloses)
 {
@@ -2208,7 +2189,7 @@ TEST(MjProjectStoreTest, storeLockRemovalFailureFailsClosedAndRecoversAfterBlock
     const auto lockPath = dir / kProjectStoreLockName;
 
     const long long deadPid = spawnAndKillChildProcess();
-    ASSERT_GT(deadPid, 0) << "spawn failed; §11-3 fallback is improbable-pid + skip";
+    ASSERT_GT(deadPid, 0) << "spawn failed; falling back to improbable-pid + skip";
     if (storeLockPidAlive(deadPid)) {
         GTEST_SKIP() << "cannot prove child pid " << deadPid
                      << " death (fail-closed probe says alive); skip per section 11-3";
@@ -2244,14 +2225,14 @@ TEST(MjProjectStoreTest, storeLockRemovalFailureFailsClosedAndRecoversAfterBlock
 #endif
 }
 
-//-- C5 §7.2 PID 探测纪律（fail-closed：证明不了死即活）--------------------------
+//-- PID 探测纪律（fail-closed：证明不了死即活） ---------------------------------
 
 TEST(MjProjectStoreTest, storeLockPidProbeFailClosedDiscipline)
 {
     // 活：本进程（正在运行）。
     EXPECT_TRUE(storeLockPidAlive(currentProcessPid()));
 
-    // 结构性死：pid ≤ 0 不可能是真进程（daemon_state.cpp 同款门）。
+    // 结构性死：pid ≤ 0 不可能是真进程。
     EXPECT_FALSE(storeLockPidAlive(0));
     EXPECT_FALSE(storeLockPidAlive(-1));
     EXPECT_FALSE(storeLockPidAlive(-123456));
@@ -2261,7 +2242,7 @@ TEST(MjProjectStoreTest, storeLockPidProbeFailClosedDiscipline)
     EXPECT_FALSE(storeLockPidAlive(1LL << 40));
     EXPECT_FALSE(storeLockPidAlive(std::numeric_limits<long long>::max()));
 
-    // 极不可能 pid（§11-3 备选法的探测断言；理论撞上活进程则 skip——按设计
+    // 极不可能 pid（备选法的探测断言；理论撞上活进程则 skip——按设计
     // "探测断言失败即 skip 该用例"口径）。
 #ifdef _WIN32
     constexpr long long kImprobable = 0xFFFFFFFE;   // Windows pid 空间顶端
@@ -2275,7 +2256,7 @@ TEST(MjProjectStoreTest, storeLockPidProbeFailClosedDiscipline)
     SUCCEED() << "improbable pid " << kImprobable << " proven dead";
 }
 
-//-- C5 红线互不越界：恢复扫描对 store.lock 零触碰 --------------------------------
+//-- 红线互不越界：恢复扫描对 store.lock 零触碰 -----------------------------------
 
 TEST(MjProjectStoreTest, recoveryScanLeavesStoreLockUntouched)
 {
@@ -2284,7 +2265,7 @@ TEST(MjProjectStoreTest, recoveryScanLeavesStoreLockUntouched)
     ASSERT_FALSE(createBundleSkeleton(refOf(dirStr)).is_err());
 
     // 手植 store.lock（活持有者形态）+ txn 残留 + 孤儿各一：扫描的盘点面是
-    // sections/ + store.json + tmp/，store.lock 不在其中（C4 扫描注释的
+    // sections/ + store.json + tmp/，store.lock 不在其中（扫描注释的
     // "不触 store.lock" 钉死；锁路径与 prune 红线互不越界）。
     const std::string lockBytes = writeLockOrDie(
         dir, lockJson(currentProcessPid(), "2026-01-01T00:00:00Z", "live-holder"));
@@ -2312,7 +2293,7 @@ TEST(MjProjectStoreTest, recoveryScanLeavesStoreLockUntouched)
     EXPECT_EQ(lockBytes, readFileOrDie(dir / kProjectStoreLockName));
 }
 
-//-- C5 R64-N1：POSIX 释放属主核验——手造 inode 错位，绝不误删抢占者新锁-----------
+//-- POSIX 释放属主核验——手造 inode 错位，绝不误删抢占者新锁 --------------------
 
 TEST(MjProjectStoreTest, storeLockPosixReleaseVerifiesOwnershipAndSparesPreemptorsLock)
 {
@@ -2327,7 +2308,7 @@ TEST(MjProjectStoreTest, storeLockPosixReleaseVerifiesOwnershipAndSparesPreempto
     ASSERT_FALSE(acquired.is_err()) << std::move(acquired).unwrap_err().message.to_std_string();
     auto lock = std::move(acquired).unwrap();
 
-    // 手造并发抢占者（R64 处方的 inode 错位 fixture）：POSIX unlink 不受阻
+    // 手造并发抢占者（inode 错位 fixture）：POSIX unlink 不受阻
     // ——外部删掉本人锁名、同路径落新内容（新 inode），即 stealLock 抢占者
     // 已把新锁放上路径的确定性模拟。
     std::error_code ec;
@@ -2354,7 +2335,7 @@ TEST(MjProjectStoreTest, storeLockPosixReleaseVerifiesOwnershipAndSparesPreempto
 #endif
 }
 
-//-- C5 R64-N2：unreadable 分支不吞 stealLock 出口（无 stealLock 仍 fail-closed）--
+//-- unreadable 分支不吞 stealLock 出口（无 stealLock 仍 fail-closed） -----------
 
 TEST(MjProjectStoreTest, storeLockUnreadableContentKeepsStealLockExitOpen)
 {
@@ -2371,7 +2352,7 @@ TEST(MjProjectStoreTest, storeLockUnreadableContentKeepsStealLockExitOpen)
     FILE* blocker = _fsopen(lockPath.string().c_str(), "r", _SH_DENYRW);
     ASSERT_NE(nullptr, blocker);
 #else
-    // chmod 000 → 非 root 读必 EACCES；root 读得穿则形态造不出，skip（§11
+    // chmod 000 → 非 root 读必 EACCES；root 读得穿则形态造不出，skip（
     // 平台注意：不断言做不到的事）。unlink/重建只看目录写权，不受影响。
     ASSERT_EQ(0, ::chmod(lockPath.c_str(), 0));
 #endif
@@ -2385,7 +2366,7 @@ TEST(MjProjectStoreTest, storeLockUnreadableContentKeepsStealLockExitOpen)
         GTEST_SKIP() << "fixture did not produce an unreadable lock (read succeeded)";
     }
 
-    // 无 stealLock → unreadable 分支按活锁 fail-closed（R45/P5 契约不变）：
+    // 无 stealLock → unreadable 分支按活锁 fail-closed（契约不变）：
     // Lock 错注明 unreadable 并指路 stealLock，文件不动。
     auto refused = acquireStoreLock(refOf(dirStr));
     ASSERT_TRUE(refused.is_err());
@@ -2397,7 +2378,7 @@ TEST(MjProjectStoreTest, storeLockUnreadableContentKeepsStealLockExitOpen)
     EXPECT_TRUE(std::filesystem::is_regular_file(lockPath));
 
 #ifdef _WIN32
-    // stealLock → R64-N2：unreadable 分支不再吞出口——越过此门进入接管面。
+    // stealLock → unreadable 分支不再吞出口——越过此门进入接管面。
     // 本夹具句柄同时阻断删除（CRT 句柄无 FILE_SHARE_DELETE），接管在删旧步
     // fail-closed 为 Io（而非 Lock-unreadable 拒绝）= 门已放行的直接证据；
     // 旧 owner 措辞如实注明读不出（不虚构三元组）。
@@ -2414,7 +2395,7 @@ TEST(MjProjectStoreTest, storeLockUnreadableContentKeepsStealLockExitOpen)
     EXPECT_EQ(ghost, readFileOrDie(lockPath));
 #else
     // POSIX：chmod 000 只挡读不挡删/建 → stealLock 全路径走通：删旧 + 独占
-    // 重试成功，锁诊断记录抢占事实并注明读不出（§7.1，不虚构 owner 三元组）。
+    // 重试成功，锁诊断记录抢占事实并注明读不出（不虚构 owner 三元组）。
     auto preempted = acquireStoreLock(refOf(dirStr), StoreLockOptions{true});
     ASSERT_FALSE(preempted.is_err())
         << std::move(preempted).unwrap_err().message.to_std_string();
@@ -2430,9 +2411,9 @@ TEST(MjProjectStoreTest, storeLockUnreadableContentKeepsStealLockExitOpen)
 #endif
 }
 
-//-- R62 N1：flush 后孤儿 prune 动作面（工作清单现扫现验）-----------------------
+//-- flush 后孤儿 prune 动作面（工作清单现扫现验） -----------------------------
 
-/// 收容条目构造（§9.3 形态；formatTag 原样携带，hash/size 由调用方给定）。
+/// 收容条目构造（形态；formatTag 原样携带，hash/size 由调用方给定）。
 StoreSectionEntry makeRetainedEntry(const char* name, const std::string& bytes)
 {
     StoreSectionEntry entry;
@@ -2489,7 +2470,7 @@ TEST(MjProjectStoreTest, pruneOrphansRemovesAfterFirstFlushOnlyAndNeverZeroTouch
     report.orphans.push_back(std::move(neverPhantom));
     report.orphans.push_back(std::move(affAbsent));
 
-    // 手植 store.lock：prune 动作面对锁零触碰（C5 边界延伸到执行面）。
+    // 手植 store.lock：prune 动作面对锁零触碰（边界延伸到执行面）。
     const std::string lockBytes =
         writeLockOrDie(dir, lockJson(currentProcessPid(), "2026-01-01T00:00:00Z", "live-holder"));
 
@@ -2554,7 +2535,7 @@ TEST(MjProjectStoreTest, pruneOrphansSkipsUnverifiablePathsWithDiagnostic)
 
     const auto pruned = pruneOrphanSections(refOf(dirStr), report);
 
-    // 非普通文件（目录）：跳过 + 不触碰（§8.2 盘点面对齐；remove 绝不递归）。
+    // 非普通文件（目录）：跳过 + 不触碰（盘点面对齐；remove 绝不递归）。
     EXPECT_TRUE(std::filesystem::is_directory(dir / "sections" / "a.dir"));
     EXPECT_TRUE(std::filesystem::exists(dir / "sections" / "a.file"));
     const std::string allDiagnostics = joinDiagnostics(pruned.diagnostics);
@@ -2572,7 +2553,7 @@ TEST(MjProjectStoreTest, pruneOrphansSkipsUnverifiablePathsWithDiagnostic)
     EXPECT_NE(std::string::npos, allDiagnostics.find("a.file/inner.jsonl"));
     EXPECT_NE(std::string::npos, allDiagnostics.find("already absent"));
 #else
-    // POSIX：ENOTDIR → exists 的 ec 非空 → 带病跳过（R62 病灶的执行面收口：
+    // POSIX：ENOTDIR → exists 的 ec 非空 → 带病跳过（病灶的执行面收口：
     // "existence check failed" 分支真跑），绝不带病删。
     EXPECT_TRUE(pruned.pruned.empty());
     ASSERT_EQ(2U, pruned.skipped.size());
@@ -2619,7 +2600,7 @@ TEST(MjProjectStoreTest, pruneOrphansRefusesAllWhileManifestUnreadableNow)
     ASSERT_EQ(1U, report.orphans.size());
     EXPECT_EQ(OrphanPrunePolicy::AfterFirstFlush, report.orphans[0].prunePolicy);
 
-    // 扫描后清单坏掉（现扫现验第 1 环）：此刻读不出清单 = 零可删（P1 红线）。
+    // 扫描后清单坏掉（现扫现验第 1 环）：此刻读不出清单 = 零可删（红线）。
     ASSERT_FALSE(
         ca::fs::FileUtil::write_text((dir / "store.json").string(), "{ not json ").is_err());
     const auto pruned = pruneOrphanSections(refOf(dirStr), report);
@@ -2629,7 +2610,7 @@ TEST(MjProjectStoreTest, pruneOrphansRefusesAllWhileManifestUnreadableNow)
     EXPECT_EQ("extra.jsonl", pruned.skipped[0].to_std_string());
     const std::string diag = joinDiagnostics(pruned.diagnostics);
     EXPECT_NE(std::string::npos, diag.find("manifest unreadable at prune time"));
-    EXPECT_NE(std::string::npos, diag.find("P1 red line"));
+    EXPECT_NE(std::string::npos, diag.find("manifest cannot be read"));
     EXPECT_NE(std::string::npos, diag.find("extra.jsonl"));
     // 文件原样保留（绝不带病删的物理面）。
     EXPECT_EQ(extra, readFileOrDie(dir / "sections" / "extra.jsonl"));
@@ -2649,7 +2630,7 @@ TEST(MjProjectStoreTest, pruneOrphansSkipsFilesNowClaimedByCurrentManifest)
     ASSERT_FALSE(commitStoreManifestTransaction(refOf(dirStr), setup).is_err());
 
     // 扫描时 extra.jsonl 是孤儿（清单可载档）；扫描到执行之间它被登记——
-    // 陈旧工作清单的每一笔都必须被当前清单的认领面拦下（R62 N1 病灶闭合：
+    // 陈旧工作清单的每一笔都必须被当前清单的认领面拦下（病灶闭合：
     // 认领处 ec 曾被忽略，登记文件可能误落 AfterFirstFlush 档，执行面是
     // 最后防线）。
     const std::string extraBytes = "{}\n";
@@ -2695,7 +2676,7 @@ TEST(MjProjectStoreTest, pruneOrphansCaseVariantClaimWindowsInsensitivePosixSens
     // Windows：登记文件被人工改名成大小写变体（同一文件，Win32 路径语义
     // CI 解析）→ 扫描的认领集是登记名、孤儿面按精确串比对比中变体名（报告
     // 层误挂 AfterFirstFlush 的现症形态）→ prune 执行面的认领现验按 Win32
-    // 同款大小写不敏感比中登记名，**拒绝删除**（N1×N2 的闭合面）。
+    // 同款大小写不敏感比中登记名，**拒绝删除**（× 的闭合面）。
     std::error_code renameEc;
     std::filesystem::rename(dir / "sections" / "facts.alpha.jsonl",
                             dir / "sections" / "Facts.Alpha.Jsonl", renameEc);
@@ -2738,7 +2719,7 @@ TEST(MjProjectStoreTest, pruneOrphansCaseVariantClaimWindowsInsensitivePosixSens
 #endif
 }
 
-//-- R62 N2：收容词根匹配平台分叉（Windows 不敏感 / POSIX 敏感）双平台钉 --------
+//-- 收容词根匹配平台分叉（Windows 不敏感 / POSIX 敏感）双平台钉 ---------------
 
 TEST(MjProjectStoreTest, recoveryScanRetainedStemCaseVariantTwoStateFork)
 {
@@ -2775,7 +2756,7 @@ TEST(MjProjectStoreTest, recoveryScanRetainedStemCaseVariantTwoStateFork)
 
 #ifdef _WIN32
     // Windows：词根匹配大小写不敏感（对齐 Win32/\\?\ 路径语义）→ 变体名被
-    // 收容认领、受验为 Ok——人工大小写变体不得绕过认领（R62 N2 病灶闭合），
+    // 收容认领、受验为 Ok——人工大小写变体不得绕过认领（病灶闭合），
     // 也绝不落入 prune 档。
     const auto* retainedRow = findEntry(report.okSections, "future.thing");
     ASSERT_NE(nullptr, retainedRow);
@@ -2819,7 +2800,7 @@ TEST(MjProjectStoreTest, recoveryScanPosixCaseSensitiveStemCoexistence)
     ASSERT_FALSE(ca::fs::FileUtil::write_text((dir / "store.json").string(),
                                               std::move(text).unwrap().to_std_string()).is_err());
 
-    // 词根匹配敏感（R62/N2 POSIX 分叉实证）：变体垃圾名与收容词根
+    // 词根匹配敏感（POSIX 分叉实证）：变体垃圾名与收容词根
     // "future.thing." 是不同文件——不进候选面（candidates 仅真收容字节，
     // 受验通过 → 0 Damaged）；变体名无人认领 → 落一般孤儿面（清单可载 →
     // AfterFirstFlush 档）。"首候选失配 Damaged + 变体 Never"是多匹配

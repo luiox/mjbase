@@ -1,7 +1,7 @@
 /// @file        method_pass_test_util.hpp
 /// @brief       方法级 pass 单测的共享驱动：建会话 → 管线驱动 → 写回 → 再升格检查。
 ///
-/// pass 域方法级用例共用（本批 A/B 五 pass 起步）。驱动路径与生产一致
+/// pass 域方法级用例共用。驱动路径与生产一致
 /// （runMethodPipelineOverSession：promote → run → 管线统一 lower），检查
 /// 路径对写回字节重新建会话再 promote——验证的是真实写回产物，不是内存态。
 #pragma once
@@ -36,7 +36,7 @@ struct MethodPassRun
     mjbase::spi::PreservedAnalyses         pa;
 };
 
-/// @brief 同上，显式给管线选项（B 批帧链接线注入 typeResolver）。
+/// @brief 同上，显式给管线选项（帧链接线注入 typeResolver）。
 ///
 /// 选项放包前：MSVC 对「尾随默认参数 + 前置参数包」的推导会把包吞空，
 /// 包后置则是干净的逐位匹配。

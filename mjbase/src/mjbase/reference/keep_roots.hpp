@@ -1,10 +1,10 @@
 /// @file        keep_roots.hpp
 /// @brief       根来源 → GlobalReachabilityOptions 三槽（可达性根）的翻译面。
 ///
-/// 审计 P0-1 的落地件：把「模式匹配（class 模式/成员模式/public-protected 档）」
+/// 把「模式匹配（class 模式/成员模式/public-protected 档）」
 /// 翻译成可达性闭包的三类根，供任何消费 GlobalReachabilityOptions 的 pass
-/// 统一生效——不再要求每个删除 pass 自己理解 keep 规则。RTA 批追加入口
-/// `applyRtaInstantiatedRoots`：RTA 精度档的已实例化声明类作为保守类根走同一
+/// 统一生效——不再要求每个删除 pass 自己理解 keep 规则。RTA 精度档另走入口
+/// `applyRtaInstantiatedRoots`：其已实例化声明类作为保守类根走同一
 /// 三槽（见下「RTA 保守根」）。
 ///
 /// ## 定位：纯增量

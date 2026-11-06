@@ -198,7 +198,7 @@ TEST(MjNameSuggestionFileTest, rejectsUnknownAndDuplicateFields)
     auto duplicateTop = parseNameSuggestionFile(
         R"({"version": 1, "source": "ai:x", "source": "ai:y", "proposals": []})");
     ASSERT_TRUE(duplicateTop.is_err());
-    // 重复字段报出字段名 + 行号（评审 N4；单行 JSON 中首次出现在 line 1）。
+    // 重复字段报出字段名 + 行号（单行 JSON 中首次出现在 line 1）。
     EXPECT_NE(
         errText(std::move(duplicateTop)).find("duplicate suggestion file field: source (line 1)"),
         std::string::npos);
@@ -252,7 +252,7 @@ TEST(MjNameSuggestionFileTest, schemaErrorMessagesCarryLineNumbers)
     EXPECT_NE(text.find("proposals[1] (line 6)"), std::string::npos) << text;
 }
 
-// 非对象元素同样占据 proposals 数组槽位（评审 N1）：错误行号指向元素自身真实
+// 非对象元素同样占据 proposals 数组槽位：错误行号指向元素自身真实
 // 行，不因元素形态前移错位（拒载判定本身与行号无关，仅伤诊断）。
 TEST(MjNameSuggestionFileTest, nonObjectElementOccupiesLineSlot)
 {

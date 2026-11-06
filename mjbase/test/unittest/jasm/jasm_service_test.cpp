@@ -506,8 +506,8 @@ TEST(MjResourceJasmServiceTest, EditsOnlySelectedMultiReleaseClassEntry)
 
 
 // 增补平面类名：cp 内是 modified UTF-8（ED A0 80 ED BC BB），jasm 物化面
-// 必须重组为规范形 UTF-8（F0 90 8C BB），严格解码拒绝合法类名即 issue #6
-// 症状 1。受控字节夹具直拼 this_class 条目（builder 无法表达非规范字节）。
+// 必须重组为规范形 UTF-8（F0 90 8C BB），严格解码若拒绝合法类名即缺陷。
+// 受控字节夹具直拼 this_class 条目（builder 无法表达非规范字节）。
 TEST(MjResourceJasmServiceTest, DisassemblesSupplementaryPlaneInternalName)
 {
     const std::string mutf8Name = "\xCE\xA9\xED\xA0\x80\xED\xBC\xBB";   // CE A9 + ED A0 80 ED BC BB

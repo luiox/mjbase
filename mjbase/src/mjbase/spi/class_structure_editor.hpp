@@ -16,7 +16,7 @@ using ca::core::Result;
 /// @file       class_structure_editor.hpp
 /// @brief      类级结构编辑原语：成员重排的双面落盘 + 成员增删 + backingIndex 同步。
 ///
-///             pass-contract §1「类级结构变换的双面落盘义务」的 API 化：类级
+///             doc:pass-contract-scope「类级结构变换的双面落盘义务」的 API 化：类级
 ///             结构 pass 做成员重排/增删时必须同时落 unit() 与 backing 两面
 ///             （backing 是 writeClass 的序列化源，只改 unit() 不落盘），且
 ///             重排/增删后必须保证 MethodUnit.backingIndex 与物理位一致。此前
@@ -49,7 +49,7 @@ const char* to_string(StructureEditError e) noexcept;
 
 /// @brief 字段重排：unit 与 backing 两面同排列落盘。
 ///
-/// @param session 目标会话（backing + unit 同生共死，见 pass-contract §1）
+/// @param session 目标会话（backing + unit 同生共死，见 doc:pass-contract-scope）
 /// @param order   新序到旧序的置换：order[newPos] = oldPos；重排后第 newPos 个
 ///                成员是重排前第 order[newPos] 个成员
 /// @return 非法置换 Err(BadPermutation)（会话保持原样，不落半面）；恒等排列
@@ -60,7 +60,7 @@ Result<void, StructureEditError> reorderClassFields(jbc::ir::ClassSession&      
 
 /// @brief 方法重排：unit 与 backing 两面同排列落盘 + backingIndex 全量同步。
 ///
-/// 与字段重排同契约，另担 §1 的 backingIndex 义务：重排后逻辑位与 backing 槽位
+/// 与字段重排同契约，另担 backingIndex 义务：重排后逻辑位与 backing 槽位
 /// 重新自然一致，全部 MethodUnit.backingIndex 改指新物理位。成员条目整体移动：
 /// MemberInfo 连同属性槽（含 Code 的 lazy span 状态）一起走、内容不被触碰；
 /// MethodUnit 携带稳定 MethodId 与已 promote 的 CodeUnit（unique_ptr 转移所有权，
@@ -69,7 +69,7 @@ Result<void, StructureEditError> reorderClassFields(jbc::ir::ClassSession&      
 Result<void, StructureEditError> reorderClassMethods(jbc::ir::ClassSession&            session,
                                                      const std::vector<ca::usize>& order);
 
-// ── 成员增删（libjbc A3/A4 通道的 mjbase 骨架面）──
+// ── 成员增删（libjbc add/remove 通道的 mjbase 骨架面）──
 //
 // 增删语义由 libjbc ClassSession 的 add/remove 入口承担：名字/描述符 intern 进
 // backing CP（命中既有池不膨胀，CP 只追加）；预检先于写入（CP 容量、u16 域、

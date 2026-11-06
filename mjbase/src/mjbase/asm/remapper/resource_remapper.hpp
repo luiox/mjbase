@@ -11,7 +11,7 @@
 ///   仅 URI 恰为类内部名 + ".class" 的资源）。类 URI 换名挂在 bytecode 门
 ///   而非 resources 下——类改名只重写字节内 name 而不挪路径会产出坏 jar，
 ///   与 morpher 侧 9507ecf39 先例同口径。
-/// - resources 门内细分（默认开，#1032 Q6）：META-INF/services 的 URI 换名
+/// - resources 门内细分（默认开）：META-INF/services 的 URI 换名
 ///   与 provider 行内容改写（serviceLoader）、MANIFEST 主属性 class 形态
 ///   改写（manifest）、映射文本资源（.map/.srg/.tiny/... 固定清单）、
 ///   显式授权的未知文本资源（authorizedTextResourceUris）。

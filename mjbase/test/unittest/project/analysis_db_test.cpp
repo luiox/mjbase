@@ -2144,7 +2144,7 @@ TEST(MjAnalysisDbTest, ReferenceQueryPlansProbeIndexesWithoutFullScans)
     sqlite3_close(raw);
 }
 
-//-- 方法版本指纹层（method_versions，schema v8，#132）--------------------------
+//-- 方法版本指纹层（method_versions，schema v8）--------------------------------
 
 namespace {
 

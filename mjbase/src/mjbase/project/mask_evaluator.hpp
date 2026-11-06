@@ -1,5 +1,5 @@
 /// @file        mask_evaluator.hpp
-/// @brief       mask 出口求值器（#121 §4.5）：规则匹配 + suspect 门 +
+/// @brief       mask 出口求值器：规则匹配 + suspect 门 +
 ///              信任级别默认的统一点。
 ///
 /// 三个文本出口（MCP 工具返回、TSV 导出、反编译文本）共用本求值器，不
@@ -12,7 +12,7 @@
 ///   1. suspect 扫描先行（scanSuspect，旗标进决定留痕）；
 ///   2. 长度门：文本超过 kMaskMaxEvaluatedBytes 不进任何正则，直接按
 ///      default_action（信任级别）判定，via=LengthGate——对抗性超长
-///      输入的灾难回溯防线（引擎纪律 §3）；
+///      输入的灾难回溯防线（mask_regex_engine 的长度门纪律）；
 ///   3. 规则按 (priority, ruleId) 升序逐条匹配，先匹配先生效：mask 命中
 ///      即遮蔽；allow 命中且文本无 suspect 旗标即放行；
 ///   4. suspect 压过 allow：allow 命中但文本带 suspect 旗标时该命中作废

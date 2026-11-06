@@ -1,9 +1,8 @@
 /// @file        keep_rule.hpp
 /// @brief       keep 规则面：行式 DSL、类/成员 glob 匹配、保守 keep 预设模式库。
 ///
-/// 审计 P0-1/P0-2（opt-pass-completeness-audit §6）的落地件：
-/// 对标 商业化 trim 工具 的 trimExclude 脚本与 DEFAULT_TRIM_EXCLUDE 保守模式库，
-/// 为全局收缩家族（unused_member_remover 四件）提供可配置的保留策略。
+/// 为全局收缩家族（unused_member_remover 四件）提供可配置的保留策略：
+/// 对标商业化 trim 工具的 trimExclude 脚本与 DEFAULT_TRIM_EXCLUDE 保守模式库。
 ///
 /// ## 设计定位
 ///
@@ -39,7 +38,7 @@
 ///
 /// 每个预设是一条纯数据表（名字/描述符 glob），不含层级谓词（`extends`/
 /// `implements`）与注解谓词（`@Foo`）——那两类需要 ReferenceIndex 的层级与
-/// 注解事实，见下方「挂账」。能纯命名落地的按命名落地，落不了的宁可不做，
+/// 注解事实，见下方「未覆盖」。能纯命名落地的按命名落地，落不了的宁可不做，
 /// 也不造「看着像但语义不对」的近似：错的保留面比不保留更难排查。
 ///
 /// | 预设 | 内容 |
@@ -53,7 +52,7 @@
 /// | `+swing` | `createUI(JComponent)` / `getUI()`（可插拔 L&F 反射入口） |
 /// | `+jaxb` | `ObjectFactory`（JAXB 生成物，反射实例化入口） |
 ///
-/// ### 挂账（需要层级/注解事实，本模块不做）
+/// ### 未覆盖（需要层级/注解事实）
 ///
 /// - RMI：`interface *.* implements java.rmi.Remote` 的全部方法——需 `implements`
 ///   判定；当前只保 `_Stub`/`_Skel`/`_Tie` 这些**命名有特征**的骨架类。

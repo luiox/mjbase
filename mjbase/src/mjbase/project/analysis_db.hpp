@@ -34,8 +34,8 @@ namespace mjbase::project {
 ///   id（消失后重现的条目原地复活），未命中新建 id，消失条目打墓碑不删行。
 ///   `classes.entry_id` 记录类字节来自哪个条目。
 ///
-/// - 出口遮蔽层（schema v4）：`mask_rules` 存出口遮蔽规则（#121 §4.3，
-///   priority 有序、先匹配先生效、hit_count 复盘），meta 存项目信任级别
+/// - 出口遮蔽层（schema v4）：`mask_rules` 存出口遮蔽规则（priority
+///   有序、先匹配先生效、hit_count 复盘），meta 存项目信任级别
 ///   （default_action 翻转开关）。规则匹配与判定在 `mask_evaluator`（纯
 ///   函数面、无 IO），本层只做规则配置的数据面与命中记账。
 ///
@@ -44,7 +44,7 @@ namespace mjbase::project {
 ///   并清空文本三列，未登记目标整体落文本；id 与名字互为冗余编码，查询输出
 ///   经 LEFT JOIN + COALESCE 重建文本三元组，DbReferenceRecord 契约不变。
 ///
-/// - producer 注册表（schema v6，#143）：`producers` 登记向本库写事实的
+/// - producer 注册表（schema v6）：`producers` 登记向本库写事实的
 ///   身份（稳定 key 幂等、id 单调只增不删、trust_level 两档），`batches`
 ///   记录逻辑写入运行（一次整库导入、一次引用替换各一批；finished_at 空串
 ///   = 未收尾的残批，合法审计状态），`batch_scopes` 记录批次覆盖的事实
@@ -53,24 +53,24 @@ namespace mjbase::project {
 ///   `renames.producer_id` 列（写入口尾参盖章，缺省 0 = 匿名写入落 NULL，
 ///   覆盖行为不变 last-write-wins，覆盖来源事后可查）。
 ///
-/// - mask 配置面归属化（schema v7，#143 遗留回填）：mask_rules 与 renames
+/// - mask 配置面归属化（schema v7）：mask_rules 与 renames
 ///   同为覆盖层与配置型小表，行级归属即语义，走行级 `mask_rules.producer_id`
 ///   列（`replaceMaskRules` 尾参盖章，口径同 renames）；meta 信任级别键的
 ///   写入口 `setMaskTrustLevel` 同样尾参盖章，归属落伴随 meta 键
 ///   `mask_trust_level_producer`（匿名写入时清除）。规则面写入挂批
 ///   （rules_write）属消费方职责，本层只做行级归属。
 ///
-/// - 方法版本指纹层（schema v8，#132「怎么接进数据库」）：`method_versions`
+/// - 方法版本指纹层（schema v8）：`method_versions`
 ///   存方法语义指纹的版本历史——行 = 一次语义落库（method_version_id 单调
 ///   只增不删；fingerprint 32 字节定长 BLOB + fp_version 算法版本字节 +
 ///   recorded_at）。「当前指针」是 `is_current` 列 + (member_id) 部分唯一
 ///   索引：同成员至多一行当前版本，不动 members 表（成员身份与指纹版本是
 ///   两条独立的轴，指针挤进身份登记面会让没有版本行的方法背空指针）。
 ///   「标脏」不另建脏表：当前指针变更本身可查询（旧指纹对不上当前行即脏），
-///   is_current=0 的历史行就是审计面。指纹引擎（semanticFp，#152）在
+///   is_current=0 的历史行就是审计面。指纹引擎（semanticFp）在
 ///   analysis 层，本层只做版本事实的存储与查询，编辑流接线归上层。
 ///
-/// - 全程序可达闭包（schema v9，#159）：`closure_batches` / `closure_members`
+/// - 全程序可达闭包（schema v9）：`closure_batches` / `closure_members`
 ///   存可达方法成员集这份派生事实——批次元数据行挂既有 producer 注册表
 ///   （kind = closure_write），记录输入图指纹（32 字节 SHA-256 + fp_version
 ///   算法版本字节）、种子/覆盖度位词表与行数；closure_members 是结果本体
@@ -78,8 +78,8 @@ namespace mjbase::project {
 ///   读取面与写入面），指纹 = 变更敏感聚合（inputs 投影 + 四表聚合），指纹
 ///   不匹配整体重算，不增量修补。
 ///
-/// - 普查投影层（#121 §5 B4）：census 是库上的只读 SELECT 投影（#39 类
-///   普查事实面 + 容器形态汇总面；#148 成员普查事实面），不反向定义存储、
+/// - 普查投影层：census 是库上的只读 SELECT 投影（类
+///   普查事实面 + 容器形态汇总面；成员普查事实面），不反向定义存储、
 ///   不重新扫描容器。形态判定核心（entry_shape 路径 facet、class_kind 类
 ///   形态）是纯字节码域知识，随本层落 mjbase；导出渲染（TSV、转义、版本
 ///   化表头）由上层工具出口负责。
@@ -98,25 +98,25 @@ namespace mjbase::project {
 /// @brief 当前 schema 版本（`PRAGMA user_version`）。不识别的版本拒绝打开
 ///        （包括旧版本：不提供自动迁移，旧库由上层显式重建）。
 ///
-/// v9：全程序可达闭包（#159）——新增 closure_batches（闭包批次元数据：
+/// v9：全程序可达闭包——新增 closure_batches（闭包批次元数据：
 ///        输入图指纹 32B BLOB + fp_version + 种子/覆盖度位词表 + 行数）与
 ///        closure_members（可达成员集，(batch_id, member_id) 主键）两表与
-///        batches.kind 新词 closure_write。v8：方法版本指纹层（#132）——新增
+///        batches.kind 新词 closure_write。v8：方法版本指纹层——新增
 ///        method_versions 表（行 = 方法语义指纹版本：32 字节定长 BLOB +
 ///        fp_version 算法版本字节；is_current 当前指针 + (member_id) 部分
 ///        唯一索引，版本历史累积即审计面）。
-///        v7：mask 配置面归属化（#143 遗留回填）——mask_rules 增加可空外键
+///        v7：mask 配置面归属化——mask_rules 增加可空外键
 ///        `producer_id`（列序末位追加，`replaceMaskRules` 尾参盖章）与
 ///        meta 信任级别写入口 `setMaskTrustLevel` 尾参盖章（伴随键
 ///        `mask_trust_level_producer`）。v6：producer 注册表——新增
-///        producers / batches / batch_scopes 三表（#143：写入运行登记与
+///        producers / batches / batch_scopes 三表（写入运行登记与
 ///        作用域锚，事实表不加归属列）与 renames.producer_id 行级归属
 ///        （可空外键，写入口尾参盖章）。v5：refs 目标侧 id 化——新增可空
 ///        外键 `refs.target_class_id` / `target_member_id`，目标整体二元化
 ///        （登记目标落 id 清文本，未登记目标整体落文本），目标反查走
 ///        refs_target_id / refs_target_text 两个部分索引两分支 UNION ALL。
-///        v4：新增 mask_rules 遮蔽规则表与 meta 信任级别键（出口遮蔽层，
-///        #121 §4.3）。v3：新增 `inputs` / `entries` 条目身份表与
+///        v4：新增 mask_rules 遮蔽规则表与 meta 信任级别键（出口遮蔽层）。
+///        v3：新增 `inputs` / `entries` 条目身份表与
 ///        `classes.entry_id` 外键。v2：classes 增加 super/access/version，
 ///        新增 interfaces 与 refs 表，members 增加 access。v1 未发布，
 ///        版本号仅用于识别本分支早期的临时库。
@@ -168,7 +168,7 @@ enum class DbBatchKind : ca::u8
     RefsSliceReplace = 2, ///< refs_slice_replace：单成员引用切片替换
     RenamesWrite     = 3, ///< renames_write：覆盖层批量写入（预留）
     RulesWrite       = 4, ///< rules_write：遮蔽规则配置写入（预留）
-    ClosureWrite     = 5, ///< closure_write：可达闭包派生事实写入（schema v9，#159）
+    ClosureWrite     = 5, ///< closure_write：可达闭包派生事实写入（schema v9）
 };
 
 /// @brief 分析数据库错误类别。
@@ -305,7 +305,6 @@ struct DbEntryInput
     ca::str::Utf8String sha256;       ///< 内容锚：精确字节的 SHA-256，64 位小写 hex
     bool                regular = true; ///< 常规条目旗标；登记方通常取
                                         ///< entry_shape.hpp 的 isRegularEntryPath
-                                        ///< （B1 最小口径的公共面，#121 B4 上提）
 };
 
 /// @brief 已登记的 jar 条目事实（查询输出；墓碑行同样返回）。
@@ -331,9 +330,9 @@ struct DbEntryIngestStats
     ca::usize tombstoned  = 0; ///< 本次标记为消失的既有活跃条目数
 };
 
-//-- 普查投影层（census，#121 §5 B4） ------------------------------------------
+//-- 普查投影层（census） ------------------------------------------
 
-/// @brief 类普查投影行（`censusClasses` 输出；#39 class_census 的库侧事实面）。
+/// @brief 类普查投影行（`censusClasses` 输出；class_census 的库侧事实面）。
 ///
 /// 除 `kind` 外全是库内编码事实；`kind` 是投影层派生（classifyClassKind，
 /// access + super 现算，不存储）。行序 = internal_name 升序（SQL BINARY
@@ -356,7 +355,7 @@ struct DbClassCensusRow
                                                    ///< 登记方通常取 isRegularEntryPath）
 };
 
-/// @brief 成员普查投影行（`censusMembers` 输出；#148 member_census 的库侧
+/// @brief 成员普查投影行（`censusMembers` 输出；member_census 的库侧
 ///        事实面）。
 ///
 /// 除 `native` / `origin` 外全是库内编码事实：`native` 是投影层派生（方法
@@ -385,7 +384,7 @@ struct DbCensusFacetCount
 /// @brief 容器普查投影（`censusContainer` 输出；条目形态分布 + 分析事实计数）。
 ///
 /// 条目面统计活跃行（墓碑行只计总数）；路径形态 facet 由 entry_shape 判定
-/// 器在投影层现算（#121 B4 钩子：entries.kind 登记语义不变，细化切面走
+/// 器在投影层现算（entries.kind 登记语义不变，细化切面走
 /// 投影层）。类/成员/引用计数只统计关联本输入活跃条目的类。
 struct DbContainerCensus
 {
@@ -411,7 +410,7 @@ struct DbContainerCensus
     ca::i64 references    = 0; ///< 源类属本输入的引用行数
 };
 
-/// @brief 待写入的遮蔽规则（`replaceMaskRules` 输入；#121 §4.3）。
+/// @brief 待写入的遮蔽规则（`replaceMaskRules` 输入）。
 ///
 /// 规则是出口遮蔽的项目级配置：priority 数字越小越先匹配，先匹配先生效；
 /// pattern 为正则字面量（引擎纪律见 mask_regex_engine.hpp，写入时校验
@@ -553,7 +552,7 @@ struct DbProducerStats
     ca::str::Utf8String  lastBatchAt;  ///< 各批 finished_at 最大值（残批不计）；无批为空串
 };
 
-/// @brief 待落库的方法版本指纹（`recordMethodVersions` 输入；schema v8，#132）。
+/// @brief 待落库的方法版本指纹（`recordMethodVersions` 输入；schema v8）。
 struct DbMethodVersionInput
 {
     ca::i64              classId = 0;  ///< 方法宿主类（须与成员登记归属一致）
@@ -585,12 +584,12 @@ struct DbMethodVersionRecordStats
     ca::usize unchanged = 0; ///< 指纹与当前行相同、幂等跳过的成员数
 };
 
-/// @brief 待落库的可达闭包批次（`storeClosureBatch` 输入；schema v9，#159）。
+/// @brief 待落库的可达闭包批次（`storeClosureBatch` 输入；schema v9）。
 ///
 /// 批次生命周期由本面托管：按 @p producerId 开 closure_write 批 → 单事务落
 /// 元数据行 + 成员集 + 类域作用域行（作用域从成员集派生，不经输入携带）→
 /// 收尾批。@p memberIds 契约为升序去重（闭包工作表的自然输出序），落库前
-/// 校验；`fingerprint` 必须是 32 字节（闭包输入图指纹，设计稿 §5）。
+/// 校验；`fingerprint` 必须是 32 字节（闭包输入图指纹）。
 struct DbClosureBatchRecord
 {
     ca::i64             producerId    = 0;
@@ -599,7 +598,7 @@ struct DbClosureBatchRecord
     ca::u32             seedMask      = 0; ///< 种子档位位词表（ClosureSeedMask）
     ca::i64             seedCount     = 0;
     ca::u32             coverageMask  = 0; ///< 覆盖度位词表（ClosureCoverageMask）
-    ca::i64             indyEdgeCount = 0; ///< indy 补充边数（本批口径恒 0）
+    ca::i64             indyEdgeCount = 0; ///< indy 补充边数（当前实现恒 0）
     std::vector<ca::i64> memberIds;        ///< 可达成员集（升序去重）
 };
 
@@ -623,7 +622,7 @@ struct DbClosureBatchInfo
 ///
 /// 方法边只来自 method 引用的 id 分支行（target_member_id 已登记）；触发行
 /// 携带「源方法 → 目标类」（refs 无 opcode 位，Type/Field/Method 引用一律
-/// 按「可能首触」保守处理，设计稿 §3）；class 级引用行（source_member_id
+/// 按「可能首触」保守处理）；class 级引用行（source_member_id
 /// 为空）不入快照——类头声明不触发 JVM 初始化。文本分支行只保留已登记
 /// owner 类的触发（未登记目标无类节点，不入闭包域）。行序 = ref_id 升序
 ///（确定性），同名边可能重复，消费方去重（闭包面 sort+unique）。
@@ -769,7 +768,7 @@ public:
     /// - 处理顺序先墓碑后匹配：本批未出现的该输入既有活跃条目先标记
     ///   `tombstoned=1`，再逐条匹配/新建——同 path 内容变化必然让旧行进
     ///   墓碑、新内容拿新 id。
-    /// - `batchId` 首参挂靠批次（#143 批 3）：0 = 无批写入（不落作用域行，
+    /// - `batchId` 首参挂靠批次：0 = 无批写入（不落作用域行，
     ///   条目归属悬空）；非 0 必须是未收尾的已注册批次（否则 `Invalid`，
     ///   不静默匿名写入），命中后落 (1, input_id) 作用域行。
     /// - 输入不存在、批内重复 path、path/kind 为空或含 NUL、sha256 非 64 位
@@ -784,9 +783,9 @@ public:
     ///        输入不存在返回 `Invalid`；未登记条目返回空表。
     ca::Result<std::vector<DbEntryInfo>, AnalysisDbError> listEntries(ca::i64 inputId) const;
 
-    //-- 普查投影层（census，#121 §5 B4） ------------------------------------
+    //-- 普查投影层（census） ------------------------------------
 
-    /// @brief 类普查投影：一行一类（#39 class_census 事实面）。
+    /// @brief 类普查投影：一行一类（class_census 事实面）。
     ///
     /// 纯 SELECT 投影：类事实 JOIN 所属条目（byte_size / 形态旗标）+ 接口
     /// 与成员计数聚合，`ORDER BY internal_name`（BINARY 字节序，确定性）。
@@ -796,7 +795,7 @@ public:
     ca::Result<std::vector<DbClassCensusRow>, AnalysisDbError> censusClasses(
         ca::i64 inputId) const;
 
-    /// @brief 成员普查投影：一行一成员（#148 member_census 事实面；v1 范围
+    /// @brief 成员普查投影：一行一成员（member_census 事实面；v1 范围
     ///        = 全部成员，字段与方法都出）。
     ///
     /// 纯 SELECT 投影：members JOIN 所属类 JOIN 所属条目，行序复合键 BINARY
@@ -810,14 +809,14 @@ public:
 
     /// @brief 容器普查投影：条目形态分布 + 类/成员/引用计数（汇总面）。
     ///
-    /// 路径形态 facet 由 entry_shape 判定器现算（#121 B4 钩子：不改
+    /// 路径形态 facet 由 entry_shape 判定器现算（不改
     /// entries.kind 登记语义）；facet 分布只含计数非零项。输入不存在、
     /// 连接未打开 → `Invalid`；只读连接可用。
     ca::Result<DbContainerCensus, AnalysisDbError> censusContainer(ca::i64 inputId) const;
 
     //-- 出口遮蔽层（mask_rules / 信任级别，schema v4） --------------------
 
-    /// @brief 原子替换全部遮蔽规则（单事务；#121 §4.3）。
+    /// @brief 原子替换全部遮蔽规则（单事务）。
     ///
     /// 整体替换语义：既有行（连同 hit_count 计数）删除后按输入序插入，新
     /// rule_id 单调分配；空输入 = 清空规则面。规则匹配数据面的求值器
@@ -826,7 +825,7 @@ public:
     /// 写库——数据面不存编译不了的模式，求值器装载失败只剩实现缺陷一种
     /// 来源。
     ///
-    /// `producerId` 行级盖章（schema v7，#143；口径同 `setClassRename`）：
+    /// `producerId` 行级盖章（schema v7；口径同 `setClassRename`）：
     /// 0 = 匿名写入，producer_id 落 NULL；非 0 必须已注册，否则 `Invalid`。
     /// 整体替换后新行统一盖 @p producerId，覆盖来源事后可查。
     ca::Result<DbMaskRuleReplaceStats, AnalysisDbError> replaceMaskRules(
@@ -838,7 +837,7 @@ public:
     /// @brief 设置项目信任级别（meta 键 `mask_trust_level`；default_action
     ///        的翻转开关，见 MaskTrustLevel）。重复设置同值幂等。
     ///
-    /// `producerId` 配置面归属盖章（schema v7，#143；口径同
+    /// `producerId` 配置面归属盖章（schema v7；口径同
     /// `setClassRename`）：0 = 匿名写入（伴随键清除），非 0 必须已注册，
     /// 否则 `Invalid`；归属落伴随 meta 键 `mask_trust_level_producer`
     /// （裸 SQL 可查），随每次设置整体刷新。
@@ -848,7 +847,7 @@ public:
     /// @brief 项目信任级别；未设置（键缺省）按 `Trusted`。
     ca::Result<MaskTrustLevel, AnalysisDbError> maskTrustLevel() const;
 
-    /// @brief 批量累加规则命中计数（单事务；#121 §4.3 hit_count 复盘面）。
+    /// @brief 批量累加规则命中计数（单事务；hit_count 复盘面）。
     ///
     /// 输入按出现次数逐 id `hit_count + 1`（出口按行记账：一次查询命中同
     /// 一规则的多条文本各计一次）；未知 rule_id 静默跳过（规则替换与出口
@@ -903,7 +902,7 @@ public:
     ///        批次不存在 → `Invalid`；已登记但无作用域行返回空表。
     ca::Result<std::vector<DbBatchScope>, AnalysisDbError> batchScopes(ca::i64 batchId) const;
 
-    /// @brief 成员引用切片的归属解析（#143 3.2）。
+    /// @brief 成员引用切片的归属解析。
     ///
     /// 在 batch_scopes 探 (3, member_id) 与 (0, 0) 两个前缀、取 batch_id 较大
     /// 者（两次索引前缀探 + 取大，无全表扫；refs_all 锚覆盖全部引用切片，
@@ -912,7 +911,7 @@ public:
     ca::Result<std::optional<DbOwnershipInfo>, AnalysisDbError> refSliceOwnership(
         DbMemberKind kind, ca::i64 memberId) const;
 
-    /// @brief 类事实的归属解析（#143 3.2）：只探 (2, class_id)——整库引用
+    /// @brief 类事实的归属解析：只探 (2, class_id)——整库引用
     ///        替换不触碰类行，refs_all 不回退参与类事实归属；full_import 缺
     ///        逐类作用域行时类归属为空（负例即契约）。无行返回 nullopt。
     ///        @p classId <= 0 → `Invalid`。只读连接可用。
@@ -931,10 +930,10 @@ public:
     /// - interfaces 整表替换（删除该类的旧行后按声明顺序重插）。
     /// - 成员按 (kind, name, descriptor) upsert access；库内已有但本批未提及的
     ///   成员保留（身份只增不删）。
-    /// - `batchId` 首参挂靠批次（#143 批 3）：0 = 无批写入（类事实归属悬空）；
+    /// - `batchId` 首参挂靠批次：0 = 无批写入（类事实归属悬空）；
     ///   非 0 必须是未收尾的已注册批次（否则 `Invalid`），命中后逐类落
     ///   (2, class_id) 作用域行——full_import 的逐类作用域行是 classOwnership
-    ///   可答的必需项而非审计细节（PoC 263 行/次导入量级）。
+    ///   可答的必需项而非审计细节（263 行/次导入量级）。
     /// - 批内类名重复、接口重复、成员重复或字段非法 → `Invalid`，不写库。
     ///
     /// @return 处理的类数。
@@ -945,7 +944,7 @@ public:
     ///
     /// 来源类/方法必须已在库中（先 `ingestClasses`），否则整批回滚并保留旧
     /// refs。适合整库重建；方法体局部变更后的增量替换由上层切片。
-    /// `batchId` 首参挂靠批次（#143 批 3）：0 = 无批写入；非 0 必须是未收尾
+    /// `batchId` 首参挂靠批次：0 = 无批写入；非 0 必须是未收尾
     /// 的已注册批次（否则 `Invalid`），命中后落 (0, 0) refs_all 作用域行——
     /// 该锚覆盖全部引用切片，此后此前一切成员级归属被本批盖过。
     ///
@@ -961,7 +960,7 @@ public:
     /// → `Invalid`）。@p sourceMemberId 不存在或不是方法、记录形状非法 →
     /// `Invalid`，旧切片保持不动；空输入 = 清空该成员的引用切片。适合方法
     /// 体编辑后的增量替换；整库重建用 `replaceReferences`。
-    /// `batchId` 首参挂靠批次（#143 批 3）：0 = 无批写入；非 0 必须是未收尾
+    /// `batchId` 首参挂靠批次：0 = 无批写入；非 0 必须是未收尾
     /// 的已注册批次（否则 `Invalid`），命中后落 (3, member_id) 作用域行（类
     /// 事实未触碰，不落 class 作用域行）。
     ///
@@ -1092,11 +1091,11 @@ public:
     /// @brief 库内直接引用总数。
     ca::Result<ca::usize, AnalysisDbError> referenceCount() const;
 
-    //-- 方法版本指纹层（method_versions，schema v8，#132）----------------
+    //-- 方法版本指纹层（method_versions，schema v8）----------------
 
     /// @brief 记录方法版本指纹（单方法口；编辑流在每次方法体变更后调用）。
     ///
-    /// 一个事务三件事（#132「怎么接进数据库」）：存新版本（异指纹落新行，
+    /// 一个事务三件事：存新版本（异指纹落新行，
     /// method_version_id 单调分配）、更新当前指针（旧行 is_current 退位、
     /// 新行接棒，部分唯一索引锁死同成员至多一行当前版本）、可查询即标脏
     /// （旧指纹对不上当前行即脏，不另建脏表）。指纹与当前行相同则幂等跳过
@@ -1136,7 +1135,7 @@ public:
     ca::Result<DbMethodVersionRecordStats, AnalysisDbError> recordMethodVersions(
         std::vector<DbMethodVersionInput> inputs);
 
-    //-- 全程序可达闭包（closure_batches / closure_members，schema v9，#159）----
+    //-- 全程序可达闭包（closure_batches / closure_members，schema v9）----
 
     /// @brief 可达闭包批次落库：按 @p record.producerId 开 closure_write 批 →
     ///        单事务落元数据行 + 成员集 + 类域作用域行（作用域从成员集经
@@ -1155,7 +1154,7 @@ public:
 
     /// @brief 复用判定：输入图指纹与种子档位都命中的「最新有效批」（batch_id
     ///        最大且已收尾者；残批跳过——与注册表审计语义一致）。指纹含
-    ///        fp_version 载荷段（设计稿 §5），算法升级后旧指纹自然失配；
+    ///        fp_version 载荷段，算法升级后旧指纹自然失配；
     ///        seed_mask 同匹配——种子档位是计算输入的一部分，同图不同档位的
     ///        闭包集不可互复用。未命中返回 `std::nullopt`；fingerprint 非
     ///        32 字节 → `Invalid`。只读连接可用。
@@ -1174,11 +1173,11 @@ public:
     ca::Result<bool, AnalysisDbError> isClosureMember(ca::i64 batchId, ca::i64 memberId) const;
 
     /// @brief 闭包图边快照：refs 全量方法边与 clinit 触发行（形状见
-    ///        `DbClosureGraphEdges`）。全量快照语义（PoC M2 裁决：批量装载
+    ///        `DbClosureGraphEdges`）。全量快照语义（批量装载
     ///        胜过 per-member 反查一个数量级），行序 ref_id 升序。只读连接可用。
     ca::Result<DbClosureGraphEdges, AnalysisDbError> closureGraphEdges() const;
 
-    /// @brief 闭包输入图指纹载荷（canonical 序列化，设计稿 §5）：
+    /// @brief 闭包输入图指纹载荷（canonical 序列化）：
     ///        fp_version 字节 + inputs 投影（input_id 升序：(input_id, size,
     ///        path 长度前缀, path, sha256)）+ classes/interfaces/members/refs
     ///        变更敏感聚合（COUNT/MAX/SUM；refs 聚合含 SUM(ref_id)——ref_id

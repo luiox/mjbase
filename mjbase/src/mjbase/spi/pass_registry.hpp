@@ -1,5 +1,5 @@
 /// @file        pass_registry.hpp
-/// @brief       命名流水线注册中心 + 内置流水线注册（pass-contract §9 装配层）。
+/// @brief       命名流水线注册中心 + 内置流水线注册（doc:pass-contract 装配层）。
 ///
 /// 名字 → 可查询配置（工厂），解决「常用
 /// pass 组合集中配置」的跨二进制复用。避开 Java SPIRegistry 的失败（
@@ -10,7 +10,7 @@
 /// FixPatternSimplifier/ConsStaticFieldReplacer 等属于 mbase IR 域，未在
 /// mjbase 落地，不虚构同名 pass）；同名 "default-optimize" 的组成以本注册表
 /// 为准，消费方经 availablePipelines/pipelineInfo 枚举；
-/// 对齐。mjt-mcp 是第二个管线消费方（§9 触发条件），本文件即其消费面。
+/// 对齐。mjt-mcp 是另一个管线消费方，本文件即其消费面。
 ///
 /// @warning 非线程安全。注册和查询应在同一线程的初始化阶段完成。
 #pragma once

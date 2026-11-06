@@ -1,11 +1,9 @@
 /// @file        member_remap_plan_test.cpp
 /// @brief       asm/remapper 模块测试：计划/类改写器/资源改写器/映射门面。
 ///
-/// 21 用例
-/// 全量移植，语义为 oracle）；夹具从 ASM ClassNode 手拼改为
-/// class_bytes_builder.hpp 的受控字节装配 + libjbc 会话往返，断言面从内存树
-/// 改为 writeClass → readClass 的产物字节（更贴近 ClassWriter 输出的
-/// 可观察行为）。另补 MappingRemapper（utf8_remapper 去 visitor 重设计）用例。
+/// 夹具为 class_bytes_builder.hpp 的受控字节装配 + libjbc 会话往返；断言面为
+/// writeClass → readClass 的产物字节（贴近 ClassWriter 输出的可观察行为）。
+/// 另含 MappingRemapper 门面用例。
 #include <gtest/gtest.h>
 
 #include <cstring>
@@ -256,8 +254,7 @@ std::string signatureOf(ClassFile& cf, std::vector<jbc::core::AttrSlot>& attrs)
 
 /// @brief Exceptions 属性的异常类内部名列表；无该属性返回空。
 ///
-/// typed ExceptionsAttr 体经公开解码入口读出（B3 分派接线前后同形，不依赖
-/// decodeAttr 的分派形态）。
+/// typed ExceptionsAttr 体经公开解码入口读出（不依赖 decodeAttr 的分派形态）。
 std::vector<std::string> exceptionsOf(ClassFile& cf, MemberInfo& member)
 {
     std::vector<std::string>          names;
@@ -441,7 +438,7 @@ Bytes buildRemapClass()
     return b.assemble({oldMethod, use});
 }
 
-/// @brief T4 夹具：类常量/方法句柄/invokedynamic/condy/SMT 全帧。
+/// @brief 夹具：类常量/方法句柄/invokedynamic/condy/SMT 全帧。
 Bytes buildTypeHandleClass()
 {
     ClassBytesBuilder b("pkg/Caller");
@@ -481,7 +478,7 @@ Bytes buildTypeHandleClass()
     return b.assemble({use});
 }
 
-/// @brief T5 夹具：模块属性 + Exceptions + try/catch + LVT/LVTT。
+/// @brief 夹具：模块属性 + Exceptions + try/catch + LVT/LVTT。
 Bytes buildModuleAndDebugClass()
 {
     ClassBytesBuilder b("pkg/OldMain");
@@ -514,7 +511,7 @@ Bytes buildModuleAndDebugClass()
     return b.assemble({debug});
 }
 
-/// @brief T6 夹具：EnclosingMethod/Nest/Permitted/InnerClasses/Record 全家桶。
+/// @brief 夹具：EnclosingMethod/Nest/Permitted/InnerClasses/Record 全家桶。
 Bytes buildStructuralClass()
 {
     ClassBytesBuilder b("OldOwner");
@@ -543,7 +540,7 @@ Bytes buildStructuralClass()
     return b.assemble({nothing});
 }
 
-/// @brief T7 夹具：owner+name 无描述符字段规则的目标类。
+/// @brief 夹具：owner+name 无描述符字段规则的目标类。
 Bytes buildDescriptorlessClass()
 {
     ClassBytesBuilder b("OldOwner");
@@ -568,7 +565,7 @@ Bytes buildDescriptorlessClass()
     return b.assemble({use});
 }
 
-/// @brief T9/T10 夹具：常量反射成员查找（getDeclaredMethod/getMethod/
+/// @brief 夹具：常量反射成员查找（getDeclaredMethod/getMethod/
 ///        getDeclaredField + forName）。
 Bytes buildReflectionMemberClass()
 {
@@ -651,7 +648,7 @@ Bytes buildReflectionMemberClass()
     return b.assemble({oldMethod, oldStringMethod, oldForNameStringMethod, use});
 }
 
-/// @brief T11 夹具：类注解携带 'c'（class literal）元素。
+/// @brief 夹具：类注解携带 'c'（class literal）元素。
 Bytes buildAnnotationClass()
 {
     ClassBytesBuilder b("pkg/Holder");
@@ -668,7 +665,7 @@ Bytes buildAnnotationClass()
     return b.assemble({use});
 }
 
-/// @brief T13 夹具：反射接收者别名形态全家桶（identity/静态槽/容器/字段/
+/// @brief 夹具：反射接收者别名形态全家桶（identity/静态槽/容器/字段/
 ///        消费队列），各 use 方法各覆盖一条别名来源。
 Bytes buildAliasReflectionClass()
 {
@@ -843,7 +840,7 @@ Bytes buildAliasReflectionClass()
                        fieldUse, containerUse, instanceUse, consumedQueueUse});
 }
 
-/// @brief T21 夹具：行号表 + 无签名 LVT 的调试元数据。
+/// @brief 夹具：行号表 + 无签名 LVT 的调试元数据。
 Bytes buildDebugClass()
 {
     ClassBytesBuilder b("pkg/Debug");
@@ -908,10 +905,9 @@ std::string manifestText(const mjbase::jar::Manifest& manifest, const char* key)
 }
 
 // ---------------------------------------------------------------------------
-// 用例（21 例全量 + MappingRemapper 2 例）。
+// 用例。
 // ---------------------------------------------------------------------------
 
-// 旧例 1：rewritesClassDescriptorsAndCallSites
 TEST(MjAsmRemapperTest, rewritesClassDescriptorsAndCallSites)
 {
     MemberRemapPlan plan;
@@ -976,7 +972,6 @@ TEST(MjAsmRemapperTest, rewritesClassDescriptorsAndCallSites)
     EXPECT_EQ("[[LNewType;", classTextOf(back->backing(), multiInsn->cp));
 }
 
-// 旧例 2：mapsDescriptorsWithoutApplyingClassTree
 TEST(MjAsmRemapperTest, mapsDescriptorsWithoutApplyingClassTree)
 {
     MemberRemapPlan empty;
@@ -1004,7 +999,6 @@ TEST(MjAsmRemapperTest, mapsDescriptorsWithoutApplyingClassTree)
               std::string(plan.mapFieldDescriptor("LOldOwner;")));
 }
 
-// 旧例 3：descriptorCacheFollowsClassMappingUpdates
 TEST(MjAsmRemapperTest, descriptorCacheFollowsClassMappingUpdates)
 {
     MemberRemapPlan plan;
@@ -1020,7 +1014,6 @@ TEST(MjAsmRemapperTest, descriptorCacheFollowsClassMappingUpdates)
     EXPECT_EQ("LFinalOwner;", std::string(plan.mapSignature("LOldOwner;")));
 }
 
-// 旧例 4：remapsTypeHandleInvokeDynamicAndFrameConstants
 TEST(MjAsmRemapperTest, remapsTypeHandleInvokeDynamicAndFrameConstants)
 {
     MemberRemapPlan plan;
@@ -1134,11 +1127,11 @@ TEST(MjAsmRemapperTest, remapsTypeHandleInvokeDynamicAndFrameConstants)
     EXPECT_EQ("[Lpkg/NewType;", classTextOf(bcf, smt->frames[0].locals[1].cp));
 }
 
-// B8 8.4 收编 libjbc cp_resolve（PR #14）后的口径收紧点。旧行为（本地宽松
-// 口径）：kind ∉1..4 一律走方法分支——被污染成 kind=10 的句柄会被方法规则
-// 改写；libjbc resolveHandleCp 严格口径下 reference_kind 域检失败 → 条目
-// 整体跳过（对合法类零影响：JVM 解析即拒、libjbc 读闸即拦，此用例覆盖的
-// 是改写器对污染池的防御深度）。
+// 句柄解析走 libjbc resolveHandleCp 的严格口径：reference_kind 域检失败 →
+// 条目整体跳过。宽松口径（kind ∉1..4 一律落方法分支）会把污染成 kind=10 的
+// 句柄交方法规则改写。
+// 对合法类零影响：JVM 解析即拒、libjbc 读闸即拦，此用例覆盖的是
+// 改写器对污染池的防御深度。
 //
 // 接缝说明：readClass 的 CP 引用校验对畸形 kind 整类拒读，畸形输入到不了
 // 公开读路径；这里 parse 合法类后就地污染句柄 kind 再 makeSession（不走
@@ -1185,8 +1178,8 @@ TEST(MjAsmRemapperTest, skipsMalformedHandleKindInsteadOfMethodFallback)
                                                                RemapPolicy::bytecodeOnly());
     ASSERT_FALSE(applied.is_err());
 
-    // 收紧后：畸形 kind 句柄整体跳过，引用三段保持原形；宽松口径（旧）会
-    // 经方法分支把三段改写成 pkg/NewOwner.newMethod。
+    // 畸形 kind 句柄整体跳过，引用三段保持原形（域检若放行，方法分支会把三段
+    // 改写成 pkg/NewOwner.newMethod）。
     const ClassFile& out       = sessionPtr->backing();
     bool             sawHandle = false;
     for (ca::u32 i = 1; i < out.cp.size(); ++i) {
@@ -1202,7 +1195,6 @@ TEST(MjAsmRemapperTest, skipsMalformedHandleKindInsteadOfMethodFallback)
     EXPECT_TRUE(sawHandle);
 }
 
-// 旧例 5：remapsMethodDebugExceptionAndModuleClassMetadata
 TEST(MjAsmRemapperTest, remapsMethodDebugExceptionAndModuleClassMetadata)
 {
     MemberRemapPlan plan;
@@ -1280,7 +1272,6 @@ TEST(MjAsmRemapperTest, remapsMethodDebugExceptionAndModuleClassMetadata)
     }
 }
 
-// 旧例 6：remapsStructuralClassMetadata
 TEST(MjAsmRemapperTest, remapsStructuralClassMetadata)
 {
     MemberRemapPlan plan;
@@ -1312,7 +1303,7 @@ TEST(MjAsmRemapperTest, remapsStructuralClassMetadata)
 
         const jbc::core::AttrSlot* enclosingSlot = slotOf(*cf, cf->attrs, "EnclosingMethod");
         ASSERT_TRUE(enclosingSlot != nullptr);
-        // typed 体公开入口读槽（B3 分派接线前后同形）：两槽语义逐字段断言。
+        // typed 体公开入口读槽：两槽语义逐字段断言。
         {
             auto d = decodeEnclosingMethodBody(*cf, *enclosingSlot);
             ASSERT_TRUE(d.is_ok());
@@ -1359,7 +1350,7 @@ TEST(MjAsmRemapperTest, remapsStructuralClassMetadata)
 
         const jbc::core::AttrSlot* innerSlot = slotOf(*cf, cf->attrs, "InnerClasses");
         ASSERT_TRUE(innerSlot != nullptr);
-        // typed 体公开入口读槽（同上）：行三槽语义逐字段断言。
+        // typed 体公开入口读槽：行三槽语义逐字段断言。
         {
             auto d = decodeInnerClassesBody(*cf, *innerSlot);
             ASSERT_TRUE(d.is_ok());
@@ -1427,7 +1418,6 @@ TEST(MjAsmRemapperTest, remapsStructuralClassMetadata)
     }
 }
 
-// 旧例 7：descriptorlessFieldRuleMatchesByOwnerAndName
 TEST(MjAsmRemapperTest, descriptorlessFieldRuleMatchesByOwnerAndName)
 {
     MemberRemapPlan plan;
@@ -1461,7 +1451,6 @@ TEST(MjAsmRemapperTest, descriptorlessFieldRuleMatchesByOwnerAndName)
     EXPECT_EQ("LOldType;", ref.desc);
 }
 
-// 旧例 8：policyControlsReflectionStringsAnnotationsAndSignatures
 TEST(MjAsmRemapperTest, policyControlsReflectionStringsAnnotationsAndSignatures)
 {
     MemberRemapPlan plan;
@@ -1524,7 +1513,6 @@ TEST(MjAsmRemapperTest, policyControlsReflectionStringsAnnotationsAndSignatures)
     }
 }
 
-// 旧例 9：reflectionPolicyRewritesConstantMemberLookupNames
 TEST(MjAsmRemapperTest, reflectionPolicyRewritesConstantMemberLookupNames)
 {
     MemberRemapPlan plan;
@@ -1573,7 +1561,6 @@ TEST(MjAsmRemapperTest, reflectionPolicyRewritesConstantMemberLookupNames)
     }
 }
 
-// 旧例 10：reflectionMemberLookupKeepsAmbiguousOverloadName
 TEST(MjAsmRemapperTest, reflectionMemberLookupKeepsAmbiguousOverloadName)
 {
     MemberRemapPlan plan;
@@ -1604,7 +1591,6 @@ TEST(MjAsmRemapperTest, reflectionMemberLookupKeepsAmbiguousOverloadName)
     EXPECT_TRUE(methodOf(*cf, "oldMethod") == nullptr);
 }
 
-// 旧例 11：policyControlsAnnotationClassLiteralElements
 TEST(MjAsmRemapperTest, policyControlsAnnotationClassLiteralElements)
 {
     MemberRemapPlan plan;
@@ -1642,8 +1628,7 @@ TEST(MjAsmRemapperTest, policyControlsAnnotationClassLiteralElements)
     }
 }
 
-// 旧例 12：containerRemapKeepsResourceNamesByDefault——类 URI 门已对齐
-// morpher 9507ecf39 口径（类 URI 跟 bytecode 门走，不挂 resources）：改名类
+// 类 URI 门对齐 morpher 口径（类 URI 跟 bytecode 门走，不挂 resources）：改名类
 // 只重写字节内 name 而不挪路径会产出坏 jar。
 TEST(MjAsmRemapperTest, containerRemapMovesClassUriUnderBytecodeGate)
 {
@@ -1721,7 +1706,6 @@ TEST(MjAsmRemapperTest, containerRemapMovesClassUriUnderBytecodeGate)
     }
 }
 
-// 旧例 13：remapsReflectionMemberAfterAliasWrapper
 TEST(MjAsmRemapperTest, remapsReflectionMemberAfterAliasWrapper)
 {
     MemberRemapPlan plan;
@@ -1744,9 +1728,8 @@ TEST(MjAsmRemapperTest, remapsReflectionMemberAfterAliasWrapper)
         EXPECT_TRUE(contains(strings, "newMethod")) << method;
         EXPECT_FALSE(contains(strings, "oldMethod")) << method;
     }
-    // 偏离点：consumedQueueUse 的 poll→checkcast 队列消费形态，mjbase
-    // AliasAnalysis 未建模（fail-open 保留原名）；别名引擎可证该接收者。
-    // 等价能力见共享设施请求。
+    // consumedQueueUse 的 poll→checkcast 队列消费形态，mjbase
+    // AliasAnalysis 未建模（fail-open 保留原名）。
     {
         const std::vector<std::string> strings = ldcStringsOf(*session, "consumedQueueUse");
         EXPECT_TRUE(contains(strings, "oldMethod"));
@@ -1754,7 +1737,6 @@ TEST(MjAsmRemapperTest, remapsReflectionMemberAfterAliasWrapper)
     }
 }
 
-// 旧例 14：containerRemapMovesClassResourceNamesWhenPolicyAllows
 TEST(MjAsmRemapperTest, containerRemapMovesClassResourceNamesWhenPolicyAllows)
 {
     MemberRemapPlan plan;
@@ -1782,7 +1764,6 @@ TEST(MjAsmRemapperTest, containerRemapMovesClassResourceNamesWhenPolicyAllows)
     EXPECT_EQ(textBytes, text->get());
 }
 
-// 旧例 15：containerRemapRewritesServiceMetadataWhenPolicyAllows
 TEST(MjAsmRemapperTest, containerRemapRewritesServiceMetadataWhenPolicyAllows)
 {
     MemberRemapPlan plan;
@@ -1824,7 +1805,6 @@ TEST(MjAsmRemapperTest, containerRemapRewritesServiceMetadataWhenPolicyAllows)
     }
 }
 
-// 旧例 16：containerRemapRewritesEmbeddedMappingTextWhenPolicyAllows
 TEST(MjAsmRemapperTest, containerRemapRewritesEmbeddedMappingTextWhenPolicyAllows)
 {
     MemberRemapPlan plan;
@@ -1848,7 +1828,6 @@ TEST(MjAsmRemapperTest, containerRemapRewritesEmbeddedMappingTextWhenPolicyAllow
     EXPECT_EQ(toBytes("pkg/NewName Lpkg/NewType;\npkg/NewName.oldField\n"), mapping->get());
 }
 
-// 旧例 17：containerRemapRewritesBusinessTextOnlyWhenExplicitlyAuthorized
 TEST(MjAsmRemapperTest, containerRemapRewritesBusinessTextOnlyWhenExplicitlyAuthorized)
 {
     MemberRemapPlan plan;
@@ -1887,7 +1866,6 @@ TEST(MjAsmRemapperTest, containerRemapRewritesBusinessTextOnlyWhenExplicitlyAuth
     }
 }
 
-// 旧例 18：containerRemapRewritesManifestClassAttributesWhenPolicyAllows
 TEST(MjAsmRemapperTest, containerRemapRewritesManifestClassAttributesWhenPolicyAllows)
 {
     MemberRemapPlan plan;
@@ -1940,7 +1918,6 @@ TEST(MjAsmRemapperTest, containerRemapRewritesManifestClassAttributesWhenPolicyA
     }
 }
 
-// 旧例 19：resourceSubSwitchesGateManifestAndServiceLoader
 TEST(MjAsmRemapperTest, resourceSubSwitchesGateManifestAndServiceLoader)
 {
     MemberRemapPlan plan;
@@ -2018,7 +1995,6 @@ TEST(MjAsmRemapperTest, resourceSubSwitchesGateManifestAndServiceLoader)
     }
 }
 
-// 旧例 20：resourceRemapperKeepsAllPolicySurfacesIndependent
 TEST(MjAsmRemapperTest, resourceRemapperKeepsAllPolicySurfacesIndependent)
 {
     MemberRemapPlan plan;
@@ -2113,7 +2089,6 @@ TEST(MjAsmRemapperTest, resourceRemapperKeepsAllPolicySurfacesIndependent)
     }
 }
 
-// 旧例 21：containerRemapPreservesDebugMetadata
 TEST(MjAsmRemapperTest, containerRemapPreservesDebugMetadata)
 {
     MemberRemapPlan plan;
@@ -2152,7 +2127,7 @@ TEST(MjAsmRemapperTest, containerRemapPreservesDebugMetadata)
 }
 
 // ---------------------------------------------------------------------------
-// MappingRemapper（utf8_remapper 去 visitor 重设计）补充用例。
+// MappingRemapper 补充用例。
 // ---------------------------------------------------------------------------
 
 TEST(MjAsmRemapperTest, mappingRemapperMapsClassAndMemberTexts)
@@ -2206,7 +2181,7 @@ TEST(MjAsmRemapperTest, mappingRemapperRewritesDescriptorsAndSignatures)
 // cp Utf8 是 modified UTF-8（U+1033B = ED A0 80 ED BC BB），zip 条目名/计划
 // 键/资源文本是标准 UTF-8（F0 90 8C BB）。计划查表与 URI 比对必须跨形态
 // 命中，否则字节码面 miss 而资源面 hit，产出 Main-Class 指新名而类未改写
-// 的混合态 jar（issue #6 症状 2 的根因）。
+// 的混合态 jar。
 
 constexpr std::string_view kMutf8OmegaGoth =
     "\xCE\xA9\xED\xA0\x80\xED\xBC\xBB";   // cp 形：Ω + U+1033B（代理对各 3 字节）
@@ -2303,7 +2278,7 @@ TEST(MjAsmRemapperTest, containerRemapSkipsUnplannedUnreadableClasses)
 }
 
 // ---------------------------------------------------------------------------
-// B8 8.3 收口：结构化签名 / TypeAnnotation / 参数注解 / AnnotationDefault 面。
+// 结构化签名 / TypeAnnotation / 参数注解 / AnnotationDefault 面。
 // ---------------------------------------------------------------------------
 
 // 结构化签名映射的文法边界：解析树定界 + 段级 span 手术（非字符串替换）。
@@ -2376,7 +2351,7 @@ TEST(MjAsmRemapperTest, structuredSignatureHandlesNestedSegmentChains)
     EXPECT_EQ("Lpkg/Flatten;", std::string(flatten.mapSignature("Lpkg/Box$Item;")));
 }
 
-// B8 8.3 收口：Runtime*TypeAnnotations / ParameterAnnotations / AnnotationDefault
+// Runtime*TypeAnnotations / ParameterAnnotations / AnnotationDefault
 // 的结构化改写（typed 模型；type_path/target_info/行结构保真 + 门控面 copy-through）。
 TEST(MjAsmRemapperTest, remapsTypeAndParameterAnnotationsStructurally)
 {

@@ -102,7 +102,7 @@ TEST(ClassStructureEditorTest, ReorderFieldsSyncsUnitAndBacking)
     EXPECT_EQ(backingFieldName(*session, 2), "c");
 }
 
-// §1 backingIndex 义务：重排后全部 MethodUnit.backingIndex 改指新物理位，
+// backingIndex 义务：重排后全部 MethodUnit.backingIndex 改指新物理位，
 // 重排前 promote 的方法体按稳定身份 lower 写回自己的槽位，不污染他人。
 TEST(ClassStructureEditorTest, ReorderMethodsFixesBackingIndex)
 {
@@ -241,7 +241,7 @@ TEST(ClassStructureEditorTest, EmptyOrderOnEmptyClassIsOk)
     EXPECT_TRUE(session->unit().methods.empty());
 }
 
-// ── 成员增删四操作（libjbc A3/A4 通道）：双面落盘 / 稳定身份 / 失效账目 ──
+// ── 成员增删四操作：双面落盘 / 稳定身份 / 失效账目 ───────────────────────
 
 // 新增字段：unit 与 backing 两面同落，desc/access 随种子，写回重读在场。
 TEST(ClassStructureEditorTest, AddFieldLandsOnBothFaces)

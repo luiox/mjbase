@@ -19,11 +19,11 @@
 ///
 /// ## 停泊件：CallGraphAnalysis
 ///
-/// mjbase asm/classpath 的 CallGraph 是 call_graph 批的既有件（本批不改其目录），
-/// 但 GAM 包装缺失。CallGraphAnalysis 在此停泊：容器全类喂 builder 建图；建图
+/// mjbase asm/classpath 的 CallGraph 是既有件，缺的是 GAM 包装。
+/// CallGraphAnalysis 在此停泊：容器全类喂 builder 建图；建图
 /// Err（fail-fast 语义）时退化为空图并保留诊断开关——直接事实仍可从
-/// ReferenceIndex 获得。主线裁决点：call_graph 批交付自己的 GAM 包装后应迁回
-/// 其目录。
+/// ReferenceIndex 获得。归位条件：asm/classpath 线交付自己的 GAM
+/// 包装后，本件迁回其目录。
 #pragma once
 
 #include <memory>

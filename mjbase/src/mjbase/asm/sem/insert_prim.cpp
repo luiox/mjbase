@@ -1,8 +1,6 @@
 /// @file        insert_prim.cpp
 /// @brief       插入原语落地：标签重锚/fallthrough 批量插入与 copy-set
-///              前导装载（A5）。
-///
-/// 机械语义与 A2–A4 apply 内嵌实现逐位一致（提炼即等价，见文件头注）。
+///              前导装载。
 #include "mjbase/asm/sem/insert_prim.hpp"
 
 #include <algorithm>

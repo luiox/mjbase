@@ -952,8 +952,8 @@ TEST(MjAnalysisAliasContractTest, BuildsParameterReturnSummaryFromClassResource)
     EXPECT_EQ(arrayWriter->parameters[1].kind, AliasValueKind::Primitive);
     EXPECT_EQ(arrayWriter->parameters[2], AliasValue::object("param:2"));
     ASSERT_EQ(arrayWriter->arrayWrites.size(), 1u);
-    // P2：arrayHelper 自身不再持有内联自 writeArray 的数组写入（改持绑定），
-    // 展开视图与 P1 内联物化逐字段等值。
+    // arrayHelper 自身不持有内联自 writeArray 的数组写入（改持绑定），
+    // 展开视图与内联物化逐字段等值。
     ASSERT_EQ(arrayHelper->arrayWrites.size(), 0u);
     const auto helperExpanded = analysis.expandedFactsOf("AliasFixture", "arrayHelperRoundTrip",
                                                          kEchoDesc);
@@ -1219,7 +1219,7 @@ TEST(MjAnalysisAliasReflectionClosureTest, ConvergenceRoundsReflectClosureOnly)
 }
 
 // ---------------------------------------------------------------------------
-// P1 静态槽迟变更（Jacobi 槽依赖收敛钉）
+// 静态槽迟变更（Jacobi 槽依赖收敛钉）
 // ---------------------------------------------------------------------------
 
 TEST(MjAnalysisAliasWorklistTest, StaticSlotLateChangePropagatesBeforeConvergence)
@@ -1270,7 +1270,7 @@ TEST(MjAnalysisAliasWorklistTest, MemoizedBuildReproducesFullBuildSummaries)
 }
 
 // ---------------------------------------------------------------------------
-// P2 引用化摘要：绑定 + 惰性展开
+// 引用化摘要：绑定 + 惰性展开
 // ---------------------------------------------------------------------------
 
 TEST(MjAnalysisAliasReferenceSummaryTest, CallBindingsReplaceInlinedCalleeFacts)
@@ -1358,7 +1358,7 @@ TEST(MjAnalysisAliasReferenceSummaryTest, CyclicCallGraphConvergesWithConstantSu
     ASSERT_NE(slot, nullptr);
     // 槽聚合 = merge(param:0, new:BindA.callSet()V:0:java/lang/Object)：
     // setSlot 直写贡献形参、callSet 绑定实例化贡献具体分配点，分歧收敛为
-    // Unknown 并保留诊断 pointsTo（与 P1 物化聚合同语义）。
+    // Unknown 并保留诊断 pointsTo（与内联物化聚合同语义）。
     EXPECT_EQ(slot->kind, AliasValueKind::Unknown);
     const std::string_view callSetAlloc = aliasInterned("new:BindA.callSet()V:0:java/lang/Object");
     EXPECT_TRUE(std::find(slot->pointsTo.begin(), slot->pointsTo.end(), callSetAlloc) !=

@@ -38,7 +38,7 @@ std::string_view internName(mjbase::KeyPool& pool, std::string_view value)
     return value.empty() ? std::string_view{} : pool.str(pool.intern(value));
 }
 
-/// (name, desc) 字典序比较器（#1072 钉死：类内稳定序）。
+/// (name, desc) 字典序比较器（类内稳定序）。
 bool memberPairLess(const std::pair<std::string, std::string>& a,
                     const std::pair<std::string, std::string>& b)
 {
@@ -61,7 +61,7 @@ std::string jasmEscaped(std::string_view value)
     return escaped.to_utf8_string().to_std_string();
 }
 
-/// #1156 引用 token：4 字节 CSPRNG → 8 位小写 hex（uint32 %08x 语义）；
+/// 引用 token：4 字节 CSPRNG → 8 位小写 hex（uint32 %08x 语义）；
 /// 与 taken 撞号则重生成（表内唯一）。随机源 = libca secure_random_bytes
 /// （系统 CSPRNG）；系统 RNG 失败属环境灾难，报 Err 而非自造随机源降级。
 ca::core::Result<std::string, std::string> freshUniqueToken8(
@@ -295,7 +295,7 @@ std::string ShadowAliasTable::renderMember(std::string_view owner, std::string_v
                    nameEsc + ")";
     }
 
-    // P0-2：尾随 ` (完整原始形式)` 属信息删除，必须逐字段
+    // 尾随 ` (完整原始形式)` 属信息删除，必须逐字段
     // 核对尾段与前段完全重合才可去。当前格式下 owner/name 在前段必然出现
     // （直接或 `shadow (raw)` 括号内；结构性后缀比较，不用子串搜索，防名字
     // 本身含 `(`/`)` 时误判），desc 恒以 `:` + descEsc 收尾 → 三字段全部重合，
@@ -501,7 +501,7 @@ ca::core::Result<ShadowGenStats, std::string> generateMechanicalShadowNames(
         }
     }
 
-    // #1156：token 列收尾——新条目与历史缺号条目（v1 sidecar 遗留）一律补
+    // token 列收尾——新条目与历史缺号条目（v1 sidecar 遗留）一律补
     // CSPRNG token8（表内唯一；已有 token 原样保留，幂等）。随机列不参与
     // 上面的编号与排序，编号确定性不受影响。随机源失败 → Err（已分配编号
     // 保留在表，重跑幂等补号）。
@@ -683,7 +683,7 @@ ca::usize pruneShadowAliases(const mjbase::model::ResourceContainer& container,
     }
 
     // 先收集存活条目（owned 拷贝），再原地重建——clear() 使旧视图失效，
-    // 重建期不得再引用旧条目。token8 随行（#1156：prune 不得丢 token）。
+    // 重建期不得再引用旧条目。token8 随行（prune 不得丢 token）。
     struct KeptEntry
     {
         ShadowKind  kind;

@@ -21,7 +21,7 @@ namespace mjbase::pass {
 /// 3. 改写：命中 ldc 原位改写为索引装载（materializeIntConst 波段物化），
 ///    紧随 INVOKESTATIC str/Pool.getStr(I)Ljava/lang/String;——对是净栈
 ///    中性替换（调用弹索引推引用），分支目标帧不漂移，无需帧再生；
-///    改写方法 maxStack 保守 +1（精确重算随帧面批次）。
+///    改写方法 maxStack 保守 +1（精确重算归帧面）。
 /// 4. 合成 helper：str/Pool（中性名，不携带任何工具身份）——public
 ///    static String[] strPool、<init>、<clinit>（new String[n] + 逐项
 ///    aastore）、private static getStr(I)；writeClass 序列化后入容器。

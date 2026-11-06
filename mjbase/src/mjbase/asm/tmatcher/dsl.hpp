@@ -1,11 +1,11 @@
 /// @file        dsl.hpp
 /// @brief       DSL 运算符层：- (seq) / | (alt) / >> (规则产出)。
 ///
-/// 运算子集；有意不迁的部分：
+/// 运算子集，明确不提供两类能力：
 ///   - CaptureVar<T>/load()：依赖 InsnUtil 的常量解释；新 DSL 的
 ///     捕获是 InsnId，取值由产出器经 ReplaceContext::capturedInsn 完成；
 ///   - makeSeq/makeReplaceSeq 大括号糖：initializer_list 持 move-only
-///     句柄需 const_cast 挪动，属于将就写法，不迁。
+///     句柄需 const_cast 挪动，属于将就写法，不提供。
 #pragma once
 
 #include <functional>

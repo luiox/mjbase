@@ -67,7 +67,7 @@ TEST(MjExprValueTest, remByZero)
 }
 
 /// 回归：B64 下 INT64_MIN / -1 在 i64 上溢出，x86 直接触发除法异常（SIGFPE）。
-/// 修复后经 jstd::arith::div 按 Java 语义回绕为 INT64_MIN；rem 为 0。
+/// 经 jstd::arith::div 按 Java 语义回绕为 INT64_MIN；rem 为 0。
 TEST(MjExprValueTest, divRemInt64MinByMinusOne)
 {
     ExprValue min(INT64_MIN, BitWidth::B64);

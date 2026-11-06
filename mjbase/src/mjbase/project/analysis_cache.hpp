@@ -17,18 +17,17 @@ namespace mjbase::project {
 /// @brief 分析缓存落盘引擎：xref 缓存（整索引一槽）与条目级 decompile 缓存
 ///        的 section 读写、失效键判定与合并 flush。
 ///
-/// 上游依据：mjt 仓 RFC 0001 §4.1/§7/§10-P3/§11 风险 6。失效键**完全沿用
-/// store.json 既有字段**（§2.2），不自造体系：
+/// 设计定稿见 doc:container-cache。失效键**完全沿用 store.json 既有字段**，
+/// 不自造体系：
 ///
 ///     失效键 = depends[]（参与容器的 path+fingerprint 全集）
 ///            + produced_by（引擎 + 引擎版本自述串）
 ///            + section_version（缓存格式版本）
-///            + profile（影响内容的 options 串；空 ≡ 未设置，R52/CP-3 归一）
+///            + profile（影响内容的 options 串；空 ≡ 未设置）
 ///
 /// 命中判定 = 名字槽定位（名字内嵌短 digest，不同键不共槽）+ 清单条目四字段
-/// 全值复核（防短 digest 相撞）+ readSectionBytes 校验读（§5.2 先 size 后
-/// hash）。任一环节失配按**未命中**处理（缓存内容可重算，永不值得为它报错）
-/// ——Damaged 缓存段由「未命中重算 + 同名重写」自愈（§8.2-3 既有口径）。
+/// 全值复核（防短 digest 相撞）+ readSectionBytes 校验读（先 size 后 hash）。任一环节失配按**未命中**处理（缓存内容可重算，永不值得为它报错）
+/// ——Damaged 缓存段由「未命中重算 + 同名重写」自愈。
 /// 清单不可载（isManifestUnloadableKind）除外：降级孤儿态下读路径报错、写
 /// 路径拒绝，与台账引擎同一 fail-closed 纪律。
 ///
@@ -37,8 +36,8 @@ namespace mjbase::project {
 /// 档孤儿（scanBundleRecovery + pruneOrphanSections 收敛），旧清单完整。
 ///
 /// 锁纪律：本类**不获取** store.lock——单写者锁由工程会话（如 EditLedgerStore
-/// 绑定）持有，写路径（storeXref/flush）前置条件是调用方已持锁；读路径无锁
-/// 短句柄（§7.3 读者纪律）。
+/// 绑定）持有，写路径（storeXref/flush）前置条件是调用方已持锁；读路径无锁、
+/// 短句柄。
 
 /// @brief xref 缓存引擎自述串（produced_by；消费者可携带自己的引擎串覆盖）。
 inline constexpr const char* kXrefCacheEngineDefault = "mjbase-xref-cache/1";
@@ -58,7 +57,7 @@ inline constexpr const char* kDecompileCacheSectionPrefix = "decompile-";
 /// @brief xref 缓存 section 名前缀（同上；陈旧槽随 storeXref 退役）。
 inline constexpr const char* kXrefCacheSectionPrefix = "xref-";
 
-/// @brief xref 缓存键（失效键四字段的原样投影；RFC §7）。
+/// @brief xref 缓存键（失效键四字段的原样投影）。
 struct XrefCacheKey
 {
     std::vector<SectionDep> depends;   ///< 参与容器全集（写出按 path 字典序复核）
@@ -67,7 +66,7 @@ struct XrefCacheKey
     ca::str::Utf8String     profile;       ///< options profile（空 ≡ 未设置）
 };
 
-/// @brief decompile 缓存的槽键（RFC §7 条目级键的槽级投影）。
+/// @brief decompile 缓存的槽键（条目级键的槽级投影）。
 ///
 /// 槽 = （容器 digest、引擎 + 引擎版本、options profile）三元组确定的
 /// section；条目级粒度由槽内记录的条目 digest 承担——条目未变即命中，编辑
@@ -151,7 +150,7 @@ public:
     ///        落盘；高频批量场景归 flush 的合并事务面）。
     ///
     /// 序：writeSectionBytes 原子写 → 同族（xref- 词根）陈旧槽墓碑 → 一笔
-    /// manifest 事务 upsert + removals。清单不可载拒绝事务（CP-1，零触盘）。
+    /// manifest 事务 upsert + removals。清单不可载即拒绝事务（零触盘）。
     ca::Result<void, ProjectStoreError> storeXref(const XrefCacheKey& key,
                                                   const ca::u8* payload, ca::usize payloadSize,
                                                   std::string_view createdAt);
@@ -170,7 +169,7 @@ public:
         const ca::str::Utf8StringRef& entryDigest) const;
 
     /// @brief 缓冲一条条目级反编译产物（驻内存 pending，随 flush 批量落盘；
-    ///        RFC 风险 6 的合并 flush 形态——N 条目只付一次清单事务）。
+    ///        合并 flush 形态——N 条目只付一次清单事务）。
     ///
     /// className 非空、entryDigest 合法形状即受理（同类名重复 put 以最后一次
     /// 为准）；未绑定 bundle 时 pending 仅内存（flush no-op）。槽键形状违约

@@ -19,8 +19,7 @@ namespace mjbase::project {
 ///        ProjectStore bundle 上的代际化落盘（flush）、压缩（手动/自动阈值）
 ///        与崩溃安全（manifest last、只删非活动代）。
 ///
-/// 设计定稿见 doc:schema-v2-ledger（上游 RFC 0001 §6.2/
-/// §6.4）。引擎工作在 uri + digest + 字节面：不知道容器对象，重放与状态物料化
+/// 设计定稿见 doc:schema-v2-ledger。引擎工作在 uri + digest + 字节面：不知道容器对象，重放与状态物料化
 /// 由消费方在其载体上执行；引擎负责链完整性、载荷寻址、落盘协议与压缩不变量。
 /// 未绑定 bundle 时引擎是纯内存台账（flush 为 no-op），供无工程会话使用。
 
@@ -55,7 +54,7 @@ struct LedgerFlushReport
     std::vector<ca::str::Utf8String> released;    ///< 本次随清理事务删除的 section 名
 };
 
-/// @brief 手动压缩参数（设计文档 §5.2）。
+/// @brief 手动压缩参数（doc:schema-v2-compaction）。
 struct LedgerCompactRequest
 {
     /// 保留最近 N 个书签（按创建序）；上限值 = 全保留。被裁书签列名进报告。
@@ -103,7 +102,7 @@ public:
     /// 新清单）。无台账 section = 全新会话（活动链为空、基线取 baseContainer
     ///Digest 所指的原始容器）。配置取 manifest.ledgerConfig（工程配置持久面），
     /// 缺省回落 @p config。基线 section 存在时核对其 content_hash 与锚行
-    /// container（一口径两处验证，§1.6）。
+    /// container（一口径两处验证，doc:schema-v2-project-json）。
     static ca::Result<EditLedgerStore, ProjectStoreError> openBundle(
         const ca::str::Utf8StringRef& bundleDir, const ca::str::Utf8StringRef& baseContainerDigest,
         const LedgerEngineConfig& config = {});
@@ -151,8 +150,9 @@ public:
     /// 活动链行的序列化字节数（阈值指标）。
     ca::u64 ledgerBytes() const;
 
-    /// @brief 载荷字节：内存 pending 优先，已落盘走清单校验读（§5.2 先 size 后
-    ///        hash）。未绑定且非 pending = NotFound。
+    /// @brief 载荷字节：内存 pending 优先，已落盘走清单校验读
+    ///        （doc:schema-v2-compaction 先 size 后 hash）。未绑定且非
+    ///        pending = NotFound。
     ca::Result<std::vector<ca::u8>, ProjectStoreError> payloadBytes(
         const ca::str::Utf8StringRef& ref) const;
 
@@ -210,29 +210,29 @@ public:
     /// 当前活动代（0 = 尚无落盘台账）。
     ca::u32 generation() const { return generation_; }
 
-    /// @brief flush（设计文档 §3.2，manifest last）：落 overlay sections → 新代
+    /// @brief flush（doc:schema-v2-ledger，manifest last）：落 overlay sections → 新代
     ///        台账 section → manifest 事务 upsert → 清理事务删除待释放（只删
     ///        非活动代）→ 释放内存 pending。未绑定 / 无 pending 且无待释放 =
-    ///        no-op。崩溃任一点旧代完整（§3.2/§3.4）；重试同字节幂等。
+    ///        no-op。崩溃任一点旧代完整（doc:schema-v2-ledger）；重试同字节幂等。
     ca::Result<LedgerFlushReport, ProjectStoreError> flush(const std::string& createdAt);
 
     //-- 压缩 -----------------------------------------------------------------
 
-    /// 自动压缩阈值判定（flush/savepoint 时机查视；§5.3）。
+    /// 自动压缩阈值判定（flush/savepoint 时机查视；doc:schema-v2-compaction）。
     bool shouldAutoCompact() const;
 
-    /// @brief 保留点计算（§5.1）：clamp(head − keepUndoDepth, 基点,
+    /// @brief 保留点计算（doc:schema-v2-compaction）：clamp(head − keepUndoDepth, 基点,
     ///        最老存活书签事务号)；自动路径 keepUndoDepth 取配置 min_undo_depth、
     ///        书签全保留。返回值 ≤ 基点 = 不可推进（自动路径跳过）。
     ca::u64 retentionPoint(const LedgerCompactRequest& request, bool automatic,
                            std::vector<ca::str::Utf8String>* droppedBookmarks) const;
 
-    /// @brief 压缩（§5.4）：物化基线由消费方按 retentionPoint 预先完成并以
+    /// @brief 压缩（doc:schema-v2-compaction）：物化基线由消费方按 retentionPoint 预先完成并以
     ///        canonical 字节交入；引擎原子写新基线 + 新代台账 → manifest 换代
     ///        → 旧代/失引 overlay 入待释放并随即清理。
     ///
     /// 自动路径书签零失效（保留点不越过最老存活书签）；手动路径可显式丢弃更
-    /// 早书签（列名进报告）。undo 深度承诺按 §5.1 形式化。
+    /// 早书签（列名进报告）。undo 深度承诺按 doc:schema-v2-compaction 形式化。
     ca::Result<LedgerCompactReport, ProjectStoreError> compact(
         const LedgerCompactRequest& request, const std::vector<ca::u8>& baselineCanonicalBytes,
         std::string_view createdAt, bool automatic);

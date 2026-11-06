@@ -1,6 +1,6 @@
 /// @file        shadow_alias_test.cpp
 /// @brief       ShadowAliasTable + 机械占位名生成 + prune + jasm 显示层改写
-///              （#1072/#1156 mjbase 移植版）。
+///              。
 ///
 /// 登记/查询/渲染口径、双向与范围查询、mapping roundtrip、生成器字典序稳定 +
 /// 幂等 + 手工名保留 + 撞号递增 + 容器遍历序无关、jar 字节零写入（红线）、
@@ -150,7 +150,7 @@ TEST(MjShadowAliasTableTest, renderAppendsRawFormOnlyOnHit)
     EXPECT_EQ("Method_1 (m)", toStd(table.renderMemberName("a/A", "m", "(I)V")));
     EXPECT_EQ("n", toStd(table.renderMemberName("a/A", "n", "(I)V")));
     // 双命中：两段各带括号；尾段 ` (完整原始形式)` 与前段逐字段重合
-    // （owner/name 在括号内、desc 以 `:desc` 收尾），按 #1106 P0-2 去重。
+    // （owner/name 在括号内、desc 以 `:desc` 收尾），故去重。
     EXPECT_EQ("Class_1 (a/A).Method_1 (m):(I)V", toStd(table.renderMember("a/A", "m", "(I)V")));
     // 仅 owner 命中 / 仅名字命中：同样去重（owner/name/desc 均在前段出现）。
     EXPECT_EQ("Class_1 (a/A).n:(I)V", toStd(table.renderMember("a/A", "n", "(I)V")));
@@ -429,7 +429,7 @@ TEST(MjShadowAliasTableTest, jasmRewriteDiscriminatesSameNameFieldAndMethod)
 {
     ShadowAliasTable table;
     table.addClass("A", "Alpha");
-    // JVM 合法：field 与 method 同名（混淆器产物，#1072 真实 jar 实测）。
+    // JVM 合法：field 与 method 同名（混淆器产物，真实 jar 实测形态）。
     table.addField("A", "I", "dup", "Field_1");
     table.addMethod("A", "()I", "dup", "Method_1");
 
@@ -461,7 +461,7 @@ TEST(MjShadowAliasTableTest, clearInvalidatesAllViews)
 }
 
 // ═══════════════════════════════════════════════════════════════
-// #1156 shadow 引用 token —— 表层（T1 切片）
+// shadow 引用 token —— 表层
 // ═══════════════════════════════════════════════════════════════
 
 TEST(MjShadowAliasTableTest, token8PlumbsEntriesAndMappingPivot)

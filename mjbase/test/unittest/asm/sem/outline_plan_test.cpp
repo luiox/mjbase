@@ -2,7 +2,7 @@
 /// @brief       OutlinePlan 测试：判据拒绝逐条钉死 + apply 结构断言 +
 ///              JVM 真跑门（javac → outline → java 行为对拍，JDK 缺失 SKIP）。
 ///
-/// 判据对照 luiox/mjbase #115 §1.1（A2 口径见 outline_plan.hpp 头注）。
+/// 判据口径见 outline_plan.hpp 头注。
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -66,7 +66,7 @@ MethodSpec pickSpec()
 }
 
 /// 含写局部臂的样本：B 臂写 t（槽 3），汇合块读 t → 出口后仍活跃
-/// （判据 3 A3 口径：写回集 = 被写 ∩ 出口后活跃 非空 → 拒绝）。
+/// （判据 3 口径：写回集 = 被写 ∩ 出口后活跃 非空 → 拒绝）。
 MethodSpec writeLocalSpec()
 {
     MethodSpec m;
@@ -98,8 +98,8 @@ MethodSpec writeLocalSpec()
     return m;
 }
 
-/// 死写臂样本：B 臂写 t 但汇合块不再读 → 写回集为空，判据 3 放开接受
-/// （A2 同形态被「区域不写局部」整体拒绝）。
+/// 死写臂样本：B 臂写 t 但汇合块不再读 → 写回集为空，判据 3 按活跃性
+/// 口径接受（「区域不写局部槽」不是判据本身）。
 MethodSpec deadWriteSpec()
 {
     MethodSpec m;
@@ -163,8 +163,8 @@ MethodSpec readTrimSpec()
     return m;
 }
 
-/// dup_x1 + pop ≡ SWAP 跨切点样本（#115 §3.4 实测档）：出口 [b, a] 与入口
-/// [a, b] 前缀失配 → ExitShapeImpure（tier-3 结构性拒绝，A2 已拒）。
+/// dup_x1 + pop ≡ SWAP 跨切点样本：出口 [b, a] 与入口
+/// [a, b] 前缀失配 → ExitShapeImpure（结构性拒绝，判据 2 已拒）。
 MethodSpec swapCrossSpec()
 {
     MethodSpec m;
@@ -188,9 +188,9 @@ MethodSpec swapCrossSpec()
     return m;
 }
 
-/// goto 入边 + 局部参数样本（#115 §3.3 实测缺陷 DupNorm.sum 形态）：区域
-/// 头标签 = B 臂 goto 目标（分支入边），区域内读 B 臂写入的槽 2 —— A2 的
-/// 装载被入边绕过（VerifyError），A3 修复后 JVM 真跑对拍。
+/// goto 入边 + 局部参数样本：区域
+/// 头标签 = B 臂 goto 目标（分支入边），区域内读 B 臂写入的槽 2；参数
+/// 装载块标签锚定首条装载、随入边走——JVM 真跑对拍钉住该形态。
 MethodSpec gotoEntryLocalParamSpec()
 {
     MethodSpec m;
@@ -305,7 +305,7 @@ OutlineRequest requestOf(PlanContext& ctx, const RegionCandidate& region, ca::u3
                            seq};
 }
 
-/// 行/属性结构断言助手已上收 sem_fixture.hpp（A4 与 outline 两批共用）。
+/// 行/属性结构断言助手定义在 sem_fixture.hpp，供 sem 面多组用例共用。
 
 /// 候选区域首条指令的布局 pc（行锚定坐标；区域成员块首指令 srcPc）。
 ca::u32 regionFirstPc(PlanContext& ctx, const RegionCandidate& r)
@@ -477,7 +477,7 @@ TEST(MjAsmSemOutlinePlanTest, LvtRowCrossingCutRejected)
     EXPECT_EQ(planned.unwrap_err(), OutlineError::LvtRowCrossesCut);
 }
 
-/// LVT 越切点宽松档（#115 §6 决策点 3）：applier 显式开关下裁剪（父表
+/// LVT 越切点宽松档：applier 显式开关下裁剪（父表
 /// 删除、记 lvtDrops），不再 fail-closed。
 TEST(MjAsmSemOutlinePlanTest, LvtCrossCutLooseModeDropsRow)
 {
@@ -509,7 +509,7 @@ TEST(MjAsmSemOutlinePlanTest, LvtCrossCutLooseModeDropsRow)
     EXPECT_TRUE(parentRows.empty());
 }
 
-/// 判据 3（A3 口径）：被写槽出口后仍活跃 → RegionWritesLocal；
+/// 判据 3：被写槽出口后仍活跃 → RegionWritesLocal；
 /// 同方法的纯净臂仍可识别（对照）。
 TEST(MjAsmSemOutlinePlanTest, RegionWritesLocalRejected)
 {
@@ -532,8 +532,8 @@ TEST(MjAsmSemOutlinePlanTest, RegionWritesLocalRejected)
     EXPECT_TRUE(accepted);
 }
 
-/// 判据 3 放开（A3 + LivenessView）：被写槽出口后不再被读（写回集为空）
-/// → 接受；写槽不进参数集但入重编号表，N 体显式重槽。
+/// 判据 3 的活跃性口径（LivenessView 供出口活跃集）：被写槽出口后不再
+/// 被读（写回集为空）→ 接受；写槽不进参数集但入重编号表，N 体显式重槽。
 TEST(MjAsmSemOutlinePlanTest, RegionWritesDeadLocalAccepted)
 {
     ClassBytesBuilder b("T");
@@ -609,8 +609,8 @@ TEST(MjAsmSemOutlinePlanTest, ReadAfterWriteTrimsParam)
     EXPECT_TRUE(plan.validate().is_ok());
 }
 
-/// 边界 DUP（§3.4 落临时档，A3）：出口栈顶 = 区域末条 DUP 对入口栈顶原值
-/// 的复制 → 原值升格 Stack 入参 + retIsEntryCopy（调用点 DUP 复位）。
+/// 边界 DUP（outline_plan.hpp 头注的放开一档）：出口栈顶 = 区域末条 DUP
+/// 对入口栈顶原值的复制 → 原值升格 Stack 入参 + retIsEntryCopy（调用点 DUP 复位）。
 TEST(MjAsmSemOutlinePlanTest, BoundaryDupEntryCopyAccepted)
 {
     ClassBytesBuilder b("T");
@@ -658,7 +658,7 @@ TEST(MjAsmSemOutlinePlanTest, BoundaryDupEntryCopyAccepted)
     EXPECT_EQ(callInsn->op, Op::INVOKESTATIC);
 }
 
-/// §3.4 tier-3（结构性拒绝）：dup_x1 + pop ≡ SWAP 跨切点，出口 [b, a] 与
+/// 结构性拒绝：dup_x1 + pop ≡ SWAP 跨切点，出口 [b, a] 与
 /// 入口 [a, b] 前缀失配 → ExitShapeImpure（调用表达不了换位）。
 TEST(MjAsmSemOutlinePlanTest, DupX1SwapCrossingRejected)
 {
@@ -736,7 +736,7 @@ TEST(MjAsmSemOutlinePlanTest, NonStraightLoopRejected)
     EXPECT_TRUE(found);
 }
 
-/// 判据 4（A2 收紧）：try 覆盖内同质区域（handler 集非空）→ TryCovered。
+/// 判据 4：try 覆盖内同质区域（handler 集非空）→ TryCovered。
 TEST(MjAsmSemOutlinePlanTest, TryCoveredRejected)
 {
     ClassBytesBuilder b("T");
@@ -965,8 +965,8 @@ TEST(MjAsmSemOutlinePlanTest, JvmGateBehaviorPreserved)
     fs::remove_all(scratch, ec);
 }
 
-/// builder 语料补 SMT 的对照组助手已上收 sem_fixture.hpp（A4 与 outline
-/// 两个 JVM 门共用）。
+/// builder 语料补 SMT 的对照组助手定义在 sem_fixture.hpp，供多个
+/// JVM 真跑门用例共用。
 
 /// JVM 真跑门公共体：plan（谓词过滤后首个可识别候选）→ apply → 写回 →
 /// java 前后对拍。期望输出由用例断言；planOutline 全拒时 ADD_FAILURE。
@@ -1060,8 +1060,8 @@ void runJvmGate(const MethodSpec& spec, const jbc::analysis::MethodSig& gateSig,
                        const mjbase::asm_sem::RegionView&) { return true; });
 }
 
-/// JVM 真跑门（A2 缺陷修复）：goto 入边 + 局部参数——A2 的装载被入边绕过
-/// （VerifyError Inconsistent stack height），A3 标签锚定首条装载后真跑一致。
+/// JVM 真跑门：goto 入边 + 局部参数——参数装载块标签锚定首条装载、随入边
+/// 走，分支不绕过装载，真跑行为与拆分前逐字一致。
 TEST(MjAsmSemOutlinePlanTest, JvmGateGotoEntryLocalParams)
 {
     const MethodSpec spec = gotoEntryLocalParamSpec();
@@ -1071,7 +1071,7 @@ TEST(MjAsmSemOutlinePlanTest, JvmGateGotoEntryLocalParams)
                "7\n7\n");
 }
 
-/// JVM 真跑门（§3.4 tier-2）：边界 DUP 出口切点——原值升格入参 + 调用点
+/// JVM 真跑门（调用点侧栈形重排那一档）：边界 DUP 出口切点——原值升格入参 + 调用点
 /// DUP 复位，真跑行为与拆分前逐字一致。
 TEST(MjAsmSemOutlinePlanTest, JvmGateBoundaryDupEntryCopy)
 {
@@ -1084,7 +1084,7 @@ TEST(MjAsmSemOutlinePlanTest, JvmGateBoundaryDupEntryCopy)
                "0\n3\n9\n");
 }
 
-/// JVM 真跑门（A5b 盖章）：自足槽 N 携 Code 嵌套盖章属性（kOutlineStampAttr
+/// JVM 真跑门：自足槽 N 携 Code 嵌套盖章属性（kOutlineStampAttr
 /// 未建模嵌套属性）真跑——JVMS 4.7.1 忽略面 + HotSpot 实证，-Xverify:all
 /// 全程验证，行为与拆分前逐字一致。谓词钉住写臂（6 成员，含 ISTORE 3）。
 TEST(MjAsmSemOutlinePlanTest, JvmGateSelfSufficientStamp)

@@ -7,9 +7,9 @@ namespace mjbase::spi {
 
 struct MethodScope;
 
-/// @brief 变换管线的方法体写回辅助面：嵌套属性布局适配 + A1 帧链再接线。
+/// @brief 变换管线的方法体写回辅助面：嵌套属性布局适配 + 帧链再接线。
 ///
-/// 职责归属（pass-contract §2：backing 只被管线触碰）：两个入口都只由
+/// 职责归属（doc:pass-contract-pipeline：backing 只被管线触碰）：两个入口都只由
 /// runMethodPipelineOverSession 在 lower 前后调用，pass 不得自行调用。
 ///
 /// - prepareNestedAttrsForLayout（lower 前调）：指令布局将变时，把 backing
@@ -25,7 +25,7 @@ struct MethodScope;
 ///   - SMT 帧目标或 Uninitialized 载荷悬垂时整体摘除该属性（帧内容无法搬
 ///     运，摘除后由 rewireFramesAfterLower 再生；调用方须保证其后随调用，
 ///     否则方法缺帧）。
-/// - rewireFramesAfterLower（lower 后调）：A1 链消费入口。Strict 帧重算
+/// - rewireFramesAfterLower（lower 后调）：帧链再接线入口。Strict 帧重算
 ///   （布局已定，srcPc 即新 pc）→ buildStackMapTable 再生 SMT 模型 →
 ///   线性扫描栅栏补帧（HotSpot split verifier 对无落穿控制转移
 ///   （goto/switch/return/athrow）的指令后继索帧——verify_stackmap_table
@@ -39,7 +39,7 @@ struct MethodScope;
 ///   现状）。Strict 不可算（含 jsr/ret）显式抛出——不伪造帧，容错档位可
 ///   据此跳过该方法。
 ///
-/// 失败语言：异常（pass 域编排层豁免点，pass-contract §3），文本带方法定位；
+/// 失败语言：异常（pass 域编排层豁免点，doc:pass-contract-pipeline），文本带方法定位；
 /// 模块入口把异常收敛为 Result 的既有管线语义不变。
 namespace frame_rewire {
 
@@ -47,7 +47,7 @@ namespace frame_rewire {
 /// 返回是否摘除了既有 SMT（调用方据此保证 rewire 后随）。
 bool prepareNestedAttrsForLayout(jbc::ir::ClassSession& session, const jbc::ir::CodeUnit& code);
 
-/// lower 后的 A1 帧链再接线（Strict 重算 + maxes 采用 + SMT 再生挂回）。
+/// lower 后的帧链再接线（Strict 重算 + maxes 采用 + SMT 再生挂回）。
 void rewireFramesAfterLower(jbc::ir::ClassSession& session, const MethodScope& scope,
                             jbc::analysis::ITypeResolver& resolver);
 

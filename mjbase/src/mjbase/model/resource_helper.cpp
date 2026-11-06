@@ -34,7 +34,7 @@ ModelResult<void> ResourceHelper::importFromJar(ResourceContainer& container,
     return container.importResource(&importer);
 }
 
-// #1110 族解码注入面：自建 JvmJarReader 并注入条目名宽容解码回调（空 = 原始
+// 解码注入面：自建 JvmJarReader 并注入条目名宽容解码回调（空 = 原始
 // 字节直通零漂移）。与 reader 重载分离：decoder（std::function）不与 reader
 // （unique_ptr）混排默认参，避免既有 3 参 reader 调用点变义。
 ModelResult<void> ResourceHelper::importFromJar(ResourceContainer& container,

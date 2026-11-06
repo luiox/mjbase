@@ -1,5 +1,4 @@
-/// ClassRenamerTest 段，
-/// 并补齐独立直接用例（空容器 / 不可解析资源 / 命名确定性）。
+/// ClassRenamer 独立直接用例（空容器 / 不可解析资源 / 命名确定性）。
 /// 断言面：URI 重写（旧条目删除、新条目入容器）、描述符与调用点同步改写、
 /// 编号确定性（旧名序 → Class0/Class1/...）。
 #include <gtest/gtest.h>
@@ -162,7 +161,7 @@ TEST(MjPassClassRenamerTest, RenamesClassesAndRewritesDescriptorsAndCallSites)
     EXPECT_EQ(target.descOf(*id), "(Lpkg/Class1;)Lpkg/Class1;");
 }
 
-// 补齐直接用例：默认包类（旧名无 '/'）落在 "Class<N>"。
+// 默认包类（旧名无 '/'）落在 "Class<N>"。
 TEST(MjPassClassRenamerTest, RenamesDefaultPackageClassesToRootName)
 {
     mjbase::model::ResourceContainer container;
@@ -187,7 +186,7 @@ TEST(MjPassClassRenamerTest, RenamesDefaultPackageClassesToRootName)
     EXPECT_EQ(cf.thisName(), "Class0");
 }
 
-// 补齐直接用例：空容器 / 仅不可解析资源 → all()，容器原样。
+// 空容器 / 仅不可解析资源 → all()，容器原样。
 TEST(MjPassClassRenamerTest, KeepsContainerUntouchedWhenNothingLoadable)
 {
     mjbase::model::ResourceContainer container;
@@ -210,7 +209,7 @@ TEST(MjPassClassRenamerTest, KeepsContainerUntouchedWhenNothingLoadable)
 
 // ── Multi-Release 族契约 ────────────────────────────────────────────────────
 //
-// 旧行为（已证实的破坏缺陷，本组用例钉死修复后契约）：装载序只按内名排序，
+// 本组用例钉死的破坏面：装载序只按内名排序，
 // base 与 versions/N 变体内名相同并列；命名计划按内名键控，族内第二次发名
 // 覆盖第一次；写回一律 `新名.class`——族内两份写回同一 URI，旧 URI 双删后一
 // 次 replaceResource 胜出，多版本对坍缩成单条目、另一份静默丢失。
@@ -326,7 +325,7 @@ TEST(MjPassClassRenamerTest, RenamesMultiReleaseFamilyWithoutCollapsing)
 TEST(MjPassClassRenamerTest, FamilyRenamingIsInsertionOrderIndependent)
 {
     // 同一逻辑容器两种插入序 → 输出 URI 集与族新名完全一致（排序键 (内名,
-    // URI) 全序，编号不随容器迭代序漂移——旧行为在此非确定）。
+    // URI) 全序，编号不随容器迭代序漂移）。
     const auto runOnce = [] {
         mjbase::model::ResourceContainer container;
         addClassResource(container, "META-INF/versions/11/app/Api.class", buildApiMember());
@@ -391,8 +390,8 @@ TEST(MjPassClassRenamerTest, RenamesVariantOnlyFamilyKeepingVersionShape)
     EXPECT_EQ(cf.thisName(), "app/Class0");
 }
 
-// B8 8.3 收口：泛型 Signature 与 type annotation 的类引用随类映射结构化同步
-//（此前 bytecodeOnly 面滞留旧名）。边界钉死：通配符载荷、'.' 段链（对齐映射
+// 泛型 Signature 与 type annotation 的类引用随类映射结构化同步
+//（只开 bytecodeOnly 面会滞留旧名）。边界钉死：通配符载荷、'.' 段链（对齐映射
 // 逐段替换；独立新名整链坍缩为扁平新名）、注解 type_index 与 'c' 元素值全部
 // 落新名，非类名字节（类型变量/通配符）原样。
 TEST(MjPassClassRenamerTest, RewritesGenericSignatureAndTypeAnnotationReferences)

@@ -1,7 +1,6 @@
 /// @file        mask_rules_db_test.cpp
 /// @brief       AnalysisDb 出口遮蔽层数据面（schema v4）：mask_rules 整体
-///              替换与校验、信任级别 meta、命中记账与只读拒写
-///              （B2，#121 §4.3）。
+///              替换与校验、信任级别 meta、命中记账与只读拒写。
 #include <gtest/gtest.h>
 
 #include <filesystem>

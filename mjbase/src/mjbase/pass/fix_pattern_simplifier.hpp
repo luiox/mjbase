@@ -4,8 +4,7 @@
 
 namespace mjbase::pass {
 
-/// @brief 固定模式简化器：用更简单的等价字节码替换已登记的固定混淆模式
-///        （移植自 mbase pass/opt/fix_pattern_simplifier）。
+/// @brief 固定模式简化器：用更简单的等价字节码替换已登记的固定混淆模式。
 ///
 /// 定位：`ArithmeticSimplifier` 折叠直接常量算术、`ExpressionSimplifier` 处理
 /// 可复用代数恒等式，本 pass 处理**命名的字节码惯用模式**——每条规则匹配一个
@@ -41,7 +40,7 @@ namespace mjbase::pass {
 /// producer，istore 保留（slot 窗口外活跃性未知，保守不删）。仅通用 ISTORE/ILOAD
 /// 形态参与（旧栈 step 谓词逐字对齐）；短形态（istore_n/iload_n）不匹配。
 ///
-/// ## 不透明算术恒等式族（分发器折叠，spec 见 issue #44；增补规则 12–14）
+/// ## 不透明算术恒等式族（分发器折叠，规则 12–14）
 ///
 /// 混淆分发器用三条位级恒等式把状态变量折叠成 switch 操作数，反编译产物
 /// 是一长串不可读的位运算链。x 为单局部槽、K 为 int 常量；恒等式在补码
@@ -62,11 +61,11 @@ namespace mjbase::pass {
 /// 不动点轮次单 pass 收敛）。`iconst_0; ior/iadd/isub` 恒等算子噪声不属
 /// 本表，归 ExpressionSimplifier 恒等元规则（管线序建议本件在前）。
 ///
-/// ## #44 long 族（增补规则 15–20：lxor/land/lshl 位级恒等式）
+/// ## long 族（规则 15–20：lxor/land/lshl 位级恒等式）
 ///
 /// int 族恒等式在 long 语义下逐位成立（补码回绕，JVM 整数无 UB 面）；窗口
 /// 差异全部来自 cat2 双槽与帧类型面。**窗口形态偏离 int 族（已声明的差异，
-/// 与 #44 int 窗口不互为转写）**：dup 家族按槽位语义只能把复制品下插
+/// 与 int 窗口不互为转写）**：dup 家族按槽位语义只能把复制品下插
 /// 1/2 槽——dup2_x2 在 all-cat2 三值栈 [x,K,v] 上产出 [x,v,K,v]（libjbc
 /// dupSlots 与真 JVM 实测一致），且无 dup2_x4、swap 对 cat2 非法——int 窗
 /// 口中段的 dup_x2/pop/swap 栈重排在 long 上不可达。故 long 窗弃用 dup 舞
@@ -107,7 +106,7 @@ namespace mjbase::pass {
 ///   等价）：窗口内部成员前置边界有存活标签锚定（分支目标 / 异常表 / 调试
 ///   边界）即跳过该窗口。首成员的标签随替换迁移到替换头（空替换时为窗口
 ///   后继 / 方法末尾）——等价旧栈标签留原位指向新序列头的落点。
-/// - **已声明的保守偏离**（与 A 批方法体改写族同一类目）：行号边界在 CodeDom
+/// - **已声明的保守偏离**（与方法体改写族同一类目）：行号边界在 CodeDom
 ///   不可见（LNT 是 backing 属性），跨行号边界的窗口照常变换——旧栈不折叠。
 ///   SMT 帧目标悬垂由管线帧链接线显式失败（不产出缺帧类），不静默。
 /// - 替换头继承窗口首成员的来源 pc（srcPc）：LNT 等 pc 索引属性经 pcmap
@@ -116,8 +115,8 @@ namespace mjbase::pass {
 /// - 节点所有权：替换全部由新构造或 clone 产生，绝不复用被删成员（CodeDom
 ///   句柄在 erase 后即失效）。
 /// - 窗口替换的编辑器协议（头插 + 标签迁移 + 顺序删除）收敛在本文件
-///   replaceWindow 一处；libjbc CodeEditor 缺一等 replaceWindow 原语的缺口
-///   见模块地图挂账。
+///   replaceWindow 一处；libjbc CodeEditor 缺一等 replaceWindow 原语，
+///   窗口替换由本文件自组协议承担。
 ///
 /// ## 终止性
 ///

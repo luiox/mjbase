@@ -28,7 +28,7 @@
 ///
 /// ## 形态说明
 ///
-/// 本件骑 BasicInterpreter/Analyzer 基类体系；换 libjbc 域插件：
+/// 本件骑 BasicInterpreter/Analyzer 基类体系，值域走 libjbc 域插件：
 /// BindingDomain 实现 IValueDomain<BindingValue>（纯产值点在域钩子内：int 常量、
 /// ldc、GETSTATIC 常量/名表回填、CHECKCAST/ANEWARRAY/AALOAD/IADD/ISUB），
 /// 操作数依赖产点（invoke 家族、indy 拼接、SB 产出）经「迭代探测-注入」后处理
@@ -36,11 +36,11 @@
 /// 一次性施加，再以注入表回灌值轮（与 reflection_interpreter 同族两跑范式，
 /// 共享对象经 shared_ptr 携带，写时复制纪律只在纯值路径生效）。
 ///
-/// ## 非目标（第一刀不做）
+/// ## 非目标（本分析器不覆盖）
 ///
-/// - 跨方法过程间摘要（#980 常量传播线）
+/// - 跨方法过程间摘要（常量传播线）
 /// - 字段表驱动的外部映射注入（解密字符串以解密后 LDC 形态进入，本分析器只认 LDC）
-/// - callgraph 回灌（#1021 缺口 1 落地后的小集成步）
+/// - callgraph 回灌（确认边经 appendEdge 织入调用图尚未接线）
 /// - helper 桩改名补丁
 ///
 /// ## 层次

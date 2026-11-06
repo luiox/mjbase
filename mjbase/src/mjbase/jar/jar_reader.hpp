@@ -34,13 +34,13 @@ class IJarReader
 {
 public:
     /// 带进度的回调签名：(index 1-based, total, 条目名, 条目内容)。
-    /// 供 loading 阶段进度反馈用（issue #332）。
+    /// 供 loading 阶段进度反馈用。
     using ProgressConsumer =
         std::function<void(int /*index*/, int /*total*/, const Utf8String& /*name*/,
                            const std::vector<ca::u8>& /*data*/)>;
 
-    /// @brief 条目名宽容解码回调（#1110 族，opt-in，对齐 D40 setLenientTextDecoder
-    /// 先例：libjclassfile 注入回调、消费面注入 mjt text_codec 规范口径）。
+    /// @brief 条目名宽容解码回调（opt-in，对齐 libjclassfile 的
+    /// setLenientTextDecoder 先例；消费面注入 mjt text_codec 规范口径）。
     ///
     /// zip 条目名在 jzip 层是零解码原始字节（LFH/CEN read_string 直拷，GP bit
     /// 0x800 读入但未用）。注入本回调后，条目名原始字节（GBK 无 flag 名等）经

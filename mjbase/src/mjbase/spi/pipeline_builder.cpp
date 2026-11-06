@@ -40,7 +40,7 @@ GlobalPassManager PipelineBuilder::buildNestedPipeline(PassJobContext&          
                                                        const PassPipelineOptions&  options) const
 {
     GlobalPassManager mgr;
-    // 输入净化门（issue #963）：head 位置先于一切 pass 校验每个
+    // 输入净化门：head 位置先于一切 pass 校验每个
     // ClassResource 的 CP 引用语义。失败语义跟随容错档位。
     mgr.addPass(std::make_unique<ClassFileSanitizeGate>(options));
 
@@ -125,7 +125,7 @@ std::vector<std::string> PipelineBuilder::postClassPassNames() const
     return names;
 }
 
-// ── applyTo：注册名 → 段位投递（§9 唯一收口）──
+// ── applyTo：注册名 → 段位投递的唯一收口──
 //
 // 工厂 lambda 按引用借用 registry、每次构建都重新 create——与 addXxxPass 的
 // 「每次 build 产新实例」契约一致（单实例捕获会让第二次 build 拿到空 pass）。

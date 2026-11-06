@@ -1,10 +1,10 @@
 /// @file        global_reachability_test.cpp
-/// @brief       GlobalReachability 闭包用例（6 用例逐字等强）。
+/// @brief       GlobalReachability 闭包用例。
 ///
 /// 夹具为手拼 classfile 字节（class_bytes_builder.hpp）。
 /// CallGraph 自建会话，此处用 CallGraphBuilder 对同一批类字节建图——直接
 /// 编码调用边集合，闭包语义等强。
-/// GAM 注册的 ClassHierarchyAnalysis/MethodHierarchyAnalysis 由本批的
+/// GAM 注册的 ClassHierarchyAnalysis/MethodHierarchyAnalysis 由
 /// HierarchyBundleAnalysis 承载（停泊件，见 resolved_call_graph.hpp）。
 #include <gtest/gtest.h>
 

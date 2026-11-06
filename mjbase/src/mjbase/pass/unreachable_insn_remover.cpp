@@ -34,7 +34,7 @@ mjbase::spi::PreservedAnalyses UnreachableInsnRemover::run(mjbase::spi::MethodSc
     if (!summary.ok || frames.size() != n) return mjbase::spi::PreservedAnalyses::all();
 
     // 异常表标签全集（start/end/handler 任一身份都算）：锚到待删指令即保守
-    // 保留该指令，不做边界重锚；死保护区连同表项的清理归异常面清理批次。
+    // 保留该指令，不做边界重锚；死保护区连同表项的清理归异常面清理件。
     std::vector<LabelId> excLabels;
     excLabels.reserve(cu.exc.size() * 3);
     for (const jbc::ir::CodeUnit::Exc& e : cu.exc) {

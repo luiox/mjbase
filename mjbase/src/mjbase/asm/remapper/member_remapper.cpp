@@ -99,10 +99,9 @@ ca::u32 internClassName(ClassSession& session, std::string_view utf8Name)
     return session.internClass(utf8ToCp(utf8Name));
 }
 
-// 句柄/成员引用的 CP 解析自 B8 8.4 起直用 libjbc cp_resolve 原语
+// 句柄/成员引用的 CP 解析直用 libjbc cp_resolve 原语
 //（jbc::core::resolveHandleCp / resolveMemberRef：严格口径，reference_kind
-// ∉1..9 及 kind-tag 不匹配即解析失败；旧本地宽松版「非字段 kind 一律走方
-// 法分支」随收编退役——对合法类零影响，JVM 解析与 libjbc 读闸本就即拒）。
+// ∉1..9 及 kind-tag 不匹配即解析失败）。
 // libjbc 版返回零拷贝 view，本文件的消费边界见 remapHandle / remapInvoke
 // dynamic 里的落 string 纪律。
 
@@ -150,7 +149,7 @@ AttrSlot* findAttrByName(const ClassFile& cf, std::vector<AttrSlot>& attrs,
 /// @brief 解码属性槽并取指定形态的已解码体（可变）；失败/形态不符返回 nullptr。
 ///
 /// 注解族槽先过嵌套深度预检（util/annotation_depth.hpp）：libjbc attr_codec
-/// 的 readAnnotation/readElemValue 互递归无深度上限（上游条目挂账），敌意
+/// 的 readAnnotation/readElemValue 互递归无深度上限，敌意
 /// 深嵌注解会在 decodeAttr 内栈溢出。预检拒绝的槽按「解不开原样保真」
 /// fail-open 跳过——重映射面少改一条注解，进程不被打爆。
 template <typename AttrT>
@@ -439,9 +438,9 @@ bool remapAnnotationSlots(const RemapCtx& ctx, std::vector<AttrSlot>& attrs)
 }
 
 /// @brief 重映射一个 TypeAnnotationsAttr 体（Runtime{Visible,Invisible}-
-///        TypeAnnotations，typed 全结构模型——B8 8.3 收口，此前整族 copy-through）。
+///        TypeAnnotations，typed 全结构模型）。
 ///
-/// 类名承载位与 libjbc jbc::ir::type_annotation_attr（design §32.7）同口径：
+/// 类名承载位与 libjbc jbc::ir::type_annotation_attr 同口径：
 /// 注解类型描述符（typeIndexCp，字段描述符形态）与元素值（'c' 类字面量、
 /// 'e' 枚举类型名、'@' 嵌套、'[' 数组）走计划映射面；**type_path 与
 /// target_info 不承载类名**（type_path 是泛型结构定位 (kind,index) 序列、
@@ -484,8 +483,8 @@ bool remapTypeAnnotationSlots(const RemapCtx& ctx, std::vector<AttrSlot>& attrs)
 }
 
 /// @brief 重映射方法级 Runtime{Visible,Invisible}ParameterAnnotations
-///        （typed ParameterAnnotationsAttr 行模型——B8 8.3 收口，此前整族
-///        copy-through）。逐参数行的注解走与成员级同一条结构化手术路径
+///        （typed ParameterAnnotationsAttr 行模型）。逐参数行的注解走
+///        与成员级同一条结构化手术路径
 ///        （remapAnnotation）；行数与行序是方法描述符参数数的结构事实，
 ///        原样保留。解码失败的槽保守保真。
 bool remapParameterAnnotationSlots(const RemapCtx& ctx, std::vector<AttrSlot>& attrs)
@@ -514,8 +513,7 @@ bool remapParameterAnnotationSlots(const RemapCtx& ctx, std::vector<AttrSlot>& a
 /// @brief Signature 属性（typed SignatureAttr，u2 utf8）：泛型签名重映射。
 ///
 /// 签名文本经计划的结构化签名面改写（mapSignature → libjbc
-/// jbc::type::signature 解析树 span 手术，B8 8.3 收口；扫描式字符串替换
-/// 退役），类/字段/方法三级挂载点共用本入口（形态无关：结构化重写按签名
+/// jbc::type::signature 解析树 span 手术），类/字段/方法三级挂载点共用本入口（形态无关：结构化重写按签名
 /// 自身语法分派）。解析失败的签名原样保真（清洗归 IllegalSignatureRemover）。
 bool remapSignatureAttr(const RemapCtx& ctx, std::vector<AttrSlot>& attrs)
 {
@@ -532,7 +530,7 @@ bool remapSignatureAttr(const RemapCtx& ctx, std::vector<AttrSlot>& attrs)
 }
 
 /// @brief Exceptions 属性（typed ExceptionsAttr，u2 count + u2 Class 表）：
-///        捕获类重映射。typed 体经公开解码入口读出（B3 分派接线前后同形），
+///        捕获类重映射。typed 体经公开解码入口读出，
 ///        命中改槽、miss 原样；makeNew 置 New 走重编码。
 bool remapExceptionsAttr(const RemapCtx& ctx, MemberInfo& method)
 {
@@ -610,9 +608,8 @@ bool remapEnclosingMethodAttr(const RemapCtx& ctx)
 }
 
 /// @brief ModuleMainClass 属性（typed ModuleMainClassAttr，单 u2 Class 槽）：
-///        模块主类重映射。typed 体经公开解码入口读出（分派接线前后同形），
-///        类名映射命中才 intern 新条目；makeNew 置 New 走重编码。与
-///        NestHost 曾共用的单 Class 条目字节手术已随 typed 分派翻面退役。
+///        模块主类重映射。typed 体经公开解码入口读出，
+///        类名映射命中才 intern 新条目；makeNew 置 New 走重编码。
 bool remapModuleMainClassAttr(const RemapCtx& ctx)
 {
     AttrSlot* slot = findAttrByName(ctx.cf, ctx.cf.attrs, "ModuleMainClass");
@@ -630,7 +627,7 @@ bool remapModuleMainClassAttr(const RemapCtx& ctx)
 }
 
 /// @brief NestHost 属性（typed NestHostAttr，单 u2 Class 槽）：nest 宿主
-///        重映射。typed 体经公开解码入口读出（分派接线前后同形），命中才动
+///        重映射。typed 体经公开解码入口读出，命中才动
 ///        （类名映射命中才 intern 新条目）；makeNew 置 New 走重编码。
 bool remapNestHostAttr(const RemapCtx& ctx)
 {
@@ -650,7 +647,7 @@ bool remapNestHostAttr(const RemapCtx& ctx)
 
 /// @brief u2 Class 列表属性（typed，NestMembers / PermittedSubclasses 共形）：
 ///        条目逐个类名重映射，命中才 intern 新条目、miss 原样；makeNew 置
-///        New 走重编码。typed 体经公开解码入口读出（分派接线前后同形）。
+///        New 走重编码。typed 体经公开解码入口读出。
 ///        AttrT 区分体类型，cpsMember 指向各自的条目表成员。
 template <typename AttrT, typename DecodeFn>
 bool remapTypedClassListAttr(const RemapCtx& ctx, std::string_view attrName,
@@ -703,7 +700,7 @@ std::string_view innerSimpleName(std::string_view internalName) noexcept
 /// @brief InnerClasses 属性（typed InnerClassesAttr）：内部/外围类名重映射
 ///        + 简单名随类映射同步。行三 CP 槽语义：类名映射命中才动、
 ///        outer==0/name==0 保 0、简单名仅在全名命中旧简单名时改写。typed 体
-///        经公开解码入口读出（B3 分派接线前后同形）。
+///        经公开解码入口读出。
 bool remapInnerClassesAttr(const RemapCtx& ctx)
 {
     AttrSlot* slot = findAttrByName(ctx.cf, ctx.cf.attrs, "InnerClasses");
@@ -746,9 +743,8 @@ bool remapInnerClassesAttr(const RemapCtx& ctx)
 }
 
 /// @brief AnnotationDefault 属性（typed AnnotationDefaultAttr，单 element_value）：
-///        注解类型方法默认值重映射。B8 8.3 收口：Raw 字节手术（ByteReader 重拼）
-///        退役，typed 体经公开解码入口读出后复用 remapElemValue 同一条结构化
-///        路径（'c'/'e'/'@'/'[' 全 tag 递归）；typed 解码拒绝的形状保守保真。
+///        注解类型方法默认值重映射。typed 体经公开解码入口读出后复用 remapElemValue
+///        同一条结构化路径（'c'/'e'/'@'/'[' 全 tag 递归）；typed 解码拒绝的形状保守保真。
 bool remapAnnotationDefaultAttr(const RemapCtx& ctx, MemberInfo& method)
 {
     AttrSlot* slot = findAttrByName(ctx.cf, method.attrs, "AnnotationDefault");
@@ -1296,8 +1292,7 @@ bool remapReflectionNames(const RemapCtx& ctx, CodeUnit& code, std::string_view 
 // ── 方法体与嵌套代码元数据 ──────────────────────────────────────────────────
 
 /// @brief Code 嵌套元数据：StackMapTable Object 校验类型 + LVT/LVTT 描述符 +
-///        Runtime{Visible,Invisible}TypeAnnotations（B8 8.3 收口，此前嵌套
-///        TypeAnnotation 槽 copy-through）。
+///        Runtime{Visible,Invisible}TypeAnnotations。
 ///
 /// LVTT 行的 descriptor 列承载字段形态签名，走计划的结构化签名面
 /// （mapSignature）；LVT 行走描述符映射面。lower 布局未变走 copy-through 会

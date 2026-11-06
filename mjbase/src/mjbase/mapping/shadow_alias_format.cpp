@@ -42,8 +42,7 @@ ShadowAliasFileError makeError(ShadowAliasFileErrorKind kind, const std::string&
 }
 
 /// alias 条目定位前缀："aliases[3]: "。DOM 无行号；sidecar 由工具写出、
-/// JSON 语法错误本身已带行号，schema 定位到条目序号即可（与建议文件的
-/// 行号级定位 deliberate 简化，见 hpp v1 契约注释）。
+/// JSON 语法错误本身已带行号，schema 定位到条目序号即可。
 std::string atAlias(ca::usize index)
 {
     return "aliases[" + std::to_string(index) + "]: ";
@@ -57,7 +56,7 @@ struct AliasSlots
     const ca::json::JsonValue* desc   = nullptr;
     const ca::json::JsonValue* name   = nullptr;
     const ca::json::JsonValue* shadow = nullptr;
-    const ca::json::JsonValue* token  = nullptr;  ///< v2 新列（#1156）
+    const ca::json::JsonValue* token  = nullptr;  ///< schema v2 的 token 列
 };
 
 ca::Result<void, ShadowAliasFileError> collectAliasSlots(const ca::json::JsonValue& alias,
@@ -152,7 +151,7 @@ AliasCompareKey keyOf(const Utf8StringRef& owner, const Utf8StringRef& desc,
     return {toStd(owner), toStd(desc), toStd(name)};
 }
 
-/// #1156 token8 形状：恰 8 个字符，全部 ∈ [0-9a-f]（uint32 %08x 语义）。
+/// token8 形状：恰 8 个字符，全部 ∈ [0-9a-f]（uint32 %08x 语义）。
 bool isValidToken8(const Utf8StringRef& value)
 {
     if (value.byte_length() != 8) return false;
@@ -195,7 +194,7 @@ ca::Result<IntermediateMapping, ShadowAliasFileError> parseDocument(
     if (version == nullptr) {
         return ca::Err(makeError(ShadowAliasFileErrorKind::Schema, "missing version"));
     }
-    // 加法式版本门（#1156）：v1（无 token 列）照常加载（token 留空），v2 = v1 +
+    // 加法式版本门：v1（无 token 列）照常加载（token 留空），v2 = v1 +
     // 可选 token 列；其余版本拒载。v1 文件出现 token 列在条目级报 schema 错误
     // （版本门控新列，防手编文件误标版本）。
     constexpr ca::i64 kOldestSupportedVersion = 1;
@@ -221,7 +220,7 @@ ca::Result<IntermediateMapping, ShadowAliasFileError> parseDocument(
     std::vector<AliasCompareKey> seenClasses;
     std::vector<AliasCompareKey> seenFields;
     std::vector<AliasCompareKey> seenMethods;
-    // token 表内唯一台账（#1156 落刀 N3）：非空 token8 → 首见 owner。
+    // token 表内唯一台账：非空 token8 → 首见 owner。
     std::unordered_map<std::string, std::string> seenTokens;
 
     ca::usize index = 0;
@@ -274,7 +273,7 @@ ca::Result<IntermediateMapping, ShadowAliasFileError> parseDocument(
                                      context + toStd(kind) + " alias requires non-empty owner and desc"));
         }
 
-        // token 列（#1156）：可选；仅 v2 允许出现；8 位小写 hex。
+        // token 列：可选；仅 v2 允许出现；8 位小写 hex。
         Utf8StringRef token = Utf8StringRef();
         if (slots.token != nullptr) {
             if (!hasTokenColumn) {
@@ -296,13 +295,13 @@ ca::Result<IntermediateMapping, ShadowAliasFileError> parseDocument(
             }
         }
 
-        // 解析产物 intern 进 IntermediateMapping 自带 arena（hpp 注释：arena() 借给
-        // 外部格式解析器复用）；DOM 字符串视图不跨出本函数。
+        // 解析产物 intern 进 IntermediateMapping 自带 arena（arena() 借给外部格式
+        // 解析器复用）；DOM 字符串视图不跨出本函数。
         auto& arena = mappings.arena();
         const auto raw    = arena.intern(nameValue.unwrap()->as_string());
         const auto shadow = arena.intern(shadowValue.unwrap()->as_string());
 
-        // token 表内唯一 fail-closed（#1156 落刀 N3）：生成侧 CSPRNG 碰撞重生成
+        // token 表内唯一 fail-closed：生成侧 CSPRNG 碰撞重生成
         // 保证的表内唯一，手编文件可破——两符号持同一非空 token8 属数据破损，
         // 硬报错拒载（本仓哲学：不静默去重"修复"）；诊断点名两条冲突条目的
         // owner（class 条目以自身真名充当 owner 口径）。空 token（v1 遗留）不参与。
@@ -434,8 +433,7 @@ ca::Result<ca::str::Utf8String, ShadowAliasFileError> writeShadowAliasText(
     const IntermediateMapping& mappings)
 {
     // 对象装配走 make_object_from 聚合构造（key 为已知唯一字面量，免去逐字段
-    // set() 的去重查找；也是 JSON DOM 装配的推荐形态——门禁台账 InsnList_set_call
-    // 针对的是 InsnList::set，此处不增其计数）。
+    // set() 的去重查找；也是 JSON DOM 装配的推荐形态）。
     ca::json::JsonValue::ObjectStorage rootMembers;
     rootMembers.emplace_back(
         refOf("version"),
@@ -443,7 +441,7 @@ ca::Result<ca::str::Utf8String, ShadowAliasFileError> writeShadowAliasText(
 
     // 稳定序骨架 = owner 键并集（class 条目键 ∪ field/method 条目 owner 键）排序。
     // 只按 getClasses() 分组会静默丢掉 owner 无 class 条目的成员条目（手编/局部
-    // sidecar + 任一 prune 移除触发重写即丢数据，R27 P2 实锤）；并集后 class 循环
+    // sidecar + 任一 prune 移除触发重写即丢数据）；并集后 class 循环
     // 靠 getClassMapping 空指针跳过、成员循环靠映射组空指针跳过，仍只输出真实
     // 存在的条目——生成器产出的 sidecar（owner 键 ⊆ class 键）输出逐字节不变。
     std::set<std::string> ownerKeys;
@@ -461,7 +459,7 @@ ca::Result<ca::str::Utf8String, ShadowAliasFileError> writeShadowAliasText(
         members.emplace_back(refOf("kind"), ca::json::JsonValue::make_string(refOf("class")));
         members.emplace_back(refOf("name"), ca::json::JsonValue::make_string(cm->oldName));
         members.emplace_back(refOf("shadow"), ca::json::JsonValue::make_string(cm->newName));
-        // token 列（#1156）：非空才落（空 = 旧格式/未生成条目，加法式省略）。
+        // token 列：非空才落（空 = v1 文件/未生成条目，加法式省略）。
         if (!cm->token.is_empty()) {
             members.emplace_back(refOf("token"), ca::json::JsonValue::make_string(cm->token));
         }

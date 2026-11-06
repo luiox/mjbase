@@ -824,7 +824,7 @@ TEST(MjRenamerRecordTest, tinyV2RoundtripIsByteIdentical)
     const auto firstText = std::move(exported).unwrap();
     EXPECT_FALSE(firstText.is_empty());
 
-    // 读回 → 再导出 → 字节恒等（#1032 Q5 字面口径：导出即稳定规范形）。
+    // 读回 → 再导出 → 字节恒等。
     auto reparsed = registry.parse(ca::str::Utf8StringRef::from_cstr("Tiny-V2"), firstText.ref());
     ASSERT_TRUE(reparsed.is_ok());
     auto formatted = registry.format(ca::str::Utf8StringRef::from_cstr("Tiny-V2"),
@@ -1272,7 +1272,7 @@ void addDualComponentWorld(model::ResourceContainer& container, bool withCaller)
 
 TEST(MjRenamerAliasTest, methodAliasAmbiguityDropsWholeRuleWhenInheritorsDisagree)
 {
-    // N5：同 (owner=C, oldName, desc) 键被两个
+    // 同 (owner=C, oldName, desc) 键被两个
     // override 组件组分配到不同新名（A 组 → brandA，I 组 → brandI）时，C 的
     // 继承别名无法二选一——整条放弃（保守口径，与旧核心一致），不得产出
     // 半边别名把另一组件的调用点错改。

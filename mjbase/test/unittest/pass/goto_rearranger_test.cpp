@@ -145,7 +145,7 @@ TEST(GotoRearrangerTest, multiplePredecessorsRejected)
 TEST(GotoRearrangerTest, cycleBackEdgeRejected)
 {
     // GOTO→pc4(0) | M: IRETURN(3) | L: ICONST_2(4) GOTO→pc3(5) IRETURN(8)。
-    // 段内 GOTO 回跳 M 头（段外），跨段循环首件不证。
+    // 段内 GOTO 回跳 M 头（段外），跨段循环本 pass 不证。
     const Bytes in       = oneMethodEx("m", "()I",
                                  {0xa7, 0x00, 0x04, 0xac, 0x05, 0xa7, 0xff, 0xfe, 0xac});
     const MethodPassRun r = runMethodPass(in, mjbase::pass::GotoRearranger{});

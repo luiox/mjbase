@@ -318,7 +318,7 @@ void collectCallerRefParams(std::string_view desc, bool isStatic,
     }
 }
 
-/// 调用方实参类型上下文（切片 2 对齐面）：入参声明槽型 + 惰性 def-use
+/// 调用方实参类型上下文（类型对齐面）：入参声明槽型 + 惰性 def-use
 /// （仅 aload 实参需要到达定值证据时才构建，单方法至多一次）。
 struct CallerArgCtx
 {
@@ -407,7 +407,7 @@ bool isSingleValueProducer(const jbc::ir::ClassSession& session, const jbc::ir::
 bool argMatchesTi(const jbc::ir::ClassSession& session, const jbc::ir::Insn& arg,
                   jbc::ir::InsnId argId, std::string_view tiName, CallerArgCtx& actx);
 
-/// 实参组类型守卫（切片 3 面向）：组净效果须恰为压入 1 个引用。已判形：
+/// 实参组类型守卫：组净效果须恰为压入 1 个引用。已判形：
 /// 单指令（argMatchesTi 全面）；双指令装箱链 [单值生产者;
 /// <wrapper>.valueOf(<prim>) / String.valueOf(...)]——产出型由调用决定，
 /// 生产者只做宽度形态校验。其余形态 fail-closed 拒收。
@@ -449,12 +449,12 @@ bool argGroupMatchesTi(const jbc::ir::ClassSession& session, jbc::ir::CodeUnit& 
 
 constexpr ca::usize kMaxArgInsns = 8;   ///< 实参组长度上界（扫描有界）
 
-/// 单指令实参类型守卫（切片 2 对齐面）：
+/// 单指令实参类型守卫：
 ///   - aconst_null → 任意引用 Ti；
 ///   - ldc String → Ti ∈ {String, Object}；ldc Class 常量 → Ti ∈ {常量类, Object}；
 ///   - aload s → 槽类型提升：读点到达定值恰为调用方同槽入参定值（单定义、
 ///     未截断——槽未被重存储/多前驱合流）时 Ti ∈ {声明型, Object}，否则
-///     仅 Object。多指令实参形态（装箱工厂等）挂账切片 3，与窗形扩展一并。
+///     仅 Object。多指令实参形态（装箱工厂等）未做，与窗形扩展同批。
 bool argMatchesTi(const jbc::ir::ClassSession& session, const jbc::ir::Insn& arg,
                   jbc::ir::InsnId argId, std::string_view tiName, CallerArgCtx& actx)
 {
@@ -573,7 +573,7 @@ mjbase::spi::PreservedAnalyses ArgumentArrayScalarizer::run(
             const ca::usize           n     = order.size();
             std::vector<InsnId>       methodErases;
             std::set<ca::usize>       methodPlans;
-            // 切片 2：调用方实参类型上下文（入参声明槽型，惰性 def-use）。
+            // 调用方实参类型上下文（入参声明槽型，惰性 def-use）。
             CallerArgCtx actx;
             actx.isStatic  = (unit.methods[idx].access & mjbase::hierarchy::kAccStatic) != 0;
             actx.thisClass = lc.name;
@@ -602,7 +602,7 @@ mjbase::spi::PreservedAnalyses ArgumentArrayScalarizer::run(
                 if (plan.dead) continue;   // 已死候选的残余位点静默跳过
                 if ((inv->op == Op::INVOKESTATIC) != plan.isStatic) continue;
                 if (sem.owner != plan.key.owner) { plan.dead = true; continue; }
-                // 规范装箱窗（切片 3 顺序扫描形）：[长度常量; anewarray
+                // 规范装箱窗（顺序扫描形）：[长度常量; anewarray
                 // Object; (dup; 实参组; intConst e; aastore)×m; invoke]。
                 // 实参组非空、至多 kMaxArgInsns 条（装箱工厂链）；窗头锚定
                 // 回扫（组不等长），元素边界回溯容嵌套同形序列。

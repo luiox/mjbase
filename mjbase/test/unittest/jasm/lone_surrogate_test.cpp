@@ -1,7 +1,6 @@
-// 未配对代理（lone surrogate）CP Utf8 的反汇编回归：BoogerV2 语料的病态类
-// 曾因孤立代理单元无法重编码为标准 UTF-8（Utf16String::to_utf8_string 显式
-// 拒绝）整类 disassemble 一票否决。EscapeUtil::escape 对孤立代理落 \uXXXX
-// 转义文本（合法代理对保持增补平面字符呈现）后，文本面对全部引用位可
+// 未配对代理（lone surrogate）CP Utf8 的反汇编回归：孤立代理单元无法重编码为
+// 标准 UTF-8（Utf16String::to_utf8_string 显式拒绝），文本面经 EscapeUtil::escape
+// 对孤立代理落 \uXXXX 转义（合法代理对保持增补平面字符呈现）后，对全部引用位可
 // 反汇编；字符串常量位（语料真实形态：XOR 加密常量）经 unescape +
 // modifiedUtf8 逐位还原 CESU-8 三字节形，往返字节可逆。
 //
@@ -85,7 +84,7 @@ TEST(MjLoneSurrogateDisasm, EmitsReversibleUnicodeEscapeAndRestoresBytes)
 }
 
 // 方法名位（裸 token）的 \uXXXX 不做反转义是既有解析面缺口（LRM 等合法
-// 转义名同样往返走样）；本批交付面是「可反汇编」——文本含可逆转义即可。
+// 转义名同样往返走样）；本用例面是「可反汇编」——文本含可逆转义即可。
 TEST(MjLoneSurrogateDisasm, ShowsEscapedLoneSurrogateMethodName)
 {
     const auto bytes = readFixture("v_name");

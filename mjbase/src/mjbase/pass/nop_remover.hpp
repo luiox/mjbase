@@ -4,11 +4,11 @@
 
 namespace mjbase::pass {
 
-/// @brief NOP 规范化器：删除方法体里的 NOP 指令（移植自 mbase pass/opt/
-///        dead_code_remover 的 NopRemover，Java 原件 cleaner/NopRemover.java）。
+/// @brief NOP 规范化器：删除方法体里的 NOP 指令（dead_code_remover 拆出的
+///        NOP 段）。
 ///
 /// 语义：只删 NOP，不碰任何其他指令；不删标签/行号/
-/// 异常表边界等元数据。mjt opt 默认链（PassStability::Default）的收尾清理件。
+/// 异常表边界等元数据。属 mjt opt 默认链（PassStability::Default）的清理件。
 ///
 /// 载体重定型：NOP 是指令序列成员，LabelNode/LineNumberNode 与 NOP
 /// 平级共存；新栈 CodeDom 无标签节点，标签是边界句柄。删除策略：

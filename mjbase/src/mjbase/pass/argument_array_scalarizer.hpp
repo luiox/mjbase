@@ -4,7 +4,7 @@
 
 namespace mjbase::pass {
 
-/// @brief 参数数组标量化（#37 切片 1，全局件）：装箱混淆把真参数序列退化
+/// @brief 参数数组标量化：装箱混淆把真参数序列退化
 ///        成单 Object[] 参数（签名 `([Ljava/lang/Object;)R`），本件还原——
 ///        被调方取参窗改直接参数槽位、调用侧装箱窗拆成直接传参、签名经
 ///        MemberRemapPlan 全局同步（声明面 + 全部引用面）。
@@ -23,7 +23,7 @@ namespace mjbase::pass {
 ///     全部使用（def-use 入参定义边）都落在取参窗的 aaload 上——数组
 ///     不逃逸（arraylength / 传参 / 返回 / 再存储整体拒收）；参数槽
 ///     无 store/iinc/ret 触碰；
-///   - 调用侧窗口规范形（切片 3 顺序扫描形）：长度常量 == n、下标序恰
+///   - 调用侧窗口规范形（顺序扫描形）：长度常量 == n、下标序恰
 ///     0..n-1、实参组非空且至多 kMaxArgInsns 条（窗头锚定回扫，元素
 ///     边界回溯容嵌套同形序列）；实参类型静态可判面：aconst_null 匹配
 ///     任意引用 Ti；ldc String 要求 Ti ∈ {String, Object}；ldc Class

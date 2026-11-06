@@ -1,4 +1,4 @@
-// InsnRearranger（#20 重排家族，方法级两件）：ArithmeticInsnRearranger 把
+// InsnRearranger：ArithmeticInsnRearranger 把
 // 连续 xLOAD;CONST;可交换算术;xSTORE 四元块按槽首现序分组重排；
 // CommutativeOperatorReorder 把交换律链内常量操作数后移使常量相邻。
 // 覆盖：跨槽归组（含 long/快捷形）、单块/同槽恒等不动、窗口/链起点与

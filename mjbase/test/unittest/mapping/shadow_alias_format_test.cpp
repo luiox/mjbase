@@ -175,7 +175,7 @@ TEST(MjMappingShadowAliasTest, formatOutputIsDeterministicAndSorted)
 
 TEST(MjMappingShadowAliasTest, orphanMemberEntriesSurviveRoundtrip)
 {
-    // R27 P2 回归样本：owner 无 class 条目的成员条目（手编/局部 sidecar 常态）
+    // 回归样本：owner 无 class 条目的成员条目（手编/局部 sidecar 常态）
     // + 一条正常 class 条目。写出不得静默丢孤儿成员（--prune 重写即触发丢数据
     // 的根因就是分组骨架只取 getClasses() 键）；hpp 验收口径
     // parse(write(parse(x))) 关键字段恒等在此含孤儿样本钉死。
@@ -216,7 +216,7 @@ TEST(MjMappingShadowAliasTest, rejectsForeignMappingText)
 }
 
 // ═══════════════════════════════════════════════════════════════
-// #1156 shadow 引用 token —— v2 加法式 bump（T1 切片）
+// shadow 引用 token —— v2 加法式 bump
 // ═══════════════════════════════════════════════════════════════
 
 TEST(MjMappingShadowAliasTest, tokenColumnRoundtripsByteFidelity)
@@ -267,7 +267,7 @@ TEST(MjMappingShadowAliasTest, tokenColumnRoundtripsByteFidelity)
 
 TEST(MjMappingShadowAliasTest, legacyV1LoadsTokensEmptyFieldsIntact)
 {
-    // 加法式 bump 的核心兼容分支：旧格式（无 token 列）照常加载，token 留空、
+    // 加法式 bump 的核心兼容分支：v1 格式（无 token 列）照常加载，token 留空、
     // 其余字段无损。
     const char* v1 =
         "{\n  \"version\": 1,\n  \"aliases\": [\n"
@@ -281,7 +281,7 @@ TEST(MjMappingShadowAliasTest, legacyV1LoadsTokensEmptyFieldsIntact)
     ASSERT_FALSE(parsed.is_err());
     auto mappings = std::move(parsed).unwrap();
 
-    // 其余字段无损（与 v1 时代同一关键读数）。
+    // 其余字段无损。
     EXPECT_EQ("Class_1", mappings.getMappedClassName(S("a/A")).to_std_string());
     EXPECT_EQ("Method_2",
               mappings.getMappedMethodName(S("a/A"), S("run"), S("(I)V")).to_std_string());
@@ -298,7 +298,7 @@ TEST(MjMappingShadowAliasTest, legacyV1LoadsTokensEmptyFieldsIntact)
 
 TEST(MjMappingShadowAliasTest, versionBumpAdditiveCompatPinned)
 {
-    // 写出恒为 version 2（bump 钉子）。
+    // 写出恒为 version 2。
     auto written = writeShadowAliasText(IntermediateMapping());
     ASSERT_FALSE(written.is_err());
     const auto text = std::move(written).unwrap().to_std_string();
@@ -361,7 +361,7 @@ TEST(MjMappingShadowAliasTest, versionBumpAdditiveCompatPinned)
 
 TEST(MjMappingShadowAliasTest, duplicateTokenAcrossEntriesRejectsLoadFailClosed)
 {
-    // T1 落刀 N3：token 表内唯一不能只靠生成路径保证——手编 v2 文件两符号持
+    // token 表内唯一不能只靠生成路径保证——手编 v2 文件两符号持
     // 同一非空 token8 必须整文件拒载（fail-closed 硬报错，不静默去重"修复"），
     // 诊断点名两条冲突条目的 owner（消歧：谁和谁撞号）。
     const char* duplicate =

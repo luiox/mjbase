@@ -4,7 +4,7 @@
 ///
 /// 合并代数为 NullabilityUtil::merge（NotNull+Null→Nullable 族）；
 /// 产点事实为 NullabilityInterpreter::newOperation。类型载荷
-/// 与 IFNULL/IFNONNULL 分支细化未迁（理由见域头注释）。
+/// 与 IFNULL/IFNONNULL 分支细化不在覆盖面（理由见 null_domain.hpp 头注）。
 #include <gtest/gtest.h>
 
 #include <string_view>

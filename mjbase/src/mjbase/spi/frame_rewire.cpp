@@ -423,7 +423,7 @@ void rewireFramesAfterLower(jbc::ir::ClassSession& session, const MethodScope& s
     sig.thisClass = unit.symbols().str(unit.thisClass);
 
     // Strict 帧重算：lower 已把 srcPc 刷新为新布局，帧的 Uninitialized 载荷
-    // 与目标 pc 天然与新 Code 对齐（§10.4 布局一致性由接线方保证——即此处）。
+    // 与目标 pc 天然与新 Code 对齐——布局一致性由本接线点保证。
     ja::FrameEngine            engine(session.backing().cp, resolver, ja::FramePolicy::Strict);
     std::vector<ja::FrameAt>   frames;
     const ja::FrameSummary     summary = engine.compute(cu, sig, frames);
@@ -491,7 +491,7 @@ void rewireFramesAfterLower(jbc::ir::ClassSession& session, const MethodScope& s
         fenceNeed = need;
     }
 
-    // maxes 显式采用（A2 裁决：Strict 重算 = 覆盖）→ 第二次 lower 落 maxes
+    // maxes 显式采用（口径：Strict 重算结果覆盖既有 maxes）→ 第二次 lower 落 maxes
     // （布局未变，写回只触 maxStack/maxLocals 两字段）。栅栏抬升在采用后
     // 叠加（采用会覆盖重算面，先抬必被冲掉），lower 落盘前生效。
     if (!ja::applyComputedMaxes(cu, summary, sig)) {

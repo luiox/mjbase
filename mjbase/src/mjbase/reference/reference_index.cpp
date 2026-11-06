@@ -123,7 +123,7 @@ bool isReflectionFieldLookup(std::string_view owner, std::string_view name, std:
 
 // ── method handle（JVMS 4.4.8）─────────────────────────────────
 //
-// 句柄解析自 B8 8.4 起直用 libjbc cp_resolve 的严格口径原语
+// 句柄解析直用 libjbc cp_resolve 的严格口径原语
 //（jbc::core::resolveHandleCp：reference_kind ∉1..9 及 kind-tag 不匹配即
 // 解析失败），本文件不再持有本地副本。kind 域的 1..4 字段 / 5..9 方法分
 // 流语义见 appendHandleReference 的分支注。
@@ -433,7 +433,7 @@ void ReferenceIndex::indexClassHeader(jbc::ir::ClassSession& session,
                 }
             }
         }
-        // 类级 Runtime 注解（jbc 建模体；*TypeAnnotation 家族未建模，本批放弃）
+        // 类级 Runtime 注解（jbc 建模体；*TypeAnnotation 家族未建模）
         for (const std::string_view attrName :
              {std::string_view{"RuntimeVisibleAnnotations"},
               std::string_view{"RuntimeInvisibleAnnotations"}}) {
@@ -610,7 +610,7 @@ void ReferenceIndex::indexFieldUnit(jbc::ir::ClassSession& session,
 
     {
         const jbc::ir::FieldUnit&    field = unit.fields[fieldIdx];
-        // 成员增删后逻辑下标与物理位置不再恒等（libjbc design.md §34.1）：字段元数据
+        // 成员增删后逻辑下标与物理位置不再恒等：字段元数据
         // 一律经 backingIndex 定位物理 method/field_info。
         const jbc::core::MemberInfo& backing = cf.fields[field.backingIndex];
         const std::string_view            fieldName = syms.str(field.name);
@@ -753,7 +753,7 @@ void ReferenceIndex::indexMethodMetadata(jbc::ir::ClassSession&     session,
         }
     }
     // 方法级 Runtime 注解 + ParameterAnnotations + AnnotationDefault
-    //（*TypeAnnotation / 局部变量注解族 libjbc 未建模，本批放弃）
+    //（*TypeAnnotation / 局部变量注解族 libjbc 未建模）
     for (const std::string_view attrName :
          {std::string_view{"RuntimeVisibleAnnotations"},
           std::string_view{"RuntimeInvisibleAnnotations"}}) {
@@ -1323,7 +1323,7 @@ void ReferenceIndex::restore(std::vector<ClassDeclaration>  classDecls,
     }
 }
 
-// ── E2 局部重建（libjbc design.md §35.4）：ChangeSet 驱动的成员级补丁 ──
+// ── 局部重建：ChangeSet 驱动的成员级补丁 ──
 
 void ReferenceIndex::dropMethodFacts(std::string_view className, std::string_view name,
                                      std::string_view desc)

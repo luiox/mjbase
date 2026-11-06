@@ -51,7 +51,7 @@ public:
         ca::str::Utf8StringRef name, const IntermediateMapping& mappings) const;
 
 private:
-    // -- arena 死亡点声明（memory-governance-plan §5-P1③）--
+    // -- arena 死亡点声明--
     // 本成员持有本注册表私有的 Utf8StringArena：registerFormat() 把格式名
     // arena_.intern 后作为 factories_ 的 key，formatNames() 返回的 Utf8StringRef
     // 即这些 key 的视图。hasFormat/createFormat 不返回视图；parse() 返回的

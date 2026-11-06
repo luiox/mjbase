@@ -2,13 +2,12 @@
 /// @brief       角色化容器栈：多容器挂载的合并视图、first-wins 解析、角色
 ///              过滤与复合寻址扩展位。
 ///
-/// 上游依据：mjt 仓 RFC 0001 §5（容器抽象）、§10-P5；工程登记结构见
+/// 上游依据：mjt 仓 RFC 0001（容器抽象）；工程登记结构见
 /// analysis_project.hpp schema v2（role: primary/library/runtime + 挂载树
 /// parent）。本类是 model 层能力：只认「容器 + 角色 + 稳定 id」，不知道
-/// project.json——登记（AnalysisInput）到挂载的接线归上层消费方（workspace /
-/// mjt）。
+/// project.json——登记（AnalysisInput）到挂载的接线归上层消费方（mjt）。
 ///
-/// 解析序裁决（RFC §5.2 角色化容器栈）：primary > library（按挂载序）>
+/// 解析序裁决（角色化容器栈）：primary > library（按挂载序）>
 /// runtime（按挂载序）；同 URI 多容器出现时 first-wins 保留解析序首位条目，
 /// 其余记录进 shadowedEntries（类路径口径：JVM 跨 classpath 条目按先见先加载，
 /// 与单 jar 内同名条目的 CEN 末现口径分属两个维度；另对齐 workspace
@@ -106,7 +105,7 @@ public:
     /// 视图比失败更危险。
     ModelResult<std::unique_ptr<ResourceContainer>> mergedView() const;
 
-    //-- 复合寻址扩展位（RFC §5.3；本期只落接口，不实现解包）------------------
+    //-- 复合寻址扩展位（当前只落接口，不实现解包）----------------------------
 
     /// @brief 挂载链地址分隔符（bang 链）：`<containerId>!/entry/path`。
     static constexpr std::string_view kAddressSeparator = "!/";

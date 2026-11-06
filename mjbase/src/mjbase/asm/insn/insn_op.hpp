@@ -1,10 +1,10 @@
 /// @file        insn_op.hpp
 /// @brief       opcode 分类谓词全集与栈效应静态表。
 ///
-/// 语义来源：mbase asm/insn 的 InsnUtil 分类与 Stack 分析（isReturn/isIf/
-/// invertIf/getStack*Count 等），在 jbc::core::Op 值域上重写。两处有意的
-/// 语义修订：
-///   - 常量族补齐 LDC_W/LDC2_W（旧 isConstant 只认 LDC，宽形态被注释掉）；
+/// 语义口径：opcode 分类谓词（isReturn/isIf/invertIf/getStack*Count 等）
+/// 定义在 jbc::core::Op 值域上，与 mbase asm/insn 的 InsnUtil 同族。两处
+/// 有意的语义差异：
+///   - 常量族补齐 LDC_W/LDC2_W（只认 LDC 的窄口径会漏宽形态）；
 ///   - isGoto 纳入 GOTO_W、isTerminator 纳入 RET——与 FrameEngine 的控制流
 ///     终结判定（domain.hpp 的 ends 名单）对齐。
 /// 栈效应与 jbc::analysis::FrameEngine 的槽位迁移语义一致：cat2 值占 2 槽，

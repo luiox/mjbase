@@ -1,6 +1,6 @@
 // StrengthReducer：2^k 乘除强度削减（imul/lmul→shl；idiv/ldiv→dup+符号
 // 修正序列）+ 保守停止 + 负被除数差分矩阵 + 幂等 + maxStack 抬升 +
-// A1 帧链接线（resolver 注入 → SMT 再生被读侧接受）。
+// 帧链接线（resolver 注入 → SMT 再生被读侧接受）。
 //
 // 差分面：asm_evaluator 已摘除（libjsim 接位，未落包前不引测试依赖），
 // 矩阵验证改为「发射形状逐操作数读取 + C++ 位精确模拟」——k/mask/符号
@@ -611,7 +611,7 @@ TEST(StrengthReducerTest, secondRunIsNoOp)
     EXPECT_EQ(second.out, first.out);
 }
 
-// ── A1 帧链接线：resolver 注入 → SMT 再生且被读侧接受 ──
+// ── 帧链接线：resolver 注入 → SMT 再生且被读侧接受 ──
 TEST(StrengthReducerTest, resolverWiredPipelineRegeneratesSmt)
 {
     mjbase::KeyPool                        pool;

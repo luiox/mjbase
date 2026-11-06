@@ -18,7 +18,7 @@ using ca::core::Err;
 using ca::core::Ok;
 using ca::core::Result;
 
-/// pass 作用域标签：与 pass-contract §1 三级作用域 + §6 cf 域一一对应。
+/// pass 作用域标签：与 doc:pass-contract-scope 三级作用域、doc:pass-contract 的 cf 域一一对应。
 enum class PassScope : ca::u8
 {
     Method,  ///< 方法级：MethodPass，载体 MethodScope
@@ -55,7 +55,7 @@ struct PassNameEntry
 /// @brief pass 名字注册面：name → factory + scope 标签。
 ///
 /// 职责边界：本注册面只管 name→factory 映射与 scope 标签，不管装配序——
-/// buildNestedPipeline 装配面按 pass-contract §9 留待第二个管线消费方出现时再
+/// buildNestedPipeline 装配面按 doc:pass-contract 留待第二个管线消费方出现时再
 /// 定型；CLI -p 按名选择属 cli 批，届时经本面查名构造再按 scope 标签投入对应
 /// 管线。三个 create 入口按 scope 分型（`unique_ptr<对应基类>`），与三级
 /// PassManager / CfClassPassManager 的 addPass 直连。
@@ -138,12 +138,12 @@ private:
 
 /// @brief 全局默认注册表（函数局部静态，首次访问时种子注册）。
 ///
-/// 种子面：三个结构级 pass 试点（ClassMemberSorter / IllegalClassFileCleaner /
-/// AccessModifierTightener）+ pass A 批方法体改写族（NopRemover /
+/// 种子面：结构级三件（ClassMemberSorter / IllegalClassFileCleaner /
+/// AccessModifierTightener）+ 方法体改写族（NopRemover /
 /// RedundantLoadValEliminator / CharArrToStrSimplifier / UnusedCheckCleaner）+
-/// B 批确定性垃圾插入（JunkCodeInserter），名字用真实类名。
+/// 确定性垃圾插入（JunkCodeInserter），名字用真实类名。
 /// 注册命名纪律。种子在首次访问内完成且自带 has 防护语义（新表重名不可能），
-/// 调用方无需也不要对默认表重复注册；pass 后续批次落地时在此追加种子。
+/// 调用方无需也不要对默认表重复注册；新 pass 落地时在此追加种子。
 PassNameRegistry& defaultPassRegistry();
 
 }   // namespace mjbase::spi

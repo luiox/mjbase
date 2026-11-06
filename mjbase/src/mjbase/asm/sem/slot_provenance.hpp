@@ -1,21 +1,20 @@
 /// @file        slot_provenance.hpp
-/// @brief       SlotProvenanceView：栈槽 + 局部槽的到达定义只读视图（asm/sem 设施层首批）。
+/// @brief       SlotProvenanceView：栈槽 + 局部槽的到达定义只读视图（asm/sem 设施层）。
 ///
-/// 设计依据 luiox/mjbase #115 §2.2：切面槽 provenance——逐指令逐槽的到达
-/// 定义集（def → uses，栈槽与局部槽同域建模），供 outline 判据 2/3 的
-/// 切面检查消费（A2 起）。
+/// 定位：切面槽 provenance——逐指令逐槽的到达定义集（def → uses，栈槽与
+/// 局部槽同域建模），供 outline 判据 2/3 的切面检查消费。
 ///
 /// 与 asm/analyzer/def_use 的关系：def-use 的并集域（DefUseDomain）已把
 /// 栈槽纳入建模，本视图直接复用其域与边语义（asm_analyzer 的 DefId /
 /// DefSet / DefUseEdge / LocalAccess 类型原样借用），在其上补两件事：
 ///   1. 逐指令逐槽的到达定义查询面（MethodDefUse 只交付边表，不交付
 ///      任意槽位的到达集查询）；
-///   2. DUP 族的补充使用边——#115 §2.2 口径「复制槽不产定义、产使用边」：
+///   2. DUP 族的补充使用边——口径「复制槽不产定义、产使用边」：
 ///      dup 族复制出的槽不产生新定义（域语义本就如此），但按使用边记账
 ///      （def_use 边语义里 dup 族不算使用，本视图按切面口径补齐；SWAP
 ///      只重排不复制，不补边）。
 ///
-/// 「切面槽干净」（§3.4）：该槽 provenance 唯一——到达集恰一且不溢出。
+/// 「切面槽干净」：该槽 provenance 唯一——到达集恰一且不溢出。
 /// 负向结论纪律沿用 slot_def_use 头注纪律：truncated() 为真时「唯一/无使用」类
 /// 结论不可信，消费方必须先把关。
 ///
@@ -46,7 +45,7 @@ public:
     ///
     /// 两次引擎遍历同源装配：MethodDefUse（边/访问事实，def_use 既有
     /// 语义零漂移）+ DomainEngine<DefUseValue> 保真帧（逐槽查询面）。
-    /// 方法体规模下重建成本可接受（#115 §2.1 同 asm/cfg 口径）。
+    /// 方法体规模下重建成本可接受（同 asm/cfg 口径）。
     static SlotProvenanceView build(const jbc::core::ConstantPool& cp,
                                     const jbc::ir::CodeUnit& u,
                                     const jbc::analysis::MethodSig& sig);
@@ -73,7 +72,7 @@ public:
     /// @brief 局部槽到达定义。空集：不可达 / 越界 / cat2 垫底行。
     mjbase::asm_analyzer::DefSet localDefsAt(jbc::ir::InsnId id, ca::u32 local) const noexcept;
 
-    /// @brief 切面槽「干净」：到达定义恰一且不溢出（#115 §3.4）。
+    /// @brief 切面槽「干净」：到达定义恰一且不溢出。
     bool stackSlotClean(jbc::ir::InsnId id, ca::u32 fromTop) const noexcept;
     bool localSlotClean(jbc::ir::InsnId id, ca::u32 local) const noexcept;
 

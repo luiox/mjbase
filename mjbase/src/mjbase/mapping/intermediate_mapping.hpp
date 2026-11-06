@@ -12,7 +12,7 @@ struct ClassMapping
 {
     ca::str::Utf8StringRef oldName;
     ca::str::Utf8StringRef newName;
-    /// shadow sidecar v2 专用载荷（#1156 token8）：仅 Shadow-Alias 格式读写，
+    /// shadow sidecar v2 专用载荷（token8）：仅 Shadow-Alias 格式读写，
     /// 其余映射格式与真实 remap 路径恒空（不序列化、不消费）。
     ca::str::Utf8StringRef token = {};
 };
@@ -29,7 +29,7 @@ struct FieldMapping
     ca::str::Utf8StringRef desc;
     ca::str::Utf8StringRef oldName;
     ca::str::Utf8StringRef newName;
-    /// shadow sidecar v2 专用载荷（#1156 token8）：仅 Shadow-Alias 格式读写。
+    /// shadow sidecar v2 专用载荷（token8）：仅 Shadow-Alias 格式读写。
     ca::str::Utf8StringRef token = {};
 
     bool hasType() const { return !desc.is_empty(); }
@@ -41,7 +41,7 @@ struct MethodMapping
     ca::str::Utf8StringRef desc;
     ca::str::Utf8StringRef oldName;
     ca::str::Utf8StringRef newName;
-    /// shadow sidecar v2 专用载荷（#1156 token8）：仅 Shadow-Alias 格式读写。
+    /// shadow sidecar v2 专用载荷（token8）：仅 Shadow-Alias 格式读写。
     ca::str::Utf8StringRef token = {};
 };
 
@@ -102,7 +102,7 @@ public:
 private:
     void markModified();
 
-    // -- arena 死亡点声明（memory-governance-plan §5-P1③）--
+    // -- arena 死亡点声明--
     // 本成员持有本映射私有的 Utf8StringArena（mutable：const 查询也会按需
     // intern）。指向本 arena 的视图包括：addPackage/addClass/addField/addMethod
     // intern 进去的 key/value，getPackages/getClasses/getFields/getMethods 返回的

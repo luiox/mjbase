@@ -1,4 +1,4 @@
-// WriteOnlyArrayCleaner（#37 第三件）：只写数组分配连存储窗整体删除——
+// WriteOnlyArrayCleaner：只写数组分配连存储窗整体删除——
 // S1 直通形/S2 暂存形窗匹配、纯常量元素/下标、守卫面（读取逃逸/非常量
 // 生产者/异常域相交/窗内锚标/size 生产者非纯）、注册面、与
 // ArgumentArrayScalarizer 的管线串联裁决（调用窗无残段 + 哑数组串联清理）。

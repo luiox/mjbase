@@ -1,5 +1,5 @@
 /// @file        reference_index_changeset_test.cpp
-/// @brief       E2 ChangeSet 局部重建等价性测试（libjbc design.md §35.4 硬验收）。
+/// @brief       ChangeSet 局部重建与全量 build 的等价性测试。
 ///
 /// 清单行点名的缺失证明：同一批变换后，「按 ChangeSet 局部重建的
 /// ReferenceIndex」与「变换后容器全量重扫的 ReferenceIndex」六张主表逐项

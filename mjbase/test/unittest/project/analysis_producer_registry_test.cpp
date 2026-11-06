@@ -1,5 +1,5 @@
 /// @file        analysis_producer_registry_test.cpp
-/// @brief       AnalysisDb producer 注册表（schema v6，#143）：注册幂等、
+/// @brief       AnalysisDb producer 注册表（schema v6）：注册幂等、
 ///              批次生命周期（started → 收尾回填）、残批可见、trust_level
 ///              CHECK 门、只读拒写；renames 行级归属与作用域归属解析，及
 ///              mask 配置面行级归属（schema v7 遗留回填）。
@@ -387,7 +387,7 @@ TEST(MjAnalysisProducerRegistryTest, RegistryWritesValidateInputsAndReadOnly)
               takeErrorKind(readOnly.closeBatch(1, DbBatchCounts{})));
 }
 
-//-- 批 2：renames 行级归属 ------------------------------------------------------
+//-- renames 行级归属 ----------------------------------------------------------
 
 TEST(MjAnalysisProducerRegistryTest, RenamesSchemaKeepsColumnOrderAndIndexes)
 {
@@ -538,7 +538,7 @@ TEST(MjAnalysisProducerRegistryTest, RenameProducerGateRejectsUnregisteredIds)
 
 TEST(MjAnalysisProducerRegistryTest, ReplaceRenamesReplayStartsNullAndStampWorks)
 {
-    // 验收线（#143 批 2）：覆盖重放后新行 NULL；盖章 UPDATE 路径可重放生效。
+    // 验收线：覆盖重放后新行 NULL；盖章 UPDATE 路径可重放生效。
     const auto path = freshDbPath("renames_replay_stamp");
     auto       db   = openOrDie(path);
 
@@ -605,7 +605,7 @@ TEST(MjAnalysisProducerRegistryTest, ReplaceRenamesReplayStartsNullAndStampWorks
     }
 }
 
-//-- mask 配置面归属化（schema v7，#143 遗留回填）--------------------------------
+//-- mask 配置面归属化（schema v7）--------------------------------
 
 namespace {
 
@@ -851,30 +851,11 @@ TEST(MjAnalysisProducerRegistryTest, MaskTrustLevelAttributionFollowsLastWriter)
     EXPECT_EQ(MaskTrustLevel::Trusted, std::move(level).unwrap());
 }
 
-//-- 批 3：写入口批次参数化、作用域归属解析与查询面 ------------------------------
+//-- 写入口批次参数化、作用域归属解析与查询面 ------------------------------------
 //
-// PoC（mjt/scratch/scratch_prod.cpp，#143 成本模型验证）29 项断言的场景
-// 逐项复刻为 gtest；PoC 驱动里手写 SQL 的部分（作用域行、盖章 UPDATE）
-// 在此经库面写入口或裸连接等价表达：
-//   1  trust CHECK 拒绝         → TrustLevelCheckRejectsOutOfRangeValues
-//   2  batch_scopes FK 拒绝     → OpenBatchRejectsUnknownProducerAndBadKind
-//   3  注册幂等同 id            → RegistersProducerIdempotentlyByKey
-//   4-5  batch1 后成员/类归属   → BatchScopedImportResolvesOwnershipAcrossBatches
-//   6  选中带引用方法           → 语料构造保证（run()V 携带三条引用）
-//   7-8  batch2 取大/他人不动   → 同上
-//   9  切片批携带 class 锚翻转  → 同上（PoC 驱动手写 (2, class_id) 行，
-//                                  以裸连接等价复刻：解析规则与批种类无关）
-//   10 未触类仍属 batch1       → 同上
-//   11 命中记账不入批次        → MaskHitAccountingStaysOutsideBatches
-//   12 重导 created=0          → BatchScopedImportResolvesOwnershipAcrossBatches
-//   13-15 batch3 重导翻转      → 同上
-//   16-19 batch4 refs_replace 非对称 → 同上
-//   20-21 renames 列落位       → RenamesSchemaKeepsColumnOrderAndIndexes
-//   22-24 rename 写入读回      → RenameRowsCarryProducerAttribution
-//   25 匿名写入 NULL           → 同上
-//   26 盖章 UPDATE 生效        → ReplaceRenamesReplayStartsNullAndStampWorks
-//   27-28 重放后新行 NULL      → 同上
-//   29 加列后读路径不变        → ReplaceRenamesReplayStartsNullAndStampWorks
+// 逐条覆盖 trust CHECK、batch_scopes 外键、注册幂等、跨批归属翻转、命中记账
+// 不入批次、rename 列落位与盖章 UPDATE 重放；手写 SQL 的场景（作用域行、
+// 盖章 UPDATE）经库面写入口或裸连接等价表达。
 
 namespace {
 
@@ -1303,7 +1284,7 @@ TEST(MjAnalysisProducerRegistryTest, MaskHitAccountingStaysOutsideBatches)
 
 TEST(MjAnalysisProducerRegistryTest, RolledBackWriteLeavesNoScopeRows)
 {
-    // 验收线（#143 批 3）：批内回滚不留作用域行——写入口的事务把事实与
+    // 验收线：批内回滚不留作用域行——写入口的事务把事实与
     // 作用域行绑在一起，任何一步失败整批回滚。
     const auto path = freshDbPath("rollback_no_scope");
     auto       db   = openOrDie(path);
@@ -1348,7 +1329,7 @@ TEST(MjAnalysisProducerRegistryTest, RolledBackWriteLeavesNoScopeRows)
 
 TEST(MjAnalysisProducerRegistryTest, MissingPerClassScopeLeavesClassOwnershipEmpty)
 {
-    // 负例（#143 3.6 批 3 验收）：full_import 缺逐类作用域行时类归属为空，
+    // 负例：full_import 缺逐类作用域行时类归属为空，
     // 不回退到 refs_all / input 等别的锚。
     const auto path = freshDbPath("negative_no_class_rows");
     auto       db   = openOrDie(path);
@@ -1390,7 +1371,7 @@ TEST(MjAnalysisProducerRegistryTest, MissingPerClassScopeLeavesClassOwnershipEmp
 
 TEST(MjAnalysisProducerRegistryTest, OwnershipQueryPlansProbeIndexWithoutFullScans)
 {
-    // 验收线（#143 批 3）：归属解析 EXPLAIN 无全表扫——两个前缀探都走
+    // 验收线：归属解析 EXPLAIN 无全表扫——两个前缀探都走
     // batch_scopes_owner 覆盖索引，绝不对 batch_scopes 裸扫。
     const auto path = freshDbPath("ownership_plans");
     auto       db   = openOrDie(path);

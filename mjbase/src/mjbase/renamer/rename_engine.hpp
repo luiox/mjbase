@@ -87,7 +87,7 @@ struct RejectedProposal
 /// @brief 改名审计记录：IntermediateMapping 底座 + source/confidence 溯源 +
 ///        被拒流水。
 ///
-/// 映射底座可经 MappingFormatRegistry 导出（Tiny-V2 往返恒等为验收基准）；
+/// 映射底座可经 MappingFormatRegistry 导出（契约是 Tiny-V2 往返恒等）；
 /// 溯源与被拒流水随记录对象在内存中供审计。别名规则（继承字段/闭世界继承
 /// 方法）只入 plan，不入本记录。
 class NameChangeRecord

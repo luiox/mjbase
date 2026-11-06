@@ -72,7 +72,7 @@ TEST(MjModelContainerTest, GetMutableResources)
 }
 
 // 重复 zip 条目：last-wins 保留末条目（对齐 JVM 类加载实测口径：mini jar 对照
-// 实验钉死 CEN 末现生效，推翻 issue #962 的 first-wins 误判），重复项记录在
+// 实验钉死 CEN 末现生效，推翻  first-wins 误判），重复项记录在
 // duplicateResourceUris() 供导入方告警；有意静默替换走 replaceResource。
 TEST(MjModelContainerTest, DuplicateEntriesAreRecordedAndLastWins)
 {
@@ -125,7 +125,7 @@ TEST(MjModelContainerTest, SSTOShapeGarbageFrontRealClassLastSurvives)
 }
 
 // replaceResource：候选重建、事务预览等对已知 URI 的有意替换，直接覆盖
-// 且不记入重复导入告警（issue #962 引入，与 addResource 的 first-wins 区分）。
+// 且不记入重复导入告警（区别于 addResource 的重复条目告警路径）。
 TEST(MjModelContainerTest, ReplaceResourceOverwritesWithoutDuplicateRecord)
 {
     ResourceContainer c;

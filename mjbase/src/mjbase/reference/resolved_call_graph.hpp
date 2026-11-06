@@ -1,21 +1,19 @@
 /// @file        resolved_call_graph.hpp
 /// @brief       层次感知调用图：CHA 虚/接口分派扩展 + RTA 精度档 + 反射织入挂点。
 ///
-/// 移植自旧栈同名件（CHA 档 + 查询面 + appendEdge 织入挂点 + RTA 精度档；
-/// .rcg 持久化不迁，旧栈独立测试承载，后续批次补）。与旧版的差异：
+/// 档位：CHA 档 + 查询面 + appendEdge 织入挂点 + RTA 精度档。输入口径：
 ///
-/// - 基座换 mjbase 件：调用点来自 ReferenceIndex（CodeDom order() 坐标的
-///   ReferenceSite），层次查询走 mjbase::hierarchy 的 ClassHierarchy/
-///   MethodHierarchy（键面 API，无旧栈的条目下标制）。
+/// - 调用点来自 ReferenceIndex（CodeDom order() 坐标的 ReferenceSite），层次查询
+///   走 mjbase::hierarchy 的 ClassHierarchy/MethodHierarchy（键面 API）。
 /// - 输入层次以 HierarchyBundle 交付（共享驻留池 + 类/方法层次图同生共死）：
 ///   mjbase MethodHierarchy 的查询键必须经类图绑定的池驻留，束把「池 + 两图」
 ///   的配对关系收口为单一载体。
-/// - RTA 档（buildRta）语义与旧栈当前实现对齐，两处口径适配 mjbase 类图：
-///   类链「走满」判定（旧栈未登记 java/lang/Object 时自动合成补位条目并以
-///   objectIndex 为链终点；mjbase 不自动合成，按链尾名字等价判定，其余悬挂
-///   尾部仍按「解析不可知」保守放行组件全部条目）；方法层次的组件经
-///   overrideFamily / sourceDeclaration 键面表达（旧栈为并查集下标），祖先
-///   闭包由 super 链 + 接口闭包两查询拼合（旧栈 ancestors() 单查询含接口）。
+/// - RTA 档（buildRta）两处口径：类链「走满」按链尾名字等价判定，不自动合成
+///   java/lang/Object 补位条目，悬挂尾部按「解析不可知」保守放行组件全部条目；
+///   方法层次的组件经 overrideFamily / sourceDeclaration 键面表达，祖先闭包由
+///   super 链 + 接口闭包两查询拼合。
+///
+/// TODO: `.rcg` 持久化面未落，消费方每次重建图。
 ///
 /// ## 扩展规则（CHA 档）
 ///
@@ -153,11 +151,11 @@ struct RtaOptions
 
 /// @brief 层次分析束：共享驻留池 + 类/方法层次图的最小配对载体。
 ///
-/// 停泊件：mbase 的 ClassHierarchyAnalysis/MethodHierarchyAnalysis（GAM 包装）
-/// 归层次批所有，本批不改其目录；resolved 图需要「查询键驻留池与两图绑定池
-/// 同一」的载体，此处给最小实现（build 从容器扫描 + fillSummary 逐类登记，
-/// 同名首到先得，登记 Err 的类跳过）。主线裁决点：层次批交付 GAM 包装后，
-/// 本束应改为其 Result 载体或被替换（见迁移报告）。
+/// 停泊件：resolved 图需要「查询键驻留池与两图绑定池同一」的载体，此处给
+/// 最小实现（build 从容器扫描 + fillSummary 逐类登记，同名首到先得，登记 Err
+/// 的类跳过）。口径对齐 mbase 的 ClassHierarchyAnalysis/MethodHierarchyAnalysis
+/// （GAM 包装），实现不复制；hierarchy 面若给出自己的 GAM 包装，本束应改为
+/// 其 Result 载体或被替换。
 class HierarchyBundle
 {
 public:

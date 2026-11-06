@@ -1,9 +1,9 @@
 /// @file        tmatcher_test.cpp
 /// @brief       新代指令模式匹配 DSL 测试：组合子、捕获、匹配入口、替换计划骨架。
 ///
-/// 验收清单移植自 mbase 的 unittest/asm/tmatcher（tmatcher_test /
+/// 用例形态对齐 mbase 的 tmatcher 测试面（tmatcher_test /
 /// tmatcher_scenarios_test / tmatcher_layer_test / tmatcher_demo_test），
-/// 底座换成 jbc::ir::CodeDom（append + createLabel 构造，不经 classfile）。
+/// 底座是 jbc::ir::CodeDom（append + createLabel 构造，不经 classfile）。
 #include <gtest/gtest.h>
 
 #include <functional>

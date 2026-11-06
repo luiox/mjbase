@@ -19,7 +19,7 @@ namespace mjbase::spi {
 /// 返回 Err(Unresolvable)——Strict 域据此显式拒绝并给指令定位，不伪造帧。
 ///
 /// 结果视图寿命：返回 VType 的 name 指向层次图驻留池或 resolver 查询池，
-/// 寿命 = 两者中先死亡者（pass-contract §7）；帧计算期内调用方须保持
+/// 寿命 = 两者中先死亡者（doc:pass-contract）；帧计算期内调用方须保持
 /// resolver 与层次图存活。
 class StrictTypeResolverAdapter : public jbc::analysis::ITypeResolver
 {

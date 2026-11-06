@@ -1,4 +1,4 @@
-/// meta 元数据清理家族（批 B 13 件）在真 JVM 上的硬验收：javac -g -parameters
+/// meta 元数据清理家族（13 件）在真 JVM 上的硬验收：javac -g -parameters
 /// 编译样本（注解两态 / @Deprecated / 泛型继承桥方法 / final 常量 / 参数名）→
 /// 家族 13 件经 registry 按名构造顺序全跑 → 产物目录真 java 执行，stdout 与
 /// 原样本一致（行为面零变化）；另跑反射检查器钉死「剥离后」语义（注解清零 /
@@ -108,7 +108,7 @@ constexpr const char* kReflectExpected =
     "childSuperGeneric=false\n"
     "childBridgeOrSynthetic=false\n";
 
-/// 家族 13 件（注册名，批 B 全集）。
+/// 家族 13 件（注册名，全集）。
 constexpr const char* kFamilyPasses[] = {
     "MetaInfoRemover",           "FinalRemover",
     "SyntheticBridgeRemover",    "KotlinMetadataRemover",

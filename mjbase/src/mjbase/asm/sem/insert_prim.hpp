@@ -1,29 +1,26 @@
 /// @file        insert_prim.hpp
-/// @brief       插入原语：outline/merge 落地路径共用的字节码插入机械（A5）。
+/// @brief       插入原语：outline/merge 落地路径共用的字节码插入机械。
 ///
-/// 设计依据 luiox/mjbase #115 §3.3/§3.5（D0 设计稿）A5 里程碑：apply 路径
-/// 内嵌的插入机械原先分别埋在 OutlinePlan::apply（调用点重写）与
-/// MergePlan::apply（回迁）两处——标签重锚、参数装载序幕、栈形重排（返回
-/// 值插回原位）、DUP/紧凑栈操作发射各实现两份，别的设施想用只能抄。本批
-/// 提炼为独立设施，outline_plan 与 merge_plan 改为消费（行为逐位不变，
-/// A2–A4 既有测试为等价门）。
+/// 定位：apply 路径的插入机械单点在此——标签重锚、参数装载序幕、栈形
+/// 重排（返回值插回原位）、DUP/紧凑栈操作发射；OutlinePlan::apply
+/// （调用点重写）与 MergePlan::apply（回迁）都消费这些原语，其他设施
+/// 直接用原语而非各自内嵌。
 ///
 /// 能力面（四轴，全部有直接单测 insert_prim_test）：
 ///   1. 标签重锚（insertAnchoredAtLabel）：序列落标签边界、标签重锚到
-///      首条——goto 入边形态下参数装载块随入边走（首条装载锚定，A2
-///      VerifyError 缺陷修复的承载原语）。CodeEditor::insertAtLabel 语义
+///      首条——goto 入边形态下参数装载块随入边走（首条装载锚定）。
+///      CodeEditor::insertAtLabel 语义
 ///      （标签恒指新插入指令）要求按执行序逆序逐条插入，终序 = 程序序。
 ///   2. fallthrough 批量插入（insertBeforeInsn）：锚指令前正序插入。
 ///   3. 带参数处理的前导装载（localLoadInsn / copySetLoadPreamble）：
 ///      描述符 → 显式局部装载指令（族轴 loadOpOf），落局部/栈序列消费
 ///      ——N 体栈参序幕（描述符落局部）与调用点局部入参 preamble 同源。
-///   4. DUP 复位发射（entryDupResetInsn，§3.4 tier-2 调用点侧栈形重排）：
+///   4. DUP 复位发射（entryDupResetInsn，调用点侧栈形重排）：
 ///      复制入口栈顶（副本作实参、原值留栈下、返回值落顶插回原位）。
-///      临时局部过渡（dup_x1 族不可表达的形态）留策略层批次（#115 §3.4
-///      tier-3 拒绝口径不变）。
+///      临时局部过渡（dup_x1 族不可表达的形态）仍由策略层拒绝。
 ///
-/// 值形态原语（descSlots/ValueFamily/loadOpOf/…）为两路径逐字重复的共用
-/// 辅助，A4 挂账（PR #123 注明不抽公共头），随本批收口。
+/// 值形态原语（descSlots/ValueFamily/loadOpOf/…）为两路径共用的
+/// 辅助。
 #pragma once
 
 #include <vector>
@@ -148,7 +145,7 @@ jbc::ir::Insn localLoadInsn(char descHead, ca::u32 slot) noexcept;
 ///
 /// slotNew=false 取 oldLocal（调用点局部入参装载），true 取 newSlot（N 体
 /// 栈参序幕——描述符落局部、区域体自栈消费）。槽选择按栈序自底向上 =
-/// 参数序（S_in 口径）。栈切片参数（Kind::Stack）在调用点免装载（值已在
+/// 参数序。栈切片参数（Kind::Stack）在调用点免装载（值已在
 /// 栈上），由本函数 kind 过滤承担。
 std::vector<jbc::ir::Insn> copySetLoadPreamble(const std::vector<SlotCopy>& params,
                                                SlotCopy::Kind kind, bool slotNew);
@@ -157,8 +154,8 @@ std::vector<jbc::ir::Insn> copySetLoadPreamble(const std::vector<SlotCopy>& para
 ///
 /// CodeEditor::insertAtLabel 语义（标签恒指新插入指令）下按执行序逆序逐条
 /// 插入，终序 = 程序序；返回值 = 插入指令句柄（程序序）。goto 入边形态下
-/// 首条装载锚定标签 = 参数装载随入边走（A2 缺陷修复口径）。任一条失败即
-/// Err(EditFailed)（与原 apply 内嵌口径一致）。
+/// 首条装载锚定标签 = 参数装载随入边走。任一条失败即
+/// Err(EditFailed)。
 ca::core::Result<std::vector<jbc::ir::InsnId>, OutlineError>
 insertAnchoredAtLabel(jbc::ir::CodeEditor& ed, jbc::ir::LabelId label,
                       const std::vector<jbc::ir::Insn>& insns);
@@ -168,7 +165,7 @@ ca::core::Result<std::vector<jbc::ir::InsnId>, OutlineError>
 insertBeforeInsn(jbc::ir::CodeEditor& ed, jbc::ir::InsnId anchor,
                  const std::vector<jbc::ir::Insn>& insns);
 
-/// @brief DUP 复位发射原语（§3.4 tier-2 调用点侧栈形重排）：dupOp ∈
+/// @brief DUP 复位发射原语（调用点侧栈形重排）：dupOp ∈
 ///        {DUP, DUP2}，复制入口栈顶（副本作实参、原值留栈下、返回值落顶
 ///        插回原位）。
 jbc::ir::Insn entryDupResetInsn(jbc::core::Op dupOp) noexcept;

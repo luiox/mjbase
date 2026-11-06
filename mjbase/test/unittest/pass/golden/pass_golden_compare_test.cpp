@@ -436,7 +436,7 @@ TEST(MjPassGoldenCompare, IllegalClassFileCleaner)
     }
 }
 
-// ── A 批方法级 pass（NopRemover / RedundantLoadValEliminator /
+// ── 方法级 pass（NopRemover / RedundantLoadValEliminator /
 //    CharArrToStrSimplifier / UnusedCheckCleaner）：tree 道语料 → mjbase
 //    方法级管线（promote → pass → 管线统一 lower）→ 与 golden 对拍。──
 //
@@ -482,7 +482,7 @@ struct InsnFingerprint
     std::string semantic;   ///< CP 解析面（LDC 常量字面 / invoke member 三段）；无引用为空
 };
 
-/// 全类指令指纹（按方法序拼接；无 Code 的方法跳过——A 批语料全带 Code）。
+/// 全类指令指纹（按方法序拼接；无 Code 的方法跳过——本族语料全带 Code）。
 std::vector<InsnFingerprint> classFingerprint(const Bytes& bytes)
 {
     std::vector<InsnFingerprint> fps;
@@ -547,7 +547,7 @@ std::vector<InsnFingerprint> classFingerprint(const Bytes& bytes)
     return ::testing::AssertionSuccess();
 }
 
-/// A 批单 pass 对拍主体：遍历 A 批语料，manifest 命中走指纹对拍，否则逐字节。
+/// 方法级单 pass 对拍主体：遍历本族语料，manifest 命中走指纹对拍，否则逐字节。
 void compareAbatchMethodPass(const char* passName)
 {
     const std::vector<std::string> names = listLane(kTreeLane);
@@ -610,13 +610,13 @@ TEST(MjPassGoldenCompare, EnumCastCheckRemover)
     compareAbatchMethodPass("EnumCastCheckRemover");
 }
 
-// ── 批 C 方法级指令变换组第一件：ConstCharArrayStringFolder（整窗折叠）──
+// ── ConstCharArrayStringFolder（方法级整窗折叠）──
 TEST(MjPassGoldenCompare, ConstCharArrayStringFolder)
 {
     compareAbatchMethodPass("ConstCharArrayStringFolder");
 }
 
-// ── 批 A ClassRenamer：全部语料必被重命名（tree writer 全量重编码 +
+// ── ClassRenamer：全部语料必被重命名（tree writer 全量重编码 +
 //    类名/描述符全变），逐字节比较无意义——对拍面 = 重命名映射一致性 +
 //    逐类骨架语义矩阵（this/super/接口/access/成员序）+ 方法体指令指纹。
 //    golden 文件名即新类名（两侧命名确定性同源：装载序按旧名字节序 +
@@ -763,8 +763,8 @@ TEST(MjPassGoldenCompare, ClassRenamer)
     // 对拍驱动约束：缩减集必须剔除「排序在首个声明类目之后」的全部语料
     // （声明类 + 其后所有类），否则全局递增编号位移使 golden 新名与输出新名
     // 错位——golden 基线冻结自全语料，缩减集保持为全排序的**前缀**，保留类
-    // 编号才与 golden 一致。被剔除的殿后类（tech/E 与 B 批 meta 语料 zz/* 对）
-    // 的覆盖由单测与 JVM 门补足（报告挂账，非语义差异声明）。
+    // 编号才与 golden 一致。被剔除的殿后类（tech/E 与 meta 语料 zz/* 对）
+    // 的覆盖由单测与 JVM 门补足（记录在报告，非语义差异声明）。
     {
         std::size_t cut = corpusEntries.size();
         for (std::size_t i = 0; i < corpusEntries.size(); ++i) {
@@ -901,7 +901,7 @@ TEST(MjPassGoldenCompare, ClassRenamer)
         << "配对数与缩减 golden 集合不一致（声明类目剔除面漂移）";
 }
 
-// ── 批 A 未使用成员清理家族（EmptyClassRemover / UnusedClassRemover /
+// ── 未使用成员清理家族（EmptyClassRemover / UnusedClassRemover /
 //    UnusedFieldRemover / GlobalUnusedMethodRemover）：um 道专用 mini 语料 +
 //    services / Manifest 两件非类 keep 根（与提取侧同源重建，golden 只落类
 //    字节）。删除类 pass（EmptyClassRemover / UnusedClassRemover）无类改写
@@ -1046,7 +1046,7 @@ TEST(MjPassGoldenCompare, GlobalUnusedMethodRemover)
     compareUnusedMemberFamilyPass("GlobalUnusedMethodRemover");
 }
 
-// ── 批 A ToolClassCombiner：cc 道专用 mini 语料（合并语义面 pass，宿主为
+// ── ToolClassCombiner：cc 道专用 mini 语料（合并语义面 pass，宿主为
 //    新合成类，逐字节不可仲裁——对拍语言按资源角色分档）：
 //    - 供体（候选）：golden 缺席 = 必须被合并删除；声明类目（宽常量）
 //      反转 = 必须原样保留且字节与语料一致；
@@ -1439,10 +1439,10 @@ TEST(MjPassGoldenCompare, ToolClassCombiner)
     EXPECT_TRUE(anyOutputSmt) << "分支体并入宿主后必须再生 StackMapTable";
 }
 
-// ── B 批 JunkCodeInserter 自基线（防漂移）──
+// ── JunkCodeInserter 自基线（防漂移）──
 //
-// golden 纪律「基线在切换前从提取」对本 pass 不适用：B 批无对应件
-// （垃圾代码面在 mjt-obf，且建类属 A5 域，不在本批范围）。替代基线：
+// golden 纪律「基线在切换前从旧栈提取」对本 pass 不适用：旧栈无对照件（垃圾
+// 代码面在 mjt-obf）。替代基线：
 // 确定性 pass 的输出按字节冻结为自基线（MJBASE_PASS_GOLDEN_REGEN=1 时再生成），
 // 常规运行逐字节对拍——行为漂移即失败。硬验收面（真 JVM 执行）另在 JVM 用例。
 // 基线语料取 hb_char_arr（15 指令方法，kStride 命中一次插入）与 hb_nop_seq
@@ -1482,7 +1482,7 @@ TEST(MjPassGoldenCompare, JunkCodeInserterSelfBaseline)
         EXPECT_TRUE(bytesEqual(baseline, output));
     }
 }
-// ── 批 B meta 元数据清理家族（13 件 ClassPass）：tree 道全语料 → mjbase
+// ── meta 元数据清理家族（13 件 ClassPass）：tree 道全语料 → mjbase
 //    ClassPass → 写回字节，与 golden 对拍。对拍口径分两档：
 //    - golden == output（逐字节一致）即通过。注意这合法地涵盖两类：未触发
 //      类目（copy-through 恒等），以及**纯标志位触发**类目（FinalRemover /
@@ -1619,8 +1619,8 @@ std::vector<SlotFace> locationFace(jbc::core::ClassFile&              cf,
     return ::testing::AssertionSuccess();
 }
 
-/// 批 B meta 家族对拍语料（与提取侧 metaCorpusNames 同源：6 条既有 tree 道
-/// 语料 + hb_meta_* 厨房水槽双件；A 批方法体语料不在本族提取面）。
+/// meta 家族对拍语料（与提取侧 metaCorpusNames 同源：6 条既有 tree 道
+/// 语料 + hb_meta_* 厨房水槽双件；方法级 pass 语料不在本族提取面）。
 const std::vector<std::string>& metaCorpusNames()
 {
     static const std::vector<std::string> names = {

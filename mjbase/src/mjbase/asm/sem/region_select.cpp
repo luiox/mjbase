@@ -107,8 +107,8 @@ bool hasOverlapTie(const std::vector<RegionCandidate>& candidates,
     return false;
 }
 
-/// v2 排除档（A8）：候选是否为「合成接力块」——apply 调用点块形态（批量
-/// 驱动 A7 实证的接力候选：apply 后调用点块自身满足全部预检与出口形，排
+/// v2 排除档：候选是否为「合成接力块」——apply 调用点块形态（接力候选：
+/// apply 后调用点块自身满足全部预检与出口形，排
 /// 除档开启时驱动器跳过它，候选耗尽正常收敛）。判定规则见 region_select.hpp
 /// selectRegion 注：单块 + 转发 goto + lone invokestatic（身份事实与
 /// planInline 的 NotOutlineSynthetic 同源）+ 其余指令限装载/复位族。
@@ -181,10 +181,10 @@ bool passesFactPreflight(const RegionSelectPolicy& policy, const RegionSelectReq
         return false;   /// 防御：空成员不交付（RegionView 口径，手构面兜底）。
     }
     if (policy.requireStraightLine && !c.straightLine) {
-        return false;   /// F2 判据 1：A2 v1 只开直线档。
+        return false;   /// F2 判据 1：v1 只开直线档。
     }
     if (policy.requireNoHandlers && (!c.exceptionHomogeneous || !c.handlers.empty())) {
-        return false;   /// F3 判据 4 A2 收紧：同质且 handler 集为空（非同质
+        return false;   /// F3 判据 4：同质且 handler 集为空（非同质
                         ///  候选 handlers 恒空，以旗标同拒）。
     }
     const bool haveView = req.view != nullptr && req.unit != nullptr;

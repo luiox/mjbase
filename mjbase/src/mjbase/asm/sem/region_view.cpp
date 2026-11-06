@@ -298,7 +298,7 @@ std::vector<RegionCandidate> RegionView::candidates() const
 
             std::vector<RegionCandidate> perEdge;
             for (const ca::u32 anchor : probes) {
-                /// R = { x ∈ 支配集 : 锚后支配 x } \ {锚}（#115 §3.1
+                /// R = { x ∈ 支配集 : 锚后支配 x } \ {锚}（口径
                 /// 「入口支配集 ∩ 出口后支配集」；锚自排除——它是续延点）。
                 std::vector<mjbase::asm_cfg::BlockId> members;
                 for (const mjbase::asm_cfg::BlockId x : dominated) {

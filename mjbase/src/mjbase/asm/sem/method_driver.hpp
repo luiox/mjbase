@@ -1,14 +1,13 @@
 /// @file        method_driver.hpp
 /// @brief       MethodDriver：方法级挑选与跨方法编排——多方法连续 outline
-///              的调度层（asm/sem 策略层第四批，A9）。
+///              的调度层。
 ///
-/// 设计依据 luiox/mjbase #115 策略层里程碑 + A8 起点备忘：A7 的
-/// driveOutlines 是单方法闭环（选区 → 识别 → 落地 → 重建 → 再选），A9
+/// driveOutlines 是单方法闭环（选区 → 识别 → 落地 → 重建 → 再选），本层
 /// 把它接成方法级编排——
-///   方法挑选（本批 selectMethods）→ 逐方法 driveOutlines（A7/A8 档位
-///   透传）→ 聚合报告。owner 分层纪律延续：设施先行、策略后加、策略归
-///   编排层、复用原语——本批是新消费方，outline_driver / region_select /
-///   planOutline 既有行为零改动。
+///   方法挑选（selectMethods）→ 逐方法 driveOutlines（档位
+///   透传）→ 聚合报告。分层纪律：策略归编排层、复用原语——编排层只消费
+///   既有设施，outline_driver / region_select /
+///   planOutline 行为不因编排改变。
 ///
 /// 接口形状（对齐 RegionSelectPolicy 模式：纯数据 + 纯函数、值语义）：
 ///   输入 = MethodDriveRequest{session + resolver 借用 + 方法候选池 +
@@ -18,8 +17,8 @@
 ///   聚合。输出 = MethodDriveReport{逐方法 OutlineDriveReport + 总计
 ///   （应用层数 / 跳过数 / 全拒数 / 失败数）}。
 ///
-/// 方法挑选策略 v1（保守口径，不做调用图感知——v2 需调用图设施，本批
-/// 不引入）：确定性内部名序（方法名升序 → 描述符升序 → 池序稳定破平，
+/// 方法挑选策略 v1（保守口径，不做调用图感知——调用图感知需调用图设施，
+/// 属 v2 方向）：确定性内部名序（方法名升序 → 描述符升序 → 池序稳定破平，
 /// 重载与同名歧义全部消解）+ 无候选快跳（快跳在编排循环的便宜预检，
 /// 不在策略——策略只管顺序，预检要建视图，职责分层）。策略接口留插
 /// 拔形状：MethodSelectPolicy 纯数据档位 + MethodSelectFn 策略函数形状，
@@ -28,8 +27,8 @@
 /// 保守门（fail-closed 逐方法化）：
 ///   - 单方法驱动失败不阻断其他方法：逐方法独立驱动，失败原因记录在
 ///     该方法的 OutlineDriveReport（note + stop 便签字段），编排继续
-///     （A7 的「单轮失败即停」语义在方法内不变，A9 把停的范围收在单
-///     方法内）；
+///     （driveOutlines 的「单轮失败即停」语义在方法内不变，本层
+///     把停的范围收在单方法内）；
 ///   - 编排层禁复用过期视图：便宜预检的 RegionView 只用于候选计数，
 ///     绝不传入驱动——驱动器每方法每轮从 session 重取方法体对象新鲜
 ///     装配（失效戳语义，同 outline_driver.hpp 文件头注）；预检视图
@@ -49,7 +48,7 @@
 /// （策略便签归驱动，预检不代跑）。候选非空而策略全拒的方法（如判据 6
 /// 全滤）照常进驱动，落全拒桶（rejectedCount）。
 ///
-/// 红线（#115 §2.1 同口径）：请求/报告纯数据值语义；session / resolver
+/// 红线：请求/报告纯数据值语义；session / resolver
 /// 为借用（编排全程存活）；预检视图为方法内快照，用完即弃。
 #pragma once
 
@@ -109,11 +108,12 @@ struct MethodDriveRequest
 
     // ---- drive 档位（逐字段透传给每个方法的 OutlineDriveRequest）----
 
-    /// 区域策略档位（A8 收敛开关 excludeOutlineRelay 经此透传）。
+    /// 区域策略档位（收敛开关 excludeOutlineRelay 经此透传）。
     RegionSelectPolicy drivePolicy{};
     /// 区域策略函数（缺省 v1 默认策略，同 OutlineDriveRequest 口径）。
     RegionSelectFn driveSelect = &selectRegion;
-    /// 每方法迭代上限（显式参数，缺省保守——防组合爆炸，同 A7 口径）。
+    /// 每方法迭代上限（显式参数，缺省保守——防组合爆炸，同
+    /// OutlineDriveRequest.maxRounds 口径）。
     ca::u32 maxRounds = 16;
     /// 命名序号起点（逐方法生效：合成方法名 `outline$<名>$<序>` 按父方法
     /// 名分域，不同方法间不冲突，序号各自从起点起）。
@@ -126,7 +126,7 @@ struct MethodDriveRequest
 struct MethodDriveRecord
 {
     jbc::ir::MethodId  method{};   ///< 驱动的方法身份
-    OutlineDriveReport drive{};    ///< A7/A8 驱动报告（逐轮 + 终止原因 +
+    OutlineDriveReport drive{};    ///< 驱动报告（逐轮 + 终止原因 +
                                    ///  停轮便签——失败原因就地可查）
 };
 
@@ -144,7 +144,7 @@ struct MethodDriveReport
                                   ///  / ViewRebuildFailed / ParentUnusable——
                                   ///  失败不阻断其他方法，原因见逐方法报告）
 
-    /// 应用层总数：各方法已 apply 轮次之和（A7 报告口径聚合）。
+    /// 应用层总数：各方法已 apply 轮次之和（OutlineDriveReport 口径聚合）。
     ca::usize totalApplied() const noexcept
     {
         ca::usize total = 0;

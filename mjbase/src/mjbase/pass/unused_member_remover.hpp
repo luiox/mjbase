@@ -8,8 +8,7 @@
 
 namespace mjbase::pass {
 
-/// @defgroup unused_member_cleanup 未使用成员清理家族（移植自 mbase
-/// pass/opt/unused_member_remover 的容器级直写四件）。
+/// @defgroup unused_member_cleanup 未使用成员清理家族（容器级直写四件）。
 ///
 /// 本家族把「可达性 / 引用索引分析证明不可达」的类、字段、方法转换为字节码删除。
 /// 四个 pass 按分析来源分层：
@@ -28,7 +27,7 @@ namespace mjbase::pass {
 /// （library jar、无根）时整 pass 原样保留输入。分析未注册时抛 `logic_error`
 /// （配置错误，稳定失败，对齐旧栈）。
 ///
-/// ## 删除安全不变量与「调用点收尾」裁定
+/// ## 删除安全不变量与「调用点收尾」的关系
 ///
 /// 成员删除两件的安全论证与商业化 trim 工具同构：其 trim 主流程（mark 相
 /// work-queue 不动点 → sweep 二分）从不挂接调用点收尾件——保留代码引用到的成员
@@ -64,7 +63,7 @@ namespace mjbase::pass {
 /// - `All`：public 死成员也候选。仅适用于闭程序（应用 JAR，全程序在容器内）；
 ///   库型 JAR 开启会破坏外部链接。
 ///
-/// ## keep 规则面（审计 P0-1/P0-2）
+/// ## keep 规则面
 ///
 /// 四个 pass 的构造器接受可选 `KeepRuleSet`（默认 nullptr = 无规则）。规则集是
 /// **纯加法**输入：命中的类/成员在既有硬底线之上再保留一份，无法关闭任何硬底线

@@ -13,12 +13,12 @@ using Utf8StringBuilder = ca::str::Utf8StringBuilder;
 
 namespace {
 
-// #1044 同款确定性回退种子（"idg1" 的 ASCII 编码）。
+// 确定性回退种子（"idg1" 的 ASCII 编码）。
 //
 // 选值理由：本文件全部随机消费点只生成"名字/排版噪声"（EmojiAndBlank 字典的
 // 空格装饰、needStuff 洗牌、getRandomString 字符采样），非安全用途——不需要
-// 熵，只需要任意但固定的平台无关常量保证"同输入同输出"可复现（#1027 D1
-// 确定性契约）。std::random_device 兜底会让同进程两次生成产生不同字典，
+// 熵，只需要任意但固定的平台无关常量保证"同输入同输出"可复现（确定性
+// 契约）。std::random_device 兜底会让同进程两次生成产生不同字典，
 // 破坏确定性，故一律替换为本常量。
 //
 // getRandomString/getRandomName 是 static API：引擎用 thread_local 持久化，

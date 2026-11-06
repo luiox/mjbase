@@ -51,7 +51,7 @@ std::string quoted(std::string_view value)
 /// 手滑前导零查无此条 → unknown-handle 响亮报错），token 必须逐字节相等。
 ///
 /// 返回条目拷贝（optional 按值）——不得返回指向 findByShadowName 临时 vector
-/// 内部的指针（悬垂 UB，mjt 9e72e9f 实修，本移植自始按值交付）。
+/// 内部的指针——那是悬垂 UB，故按值交付。
 std::optional<ShadowAliasEntry> findClassByHandle(const ShadowAliasTable& table,
                                                   const std::string&      index,
                                                   const std::string&      token,
@@ -323,7 +323,7 @@ ShadowSlotResult resolveShadowSlot(const ShadowAliasTable& table,
 
     case ShadowRefForm::Malformed:
         if (table.empty()) {
-            // 引用形状但无表可查：缺 sidecar 硬报错（§6 末行），不静默回落。
+            // 引用形状但无表可查：缺 sidecar 硬报错，不静默回落。
             return failure(ShadowSlotError::MissingSidecar,
                            "reference-shaped input " + quoted(input) +
                                " requires a loaded shadow sidecar, but none is loaded");
@@ -701,7 +701,7 @@ std::string shadowRefHandleOf(const ShadowAliasTable& table, const ShadowAliasEn
     const std::string token(entry.token8);
     if (token.size() != 8) return {};
     if (entry.kind == ShadowKind::Class) {
-        // 类影子名必须呈 `Class_<纯数字>` 规范形（§2 文法前缀）；手工名不发句柄。
+        // 类影子名必须呈 `Class_<纯数字>` 规范形；手工名不发句柄。
         const std::string shadow(entry.shadowName);
         if (shadow.size() <= 6 || shadow.compare(0, 6, "Class_") != 0) return {};
         for (std::size_t i = 6; i < shadow.size(); ++i) {

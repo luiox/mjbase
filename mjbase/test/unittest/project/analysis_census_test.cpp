@@ -1,8 +1,8 @@
 /// @file        analysis_census_test.cpp
-/// @brief       普查投影层（#121 §5 B4）：censusClasses 事实面（计数、条目
+/// @brief       普查投影层：censusClasses 事实面（计数、条目
 ///              关联、形态旗标、墓碑排除、排序确定性）、censusMembers 成员
 ///              事实面（复合键行序、native 派生、origin 继承、墓碑连带与
-///              条目关联契约，#148）、censusContainer 汇总面（形态分布、
+///              条目关联契约）、censusContainer 汇总面（形态分布、
 ///              分析事实计数）、空容器边界与非法输入。
 #include <gtest/gtest.h>
 
@@ -271,7 +271,7 @@ TEST(MjAnalysisCensusTest, ClassRowsProjectCountsEntryFactsAndDerivedKind)
 
 TEST(MjAnalysisCensusTest, ClassRowsProjectLibraryOriginByPrefix)
 {
-    // origin 是投影层派生（前缀分类，#132 L1）：Jdk/Known 按内部名前缀命中，
+    // origin 是投影层派生（前缀分类，库识别第一层）：Jdk/Known 按内部名前缀命中，
     // Unknown 兜底；与条目形态、类形态派生正交。普查面只含关联到本输入活跃
     // 条目的类，先登记条目并挂 entryId 再断言。
     const auto path = freshDbPath("origin");

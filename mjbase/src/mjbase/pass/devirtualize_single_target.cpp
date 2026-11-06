@@ -39,8 +39,8 @@ constexpr ca::u16 kAccBridge    = 0x0040;
 constexpr ca::u16 kAccSynthetic = 0x1000;
 constexpr ca::u16 kAccAbstract  = 0x0400;
 
-/// 调用者类版本下界：major ≥ 52（V1_8）。依据见 pass 头注 §4.1 条——
-/// SE8+ JVM 恒视 ACC_SUPER 置位；更旧版本类文件在旧宿主上按实际位取语义。
+/// 调用者类版本下界：major ≥ 52（V1_8）。版本门口径见本文件头注的 ACC_SUPER
+/// 一条——SE8+ JVM 恒视 ACC_SUPER 置位；更旧版本类文件在旧宿主上按实际位取语义。
 constexpr ca::u16 kMinClassMajor = 52;
 
 /// 一处待改写调用点（分析面事实；字节码面复核在装载后进行）。
@@ -169,7 +169,7 @@ std::optional<std::vector<ca::u8>> rewriteOneClass(const std::vector<ca::u8>& co
     auto&                  session = *loaded.unwrap();
     jbc::ir::ClassUnit&    unit    = session.unit();
 
-    // 版本门：major < 52 的调用者类不改写（§4.1 ACC_SUPER 宿主无关口径）。
+    // 版本门：major < 52 的调用者类不改写（JVMS §4.1 ACC_SUPER 宿主无关口径）。
     if (session.backing().major < kMinClassMajor) return std::nullopt;
 
     bool rewrittenAny = false;
@@ -208,7 +208,7 @@ std::optional<std::vector<ca::u8>> rewriteOneClass(const std::vector<ca::u8>& co
             continue;   // 分析-字节码漂移：放弃该站点
         }
         // 接收者守卫：前一条指令必须是 ALOAD_0（verifier 接收者约束的保守
-        // 充分形态，见 pass 头注 §4.10.1.9 条）。
+        // 充分形态，口径见本文件头注的 JVMS §4.10.1.9 一条）。
         const jbc::ir::Insn* prev =
             dom.peek(order[static_cast<ca::usize>(site.insnIndex) - 1]);
         if (prev == nullptr || prev->op != Op::ALOAD_0) continue;

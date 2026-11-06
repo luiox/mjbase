@@ -1,8 +1,8 @@
-// 三件 simplifier（#17：FixPatternSimplifier / ExpressionSimplifier /
+// 三件 simplifier（FixPatternSimplifier / ExpressionSimplifier /
 // TypeCastSimplifier）golden 自基线对拍。
 //
 // golden 纪律「基线在切换前从旧栈提取」对本族不适用：旧栈与 mjbase 的
-// FixPatternSimplifier 规则集已分叉（#44 增补规则 12-20 仅在新栈），且本族
+// FixPatternSimplifier 规则集已分叉，且本族
 // 语料为仓内新建——无旧栈对拍基线可取。替代基线走 JunkCodeInserter 自基线
 // 同款纪律：确定性 pass 的输出按字节冻结为自基线（MJBASE_PASS_GOLDEN_REGEN=1
 // 再生成），常规运行逐字节对拍——行为漂移即失败。规则语义面（逐规则命中/

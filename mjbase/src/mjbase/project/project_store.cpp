@@ -85,7 +85,7 @@ ProjectStoreError makeError(ProjectStoreErrorKind kind, const std::string& messa
 /// 系统错误文案的 UTF-8 安全化（错误消息构造**不得抛**——全库 Result 纪律）。
 ///
 /// std::error_code::message() 的编码跟随系统 ANSI 代码页（中文 Windows =
-/// GBK），直塞 Utf8String::from_data 会因严格 UTF-8 校验抛异常（C3 重试
+/// GBK），直塞 Utf8String::from_data 会因严格 UTF-8 校验抛异常（重试
 /// 用例首例踩响：换名撞句柄的 ec 文案在中文系统上非法 UTF-8）。策略：纯
 /// ASCII 原样；非 ASCII 在 Windows 走 CP_ACP→UTF-8（CharsetConverter 内置
 /// 表，无 iconv 依赖），转换失败/其他平台逐字节折叠为 '?'——诊断定位靠
@@ -112,7 +112,7 @@ std::string utf8SafeSystemText(const std::string& raw)
     return folded;
 }
 
-/// section 域错误：error.section 非空（§6.1）。
+/// section 域错误：error.section 非空。
 ProjectStoreError makeSectionError(ProjectStoreErrorKind kind, const Utf8StringRef& section,
                                    const std::string& message)
 {
@@ -209,7 +209,7 @@ ca::Result<ca::i64, ProjectStoreError> requiredInt(
     return ca::Ok(value);
 }
 
-//-- content_hash 形状（"sha256:" + 64 hex）---------------------------------
+//-- content_hash 形状（"sha256:" + 64 hex） --------------------------------
 
 bool isHexDigit(char c)
 {
@@ -232,7 +232,7 @@ ProjectStoreError badContentHashError(const std::string& context, const std::str
                      context + "content_hash must be \"sha256:\" + 64 hex (got \"" + hash + "\")");
 }
 
-//-- 命名校验字节规则（§3.3）------------------------------------------------
+//-- 命名校验字节规则 -----------------------------------------------------
 
 bool isLowerAlnum(char c)
 {
@@ -246,7 +246,7 @@ bool isNameChar(char c)
 
 bool isReservedDeviceName(const std::string& segment)
 {
-    // 已限小写字符集，仍显式大小写不敏感匹配（防未来放宽，§3.3）。
+    // 已限小写字符集，仍显式大小写不敏感匹配（防未来放宽）。
     std::string lower;
     lower.reserve(segment.size());
     for (const char c : segment) {
@@ -392,7 +392,7 @@ ca::Result<StoreSectionEntry, ProjectStoreError> parseSectionEntry(
             known = "updated_at";
         }
         else {
-            // 条目字段集严格（§4.2）：未知字段即整文件拒载。
+            // 条目字段集严格：未知字段即整文件拒载。
             return ca::Err(makeError(ProjectStoreErrorKind::Schema,
                                      context + "unknown section entry field: " + toStd(key)));
         }
@@ -417,7 +417,7 @@ ca::Result<StoreSectionEntry, ProjectStoreError> parseSectionEntry(
             context + "invalid section name: " + nameError.message.to_std_string()));
     }
 
-    // format：值不识别 → opaque 收容保留（§4.2/§9.3），原载串存 formatTag。
+    // format：值不识别 → opaque 收容保留，原载串存 formatTag。
     auto formatValue = requiredString(format, context, "format");
     if (formatValue.is_err()) return ca::Err(std::move(formatValue).unwrap_err());
     entry.formatTag = copyOf(formatValue.unwrap()->as_string());
@@ -426,7 +426,7 @@ ca::Result<StoreSectionEntry, ProjectStoreError> parseSectionEntry(
         entry.formatRetained = true;
     }
 
-    // 上界与字段类型 u32 对齐（R52/CP-2）：u32 最大值 4294967295 合法，
+    // 上界与字段类型 u32 对齐：u32 最大值 4294967295 合法，
     // 超出（含 u64 语义的更大值）按 Schema 拒载，不截断不静默收窄。
     auto versionValue = requiredInt(
         sectionVer, context, "section_version",
@@ -454,7 +454,7 @@ ca::Result<StoreSectionEntry, ProjectStoreError> parseSectionEntry(
         if (recordsValue.is_err()) return ca::Err(std::move(recordsValue).unwrap_err());
         entry.recordCount = static_cast<ca::u64>(recordsValue.unwrap());
     }
-    // record_count 相容规则（§4.2）：jsonl 必有；json/opaque 禁止；收容条目透传。
+    // record_count 相容规则：jsonl 必有；json/opaque 禁止；收容条目透传。
     if (!entry.formatRetained) {
         if (entry.format == SectionFormat::Jsonl && !entry.hasRecordCount) {
             return ca::Err(makeError(
@@ -574,7 +574,7 @@ ca::json::JsonValue dependJson(const SectionDep& depend)
 
 }   // namespace
 
-//-- section 命名校验（§3.3）--------------------------------------------------
+//-- section 命名校验 -------------------------------------------------------
 
 ca::Result<void, ProjectStoreError> validateSectionName(const Utf8StringRef& name)
 {
@@ -609,7 +609,7 @@ ca::Result<void, ProjectStoreError> validateSectionName(const Utf8StringRef& nam
             "section name must not end with '.' (Windows trailing dot trap)"));
     }
 
-    // 首个 '.' 之前的段不在 Windows 保留设备名集内（§3.3）。
+    // 首个 '.' 之前的段不在 Windows 保留设备名集内。
     const std::size_t firstDot = name.index_of('.');
     const std::string firstSegment =
         firstDot == static_cast<std::size_t>(-1) ? std::string(data, size)
@@ -640,7 +640,7 @@ Utf8String sectionFileName(const Utf8StringRef& name, SectionFormat format)
     return copyOf(file);
 }
 
-//-- 路径判别与目录骨架（§3.2/§3.3）--------------------------------------------
+//-- 路径判别与目录骨架 ------------------------------------------------------
 
 StorePathKind classifyStorePath(const Utf8StringRef& path)
 {
@@ -660,7 +660,7 @@ ca::Result<void, ProjectStoreError> createBundleSkeleton(const Utf8StringRef& di
         return ca::Err(makeError(
             ProjectStoreErrorKind::Open,
             "cannot create bundle: '" + dirArg +
-                "' is a bare project file; bundles are directories (see upgradeFromFile, C2)"));
+                "' is a bare project file; bundles are directories"));
     }
     if (kind == StorePathKind::Other) {
         return ca::Err(makeError(ProjectStoreErrorKind::Open,
@@ -670,7 +670,7 @@ ca::Result<void, ProjectStoreError> createBundleSkeleton(const Utf8StringRef& di
 
     std::error_code ec;
     if (kind == StorePathKind::Directory) {
-        // 存在则必须为空（§6.2 create 语义）。
+        // 存在则必须为空（create 语义）。
         auto it = std::filesystem::directory_iterator(nativePath(dirArg), ec);
         if (ec) {
             return ca::Err(makeError(ProjectStoreErrorKind::Io,
@@ -694,7 +694,7 @@ ca::Result<void, ProjectStoreError> createBundleSkeleton(const Utf8StringRef& di
         }
     }
 
-    // 子目录骨架：sections/ + tmp/（tmp 恒在 bundle 内——同卷 MUST，§8.1/R45-P6）。
+    // 子目录骨架：sections/ + tmp/（tmp 恒在 bundle 内——同卷 MUST）。
     for (const char* sub : {kProjectStoreSectionsDirName, kProjectStoreTmpDirName}) {
         std::filesystem::create_directories(nativePath(ca::fs::PathUtil::join(dirArg, sub)), ec);
         if (ec) {
@@ -704,7 +704,7 @@ ca::Result<void, ProjectStoreError> createBundleSkeleton(const Utf8StringRef& di
         }
     }
 
-    // 初始清单：v1 空白（确定性写出，验收 §11-1 骨架的重开逐字节口径）。
+    // 初始清单：v1 空白（确定性写出，重开后逐字节一致）。
     StoreManifest initial;
     initial.engine    = copyOf(kProjectStoreEngine);
     auto manifestText = writeStoreManifestText(initial);
@@ -714,7 +714,7 @@ ca::Result<void, ProjectStoreError> createBundleSkeleton(const Utf8StringRef& di
                          std::move(manifestText).unwrap().to_std_string(), "store.json");
     if (wroteManifest.is_err()) return ca::Err(std::move(wroteManifest).unwrap_err());
 
-    // 初始实体：空工程，字节 = writeAnalysisProjectText 产出（§4.3 零破坏线）。
+    // 初始实体：空工程，字节 = writeAnalysisProjectText 产出（零破坏线）。
     auto entityText = writeAnalysisProjectText(AnalysisProject::createEmpty());
     if (entityText.is_err()) {
         auto            entityError = std::move(entityText).unwrap_err();
@@ -729,7 +729,7 @@ ca::Result<void, ProjectStoreError> createBundleSkeleton(const Utf8StringRef& di
     return ca::Ok();
 }
 
-//-- store.json 严格解析（§4.2）------------------------------------------------
+//-- store.json 严格解析 -----------------------------------------------------
 
 ca::Result<StoreManifest, ProjectStoreError> parseStoreManifestText(const Utf8StringRef& text)
 {
@@ -753,7 +753,7 @@ ca::Result<StoreManifest, ProjectStoreError> parseStoreManifestText(const Utf8St
     const ca::json::JsonValue* engine       = nullptr;
     const ca::json::JsonValue* ledgerConfig = nullptr;
     const ca::json::JsonValue* sections     = nullptr;
-    // 顶层未知字段忽略（加法演进，§4.2），但重复键一律拒载——未知键重复也要抓。
+    // 顶层未知字段忽略（加法演进），但重复键一律拒载——未知键重复也要抓。
     std::set<std::string>      seenIgnoredKeys;
     for (const auto& [key, value] : root.as_object()) {
         const ca::json::JsonValue** slot  = nullptr;
@@ -793,7 +793,7 @@ ca::Result<StoreManifest, ProjectStoreError> parseStoreManifestText(const Utf8St
         *slot = &value;
     }
 
-    // kind·版本不识别 / 结构缺件 → Open（§6.1；打开期降级路径按 kind 路由）。
+    // kind·版本不识别 / 结构缺件 → Open（打开期降级路径按 kind 路由）。
     if (version == nullptr) {
         return ca::Err(makeError(ProjectStoreErrorKind::Open, "missing version"));
     }
@@ -869,7 +869,7 @@ ca::Result<StoreManifest, ProjectStoreError> parseStoreManifestText(const Utf8St
                 }
                 config.minUndoDepth = static_cast<ca::u64>(value.as_int());
             }
-            // 未知键忽略（结构宽松，设计文档 §5.3）。
+            // 未知键忽略（结构宽松）。
         }
         manifest.ledgerConfig = config;
     }
@@ -887,7 +887,7 @@ ca::Result<StoreManifest, ProjectStoreError> parseStoreManifestText(const Utf8St
                 context + "duplicate section name: " + toStd(parsed.name.ref())));
         }
         if (parsed.formatRetained) {
-            // §4.2：值不识别时按 opaque 保留处理，记 openDiagnostics，不拒载。
+            // 值不识别时按 opaque 保留处理，记入清单 diagnostics，不拒载。
             manifest.diagnostics.push_back(copyOf(
                 context + "section '" + toStd(parsed.name.ref()) + "': unrecognized format \"" +
                 toStd(parsed.formatTag.ref()) + "\"; retained verbatim as opaque"));
@@ -927,7 +927,7 @@ ca::Result<StoreManifest, ProjectStoreError> readStoreManifestFile(const Utf8Str
     return parsed;
 }
 
-//-- 确定性写出（§4.2）----------------------------------------------------------
+//-- 确定性写出 ---------------------------------------------------------------
 
 ca::Result<ca::str::Utf8String, ProjectStoreError> writeStoreManifestText(
     const StoreManifest& manifest)
@@ -939,7 +939,7 @@ ca::Result<ca::str::Utf8String, ProjectStoreError> writeStoreManifestText(
                                      std::to_string(kProjectStoreFileVersion) + ")"));
     }
 
-    // name 字典序（§4.2：sections 按字典序写出；解析容忍任意序，写出定序）。
+    // name 字典序（sections 按字典序写出；解析容忍任意序，写出定序）。
     std::vector<const StoreSectionEntry*> sorted;
     sorted.reserve(manifest.sections.size());
     for (const auto& entry : manifest.sections) sorted.push_back(&entry);
@@ -1015,7 +1015,7 @@ ca::Result<ca::str::Utf8String, ProjectStoreError> writeStoreManifestText(
             members.emplace_back(refOf("profile"),
                                  ca::json::JsonValue::make_string(entry->profile->ref()));
         }
-        // depends 按 path 字典序（§4.2）。
+        // depends 按 path 字典序。
         std::vector<const SectionDep*> sortedDeps;
         sortedDeps.reserve(entry->depends.size());
         for (const auto& depend : entry->depends) sortedDeps.push_back(&depend);
@@ -1045,11 +1045,11 @@ ca::Result<ca::str::Utf8String, ProjectStoreError> writeStoreManifestText(
     return ca::Ok(ca::json::JsonWriter::write(document, options));
 }
 
-//-- section 内容读写原语（C2：§5.1/§5.2/§8.1 的 section 层切片）----------------
+//-- section 内容读写原语（单 section 层） -------------------------------
 
 namespace {
 
-/// 当前进程 pid（txn 目录名单调，§8.1-1：txn-<pid>-<mono>，无 uuid 依赖）。
+/// 当前进程 pid（txn 目录名单调：txn-<pid>-<mono>，无 uuid 依赖）。
 unsigned long currentPid()
 {
 #ifdef _WIN32
@@ -1059,7 +1059,7 @@ unsigned long currentPid()
 #endif
 }
 
-/// hash 诊断前缀（§8.3：失配消息含期望/实际 hash 前缀，不全量铺开）。
+/// hash 诊断前缀（失配消息含期望/实际 hash 前缀，不全量铺开）。
 std::string hashPrefix(const Utf8StringRef& hash)
 {
     const std::string full = toStd(hash);
@@ -1072,9 +1072,9 @@ Utf8String sha256HexOf(const ca::u8* data, ca::usize size)
     return sectionContentHash(data, size);
 }
 
-/// 提交换名（§8.1：撞 Windows 读者句柄重试 3 次 × 50ms 退避，耗尽 = Io）。
+/// 提交换名（撞 Windows 读者句柄重试 3 次 × 50ms 退避，耗尽 = Io）。
 /// `what` 供错误消息命名提交对象（section 文件 / store manifest），重试
-/// 口径全引擎一处（C2 section 原语与 C3 manifest 事务共用）。
+/// 口径全引擎一处（section 原语与 manifest 事务共用）。
 ca::Result<void, ProjectStoreError> renameWithRetry(const std::string& from,
                                                     const std::string& to, const char* what)
 {
@@ -1091,9 +1091,9 @@ ca::Result<void, ProjectStoreError> renameWithRetry(const std::string& from,
                                  utf8SafeSystemText(ec.message())));
 }
 
-/// 读入 + 校验公共主体（§5.2：先验 byte_size 再验 content_hash；§7.3 单次
+/// 读入 + 校验公共主体（先验 byte_size 再验 content_hash；单次
 /// 读入、不持久持句柄）。显式文件名变体：常规路径按清单条目 format→ext 映射
-/// 定文件名；恢复扫描对收容条目（format 值不识别，§9.3）按词根匹配到的实际
+/// 定文件名；恢复扫描对收容条目（format 值不识别）按词根匹配到的实际
 /// 文件名校验——收容段的真实扩展名本引擎不识别，不能拿自身映射找文件。
 ca::Result<Utf8String, ProjectStoreError> readVerifiedSectionAt(const std::string& bundleDir,
                                                                 const StoreSectionEntry& entry,
@@ -1102,8 +1102,8 @@ ca::Result<Utf8String, ProjectStoreError> readVerifiedSectionAt(const std::strin
     const std::string path = ca::fs::PathUtil::join(
         ca::fs::PathUtil::join(bundleDir, kProjectStoreSectionsDirName), fileName);
     if (!ca::fs::FileUtil::exists(path)) {
-        // §8.1 崩溃表：文件缺失（removeSection 墓碑中途/半提交遗留）与真损坏
-        // 同落"→ Damaged"一条路径，判定口径不区分二者（R45/P3）。
+        // 崩溃表：文件缺失（removeSection 墓碑中途/半提交遗留）与真损坏
+        // 同落"→ Damaged"一条路径，判定口径不区分二者。
         return ca::Err(makeSectionError(
             ProjectStoreErrorKind::Section, entry.name.ref(),
             "section content missing: '" + path + "' (registered byte_size " +
@@ -1133,15 +1133,15 @@ ca::Result<Utf8String, ProjectStoreError> readVerifiedSectionAt(const std::strin
             "section content_hash mismatch for '" + toStd(entry.name.ref()) + "': expected " +
                 hashPrefix(entry.contentHash.ref()) + ", actual " + hashPrefix(actual.ref())));
     }
-    // §6.2 readBytes 的设计返回类型是 Utf8String，此处仅作字节容器使用：
-    // opaque section 是"任意字节原样"（§5.1），故走 unchecked 构造、不做
+    // readBytes 的设计返回类型是 Utf8String，此处仅作字节容器使用：
+    // opaque section 是"任意字节原样"，故走 unchecked 构造、不做
     // UTF-8 校验（字节正确性刚由 content_hash 证明，格式合法性归各格式读路径）。
     Utf8String out = Utf8String::from_data_unchecked(bytes.as_ptr(), bytes.len());
     return ca::Ok(std::move(out));
 }
 
-/// 常规入口：按清单条目 format→ext 映射定文件名（§3.3）；收容条目走
-/// readVerifiedSectionAt 的显式文件名变体（恢复扫描词根匹配，§9.3）。
+/// 常规入口：按清单条目 format→ext 映射定文件名；收容条目走
+/// readVerifiedSectionAt 的显式文件名变体（恢复扫描词根匹配）。
 ca::Result<Utf8String, ProjectStoreError> readVerifiedSection(const std::string& bundleDir,
                                                               const StoreSectionEntry& entry)
 {
@@ -1166,7 +1166,7 @@ ca::Result<SectionWriteResult, ProjectStoreError> writeSectionBytes(
     const Utf8StringRef& bundleDir, const Utf8StringRef& name, SectionFormat format,
     const ca::u8* data, ca::usize size)
 {
-    // 触盘前先拒绝非法名（§3.3：Schema 错不静默改写；零半步残迹）。
+    // 触盘前先拒绝非法名（Schema 错不静默改写；零半步残迹）。
     auto nameValidated = validateSectionName(name);
     if (nameValidated.is_err()) return ca::Err(std::move(nameValidated).unwrap_err());
     if (size > 0 && data == nullptr) {
@@ -1179,7 +1179,7 @@ ca::Result<SectionWriteResult, ProjectStoreError> writeSectionBytes(
     const std::string sectionsDir = ca::fs::PathUtil::join(dirArg, kProjectStoreSectionsDirName);
     const std::string targetPath  = ca::fs::PathUtil::join(sectionsDir, fileName);
 
-    // §8.1-1 staged：tmp/txn-<pid>-<mono>/，恒在 bundle 内（同卷 MUST，R45/P6）。
+    // staged：tmp/txn-<pid>-<mono>/，恒在 bundle 内（同卷 MUST）。
     const auto  mono   = std::chrono::steady_clock::now().time_since_epoch().count();
     std::string txnDir = ca::fs::PathUtil::join(
         ca::fs::PathUtil::join(dirArg, kProjectStoreTmpDirName),
@@ -1187,7 +1187,7 @@ ca::Result<SectionWriteResult, ProjectStoreError> writeSectionBytes(
     std::error_code ec;
     if (std::filesystem::exists(nativePath(txnDir), ec) && !ec) {
         // pid+mono 跨 run 理论撞名：同名 txn 必为陈旧残留（steady 时钟单调、
-        // 本进程不可能持有同刻活 txn），清之（§8.1 重试"清扫旧 txn"同款）。
+        // 本进程不可能持有同刻活 txn），清之（重试"清扫旧 txn"同款）。
         ec.clear();
         std::filesystem::remove_all(nativePath(txnDir), ec);
         if (ec) {
@@ -1214,7 +1214,7 @@ ca::Result<SectionWriteResult, ProjectStoreError> writeSectionBytes(
                                      "': " + utf8SafeSystemText(ec.message())));
     }
 
-    // §8.1-2 写 staged 字节（精确透传，无编码/序列化变换）。
+    // 写 staged 字节（精确透传，无编码/序列化变换）。
     const std::string stagedPath = ca::fs::PathUtil::join(stagedSections, fileName);
     auto written = ca::fs::FileUtil::write_bytes(stagedPath, ca::core::ByteSlice(data, size));
     if (written.is_err()) {
@@ -1226,15 +1226,15 @@ ca::Result<SectionWriteResult, ProjectStoreError> writeSectionBytes(
         return ca::Err(makeError(ProjectStoreErrorKind::Io, message));
     }
 
-    // §8.1-4 提交换名 = 唯一提交点；失败清扫本次 txn（重试不依赖 staged
-    // 残留，R45/P2），sections/ 无残迹、旧字节完好。
+    // 提交换名 = 唯一提交点；失败清扫本次 txn（重试不依赖 staged
+    // 残留），sections/ 无残迹、旧字节完好。
     auto renamed = renameWithRetry(stagedPath, targetPath, "section file");
     std::error_code cleanupEc;
     std::filesystem::remove_all(nativePath(txnDir), cleanupEc);
     if (renamed.is_err()) return ca::Err(std::move(renamed).unwrap_err());
 
-    // 双登记字段（§6.3/D3）：对发布的精确字节算 hash + size（写路径逐字节
-    // 透传，内存口径 == 落盘口径）。manifest 登记归 C3。
+    // 双登记字段：对发布的精确字节算 hash + size（写路径逐字节
+    // 透传，内存口径 == 落盘口径）。清单登记归事务层。
     SectionWriteResult result;
     result.byteSize    = static_cast<ca::u64>(size);
     result.contentHash = sha256HexOf(data, size);
@@ -1264,15 +1264,15 @@ ca::Result<Utf8String, ProjectStoreError> readSectionBytes(const Utf8StringRef& 
     return readVerifiedSection(toStd(bundleDir), entry);
 }
 
-//-- store.json manifest 事务（C3：§6.3 flush 的 manifest 切片、§8.1 编排）------
+//-- store.json manifest 事务（flush 的 manifest 切片、编排） ------------------
 
 namespace {
 
-/// §8.1-1/6/7 的 manifest 切片：txn staged → 全量确定性字节落 staged → 单次
+/// manifest 侧三段式提交：txn staged → 全量确定性字节落 staged → 单次
 /// 换名（唯一提交点）→ 自清扫。三段式与 writeSectionBytes 同口径（txn 目录
-/// 命名 txn-<pid>-<mono>、tmp 恒在 bundle 内同卷 MUST R45/P6、撞读者句柄
+/// 命名 txn-<pid>-<mono>、tmp 恒在 bundle 内（同卷才原子）、撞读者句柄
 /// 重试 3×50ms 耗尽 = Io、只清自己的 txn——他人/开期残留归 open 期恢复扫描
-/// §8.2-1 的动作面，scanBundleRecovery 只盘点不代清）。
+/// 的动作面，scanBundleRecovery 只盘点不代清）。
 ca::Result<void, ProjectStoreError> stageAndCommitManifest(const std::string& bundleDir,
                                                            const std::string& manifestText)
 {
@@ -1282,7 +1282,7 @@ ca::Result<void, ProjectStoreError> stageAndCommitManifest(const std::string& bu
         "txn-" + std::to_string(currentPid()) + "-" + std::to_string(mono));
     std::error_code ec;
     if (std::filesystem::exists(nativePath(txnDir), ec) && !ec) {
-        // pid+mono 跨 run 理论撞名：同名 txn 必为陈旧残留，先清后建（C2 同款）。
+        // pid+mono 跨 run 理论撞名：同名 txn 必为陈旧残留，先清后建（同款）。
         ec.clear();
         std::filesystem::remove_all(nativePath(txnDir), ec);
         if (ec) {
@@ -1299,7 +1299,7 @@ ca::Result<void, ProjectStoreError> stageAndCommitManifest(const std::string& bu
                                      "': " + utf8SafeSystemText(ec.message())));
     }
 
-    // §8.1-6 写 staged：store.json 重写出（全量、确定性）→ staged/store.json。
+    // 写 staged：store.json 重写出（全量、确定性）→ staged/store.json。
     const std::string stagedPath = ca::fs::PathUtil::join(txnDir, kProjectStoreManifestName);
     auto written = ca::fs::FileUtil::write_bytes(
         stagedPath, ca::core::ByteSlice(reinterpret_cast<const ca::u8*>(manifestText.data()),
@@ -1312,10 +1312,10 @@ ca::Result<void, ProjectStoreError> stageAndCommitManifest(const std::string& bu
         return ca::Err(makeError(ProjectStoreErrorKind::Io, message));
     }
 
-    // §8.1-6 单次换名 staged/store.json → <bundle>/store.json = 提交点。
-    // 不走 bundle 根的 atomic_write_text：其同目录临时残留游离于 §8.2 恢复
-    // 扫描之外（R45/P4）。失败清扫本次 txn——旧 store.json 完好，重试不依赖
-    // staged 残留（R45/P2：重跑全序列时 staged 按同字节重新写出，幂等）。
+    // 单次换名 staged/store.json → <bundle>/store.json = 提交点。
+    // 不走 bundle 根的 atomic_write_text：其同目录临时残留游离于恢复
+    // 扫描之外。失败清扫本次 txn——旧 store.json 完好，重试不依赖
+    // staged 残留（重跑全序列时 staged 按同字节重新写出，幂等）。
     const std::string targetPath = ca::fs::PathUtil::join(bundleDir, kProjectStoreManifestName);
     auto renamed = renameWithRetry(stagedPath, targetPath, "store manifest");
     std::error_code cleanupEc;
@@ -1363,33 +1363,32 @@ ca::Result<StoreManifest, ProjectStoreError> commitStoreManifestTransaction(
 {
     const std::string dirArg = toStd(bundleDir);
 
-    //-- 1. 读当前清单（§8.1 前置：清单是唯一真清单，事务从可载状态出发）--------
+    //-- 1. 读当前清单（前置：清单是唯一真清单，事务从可载状态出发） ------------
     //
-    // CP-1 消费点（R52 处方；**C4 终裁已落地**）：isManifestUnloadableKind
-    // 判定"清单整笔不可载"（Open ∪ 解析期 Schema 整笔拒载 ∪ Io 读取失败
-    // ——C4 终裁把 Io 划入触发面：证明不了清单可载，就不得把现存 section
-    // 文件定性为"可载场景半提交遗留"；宁可错判不可误 prune，裁定理由见
-    // isManifestUnloadableKind 注释）。unloadable → 降级孤儿态，**拒绝
-    // 事务**：若在该状态覆写 store.json，现存 section 文件会被新清单重注册
-    // 为"清单可载"场景的 §8.2-4 孤儿（flush 后可自动 prune），P1 红线
-    // （unloadable-manifest 孤儿永不自动 prune）即被绕过。错误 kind 原样
-    // 上浮不吞并——终裁合流的是处置政策面，不改错误类别。
+    // 不可载判定在此消费：isManifestUnloadableKind 认定“清单整笔不可载”
+    // （Open ∪ 解析期 Schema 整笔拒载 ∪ Io 读取失败）。证明不了清单可载，
+    // 就不得把现存 section 文件定性为“可载场景半提交遗留”——宁可错判不可
+    // 误 prune，裁定理由见 isManifestUnloadableKind 注释。unloadable →
+    // 降级孤儿态，**拒绝事务**：若在该状态覆写 store.json，现存 section
+    // 文件会被新清单重注册为“清单可载”场景的半提交孤儿（flush 后可自动
+    // prune），“降级孤儿永不自动 prune”这条底线即被绕过。错误 kind 原样
+    // 上浮不吞并——合流的是处置政策面，不改错误类别。
     auto current = readStoreManifestFile(bundleDir);
     if (current.is_err()) {
         auto        error = std::move(current).unwrap_err();
         const bool  unloadable = isManifestUnloadableKind(error.kind);
         const char* route =
             unloadable
-                ? "manifest is unloadable (degraded-orphan state per design section 8.2-2; "
-                  "CP-1 final ruling, C4: Open, parse-time Schema and Io read failures all "
-                  "count - prefer false-unloadable over a wrong prune)"
+                ? "manifest is unloadable (degraded-orphan state: Open, parse-time Schema "
+                  "and Io read failures all count - prefer false-unloadable over a wrong "
+                  "prune)"
                 : "manifest error outside the unloadable surface (unexpected kind; fail-closed "
                   "refusal)";
         ca::str::Utf8StringBuilder builder;
         builder.append(copyOf("store manifest transaction refused: "))
                .append(route)
                .append("; store.json left untouched, unloadable-manifest orphans are never "
-                       "auto-pruned (P1); original error: ")
+                       "auto-pruned; original error: ")
                .append(error.message.ref());
         error.message = builder.build_or_empty();
         return ca::Err(std::move(error));
@@ -1400,14 +1399,14 @@ ca::Result<StoreManifest, ProjectStoreError> commitStoreManifestTransaction(
     std::set<std::string> upsertNames;
     for (const auto& entry : mutation.upserts) {
         const std::string name = toStd(entry.name.ref());
-        // §6.3：一次 flush 周期内每名至多一个 writer。
+        // 一次 flush 周期内每名至多一个 writer。
         if (!upsertNames.insert(name).second) {
             return ca::Err(makeSectionError(
                 ProjectStoreErrorKind::Schema, entry.name.ref(),
                 "manifest transaction: duplicate upsert for section '" + name +
                     "' (at most one writer per name per flush)"));
         }
-        // §9.3 只保留纪律：收容段（清单载有不识别 format）字节不可解释，
+        // 只保留纪律：收容段（清单载有不识别 format）字节不可解释，
         // 不可改写——先显式 remove，再另行登记新段。
         auto existing = std::find_if(manifest.sections.begin(), manifest.sections.end(),
                                      [&entry](const StoreSectionEntry& registered) {
@@ -1442,7 +1441,7 @@ ca::Result<StoreManifest, ProjectStoreError> commitStoreManifestTransaction(
                             return entry.name.equals(tombstone.ref());
                         });
         if (!registered) {
-            // §6.3：对不存在名报 Schema 错。
+            // 对不存在名报 Schema 错。
             return ca::Err(makeSectionError(
                 ProjectStoreErrorKind::Schema, tombstone.ref(),
                 "manifest transaction: cannot remove unregistered section '" +
@@ -1450,11 +1449,11 @@ ca::Result<StoreManifest, ProjectStoreError> commitStoreManifestTransaction(
         }
     }
 
-    //-- 3. upsert 与发布字节逐笔复核（§5.2 先 size 后 hash；Damaged 判定路径）--
+    //-- 3. upsert 与发布字节逐笔复核（先 size 后 hash；Damaged 判定路径） ------
     //
-    // 挂接纪律（C3 消费 C2 原语）：登记条目的 content_hash/byte_size 来自
+    // 挂接纪律（复用 section 侧原语）：登记条目的 content_hash/byte_size 来自
     // writeSectionBytes 的 SectionWriteResult；此处对 sections/ 发布文件复核，
-    // 失配/缺失 = Damaged 判定（§8.3）当场拦截——清单是引擎自产封闭记录，
+    // 失配/缺失 = Damaged 判定当场拦截——清单是引擎自产封闭记录，
     // writer bug / 发布中断在 flush 当场抓住，不落成明日 Damaged。
     for (const auto& entry : mutation.upserts) {
         auto verified = verifySectionBytes(bundleDir, entry);
@@ -1469,7 +1468,7 @@ ca::Result<StoreManifest, ProjectStoreError> commitStoreManifestTransaction(
         }
     }
 
-    //-- 4. 删除墓碑文件（先删文件后提清单，§8.1 崩溃表：中途崩溃落 Damaged）----
+    //-- 4. 删除墓碑文件（先删文件后提清单，崩溃表：中途崩溃落 Damaged） --------
     for (const auto& tombstone : mutation.removals) {
         auto existing = std::find_if(manifest.sections.begin(), manifest.sections.end(),
                                      [&tombstone](const StoreSectionEntry& entry) {
@@ -1491,7 +1490,7 @@ ca::Result<StoreManifest, ProjectStoreError> commitStoreManifestTransaction(
         manifest.sections.erase(existing);
     }
 
-    //-- 5. 应用变更（写即替换，§6.3）：同名整体替换，未登记追加 -----------------
+    //-- 5. 应用变更（写即替换）：同名整体替换，未登记追加 ----------------------
     for (const auto& entry : mutation.upserts) {
         auto existing = std::find_if(manifest.sections.begin(), manifest.sections.end(),
                                      [&entry](const StoreSectionEntry& registered) {
@@ -1505,7 +1504,7 @@ ca::Result<StoreManifest, ProjectStoreError> commitStoreManifestTransaction(
         }
     }
 
-    //-- 6. §8.1-6/7：全量确定性写出 → staged → 单次换名（提交点）→ 自清扫 -------
+    //-- 6.：全量确定性写出 → staged → 单次换名（提交点）→ 自清扫 ----------------
     auto text = writeStoreManifestText(manifest);
     if (text.is_err()) {
         auto error = std::move(text).unwrap_err();
@@ -1519,7 +1518,7 @@ ca::Result<StoreManifest, ProjectStoreError> commitStoreManifestTransaction(
     return ca::Ok(std::move(manifest));
 }
 
-//-- 恢复扫描（C4：§8.2 全量盘点分类账；只读——扫描零触盘）----------------------
+//-- 恢复扫描（全量盘点分类账；只读——扫描零触盘） -----------------------------
 
 namespace {
 
@@ -1568,13 +1567,13 @@ ca::Result<DirectoryListing, ProjectStoreError> listDirectoryEntries(const std::
 }
 
 /// 引擎自产前缀的字面前缀比较（tmp/ 的 txn-* 盘点用；词根/登记名认领的
-/// 大小写语义见 stemPrefixMatches/claimFileNameEquals——R62/N2 平台分叉）。
+/// 大小写语义见 stemPrefixMatches/claimFileNameEquals——随平台分叉）。
 bool hasPrefix(const std::string& value, const std::string& prefix)
 {
     return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
 }
 
-/// ASCII 大小写折叠（R62/N2 平台分叉的实现基元）。词根与登记名都出自 §3.3
+/// ASCII 大小写折叠（分叉比较的实现基元）。词根与登记名都出自
 /// 名字语法（ASCII 小写集），文件名一侧可能携带人工引入的任意大小写；UTF-8
 /// 的 ≥0x80 字节不受 ASCII 折叠影响，逐字节比较对多字节序列仍成立。
 char asciiFoldChar(char c)
@@ -1582,7 +1581,7 @@ char asciiFoldChar(char c)
     return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
 }
 
-/// §9.3 收容词根匹配（R62/N2 平台分叉）：Windows 侧大小写不敏感（对齐
+/// 收容条目的词根匹配（大小写随平台分叉）：Windows 侧不敏感（对齐
 /// Win32/`\\?\` 路径的大小写不敏感语义——人工大小写变体文件不得绕过收容
 /// 认领，也不得因大小写形态被误判清单外孤儿），POSIX 保持敏感（大小写敏感
 /// 文件系统语义不变：变体名是不同文件，照常进孤儿面）。
@@ -1599,7 +1598,7 @@ bool stemPrefixMatches(const std::string& fileName, const std::string& stemPrefi
 #endif
 }
 
-/// 登记文件名与现存文件名的认领比对（R62/N1 prune 现扫现验的认领面）：
+/// 登记文件名与现存文件名的认领比对（prune 现扫现验的认领面）：
 /// Windows 大小写不敏感——认领处 exists() 本就按 Win32 语义大小写不敏感地
 /// 解析，认领判定若只做精确串比较，已登记字节会以变体名误挂 prune 档；
 /// POSIX 精确相等（变体名在大小写敏感文件系统上是不同文件）。
@@ -1627,9 +1626,9 @@ ca::Result<StoreRecoveryReport, ProjectStoreError> scanBundleRecovery(
 
     StoreRecoveryReport report;
 
-    //-- 1. 清单载入（§8.2-2/3 分流；CP-1 终裁口径）-----------------------------
+    //-- 1. 清单载入（按可载性分流） ---------------------------------------
     //
-    // 读取/解析任何失败（Open/Schema/Io）同落 Unloadable——C4 终裁后触发面
+    // 读取/解析任何失败（Open/Schema/Io）同落 Unloadable——触发面也
     // 即 readStoreManifestFile 的全部失败类别，Loadable ⇔ 载入成功。kind 原样
     // 保留供诊断；政策面（孤儿恒 Never）按状态分流，不再按 kind 二次细分。
     StoreManifest manifest;   ///< Loadable 时持有载入结果（登记面分类的唯一依据）
@@ -1638,8 +1637,8 @@ ca::Result<StoreRecoveryReport, ProjectStoreError> scanBundleRecovery(
         report.manifestError = std::move(manifestLoaded).unwrap_err();
         report.manifestState = ManifestLoadState::Unloadable;
         report.diagnostics.push_back(
-            copyOf("recovery scan: store manifest unloadable (degraded-orphan state per design "
-                   "section 8.2-2; section files are report-only, never auto-pruned): " +
+            copyOf("recovery scan: store manifest unloadable (degraded-orphan "
+                   "state: section files are report-only, never auto-pruned): " +
                    report.manifestError.message.to_std_string()));
     }
     else {
@@ -1660,16 +1659,16 @@ ca::Result<StoreRecoveryReport, ProjectStoreError> scanBundleRecovery(
             "' (bundle structure incomplete); nothing to inventory there"));
     }
     for (const auto& other : sectionsListing.others) {
-        // 非普通文件不建行不触碰（§8.2 的盘点对象是 section 文件）。
+        // 非普通文件不建行不触碰（的盘点对象是 section 文件）。
         report.diagnostics.push_back(
             copyOf("recovery scan: non-regular entry '" + other +
                    "' under sections/ (not a section file); left untouched"));
     }
 
-    //-- 3. 登记面逐条目分类（Loadable 才有登记面；§8.2-3）----------------------
+    //-- 3. 登记面逐条目分类（Loadable 才有登记面） ----------------------------
     std::vector<const StoreSectionEntry*> entries;
     if (report.manifestState == ManifestLoadState::Loadable) {
-        // 载入成功才有条目可分类；Unloadable 不做条目重建（宁孤儿不错报，§8.2-2）。
+        // 载入成功才有条目可分类；Unloadable 不做条目重建（宁孤儿不错报）。
         entries.reserve(manifest.sections.size());
         for (const auto& entry : manifest.sections) entries.push_back(&entry);
     }
@@ -1685,7 +1684,7 @@ ca::Result<StoreRecoveryReport, ProjectStoreError> scanBundleRecovery(
         if (!entry->formatRetained) {
             const std::string fileName =
                 sectionFileName(entry->name.ref(), entry->format).to_std_string();
-            // R62/N1 病灶收口：认领处 exists 的 ec 不再忽略——检查失败（病态
+            // 认领处 exists 的 ec 不再忽略——检查失败（病态
             // 权限边界）= 不能证明"清单外"，按认领收编（宁可错认不可误 prune
             // 的同款 fail-closed：误收编的代价至多一行 Damaged 报告，误落
             // AfterFirstFlush 档的代价是登记字节可被自动删除）。诊断注明现症。
@@ -1712,9 +1711,9 @@ ca::Result<StoreRecoveryReport, ProjectStoreError> scanBundleRecovery(
             continue;
         }
 
-        // 收容条目（§9.3）：真实扩展名本引擎不识别，按 `<name>.` 词根匹配
+        // 收容条目：真实扩展名本引擎不识别，按 `<name>.` 词根匹配
         // 现存文件——词根命中的文件永不落入 prune 档（宁可错认不可误删）。
-        // R62/N2：匹配大小写语义按平台分叉（stemPrefixMatches——Windows
+        // 匹配大小写语义按平台分叉（stemPrefixMatches——Windows
         // 不敏感对齐 Win32 路径语义，人工大小写变体文件照常被认领；POSIX
         // 保持敏感，变体名是不同文件照常进孤儿面）。
         const std::string stemPrefix = toStd(entry->name.ref()) + ".";
@@ -1757,7 +1756,7 @@ ca::Result<StoreRecoveryReport, ProjectStoreError> scanBundleRecovery(
         }
     }
 
-    //-- 4. 孤儿面（§8.2-2/§8.2-4 两档；文件名字典序 = sectionsListing.files 序）-
+    //-- 4. 孤儿面（按清单可载性分两档；文件名字典序）-------------------
     const OrphanPrunePolicy loadablePolicy =
         report.manifestState == ManifestLoadState::Loadable ? OrphanPrunePolicy::AfterFirstFlush
                                                             : OrphanPrunePolicy::Never;
@@ -1771,18 +1770,17 @@ ca::Result<StoreRecoveryReport, ProjectStoreError> scanBundleRecovery(
             std::string("recovery scan: orphan section file '") + file +
             "' under sections/: " +
             (loadablePolicy == OrphanPrunePolicy::AfterFirstFlush
-                 ? std::string("prunable after first successful flush (design section 8.2-4)")
-                 : std::string("never auto-pruned (unloadable manifest, design section 8.2-2; "
-                               "P1 red line)"))));
+                 ? std::string("prunable after first successful flush")
+                 : std::string("never auto-pruned (unloadable manifest)"))));
     }
-    // 步骤 3 的收容词根额外匹配行先于本循环入列——按文件名整列定序，保住
-    // "同状态重扫逐字段一致"（报告头注）。
+    // 步骤 3 的收容词根额外匹配行先于本循环入列——按文件名整列定序，保证
+    // 同一磁盘状态重扫逐字段一致。
     std::sort(report.orphans.begin(), report.orphans.end(),
               [](const StoreOrphanRow& a, const StoreOrphanRow& b) {
                   return toStd(a.fileName.ref()) < toStd(b.fileName.ref());
               });
 
-    //-- 5. Damaged 诊断行（条目保留、状态上屏，§8.2-3；恢复 = 同名重写，§8.3）--
+    //-- 5. Damaged 诊断行（条目保留、状态上屏，恢复 = 同名重写） -------------
     for (std::size_t i = 0; i < report.damagedSections.size(); ++i) {
         const auto& entry  = report.damagedSections[i];
         const auto& reason = report.damagedReasons[i];
@@ -1791,7 +1789,7 @@ ca::Result<StoreRecoveryReport, ProjectStoreError> scanBundleRecovery(
                                             reason.message.to_std_string()));
     }
 
-    //-- 6. tmp/ 盘点（§8.2-1 只盘点不清扫——清扫挂点 ProjectStore::open）--------
+    //-- 6. tmp/ 盘点（只盘点不清扫——清扫挂点 ProjectStore::open） --------------
     auto tmpListed = listDirectoryEntries(tmpDir);
     if (tmpListed.is_err()) return ca::Err(std::move(tmpListed).unwrap_err());
     auto tmpListing = std::move(tmpListed).unwrap();
@@ -1813,12 +1811,12 @@ ca::Result<StoreRecoveryReport, ProjectStoreError> scanBundleRecovery(
     return ca::Ok(std::move(report));
 }
 
-//-- flush 后孤儿 prune（R62/N1：现扫现验；动作语义见 hpp 块注）------------------
+//-- flush 后孤儿 prune（现扫现验；动作语义见 hpp 块注） ------------------------
 
 namespace {
 
 /// 当前清单的认领面（现扫现验第 2 环的比对材料）：非收容条目的登记文件名
-/// 集 + 收容条目的 `<name>.` 词根集，比对大小写语义按平台分叉（同 N2）。
+/// 集 + 收容条目的 `<name>.` 词根集，比对大小写语义随平台分叉。
 struct FreshClaimSet
 {
     std::vector<std::string> registeredNames; ///< 非收容条目的 `<name>.<ext>`
@@ -1871,7 +1869,7 @@ StorePruneReport pruneOrphanSections(const Utf8StringRef& bundleDir,
     const std::string sectionsDir = ca::fs::PathUtil::join(dirArg, kProjectStoreSectionsDirName);
 
     //-- 工作清单：仅 AfterFirstFlush 档（Never 档零触碰：不进清单、不 stat、
-    //    不诊断；清单为空时零动作返回，连 sections/ 的存在性都不探测）--------
+    // 不诊断；清单为空时零动作返回，连 sections/ 的存在性都不探测）--------
     std::vector<const StoreOrphanRow*> work;
     for (const auto& row : report.orphans) {
         if (row.prunePolicy == OrphanPrunePolicy::AfterFirstFlush) work.push_back(&row);
@@ -1883,7 +1881,7 @@ StorePruneReport pruneOrphanSections(const Utf8StringRef& bundleDir,
     if (work.empty()) return outcome;
 
     //-- 现验前置：sections/ 此刻可盘点（缺失/检查失败 = 无"已 prune 过"的可靠
-    //    基态，全部跳过，不谎报幂等已删）-------------------------------------
+    // 基态，全部跳过，不谎报幂等已删）-------------------------------------
     std::error_code sectionsEc;
     if (!std::filesystem::exists(nativePath(sectionsDir), sectionsEc)) {
         const std::string reason =
@@ -1898,8 +1896,8 @@ StorePruneReport pruneOrphanSections(const Utf8StringRef& bundleDir,
         return outcome;
     }
 
-    //-- 现验第 1 环：清单此刻可读（读不出 = 零可删；P1 红线 + CP-1 终裁同款
-    //    fail-closed：证明不了清单可载，就不得动任何 section 字节）------------
+    //-- 现验第 1 环：清单此刻可读（读不出 = 零可删；与清单侧同款
+    // fail-closed：证明不了清单可载，就不得动任何 section 字节）------------
     auto manifestNow = readStoreManifestFile(bundleDir);
     if (manifestNow.is_err()) {
         const std::string reason = std::move(manifestNow).unwrap_err().message.to_std_string();
@@ -1908,7 +1906,7 @@ StorePruneReport pruneOrphanSections(const Utf8StringRef& bundleDir,
             outcome.skipped.push_back(copyOf(row->fileName.ref()));
             outcome.diagnostics.push_back(copyOf(
                 "orphan prune: skipped '" + path + "': manifest unreadable at prune time (" +
-                reason + "); nothing prunable while the manifest cannot be read (P1 red line)"));
+                reason + "); nothing prunable while the manifest cannot be read"));
         }
         return outcome;
     }
@@ -1919,7 +1917,7 @@ StorePruneReport pruneOrphanSections(const Utf8StringRef& bundleDir,
         const std::string path     = ca::fs::PathUtil::join(sectionsDir, fileName);
 
         //-- 现验第 2 环：此刻仍不被当前清单认领（扫描到执行之间清单可能已变化；
-        //    登记字节永不该自动删；认领面含收容词根，大小写语义同 N2）---------
+        // 登记字节永不该自动删；认领面含收容词根，大小写随平台）-------
         if (claims.claimed(fileName)) {
             outcome.skipped.push_back(copyOf(fileName));
             outcome.diagnostics.push_back(copyOf(
@@ -1929,7 +1927,7 @@ StorePruneReport pruneOrphanSections(const Utf8StringRef& bundleDir,
             continue;
         }
 
-        //-- 现验第 3 环：此刻存在、为普通文件、可读（R62 病灶的执行面收口）----
+        //-- 现验第 3 环：此刻存在、为普通文件、可读（病灶的执行面收口） -------
         // 探测必须走 status() 而非 exists()：两大家族标准库的 exists(p, ec)
         // 都把 ENOTDIR（路径穿普通文件）折叠成 not_found 并清 ec——病态路径
         // 形态会被谎报成"幂等已删"，违背"绝不带病删"红线。status() 面保留
@@ -1943,7 +1941,7 @@ StorePruneReport pruneOrphanSections(const Utf8StringRef& bundleDir,
             std::filesystem::status(nativePath(path), probeEc);
 
         //-- 3a. 干净已缺 = 幂等（not-found 族 errc；Win32 的 FILE/PATH_NOT_FOUND
-        //      与 POSIX ENOENT 同映射 no_such_file_or_directory）--------------
+        // 与 POSIX ENOENT 同映射 no_such_file_or_directory）--------------
         if (probeEc == std::errc::no_such_file_or_directory
             || (!probeEc && probeStatus.type() == std::filesystem::file_type::not_found)) {
             // 已缺 = 此前中断/已被处置的幂等形态："文件已缺视为已删"的
@@ -1970,7 +1968,7 @@ StorePruneReport pruneOrphanSections(const Utf8StringRef& bundleDir,
             outcome.diagnostics.push_back(copyOf(
                 "orphan prune: skipped '" + path +
                 "': not a regular file at prune time; non-regular entries are never "
-                "touched (design section 8.2)"));
+                "touched"));
             continue;
         }
         if (!pathReadable(path)) {
@@ -1982,7 +1980,7 @@ StorePruneReport pruneOrphanSections(const Utf8StringRef& bundleDir,
             continue;
         }
 
-        //-- 动作：删除（remove 的 ec 上浮为跳过诊断，绝不带病删）---------------
+        //-- 动作：删除（remove 的 ec 上浮为跳过诊断，绝不带病删） --------------
         std::error_code removeEc;
         std::filesystem::remove(nativePath(path), removeEc);
         if (removeEc) {
@@ -1997,7 +1995,7 @@ StorePruneReport pruneOrphanSections(const Utf8StringRef& bundleDir,
     return outcome;
 }
 
-//-- 单写者锁（C5：§7.1 全路径 + §7.2 PID fail-closed 过期判定）------------------
+//-- 单写者锁（全路径 + PID fail-closed 过期判定） ------------------------------
 
 std::string rfc3339UtcNow()
 {
@@ -2049,7 +2047,7 @@ std::string lockFilePathOf(const std::string& bundleDir)
     return ca::fs::PathUtil::join(bundleDir, kProjectStoreLockName);
 }
 
-/// 锁文件内容（§7.1 单行 JSON：pid/created_at/owner；尾随 LF 供 POSIX 文本
+/// 锁文件内容（单行 JSON：pid/created_at/owner；尾随 LF 供 POSIX 文本
 /// 工具友好，读取方容忍）。
 std::string buildLockContent(ca::i64 pid, const std::string& createdAt, const std::string& owner)
 {
@@ -2086,7 +2084,7 @@ std::optional<std::string> readLockBytes(const std::string& path)
 #endif
 }
 
-/// 锁 owner 记录（store.lock 的解析产物；§7.1 三字段）。
+/// 锁 owner 记录（store.lock 的解析产物；三字段）。
 struct LockOwnerRecord
 {
     ca::i64     pid       = 0;
@@ -2095,7 +2093,7 @@ struct LockOwnerRecord
     bool        valid = false; ///< 三字段齐备且形状合法
 };
 
-/// 解析锁 owner（R45/P5 fail-closed 口径）：pid 必须是正整数、created_at/
+/// 解析锁 owner（fail-closed 口径）：pid 必须是正整数、created_at/
 /// owner 必须是非空字符串——任一不备即 invalid（"读不出 owner 的锁"禁止自动
 /// 接管）。未知键忽略（演进宽容），重复键 invalid（同 ca::json 解析纪律）。
 LockOwnerRecord parseLockOwner(const std::string& bytes)
@@ -2139,14 +2137,14 @@ LockOwnerRecord parseLockOwner(const std::string& bytes)
     return record;
 }
 
-/// owner 三元组的人读形态（§7.1 Lock 错消息与接管/抢占诊断共用一处措辞）。
+/// owner 三元组的人读形态（Lock 错消息与接管/抢占诊断共用一处措辞）。
 std::string ownerSuffix(const LockOwnerRecord& record)
 {
     return "pid=" + std::to_string(record.pid) + ", created_at='" + record.createdAt +
            "', owner='" + record.owner + "'";
 }
 
-/// R45/P5：接管失败的消息重读当前锁文件报新赢家（竞态赢家此时已写入新内容，
+/// 接管失败的消息重读当前锁文件报新赢家（竞态赢家此时已写入新内容，
 /// 报告它而非旧值）。重读失败/不可解析时如实注明（仍属 fail-closed 面）。
 std::string currentWinnerSuffix(const std::string& lockPath)
 {
@@ -2175,7 +2173,7 @@ std::string rawPrefixForDiagnostic(const std::string& bytes)
 }
 
 #if !defined(_WIN32)
-/// POSIX 侧属主核验（R64-N1，与 Windows 的内容逐字节比对对称）：句柄所指
+/// POSIX 侧属主核验（与 Windows 的内容逐字节比对对称）：句柄所指
 /// inode（fstat）与路径现指 inode（stat）比对 st_dev/st_ino——一致 = 路径上
 /// 仍是本人独占创建的那个文件；不一致 = 名字已被并发 stealLock 抢占者 unlink
 /// 后换成新 inode，绝不删（防误伤抢占者，半截字节无从内容比对时这是唯一
@@ -2208,12 +2206,12 @@ PosixLockOwnership posixLockOwnershipAtPath(std::FILE* handle, const std::string
 enum class LockCreateOutcome
 {
     Acquired, ///< 独占创建 + 写内容 + fflush 成功（句柄交调用方持有）
-    Exists,   ///< 已存在（O_EXCL 冲突）——§7.1 失败路径入口
+    Exists,   ///< 已存在（O_EXCL 冲突）——活锁判定与接管路径的入口
     Failed,   ///< 其余创建/写失败（真实文件系统失败）——Io 面
 };
 
-/// 独占创建 + 写内容 + fflush（§7.1 获取序：独占创建 = O_EXCL 语义，§6.4
-/// 处方"纯 CRT 无平台分支"——POSIX `fopen("wbx")`、Windows `_wfsopen(L"wbx",
+/// 独占创建 + 写内容 + fflush（获取序：独占创建 = O_EXCL 语义，
+/// 全程纯 CRT 无平台分支——POSIX `fopen("wbx")`、Windows `_wfsopen(L"wbx",
 /// _SH_DENYNO)`（fopen 同一 mode 解析器，'x' → _O_EXCL；走宽路径保 UTF-8
 /// 目录名的正确性，与 nativePath/u8path 的全库路径纪律一致）。写失败不留
 /// 半截锁——尽力删除后报 Failed。
@@ -2237,7 +2235,7 @@ LockCreateOutcome tryCreateLock(const std::string& path, const std::string& cont
         std::error_code removeEc;
         std::filesystem::remove(nativePath(path), removeEc);   // 半截锁不留盘（尽力而为）
 #else
-        // 写失败清场同样属主核验（R64 附注顺带收口）：半截字节无从内容比对，
+        // 写失败清场同样属主核验：半截字节无从内容比对，
         // inode 比对是唯一基准——独占创建到清场之间名字已被并发抢占者换成
         // 新 inode 时绝不删（此时本人旧 inode 已被抢占者 unlink，孤儿随 close
         // 释放，路径上不留半截锁）；名字已消失同样无可清。
@@ -2254,7 +2252,7 @@ LockCreateOutcome tryCreateLock(const std::string& path, const std::string& cont
     return LockCreateOutcome::Acquired;
 }
 
-/// Lock 错消息的固定尾巴（§7.1 IDA "database is locked by" 同款体验的定位面）。
+/// Lock 错消息的固定尾巴（IDA "database is locked by" 同款体验的定位面）。
 ProjectStoreError lockError(const std::string& message)
 {
     return makeError(ProjectStoreErrorKind::Lock, message);
@@ -2282,7 +2280,7 @@ bool storeLockPidAlive(const ca::i64 pid)
     if (pid <= 0 || pid > static_cast<ca::i64>(0xFFFFFFFFu)) return false;
     // daemon_state.cpp:348-368 纪律平移：用最小特权查询权，保护/高完整性进程
     // 也能探；只有"未知 pid"证明进程已死，其余失败（ACCESS_DENIED 或瞬时错）
-    // 必须报活——证明不了死就不得动它的锁（§7.2）。
+    // 必须报活——证明不了死就不得动它的锁。
     const HANDLE process =
         ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
     if (process == nullptr) {
@@ -2295,7 +2293,7 @@ bool storeLockPidAlive(const ca::i64 pid)
     return !queried || exitCode == STILL_ACTIVE;
 #else
     if (pid <= 0 || pid > static_cast<ca::i64>(std::numeric_limits<pid_t>::max())) return false;
-    // ESRCH = 死；EPERM（活但无权限）与其他错误一律活（fail-closed，§7.2）。
+    // ESRCH = 死；EPERM（活但无权限）与其他错误一律活（fail-closed）。
     return ::kill(static_cast<pid_t>(pid), 0) != -1 || errno != ESRCH;
 #endif
 }
@@ -2334,7 +2332,7 @@ void StoreLock::release()
     // Windows：自身独占句柄（CRT fopen 无 FILE_SHARE_DELETE）在持期间阻止
     // 删除——必须先关句柄再删文件。close→remove 窗口内可能出现 stealLock
     // 抢占者的新锁：删除前重读并逐字节比对本人写入内容，不是本人的字节绝不删
-    // （防误伤抢占者）；删不掉/已换人转诊断不外抛（析构纪律，§7.1 释放面）。
+    // （防误伤抢占者）；删不掉/已换人转诊断不外抛（析构纪律，释放面）。
     std::fclose(handle_);
     handle_ = nullptr;
     auto    current = readLockBytes(lockPath);
@@ -2360,9 +2358,9 @@ void StoreLock::release()
 #else
     // POSIX：先删名后关句柄（unlink 语义——名字消失后竞争者的独占创建落成
     // 新 inode，本句柄 close 只释放旧 inode；教科书安全序）。删除前属主核验
-    // （R64-N1，与 Windows 内容比对对称）：fstat 句柄 vs stat 路径比对 inode，
+    // （与 Windows 内容比对对称）：fstat 句柄 vs stat 路径比对 inode，
     // 名字已被并发 stealLock 抢占者换成新 inode 时绝不删（防误伤抢占者）；
-    // 删除失败/不是本人/已消失一律转诊断（析构纪律，§7.1 释放面）。
+    // 删除失败/不是本人/已消失一律转诊断（析构纪律，释放面）。
     const PosixLockOwnership ownership = posixLockOwnershipAtPath(handle_, lockPath);
     if (ownership == PosixLockOwnership::Ours) {
         std::error_code ec;
@@ -2396,7 +2394,7 @@ ca::Result<StoreLock, ProjectStoreError> acquireStoreLock(const Utf8StringRef& b
         buildLockContent(static_cast<ca::i64>(currentPid()), rfc3339UtcNow(),
                          owner != nullptr ? owner : kProjectStoreLockOwnerDefault);
 
-    //-- 获取：独占创建（O_EXCL）→ 写内容 → fflush（句柄此后持有到 close）------
+    //-- 获取：独占创建（O_EXCL）→ 写内容 → fflush（句柄此后持有到 close） -----
     std::FILE*        handle = nullptr;
     const LockCreateOutcome first = tryCreateLock(lockPath, content, &handle);
     if (first == LockCreateOutcome::Acquired) {
@@ -2418,34 +2416,33 @@ ca::Result<StoreLock, ProjectStoreError> acquireStoreLock(const Utf8StringRef& b
     const LockOwnerRecord record =
         existingBytes.has_value() ? parseLockOwner(*existingBytes) : LockOwnerRecord{};
     if (!existingBytes.has_value() && !options.stealLock) {
-        // 读不出 owner = 按"活锁" fail-closed（R45/P5：独占创建成功与内容写完
+        // 读不出 owner = 按"活锁" fail-closed（独占创建成功与内容写完
         // 之间的崩溃窗会留下空/半截 lock 文件；读不出就不得动它）。stealLock
-        // 的人工决策出口与下方不可解析支同门放行（R64-N2：fail-closed 只禁
+        // 的人工决策出口与下方不可解析支同门放行（fail-closed 只禁
         // 自动接管，不禁人工抢占；此分支被吞掉 stealLock 出口会形成"已用
         // stealLock 仍被指去 stealLock"的死循环指引）。
         return ca::Err(lockError(
             "store.lock '" + lockPath +
-            "' is present but unreadable (treated as a LIVE lock, fail-closed per R45/P5: "
+            "' is present but unreadable (treated as a LIVE lock, fail-closed: "
             "a crash between exclusive-create and content-write leaves empty/half-written "
             "lock files; auto-takeover refused, message: unparseable); use "
-            "OpenOptions::stealLock to preempt explicitly"));
+            "StoreLockOptions::stealLock to preempt explicitly"));
     }
     if (!record.valid && !options.stealLock) {
-        // 不可解析 = 按活锁 fail-closed（R45/P5）：注明 unparseable + 指路
+        // 不可解析 = 按活锁 fail-closed：注明 unparseable + 指路
         // stealLock，禁止自动接管。
         return ca::Err(lockError(
             "store.lock '" + lockPath +
-            "' is unparseable (treated as a LIVE lock, fail-closed per R45/P5; auto-takeover "
-            "refused); use OpenOptions::stealLock to preempt explicitly; raw prefix: \"" +
+            "' is unparseable (treated as a LIVE lock, fail-closed; auto-takeover "
+            "refused); use StoreLockOptions::stealLock to preempt explicitly; raw prefix: \"" +
             rawPrefixForDiagnostic(*existingBytes) + "\""));
     }
     if (!options.stealLock && storeLockPidAlive(record.pid)) {
-        // 活 = Lock 错（消息含 pid/created_at/owner，§7.1）。
+        // 活 = Lock 错（消息含 pid/created_at/owner）。
         return ca::Err(lockError("bundle is locked by another process: '" + lockPath +
                                  "'; " + ownerSuffix(record) +
-                                 " (single-writer lock, design section 7.1; takeover refused "
-                                 "because the owner process is alive per the fail-closed PID "
-                                 "probe, section 7.2)"));
+                                 " (single-writer lock; takeover refused because the owner "
+                                 "process is alive per the fail-closed PID probe)"));
     }
 
     //-- 接管（死锁接管 / stealLock 抢占）：删旧 → 重试独占创建恰好一次 ---------
@@ -2472,7 +2469,7 @@ ca::Result<StoreLock, ProjectStoreError> acquireStoreLock(const Utf8StringRef& b
     std::FILE*        retryHandle = nullptr;
     const LockCreateOutcome retry = tryCreateLock(lockPath, content, &retryHandle);
     if (retry == LockCreateOutcome::Acquired) {
-        // 接管成功也必须留下事实记录（§7.1：stealLock 诊断必须记录抢占事实；
+        // 接管成功也必须留下事实记录（stealLock 诊断必须记录抢占事实；
         // 死锁接管同样记 owner 全文 + 判死依据）。
         StoreLock lock;
         lock.handle_         = retryHandle;
@@ -2482,23 +2479,23 @@ ca::Result<StoreLock, ProjectStoreError> acquireStoreLock(const Utf8StringRef& b
             lock.diagnostics_.push_back(copyOf(
                 "store.lock preempted via stealLock at '" + lockPath + "': previous owner " +
                 previousOwnerText +
-                "; skip-pid-probe preemption by user decision (design section 7.1)"));
+                "; skip-pid-probe preemption by user decision"));
         }
         else {
             lock.diagnostics_.push_back(copyOf(
                 "store.lock taken over at '" + lockPath + "': previous owner " +
                 previousOwnerText +
-                " proven dead by the fail-closed PID probe (design section 7.2); old lock "
+                " proven dead by the fail-closed PID probe; old lock "
                 "removed, exclusive re-create succeeded (exactly-once)"));
         }
         return ca::Ok(std::move(lock));
     }
     if (retry == LockCreateOutcome::Exists) {
-        // 竞态输（再失败 = Lock，不循环）：消息重读当前锁文件报新赢家（R45/P5）。
+        // 竞态输（再失败 = Lock，不循环）：消息重读当前锁文件报新赢家。
         return ca::Err(lockError(
             "lost the takeover race for store.lock '" + lockPath + "' after removing the " +
             (options.stealLock ? "previous" : "proven-dead") + " owner's lock (" +
-            previousOwnerText + "); exactly-one retry per design section 7.1; " +
+            previousOwnerText + "); exactly-one retry; " +
             currentWinnerSuffix(lockPath)));
     }
     return ca::Err(makeError(ProjectStoreErrorKind::Io,

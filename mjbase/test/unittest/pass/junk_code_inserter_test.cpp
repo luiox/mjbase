@@ -1,4 +1,4 @@
-// JunkCodeInserter：确定性垃圾分支插入 + maxStack 抬升 + A1 帧链接线
+// JunkCodeInserter：确定性垃圾分支插入 + maxStack 抬升 + 帧链接线
 // （StrictTypeResolverAdapter 注入 → SMT 再生被读侧接受）。
 #include <gtest/gtest.h>
 
@@ -96,7 +96,7 @@ TEST(JunkCodeInserterTest, bumpsMaxStackFloor)
     EXPECT_GE(maxStackOf(inspect(r.out)), 1);
 }
 
-// ── A1 帧链接线（B 批验收核心）：resolver 注入 → SMT 再生且被读侧接受 ──
+// ── 帧链接线：resolver 注入 → SMT 再生且被读侧接受 ──
 TEST(JunkCodeInserterTest, resolverWiredPipelineRegeneratesSmt)
 {
     mjbase::KeyPool                            pool;

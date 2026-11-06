@@ -1,5 +1,5 @@
 /// @file        pipeline_builder.hpp
-/// @brief       管线装配层（pass-contract §9）：fluent 组装嵌套 PassManager。
+/// @brief       管线装配层（doc:pass-contract）：fluent 组装嵌套 PassManager。
 ///
 /// 按 mjbase 四 scope
 /// 模型定型。装配序：
@@ -17,8 +17,8 @@
 ///
 /// 与 mbase 的差异：
 /// - buildNestedPipeline 入参去掉 classWriterFlags/typeResolver——libjbc 写回面
-///   没有 COMPUTE_*S 旗标，帧重算经 options.typeResolver 注入（pass-contract
-///   §9：resolver 数据获取是调用方的事，管线只消费已建好的图）；
+///   没有 COMPUTE_*S 旗标，帧重算经 options.typeResolver 注入（resolver 数据
+///   获取是调用方的事，管线只消费已建好的图）；
 /// - ClassToMethodPassAdaptor 需要 identityPool，从入参 PassJobContext 取
 ///   （构建期借用，与 adaptor 持引用的寿命契约一致：built 管线须在 job 存活
 ///   期内 run）；
@@ -95,7 +95,7 @@ private:
     std::vector<std::pair<std::string, GlobalFactory>> postClassFactories_;
 };
 
-/// @brief 注册名 → builder 段位投递（§9：按 scope 标签分派，唯一收口）。
+/// @brief 注册名 → builder 段位投递（按 scope 标签分派，唯一收口）。
 ///
 /// 查名走 registry.find（未知名 Err(UnknownPass)），create 走对应 scope 的
 /// create*Pass；命中后按标签投入 method/class/global 段。投递的工厂 lambda

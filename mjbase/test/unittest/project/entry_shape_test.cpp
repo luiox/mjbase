@@ -1,5 +1,5 @@
 /// @file        entry_shape_test.cpp
-/// @brief       条目路径形态判定：facet 优先序、regular 口径与 B1 最小判定
+/// @brief       条目路径形态判定：facet 优先序、regular 口径与最小判定
 ///              逐字节一致、facet 稳定名。
 #include <gtest/gtest.h>
 
@@ -65,7 +65,7 @@ TEST(MjEntryShapeTest, PriorityPicksHighestFacetWhenMultipleHit)
 
 TEST(MjEntryShapeTest, RegularFlagMatchesB1MinimalPredicatePlusB4Extensions)
 {
-    // B1 最小口径（mjt 导入桥原实现，#121 B4 上提时的逐字节对照集）：
+    // 最小口径（逐字节对照集）：
     // 非空、无控制字符/DEL、无反斜杠、非前导或尾随 '/'、无空段、无点段。
     EXPECT_FALSE(isRegularEntryPath(""));
     EXPECT_FALSE(isRegularEntryPath("/lead"));
@@ -76,7 +76,7 @@ TEST(MjEntryShapeTest, RegularFlagMatchesB1MinimalPredicatePlusB4Extensions)
     EXPECT_FALSE(isRegularEntryPath("a\\b"));
     EXPECT_FALSE(isRegularEntryPath(std::string("a\x1f" "b")));
     EXPECT_FALSE(isRegularEntryPath("/"));
-    // B4 补充（空格名混淆样本实测的空洞形态）：超长与段首尾空白。
+    // 补充（空格名混淆样本实测的空洞形态）：超长与段首尾空白。
     EXPECT_FALSE(isRegularEntryPath(std::string(256, 'a')));
     EXPECT_FALSE(isRegularEntryPath(std::string(300, ' ') + ".class"));
     EXPECT_FALSE(isRegularEntryPath(" /lead-space.class"));

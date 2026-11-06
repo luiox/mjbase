@@ -334,7 +334,7 @@ TEST(MjPassIdentityWrapperInlinerTest, RewritesInterfaceForwardWithCountByte)
     EXPECT_EQ(facts[2].member, "Iface.twice(I)I");
     EXPECT_EQ(facts[3].op, Op::IRETURN);
 
-    // count 字节：接收者(1) + int 实参(1) = 2（§6.5 invokeinterface）。
+    // count 字节：接收者(1) + int 实参(1) = 2（JVMS §6.5 invokeinterface）。
     auto loaded = jbc::ir::makeSessionFromBytes(
         jbc::core::ByteView(resourceBytes(container, "Caller.class")));
     ASSERT_TRUE(loaded.is_ok());

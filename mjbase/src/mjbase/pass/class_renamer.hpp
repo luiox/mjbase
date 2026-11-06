@@ -5,10 +5,9 @@
 
 namespace mjbase::pass {
 
-/// @brief 类重命名器：按确定性规则把容器内全部类重命名为 `<包>/Class<N>`（移植自
-///        mbase pass/opt/class_renamer）。
+/// @brief 类重命名器：按确定性规则把容器内全部类重命名为 `<包>/Class<N>`。
 ///
-/// 行为矩阵（与旧实现逐条对齐，Multi-Release 族契约为本仓增量）：
+/// 行为矩阵：
 ///   - 装载面：可解析、有类名的 class 资源参与；空 bytes、不可解析资源跳过。
 ///     装载后按 (类内部名, URI) 字节序排序（重命名编号的确定性来源）——base
 ///     与 `META-INF/versions/<N>/` 变体内名相同并列时，URI 是族内唯一的次序
@@ -40,14 +39,14 @@ namespace mjbase::pass {
 ///   - 结果：发生重命名返回 none()（资源列表失效），无类可改返回 all()。
 ///
 /// 与旧栈的偏差点：
-///   - Signature/注解类引用同步（B8 8.3 收口，输出变更的语义增强）：旧栈
+///   - Signature/注解类引用同步（输出变更的语义增强）：旧栈
 ///     默认策略为 bytecodeOnly，重命名后泛型签名与注解类引用滞留旧名（悬
 ///     垂泛型）；本实现经 libjbc 属性层结构化手术面（jbc::ir::sig_attr /
 ///     type_annotation_attr 消费口径）同步改写，反射字符串与资源面仍保持
 ///     旧栈不开口径。
 ///   - 写回走 libjbc copy-through：未触碰区段字节保真、常量池不重编号；旧栈
 ///     经 tree writer 全量重序列化（CP 按 encounter 序重编号、失引条目剪除）。
-///     成员/指令语义等价，writer 级差异（对拍以 golden 声明类目收口）。
+///     成员/指令语义等价，writer 级字节面存在差异。
 ///   - base 缺失而仅存版本化变体的族：变体照常改名并保持在 versions/&lt;N&gt;
 ///     前缀下，不升格为 base（输出布局变更不属本 pass，见容器层族视图契约）。
 ///

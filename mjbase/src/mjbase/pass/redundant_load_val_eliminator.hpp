@@ -5,8 +5,7 @@
 namespace mjbase::pass {
 
 /// @brief 冗余装载值消除器：删除「常量装载 + 紧随 POP/POP2」的相邻指令对
-///        （移植自 mbase pass/opt/dead_code_remover 的
-///        RedundantLoadValEliminator）。
+///        （dead_code_remover 拆出的装载值段）。
 ///
 /// 匹配矩阵（classfile 可观测行为）：
 ///   - POP：前驱是 int / long / string 常量装载（ICONST/BIPUSH/SIPUSH/LDC(Int)/

@@ -185,7 +185,7 @@ ca::u32 findOrAddUtf8(jbc::core::ClassFile& cf, std::string_view s)
 }
 
 /// 重建被搬移字段的 ConstantValue：整节点搬移保真该属性；adoptField
-/// 只搬元数据（libjbc §34.3(4) 字段属性表不随迁），常量值在此按源语义
+/// 只搬元数据（libjbc 设计文档 §34.3(4)：字段属性表不随迁），常量值在此按源语义
 /// intern 进宿主 CP 后以新建属性槽重挂——static final 常量的行为面等价。
 void rebuildConstantValue(jbc::ir::ClassSession& src, const jbc::ir::FieldUnit& srcField,
                           jbc::ir::ClassSession& dst, const jbc::ir::FieldUnit& dstField)
@@ -254,7 +254,7 @@ void rebuildConstantValue(jbc::ir::ClassSession& src, const jbc::ir::FieldUnit& 
 }
 
 /// 从零建宿主：V1_8 public super +
-/// 调用 super 构造器的 public `<init>`，走 A5 从零会话 + addMethod 管线。
+/// 调用 super 构造器的 public `<init>`，走从零会话 + addMethod 管线。
 MergedHost createMergedHost(ca::usize index)
 {
     MergedHost host;
@@ -305,12 +305,11 @@ MergedHost createMergedHost(ca::usize index)
     return host;
 }
 
-/// 方法搬移（§34.3 挂账回收）：libjbc adoptMethod 直调——libjbc 修复重放
-/// 核的分支体双缺陷（CP 三读门误伤分支族 + 前向分支占位标签被 append 校验
-/// 拒收）后，原「NOP 遮罩 append + get() 变异面恢复」的 pass 侧规避层整体
-/// 回收，搬移语义单一真源回到库契约（design.md libjbc §34.3）。NoCode
-/// （abstract/native static）按 adoptMethod 契约只搬元数据；失败转抛
-/// （调用方整批回滚，容器不动）。
+/// 方法搬移：libjbc adoptMethod 直调——libjbc 重放核的两个分支体缺陷（CP
+/// 三读门误伤分支族 + 前向分支占位标签被 append 校验拒收）已在库侧修复，
+/// pass 侧无需 NOP 遮罩规避层，搬移语义单一真源是库契约
+/// （libjbc 设计文档 §34.3）。NoCode（abstract/native static）按
+/// adoptMethod 契约只搬元数据；失败转抛（调用方整批回滚，容器不动）。
 jbc::ir::MethodId adoptToolMethodIntoHost(MergedHost& host, LoadedClass& src,
                                           jbc::ir::MethodId mid)
 {
@@ -358,7 +357,7 @@ void moveToolClassMembers(LoadedClass& src, MergedHost& host)
     }
 }
 
-/// 宿主帧再生（libjbc §34.3(4)(b) 消费者义务）：分支体或带异常表的方法
+/// 宿主帧再生（libjbc 设计文档 §34.3(4)(b) 消费者义务）：分支体或带异常表的方法
 /// 并入 V51+ 宿主后 Strict 重算 + maxes 采用 + SMT 再生挂回，走 spi 帧链
 /// 同一入口。宿主方法均为搬移产物（无非 Code 嵌套属性随迁），无悬垂适配面。
 void regenerateHostFrames(MergedHost& host, mjbase::KeyPool& pool,
@@ -399,7 +398,7 @@ void regenerateHostFrames(MergedHost& host, mjbase::KeyPool& pool,
         const mjbase::MemberKey key =
             mjbase::memberKeyOf(pool, ownerKey, name, desc);
         // 堆分配 scope：unique_ptr 局部持有、地址互异且贯穿本次调用
-        //（pass-contract §1 自造 scope 的地址唯一自证）。
+        //（doc:pass-contract-scope 自造 scope 的地址唯一自证）。
         auto scope = std::make_unique<mjbase::spi::MethodScope>(
             mjbase::spi::MethodScope{mjbase::spi::MethodTarget{key, mu.id, name, desc,
                                                                mu.access, session},

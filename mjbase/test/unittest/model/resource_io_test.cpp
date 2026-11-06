@@ -1,6 +1,5 @@
 /// @file        resource_io_test.cpp
-/// @brief       资源导入导出测试，
-///              14 用例；末尾 3 个为本批新增的 Result 错误面用例）。
+/// @brief       资源导入导出测试（含 Result 错误面用例）。
 #include <gtest/gtest.h>
 
 #include <functional>
@@ -344,7 +343,7 @@ TEST(MjModelIoTest, ManifestNameRoutesThroughManifestChannel)
     EXPECT_EQ(res->getType(), ResourceType::Manifest);
 }
 
-// ── Result 错误面（本批新增；mbase 同路径以 throw std::runtime_error 报错）──
+// ── Result 错误面（mbase 同路径用 throw std::runtime_error，本仓走 Result）──
 // 全部不触磁盘：错误分支在打开文件前返回。
 
 // 空 URI 导出 class：容器非「恰好一个 ClassResource」时拒绝。

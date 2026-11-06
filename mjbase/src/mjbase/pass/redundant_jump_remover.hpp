@@ -6,7 +6,7 @@ namespace mjbase::pass {
 
 /// @brief 冗余跳转消除器：删除/替换「目标落在顺序后继前置边界」的跳转
 ///        （对齐旧栈 mbase pass/opt/jump_label_layout 的
-///        RedundantJumpRemover 可观测面；标签布局族首件）。
+///        RedundantJumpRemover 可观测面；属标签布局族）。
 ///
 /// 适配形态：跳转（GOTO/GOTO_W 与全部条件跳转族）的分支目标标签锚定在
 /// 紧邻的顺序后继前置边界——分支边与 fallthrough 边汇合同一点，跳转本身

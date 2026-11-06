@@ -37,7 +37,7 @@ public:
     /// @param reader    可选的自定义读取器，默认使用 JvmJarReader（兼容 data descriptor）
     static ModelResult<void> importFromJar(ResourceContainer& container, std::string_view filePath,
                                            std::unique_ptr<mjbase::jar::IJarReader> reader = nullptr);
-    /// @brief 从 jar 文件导入（#1110 族条目名宽容解码注入面）。
+    /// @brief 从 jar 文件导入（条目名宽容解码注入面）。
     /// @param decoder 条目名宽容解码回调（opt-in；空 = 原始字节直通零漂移，
     ///                与 mjbase::jar::listJarEntries 同口径）。内部自建 JvmJarReader
     ///                并注入；自带 reader 的调用方走 reader 重载自行注入。

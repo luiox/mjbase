@@ -9,7 +9,7 @@ ca::core::Result<jbc::analysis::VType, jbc::analysis::TypeMergeError>
     using ca::core::Err;
     using ca::core::Ok;
 
-    // 结构性归并（两格同规，§10.2.3）：Null 作万能引用底；同类精确引用自并。
+    // 结构性归并（两格同规）：Null 作万能引用底；同类精确引用自并。
     // 计算域理论上只把具体引用对送进来，这里按防御式口径兜住缺名形态。
     if (a.k == ja::VKind::Null && b.k == ja::VKind::Ref) return Ok(b);
     if (b.k == ja::VKind::Null && a.k == ja::VKind::Ref) return Ok(a);

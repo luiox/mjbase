@@ -1,24 +1,23 @@
 /// @file        region_select.hpp
-/// @brief       RegionSelect：区域挑选策略（asm/sem 策略层首批，A6）。
+/// @brief       RegionSelect：区域挑选策略（保守档）。
 ///
-/// 设计依据 luiox/mjbase #115 策略层里程碑（设施先行、策略后加、一批一个
-/// 策略）：RegionView 只交候选 + 事实（判据 4/5 以旗标交付、拒绝决策归
-/// 消费方），「挑哪个区域」此前全靠调用方手写谓词——merge_plan_test 的
-/// outlineWhere（逐候选降级枚举）与 outline_plan_test 的 runJvmGateWhere
-/// 即该形态，本批上收为策略层。设施层既有行为（planOutline/merge 判据与
-/// 落地）零改动：策略是新设施，定位在候选枚举与识别之间——
-///   RegionView.candidates() → **selectRegion（本批）** → planOutline → apply。
+/// 定位：RegionView 只交候选 + 事实（判据 4/5 以旗标交付、拒绝决策归
+/// 消费方），「挑哪个区域」归策略层——消费方手写谓词形态（merge_plan_test
+/// 的 outlineWhere、outline_plan_test 的 runJvmGateWhere）由 selectRegion
+/// 统一承担。设施层既有行为（planOutline/merge 判据与落地）不因策略改变：
+/// 策略定位在候选枚举与识别之间——
+///   RegionView.candidates() → selectRegion → planOutline → apply。
 ///
 /// 接口形状（对齐 plan 处方模式：纯数据 + 纯函数，值语义）：
 ///   输入 = RegionCandidate 集 + 事实面（RegionView / FrameView /
 ///   LivenessView，全部指针可缺省——缺哪面跳过哪层预检，策略在纯候选
 ///   数据上仍可决策）；输出 = RegionDecision（挑选决策 + 优先序）。
-///   优先序供批量驱动复用（A7 方向：方法级挑选逐区域驱动 outline）。
+///   优先序供批量驱动复用（方法级逐区域驱动 outline）。
 ///
 /// v1 默认策略（保守口径，规则详见 selectRegion 注）：
 ///   1. 事实面预检（与 planOutline v1 判据同向的廉价代理）：方法级 jsr
-///      （判据 5）、候选级直线旗标（判据 1，A2 v1 只开直线档）、handler
-///      集为空（判据 4，A2 收紧）、末条指令 goto（v1 出口形态）、
+///      （判据 5）、候选级直线旗标（判据 1，v1 只开直线档）、handler
+///      集为空（判据 4，try 覆盖不开档）、末条指令 goto（v1 出口形态）、
 ///      UninitThis 存活（判据 6，FrameView 面）、写回集为空（判据 3，
 ///      LivenessView 面：区域内被写 ∩ 出口锚后活跃 = 空）。
 ///   2. 规模次之：通过预检的候选按成员数升序（最小切口保守——嵌套候选
@@ -35,9 +34,9 @@
 ///
 /// 可插拔（v2 起按消费方加策略不加核心）：RegionSelectPolicy 为纯数据
 /// 档位（预检开关与排序取向），RegionSelectFn 为策略函数形状——新策略
-/// = 同形状新纯函数，消费方（A7 批量驱动）持函数指针换档，不改核心。
+/// = 同形状新纯函数，消费方（批量驱动）持函数指针换档，不改核心。
 ///
-/// 红线（#115 §2.1 同口径）：只读、值语义、无编辑状态；请求中的视图 /
+/// 红线：只读、值语义、无编辑状态；请求中的视图 /
 /// 指针为借用（快照纪律——方法体结构变更后重建，句柄解析需原 CodeUnit
 /// 存活）；策略拒绝不产生任何会话改动，判据级拒绝细节仍归 planOutline。
 #pragma once
@@ -72,9 +71,9 @@ const char* to_string(RegionSelectNote note) noexcept;
 /// @brief 策略档位（纯数据；缺省值 = v1 保守口径全开）。
 struct RegionSelectPolicy
 {
-    /// 判据 1 直线旗标预检（A2 v1 只开直线档；放开交消费方自担）。
+    /// 判据 1 直线旗标预检（v1 只开直线档；放开交消费方自担）。
     bool requireStraightLine = true;
-    /// 判据 4 A2 收紧预检：异常同质且 handler 集为空（try 覆盖不开档）。
+    /// 判据 4 预检：异常同质且 handler 集为空（try 覆盖不开档）。
     bool requireNoHandlers = true;
     /// v1 出口形态预检：末成员末条指令为 GOTO（出口栈形取其到达帧）。
     bool requireExitGoto = true;
@@ -82,9 +81,9 @@ struct RegionSelectPolicy
     bool preferSmallest = true;
     /// 冲突保守拒绝：等尺寸部分重叠候选对 → 全拒（false = 程序序破平挑选）。
     bool rejectOverlapTie = true;
-    /// v2 排除档（A8）：跳过「合成接力块」候选——apply 调用点形态（装载 +
+    /// v2 排除档：跳过「合成接力块」候选——apply 调用点形态（装载 +
     /// invokestatic + 转发 goto，判定事实与 planInline 的 NotOutlineSynthetic
-    /// 同源，规则详见 selectRegion 注）。缺省 false = v1 不排除（保持 A7
+    /// 同源，规则详见 selectRegion 注）。缺省 false = v1 不排除（保持
     /// 批量驱动的接力现状，迭代上限是唯一护栏）；true = 驱动收敛档，接力
     /// 候选被跳过后候选耗尽正常终止。误排除的方向是安全的：少切一个形似
     /// 接力块的真实区域（错过优化机会），不产生任何非法变换。
@@ -137,19 +136,19 @@ using RegionSelectFn = RegionDecision (*)(const RegionSelectPolicy&,
 
 /// @brief 优先序（纯面）：通过预检的候选下标集 → 排序（规模升序 + 首成员
 ///        程序序破平；policy.preferSmallest = false 时保枚举序）。纯候选
-///        数据上的纯函数，批量驱动（A7）可直接复用。
+///        数据上的纯函数，批量驱动可直接复用。
 std::vector<ca::usize>
 rankRegions(const RegionSelectPolicy& policy, const std::vector<RegionCandidate>& candidates,
             const std::vector<ca::usize>& passing);
 
 /// @brief v1 默认策略：事实面预检 → 冲突保守拒绝 → 优先序 → 准入探针。
 ///
-/// 规则（决策依据，PR 同文）：
+/// 规则（决策依据）：
 ///   - 方法级（先于候选级）：RegionView/FrameView 任一面报 jsr/ret →
 ///     全拒（判据 5 是方法体语形事实，逐候选过滤无意义）。
 ///   - 候选级预检（与 planOutline v1 判据同向的廉价代理；通过者进优先序）：
-///     F2 直线旗标（判据 1）、F3 异常同质且 handler 集为空（判据 4 A2
-///     收紧；非同质候选 handlers 为空但旗标为假，同拒）、F4 末成员末条
+///     F2 直线旗标（判据 1）、F3 异常同质且 handler 集为空（判据 4；
+///     非同质候选 handlers 为空但旗标为假，同拒）、F4 末成员末条
 ///     指令 GOTO（v1 出口形态；需 view + unit）、F5 区域成员到达帧无
 ///     UninitThis（判据 6；需 view + frame）、F6 写回集为空（判据 3：区
 ///     域内 store/iinc 写槽 ∩ 出口锚后活跃 = 空；需 view + unit + liveness）。
@@ -159,9 +158,9 @@ rankRegions(const RegionSelectPolicy& policy, const std::vector<RegionCandidate>
 ///     不冲突（形状性质见文件头注）。
 ///   - 准入探针：按优先序逐个探测，首个通过即选中；全不通过 → 全拒
 ///     （NoneAdmitted）。缺省探针 → 选中优先序首位。
-///   - v2 排除档（policy.excludeOutlineRelay = true，A8）：先于事实面预检
-///     跳过「合成接力块」候选——apply 调用点块的形态（批量驱动 A7 实证的
-///     接力候选：每轮 apply 后调用点块自身满足全部预检与出口形，驱动器
+///   - v2 排除档（policy.excludeOutlineRelay = true）：先于事实面预检
+///     跳过「合成接力块」候选——apply 调用点块的形态（接力候选：每轮
+///     apply 后调用点块自身满足全部预检与出口形，驱动器
 ///     借此连切不停）。判定（保守匹配发射形态，宁可漏判不可误判）：
 ///       a. 单成员块，末条指令为转发 goto（apply 恒以 GOTO 复用出口标签；
 ///          直落出口形态不在本档判定范围——requireExitGoto 档下不会出现）；

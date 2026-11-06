@@ -1,13 +1,13 @@
 /// @file        class_hierarchy.hpp
 /// @brief       类层次内存图：登记 ClassSummary 建图，super 链与接口闭包查询。
 ///
-/// 与旧 mbase ClassHierarchy 的差异（本轮范围裁定）：
+/// 与 mbase 版 ClassHierarchy 的口径差异：
 /// - 输入是 ClassSummary 值（来自 fillSummary 或手工构造），不再持有
 ///   ClassNode / ResourceContainer / lookup 回调；
 /// - 无 phantom/broken/tombstone 机制：未登记的父类/接口按「悬挂键」处理
 ///   ——名字已驻留（键可比较）但没有摘要，链上行到悬挂键即截断；
 /// - java/lang/Object 不自动合成：未登记则 objectClass() 返回 invalid；
-/// - remap()（rename 后改名）与 .ihc 序列化不迁（本轮范围外）。
+/// - 不提供 remap()（rename 后改名）与 .ihc 序列化。
 ///
 /// 畸形输入纪律：父类成环、自指父类、接口环在 addClass 时被拒绝
 ///（Err(Cycle)，不静默建图）；所有链/闭包遍历带访问集，任何情况下不挂死。

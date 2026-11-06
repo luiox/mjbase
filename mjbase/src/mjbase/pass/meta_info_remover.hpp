@@ -6,8 +6,7 @@
 
 namespace mjbase::pass {
 
-/// @defgroup meta_info_cleanup meta 元数据清理家族（移植自 mbase
-/// pass/opt/meta_info_remover 的类级 13 件；批 B 类级骨架组）。
+/// @defgroup meta_info_cleanup meta 元数据清理家族（类级 13 件）。
 ///
 /// 家族语义面 = 类/字段/方法三层的非语义元数据：SourceFile 与
 /// SourceDebugExtension（旧栈 sourceDebug 字段在 classfile 的序列化名，JVMS
@@ -15,48 +14,36 @@ namespace mjbase::pass {
 /// Signature、Runtime{Visible,Invisible}Annotations、Runtime{Visible,Invisible}-
 /// TypeAnnotations、Runtime{Visible,Invisible}ParameterAnnotations、
 /// MethodParameters、AnnotationDefault、Code 嵌套 LNT/LVT/LVTT 与非法
-/// access 标志位。旧实现消费 jbytecode tree（AsmClassPass，经旧 tree writer
-/// 写回）；mjbase 重定型到 ClassSession 载体，落地两条载体重定型纪律：
+/// access 标志位。载体是 ClassSession，属性面三条落点纪律：
 ///
 /// - **属性表落点**：三层属性表在 ClassUnit 无模型，唯一真实落点是 backing
 ///   的 AttrSlot 表（backing 是 writeClass 的序列化源）——属性槽摘除/注解体
-///   过滤直接落 backing；access 标志位在 unit() 有模型，按 pass-contract §1
-///   双面落盘义务两面同步（unit() + backing）。
-/// - **Code 嵌套属性表的破例（仅两成员）**：旧实现经 tree 的
-///   LineNumberNode/localVariables 清除等价面（MetaInfoRemover）与方法向量
-///   平铺的 code 目标 type 注解过滤面（IllegalTypeAnnotationRemover）落到
-///   新载体都在 Code 嵌套属性表：前者整槽摘除 LNT/LVT/LVTT 与
-///   Runtime{Visible,Invisible}TypeAnnotations（全表删除不产生 pc 悬垂面），
-///   后者对嵌套 TypeAnnotations 槽做与成员级同规则的槽内过滤；两者改动均
-///   指令载荷/异常表/maxes 不被触碰，不经 lower，且父 Code 槽连带置脏驱动
-///   重编码。这是对「类级 pass 不直接触碰 backing 的 Code 属性」字面边界的
-///   显式、有界破例：破例面 = 属性表编辑（非指令、非 pc 编辑），仅此两处，
-///   家族其余成员不触碰 Code。
+///   过滤直接落 backing；access 标志位在 unit() 有模型，双面落盘义务两面同步
+///   （unit() + backing）。
+/// - **Code 嵌套属性表的破例（仅两成员）**：MetaInfoRemover 整槽摘除
+///   LNT/LVT/LVTT 与 Runtime{Visible,Invisible}TypeAnnotations（全表删除不产生
+///   pc 悬垂面），IllegalTypeAnnotationRemover 对嵌套 TypeAnnotations 槽做与
+///   成员级同规则的槽内过滤；两者均不触碰指令载荷/异常表/maxes，不经 lower，
+///   且父 Code 槽连带置脏驱动重编码。这是对「类级 pass 不直接触碰 backing 的
+///   Code 属性」字面边界的显式、有界破例：破例面 = 属性表编辑（非指令、非 pc
+///   编辑），仅此两处，家族其余成员不触碰 Code。
+/// - **注解过滤一律槽内过滤**（解码 AttrBody → 按描述符谓词删条目 → 槽置脏），
+///   槽内删空时连槽摘除（旧栈 annotation vector 清空后旧 writer 不再产出该
+///   属性，语义等价）。解析失败、属性形状不符时保守保持原样（fail-closed，
+///   不产出半截改写）。
 ///
-/// 与旧实现的原挂账三处：两处已收口——record 组件的注解（typed RecordAttr
-/// 组件 AttrSlot 表可达，MetaInfoRemover 对组件的 Runtime{Visible,Invisible}-
-/// Annotations 与 TypeAnnotations 槽做与成员级同规则的槽内清空，父 Record 槽
-/// 连带置脏驱动重编码）；Runtime{Visible,Invisible}Parameter-
-/// Annotations 的槽内过滤（SpecificAnnotationRemover——typed
-/// ParameterAnnotationsAttr 行模型为主（libjbc 0.4.16+ 建模），typed 解码
-/// 拒绝的 legacy 形状按 JVMS 4.7.18/4.7.19 布局做二进制级条目摘除（Raw 兜底），
-/// 布局不符整槽保守跳过；MetaInfoRemover 对该两槽是整槽摘除，照常落面）。余下 code 目标
-/// 形态普通注解是 JVMS 无此挂载点的非缺口（树读入即弃，新载体如出现保持
-/// 原样）。
-///
-/// 家族内注解过滤一律**槽内过滤**（解码 AttrBody → 按描述符谓词删条目 →
-/// 槽置脏），槽内删空时连槽摘除（旧栈 annotation vector 清空后旧 writer
-/// 不再产出该属性，语义等价）。解析失败、属性形状不符时保守保持原样
-/// （fail-closed，不产出半截改写）。
+/// record 组件的注解走同一规则：MetaInfoRemover 对组件的
+/// Runtime{Visible,Invisible}Annotations 与 TypeAnnotations 槽做槽内清空，父
+/// Record 槽连带置脏驱动重编码；SpecificAnnotationRemover 对
+/// Runtime{Visible,Invisible}ParameterAnnotations 的过滤以 typed
+/// ParameterAnnotationsAttr 行模型为主，typed 解码拒绝的 legacy 形状按 JVMS
+/// 4.7.18/4.7.19 布局做二进制级条目摘除（Raw 兜底），布局不符整槽保守跳过。
+/// code 目标形态的普通注解 JVMS 无挂载点，不是缺口。
 ///
 /// PreservedAnalyses 全家族条件语义：发生改写返回 none()，未发生返回 all()。
-/// 与旧实现的一处显式偏离（sorter 试点同款）：旧 MetaInfoRemover 无条件返回
-/// none()（未改写类也被标记改动、白付重序列化），与其头注「任一 metadata
-/// 删除返回 none()，否则 all()」相悖；本家族按声明的条件语义落地。
 ///
-/// 全家族 `opt-in`，不得进入默认优化链。golden 对拍见
-/// 私仓规格 pass-golden-pipeline（本仓无副本；tree 道，CLASSFILE_REENCODE 声明类目 +
-/// meta 语义矩阵替代断言）。
+/// 全家族 `opt-in`，不得进入默认优化链。golden 对拍走 tree 道：逐件 manifest
+/// 声明 CLASSFILE_REENCODE 类目，meta 语义矩阵替代逐字节断言。
 /// @{
 
 /// @brief 清除类/字段/方法三层已列明的 debug/framework metadata（catch-all）。

@@ -105,7 +105,7 @@ PreservedAnalyses runMethodPipelineOverSession(jbc::ir::ClassSession&  session,
             // 管线统一驱动 lower（契约见 runMethodPipelineOverSession 头注）：
             // 仅当本次方法管线声明了 IR 改动才写回 backing。lower 前做嵌套
             // 属性布局适配（LNT/LVT 悬垂行重映射 / SMT 悬垂摘除），lower 后
-            // 按 resolver 注入与否走 A1 帧链再接线（见 PassPipelineOptions::
+            // 按 resolver 注入与否走帧链再接线（见 PassPipelineOptions::
             // typeResolver 契约）。
             if (methodPA.changed()) {
                 const bool smtDropped =
@@ -251,8 +251,8 @@ PreservedAnalyses GlobalToClassPassAdaptor::run(mjbase::model::ResourceContainer
                 pending.emplace_back(cls, std::move(written).unwrap());
             }
 
-            // E2 ChangeSet 观察点（§35.4 sink 契约）：管线成功且台账非空时
-            // 回调——会话仍存活，身份视图在回调内消费。排在写回提交点之前；
+            // ChangeSet 观察点：管线成功且台账非空时
+            // 回调——会话仍存活，身份视图在回调内消费。sink 契约：排在写回提交点之前；
             // 默认档位任一后续类失败整作业抛出、容器无写回，调用方按契约
             // 整体作废已折叠状态。
             if (options_.changeSink && !session->changeSet().empty()) {

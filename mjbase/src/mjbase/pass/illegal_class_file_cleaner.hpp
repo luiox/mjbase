@@ -20,7 +20,7 @@ namespace mjbase::pass {
 /// 指针、不抛异常。
 ///
 /// 清洗规则面：
-///   前置级（5 条挂账规则 + transformer 一体携带项）：
+///   前置级（5 条规则 + transformer 一体携带项）：
 ///     1. 属性级 CP 校验剔除：属性引用的 CP 条目语义非法（tag/内容谓词不匹配，
 ///        如 ConstantValue 与字段类型不符、SourceFile 指向非 Utf8）时剔除该属性；
 ///     2. 越界跳转 / 越界与种类不符 LDC 的 RETURN 桩替换（含 null entry 的
@@ -38,7 +38,7 @@ namespace mjbase::pass {
 ///
 /// 两级差异点（载体差异导致的必要偏差）：
 ///   - 前置级以 IllegalStrippingTransformer::transform() 整体接入：除 5 条
-///     挂账规则外还携带同一规则面一体的单例属性去重与 type-annotation 目标
+///     规则外还携带同一规则面一体的单例属性去重与 type-annotation 目标
 ///     修剪——拆单项需改 libjclassfile 公共面，不碰库源码；
 ///   - 成员描述符剔除与异常表剪除在两级都存在：语义幂等、收敛一致；libjbc
 ///     级保留作快路径兜底（libjclassfile 读失败时仍生效）；

@@ -11,7 +11,7 @@
 ///   平级接口所有者优先，再按类名字典序、声明序决胜（跨平台确定性）；
 /// - virtualDispatch：receiver 起沿 super 链取最近虚声明；接口 default
 ///   方法与多继承冲突一律 Unresolved，不裁决（单继承链边界）。
-/// 旧 canRename/isExternalOverride 依赖 broken/phantom 机制，本轮不迁。
+/// 本图没有 broken/phantom 机制，因此不提供旧版的 canRename/isExternalOverride。
 #pragma once
 
 #include <unordered_map>

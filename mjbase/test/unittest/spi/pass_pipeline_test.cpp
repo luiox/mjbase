@@ -555,7 +555,7 @@ TEST(PassPipelineTest, globalAdaptorRollsBackWholeJobOnLateFailure)
     EXPECT_EQ(bRaw->get(), malformed);
 }
 
-// ── 进度回调序（issue #332 语义）：Pipeline 阶段逐类 1..N/total 刷新 ──
+// ── 进度回调序：Pipeline 阶段逐类 1..N/total 刷新 ──
 TEST(PassPipelineTest, globalAdaptorReportsProgressInClassOrder)
 {
     mjbase::KeyPool pool;

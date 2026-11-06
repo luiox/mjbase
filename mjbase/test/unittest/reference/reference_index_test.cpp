@@ -590,7 +590,7 @@ Bytes buildReflectionConstructorReferenceWithLocalClassArray()
     return b.assemble(ms);
 }
 
-/// JSR/RET fail-open 夹具（#975 评审跟进卡）：两个方法同款「常量
+/// JSR/RET fail-open 夹具：两个方法同款「常量
 /// getDeclaredMethod → Method.invoke」反射执行模式，jsrReflect 额外含
 /// JSR/RET 子例程。新引擎对 JSR 保守化（快照拒绝、fail-open），
 /// 预期：直接/lookup 事实保留、数据流证明的 ReflectionExecution 不产出。
@@ -977,8 +977,7 @@ TEST(MjReferenceTest, indexesReflectionStringsMethodHandlesAndLambdaTargets)
 
 // ── 9b. 畸形 MethodHandle kind：读侧域闸边界 ────────────────────
 
-// B8 8.4 收编 libjbc cp_resolve（PR #14）的口径背景：reference_index 侧
-// resolveHandleCp 换 libjbc 严格版后，reference_kind ∉1..9 的句柄不再落
+// reference_index 侧 resolveHandleCp 用 libjbc 严格版，reference_kind ∉1..9 的句柄不再落
 // 任何事实。该收紧在本侧公开读路径上不可达观察——libjbc readClass 的
 // ConstantPool::validateReferences 对畸形 kind 整类拒读（JVMS 4.4.8 类
 // 解析即拒），scanClassResources 随之跳过。此用例钉死这层边界：畸形类
@@ -1325,7 +1324,7 @@ TEST(MjReferenceTest, resolvesOverloadedReflectionConstructorFromLocalClassArray
     EXPECT_TRUE(index.methodReferencesTo("com/example/ReflectTarget", "<init>", "").empty());
 }
 
-// ── 20. JSR/RET fail-open（#975）───────────────────────────────
+// ── 20. JSR/RET fail-open───────────────────────────────
 //
 // 含 JSR/RET 的方法走 ReferenceIndex 全流程——不崩、fail-open 跳过：直接引用
 // 与常量 lookup 事实保留，数据流证明的 ReflectionExecution 不产出；相邻无

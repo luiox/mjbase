@@ -1,4 +1,4 @@
-/// MethodCallRemover（调用点收尾件，opt pass 波次）单测：点名删调用点的栈
+/// MethodCallRemover（调用点删除面）单测：点名删调用点的栈
 /// 等价（四族 invoke / cat2 吞参 / 死局部 store / void 吞参）、放弃路径
 /// （dup 前缀 / 方法句柄钉死 / 引用锚定 / 返回值被消费 / 容器不可读）、
 /// 调用图边同步（none() 失效驱动重建）、默认 no-op 与无用结果白名单

@@ -9,7 +9,7 @@
 /// 形，干净臂语料上每轮都能再切一层（接力）——v1 档上限是唯一护栏。故
 /// v1 档下可开档语料的驱动要么命中上限、要么候选从始耗尽；多轮用例以
 /// 「每轮产物独立合法 + 行为保持」验收，收敛用例以零候选语料钉死。
-/// A8 收敛档：policy.excludeOutlineRelay = true 时排除档跳过接力候选（判
+/// 收敛档：policy.excludeOutlineRelay = true 时排除档跳过接力候选（判
 /// 定事实与 planInline 的 NotOutlineSynthetic 同源）→ AllExcluded →
 /// CandidatesExhausted 正常终止（首层切完调用点块不再接力）。
 #include <gtest/gtest.h>
@@ -44,7 +44,7 @@ using mjbase::asm_sem::OutlineDriveRequest;
 using mjbase::asm_sem::OutlineError;
 using mjbase::asm_sem::RegionSelectNote;
 
-/// 嵌套候选梯样本（同 region_select_test ladderSpec）：A（iload c; ifeq
+/// 嵌套候选梯样本：A（iload c; ifeq
 /// else）→ B1（iload a; goto B2）→ B2（iconst 2; goto B3）→ B3（imul;
 /// goto join）为嵌套候选梯 {B1,B2,B3} ⊃ {B2,B3} ⊃ {B3}；else 臂 C
 /// fallthrough 出口（末条非 goto，F4 形态）。
@@ -411,7 +411,7 @@ TEST(MjAsmSemOutlineDriverTest, JvmGateDrivenMultiOutlineBehaviorPreserved)
 }
 
 // ---------------------------------------------------------------------------
-// A8 收敛档：排除档开启时接力候选被跳过 → 候选耗尽正常终止
+// 收敛档：排除档开启时接力候选被跳过 → 候选耗尽正常终止
 // ---------------------------------------------------------------------------
 
 /// 排除档开启 + 单候选语料：首层切完调用点块不再接力——第二轮重建后接力
@@ -429,7 +429,7 @@ TEST(MjAsmSemOutlineDriverTest, ExclusionTierSingleCutThenExhausted)
     jbc::analysis::ShapeResolver resolver;
     OutlineDriveRequest req{*fixture.session, pickId,
                             sigOf(true, "(IIIZ)I", "pick", "T"), resolver};
-    req.policy.excludeOutlineRelay = true;   /// A8 收敛档（缺省上限 16 不变）
+    req.policy.excludeOutlineRelay = true;   /// 收敛档（缺省上限 16）
     const OutlineDriveReport report = driveOutlines(req);
     ASSERT_EQ(report.appliedCount(), 1u);
     EXPECT_EQ(report.note, OutlineDriveNote::CandidatesExhausted);
@@ -439,9 +439,8 @@ TEST(MjAsmSemOutlineDriverTest, ExclusionTierSingleCutThenExhausted)
     EXPECT_EQ(report.rounds[0].selectNote, RegionSelectNote::Ok);
 }
 
-/// v1 缺省档（排除关闭）保持 A7 接力现状：同语料 2 轮上限下第二轮继续切
-/// 调用点块本身（chosenMemberCount = 1 的接力候选），命中上限——v1 行为
-/// 零改动的驱动器级钉死。
+/// v1 缺省档（排除关闭）保持接力现状：同语料 2 轮上限下第二轮继续切
+/// 调用点块本身（chosenMemberCount = 1 的接力候选），命中上限。
 TEST(MjAsmSemOutlineDriverTest, ExclusionOffKeepsRelayChaining)
 {
     ClassBytesBuilder b("T");
@@ -494,10 +493,9 @@ TEST(MjAsmSemOutlineDriverTest, NestedLadderExclusionConvergesFinite)
     }
 }
 
-/// JVM 真跑端到端门（A8 收敛档）：javac 语料 + 排除档开启（A7 同语料曾
-/// 接力切满 4 轮）→ 首层切完调用点块不再接力（1 轮 apply + Candidates-
-/// Exhausted）→ java 运行行为与拆分前逐字一致（-Xverify:all 全程验证；
-/// JDK 缺失自动 SKIP）。
+/// JVM 真跑端到端门（收敛档）：javac 语料 + 排除档开启 → 首层切完调用点块
+/// 不再接力（1 轮 apply + Candidates-Exhausted）→ java 运行行为与拆分前逐字
+/// 一致（-Xverify:all 全程验证；JDK 缺失自动 SKIP）。
 TEST(MjAsmSemOutlineDriverTest, JvmGateExclusionTierConvergedBehaviorPreserved)
 {
     namespace fs = std::filesystem;
@@ -555,8 +553,8 @@ TEST(MjAsmSemOutlineDriverTest, JvmGateExclusionTierConvergedBehaviorPreserved)
     OutlineDriveRequest req{*session, pickId,
                             sigOf(true, "(IIIZ)I", "pick", "OutlineSample"),
                             resolver};
-    req.maxRounds                  = 4;   /// A7 同语料曾接力切满 4 轮
-    req.policy.excludeOutlineRelay = true;   /// A8 收敛档
+    req.maxRounds                  = 4;   /// 排除档下 1 轮即耗尽，上限不触及
+    req.policy.excludeOutlineRelay = true;   /// 收敛档
     const OutlineDriveReport report = driveOutlines(req);
     ASSERT_EQ(report.appliedCount(), 1u) << mjbase::asm_sem::to_string(report.note);
     EXPECT_EQ(report.note, OutlineDriveNote::CandidatesExhausted);

@@ -2,8 +2,7 @@
 /// @brief       FrameView 测试：签名播种帧、引用合并注入面、死代码、
 ///              构造器 UninitThis 存活与 cat2 槽布局（合成语料，只读 golden）。
 ///
-/// 判据对照 luiox/mjbase #115 §1.1/§2.2：不可算显式 Err、不伪造帧、
-/// UninitThis 探针（判据 6）。
+/// 判据口径：不可算显式 Err、不伪造帧、UninitThis 探针（判据 6）。
 #include <gtest/gtest.h>
 
 #include <utility>

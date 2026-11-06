@@ -17,7 +17,7 @@ namespace {
 
 using jbc::core::Op;
 
-/// JVM 方法访问位：native（hierarchy/summary.hpp 未收编，效应层本地补齐）。
+/// JVM 方法访问位：native（hierarchy/summary.hpp 未暴露该位，效应层本地定义）。
 inline constexpr ca::u32 kAccNative = 0x0100;
 
 MemberKey methodKeyOf(KeyPool& pool, std::string_view owner, std::string_view name,

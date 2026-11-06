@@ -14,7 +14,7 @@ namespace mjbase::pass {
 ///
 /// ## JVMS 合法性依据（SE17 章节；实现红线，逐条对照）
 ///
-/// - **§6.5 invokespecial（选择规则）**：符号引用命名类记 R、当前类记 K。
+/// - **JVMS §6.5 invokespecial（选择规则）**：符号引用命名类记 R、当前类记 K。
 ///   三条件全真（(a) 落解方法非 `<init>`；(b) R 是类而非接口且 R 是 K 的
 ///   超类；(c) ACC_SUPER 置位）则 C = K 的直接父类，否则 C = R；选择自 C
 ///   沿父类链上扫首个同 name+desc 声明。本 pass 的目标恒非 `<init>`
@@ -22,18 +22,18 @@ namespace mjbase::pass {
 ///   - C_t == K：条件 (b) 假 → C = K，首条选择规则命中 C_t 自身声明；
 ///   - C_t ⊊ K 的祖先：条件 (b) 真 + ACC_SUPER 置位 → C = super(K)，扫描
 ///     段 [super(K)..C_t] 内无同签名声明（C_t 是族内唯一声明者）→ 同选
-///     C_t.m。与原 invokevirtual 的运行时分派（§6.5 invokevirtual：按
-///     objectref 运行时类选择，§5.4.6）落同一方法。
-/// - **§4.1 ACC_SUPER**：「In Java SE 8 and above, the Java Virtual Machine
+///     C_t.m。与原 invokevirtual 的运行时分派（JVMS §6.5 invokevirtual：按
+///     objectref 运行时类选择，JVMS §5.4.6）落同一方法。
+/// - **JVMS §4.1 ACC_SUPER**：「In Java SE 8 and above, the Java Virtual Machine
 ///   considers the ACC_SUPER flag to be set in every class file, regardless
 ///   of the actual value of the flag and the version of the class file。」
 ///   调用者类版本 major < 52 时旧 JVM 会按实际位取语义，故本 pass 只改写
 ///   major ≥ 52 的调用者类（宿主无关的安全下界）。
-/// - **§4.10.1.9.invokespecial（verifier）**：非 `<init>` 情形要求
+/// - **JVMS §4.10.1.9 invokespecial（verifier）**：非 `<init>` 情形要求
 ///   `isAssignable(NamedClass, CurrentClass)`（命名类是当前类的超类/同类，
 ///   规则原文：「must name a method in the current class/interface or a
 ///   superclass/superinterface」）**且** 栈上接收者可赋给当前类（原文：
-///   「targets a receiver object of the current class or deeper」；§4.9.2
+///   「targets a receiver object of the current class or deeper」；JVMS §4.9.2
 ///   结构约束的概括：「the class or interface named by invokespecial must
 ///   be "above" the caller … while the receiver object … must be "at" or
 ///   "below" the caller」）。因此接收者守卫收紧为**前一条指令恰是
@@ -41,29 +41,29 @@ namespace mjbase::pass {
 ///   变量，改写后过不了 verifier）。该接收者约束取代 protected 检查
 ///   （规则原文自述「supercedes … passesProtectedCheck」），protected 目标
 ///   无需额外门。
-/// - **§5.4.6（执行期选择）+ nestmates（JEP 181，§5.4.4）**：落解方法为
+/// - **JVMS §5.4.6（执行期选择）+ nestmates（JEP 181，JVMS §5.4.4）**：落解方法为
 ///   ACC_PRIVATE 时「it is the selected method」——private 虚调用的运行时
 ///   目标就是落解目标；但 invokespecial 在「命名类是超类」形态下自
 ///   super(K) 上扫，中间类的同签名新声明会被误选（这正是 javac 对跨嵌套
 ///   类私有调用改用 invokevirtual 的原因）。故 ACC_PRIVATE 目标只在
 ///   C_t == K 时改写；跨 nest 私有形态（Java 11+ javac 产物）放弃。
-///   访问控制（§5.4.4）对改写后的引用恒成立：public / protected（调用者
+///   访问控制（JVMS §5.4.4）对改写后的引用恒成立：public / protected（调用者
 ///   是目标声明类子类）/ package-private（C_t 在调用者父链上且原引用可
 ///   落解 ⇒ 同运行时包）/ private（同类）。
-/// - **§2.9.3（签名多态）**：签名多态方法只声明于 java.lang.invoke.
+/// - **JVMS §2.9.3（签名多态）**：签名多态方法只声明于 java.lang.invoke.
 ///   MethodHandle / VarHandle——恒为容器外类型，CHA 落解降级编码目标、
 ///   「目标须容器内声明」门天然排除。`<init>`/`<clinit>`：虚拟族语义排除
-///   '<' 名（§4.9.2 的 `<init>` 结构约束分支不可达）。
+///   '<' 名（JVMS §4.9.2 的 `<init>` 结构约束分支不可达）。
 /// - **接口目标一律放弃**：invokeinterface/invokevirtual 指向接口声明时，
-///   唯一族成员必为接口自身声明（类实现者会并入族使其非唯一）。§6.5
-///   invokeinterface 的选择（§5.4.6）类链优先——接收者运行时类的父链
+///   唯一族成员必为接口自身声明（类实现者会并入族使其非唯一）。JVMS §6.5
+///   invokeinterface 的选择（JVMS §5.4.6）类链优先——接收者运行时类的父链
 ///   （含容器外 JDK 父类）上的同签名声明会压过接口 default，故「族唯一」
 ///   不构成改写到接口目标的证明（CHA 档文件头自述的 class-wins 欠近似
 ///   正是此事）。接口命名形态的 invokespecial 选择规则亦不同，不进入。
 /// - **栈/帧不变**：invokevirtual 与 invokespecial 栈效应相同（弹接收者
 ///   与实参、压返回值）且同为 3 字节定长，帧与 StackMapTable 逐点不变，
 ///   lower 重定位为恒等映射。
-/// - **CP 形态**：改写后操作数须为 CONSTANT_Methodref（§4.4.1；接口目标
+/// - **CP 形态**：改写后操作数须为 CONSTANT_Methodref（JVMS §4.4.1；接口目标
 ///   既已放弃，实际只发生 Methodref→Methodref 复用/追加），经
 ///   `ClassSession::setMember` intern 落池。
 ///

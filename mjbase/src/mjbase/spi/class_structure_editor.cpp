@@ -27,7 +27,7 @@ namespace {
 /// @brief LowerError → StructureEditError 收口映射。
 ///
 /// 增删通道的可达错误族按库契约只有三个（InvalidSeed / InvalidHandle /
-/// CpAppendFailed，libjbc design §34.2）；NotModeled 是搬移（adopt）面的
+/// CpAppendFailed，libjbc 设计文档 §34.2）；NotModeled 是搬移（adopt）面的
 /// 形态，其余是 lower 指令面的形态——都不在本原语通道上，统一落
 /// Unsupported（fail-closed，出现即库契约破坏）。
 StructureEditError mapLower(jbc::ir::LowerError e) noexcept
@@ -115,7 +115,7 @@ Result<void, StructureEditError> reorderClassMethods(jbc::ir::ClassSession&     
     if (isIdentity(order)) return Ok();
     reorderBy(cf.methods, order);
     reorderBy(unit.methods, order);
-    // §1 backingIndex 义务：重排后逻辑位与 backing 槽位重新自然一致，全量改指
+    // backingIndex 义务：重排后逻辑位与 backing 槽位重新自然一致，全量改指
     // 新物理位——单元位置与 backing 槽位在结构变换后不再自然一致，靠这里修复。
     for (ca::usize i = 0; i < unit.methods.size(); ++i) {
         unit.methods[i].backingIndex = i;

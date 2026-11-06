@@ -10,7 +10,7 @@
 
 namespace mjbase::project {
 
-/// @brief 分析工程文件 schema 基线版本（v1 契约，luiox/morpher#1092）。
+/// @brief 分析工程文件 schema 基线版本（v1 契约）。
 ///
 /// v1 顶层形状：
 /// ```
@@ -37,16 +37,16 @@ inline constexpr ca::u32 kAnalysisProjectFileVersionBase = 1;
 /// - inputs 条目 role 枚举扩展 library|runtime（支撑挂载树的角色化解析栈）；
 /// - inputs 条目新增可选 parent 字段（引用同文件内另一 input 的 path，构成
 ///   挂载树；空 = 顶层挂载）；
-/// - 容器 digest 口径裁决为 "sha256:" + 64 hex（schema 层不做内容校验，口径
+/// - 容器 digest 口径为 "sha256:" + 64 hex（schema 层不做内容校验，口径
 ///   由调用方遵守；fnv1a64 遗留前缀兼容读，上层提示重算）。
 ///
 /// 版本策略（懒升级）：写出 version 2 当且仅当实体携带 v2 特性（任一 role ∈
 /// {library, runtime} 或任一 parent 非空），否则恒写 1——未用 v2 特性的工程
-/// 对 #1096 冻结 v1 读者保持逐字节可读（零破坏边界最长化）。v1 读者遇 v2 文
-/// 件严格拒载（版本门原样拒绝，不提供读 v1 子集的降级；裁决理由见设计文档
-/// §1.2）。字段集合严格（未知字段/重复字段即整文件拒载），与 Shadow-Alias
-/// 同一纪律；version 1 文件中出现 v2 值（library/runtime role 或非空
-/// parent）按 Schema 拒载——版本标 1 就必须真是 v1。
+/// 对已冻结的 v1 读者保持逐字节可读（零破坏边界最长化）。v1 读者遇 v2 文
+/// 件严格拒载（版本门原样拒绝，不提供读 v1 子集的降级；理由见
+/// doc:schema-v2-project-json）。字段集合严格（未知字段/重复字段即整文件拒载），
+/// 与 Shadow-Alias 同一纪律；version 1 文件中出现 v2 值（library/runtime role 或
+/// 非空 parent）按 Schema 拒载——版本标 1 就必须真是 v1。
 ///
 /// 实体口径：
 /// - **inputs**：被分析对象登记。`fingerprint` 必填（口径由调用方定，库不做
@@ -55,7 +55,7 @@ inline constexpr ca::u32 kAnalysisProjectFileVersionBase = 1;
 ///   不静默归一）；`parent` 非空时必须引用已登记 input 的 path 且链条无环。
 /// - **shadow_sidecar**：对 shadow sidecar 文件的**引用**（path + 可选
 ///   fingerprint），sidecar 本体仍是显示别名的唯一事实源——工程文件绝不内嵌
-///   别名表，避免双写分叉（#1072 产物引用而非复制）。
+///   别名表，避免双写分叉（产物引用而非复制）。
 /// - **annotations**：人工/工具批注。target 四类：class（仅 owner）、
 ///   method/field（owner+name+desc）、instruction（owner+name+desc+index，
 ///   index 为方法体内指令序号）。id 单调不复用（next_annotation_id 持久化，
@@ -147,7 +147,7 @@ struct AnalysisProjectError
 
 /// @brief 分析工程最小库：实体登记 + 严格 JSON v1/v2 读写。
 ///
-/// 纯数据层，不感知 CLI/MCP/执行接口（P2 起）与工作区会话；值语义存储
+/// 纯数据层，不感知 CLI/MCP/执行接口与工作区会话；值语义存储
 /// （人工规模实体量，无热路径，不引入 arena 视图生命周期）。返回指针/引用
 /// 的查询在任一增删后失效——表式 API 常规纪律。
 class AnalysisProject
@@ -239,7 +239,7 @@ ca::Result<AnalysisProject, AnalysisProjectError> readAnalysisProjectFile(
 
 /// @brief 序列化工程（pretty JSON；inputs 按路径字典序、annotations 按 id 稳定排列）。
 ///
-/// 验收口径：parse(write(parse(x))) 关键字段恒等；同实体集任意插入序输出逐字节一致。
+/// 往返契约：parse(write(parse(x))) 关键字段恒等；同实体集任意插入序输出逐字节一致。
 ca::Result<ca::str::Utf8String, AnalysisProjectError> writeAnalysisProjectText(
     const AnalysisProject& project);
 

@@ -632,7 +632,7 @@ ca::Result<AnalysisProject, AnalysisProjectError> parseAnalysisProjectText(
                                      context + "duplicate input path: " + input.path.to_std_string()));
         }
         // 直插不入 addInput：文件内允许前向引用（子条目可先于父条目出现），
-        // parent 存在性/无环由装载后的挂载树整表校验统一裁决（§1.5）；addInput
+        // parent 存在性/无环由装载后的挂载树整表校验统一裁决（doc:schema-v2-project-json）；addInput
         // 的增量 parent 检查只服务于增量 API，不适用于整文件装载。
         project.inputs_.push_back(std::move(input));
         project.inputIndex_[project.inputs_.back().path.to_std_string()] =
@@ -851,8 +851,8 @@ ca::Result<ca::str::Utf8String, AnalysisProjectError> writeAnalysisProjectText(
                   return a->id < b->id;
               });
 
-    // 懒升级（设计文档 §1.1）：实体携带 v2 特性才写 version 2，否则恒写 1，
-    // 让未用 v2 特性的工程对 #1096 冻结 v1 读者保持逐字节可读。
+    // 懒升级（doc:schema-v2-project-json）：实体携带 v2 特性才写 version 2，否则恒写 1，
+    // 让未用 v2 特性的工程对已冻结的 v1 读者保持逐字节可读。
     bool carriesV2 = false;
     for (const auto* input : sortedInputs) {
         if (isV2InputRole(input->role) || !input->parent.is_empty()) carriesV2 = true;

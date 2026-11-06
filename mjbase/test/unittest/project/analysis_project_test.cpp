@@ -436,7 +436,7 @@ TEST(MjProjectAnalysisTest, v2RolesAndMountTreeRoundtripAsVersion2)
 
 TEST(MjProjectAnalysisTest, projectWithoutV2FeaturesStaysVersion1ByteCompatible)
 {
-    // 懒版本（设计文档 §1.2）：只用 v1 特性 → 恒写 "version": 1，与 v1 读者
+    // 懒版本（doc:schema-v2-project-json）：只用 v1 特性 → 恒写 "version": 1，与 v1 读者
     // 逐字节兼容；两个 v2 input 全摘除后回落 v1。
     auto project = AnalysisProject::createEmpty();
     ASSERT_TRUE(project.addInput(makeInput("a.jar", "sha256:1", AnalysisInputRole::Primary)));
@@ -465,7 +465,7 @@ TEST(MjProjectAnalysisTest, projectWithoutV2FeaturesStaysVersion1ByteCompatible)
 TEST(MjProjectAnalysisTest, v1FileCarryingV2ValuesIsRejected)
 {
     // 版本标 1 就必须真是 v1：v2 值出现在 v1 文件按 Schema 拒载（懒升级的
-    // 反向纪律，设计文档 §1.2）。
+    // 反向纪律，doc:schema-v2-project-json）。
     auto project = AnalysisProject::createEmpty();
     ASSERT_TRUE(project.addInput(makeInput("a.jar", "sha256:1", AnalysisInputRole::Library)));
     auto written = writeAnalysisProjectText(project);

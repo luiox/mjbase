@@ -270,7 +270,7 @@ bool filterTypeAnnotationSlots(ClassFile&             cf,
 /// 方法 Code 嵌套属性表里的 Runtime{Visible,Invisible}TypeAnnotations 槽内
 /// 过滤：code 目标形态（cast/instanceof/new/localvar 等）在旧栈树模型里平铺
 /// 在方法向量上，与成员级同面参与过滤。改动落盘需父 Code 槽连带置脏
-/// （pass-contract §1：嵌套属性改动对 writeClass 不可见，除非 Code 槽本身
+/// （doc:pass-contract-scope：嵌套属性改动对 writeClass 不可见，除非 Code 槽本身
 /// 标脏重编码）。返回是否发生任何变化。
 bool filterCodeNestedTypeAnnotationSlots(ClassFile& cf, MemberInfo& m, const AnnoFilter filter)
 {
@@ -772,7 +772,7 @@ bool filterParameterAnnotationSlots(ClassFile&             cf,
     return changed;
 }
 
-/// 字段/方法访问位两面清位（unit() + backing 同步，pass-contract §1 双面
+/// 字段/方法访问位两面清位（unit() + backing 同步，doc:pass-contract-scope 双面
 /// 落盘义务——标志位在两面都有模型，任一面落单都会失真）。
 template <typename UnitMember>
 bool clearMemberAccessBits(UnitMember& unitMember, MemberInfo& backingMember, ca::u16 mask)

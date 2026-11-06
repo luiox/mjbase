@@ -8,7 +8,7 @@
 
 namespace mjbase::pass {
 
-/// @brief 方法级指令改写族共享的只读探测面（本批 A 组四 pass 内部使用）。
+/// @brief 方法级指令改写族共享的只读探测面（族内 pass 内部使用）。
 ///
 /// 只放「读指令操作数语义 + 标签边界守卫」两件事；不做任何编辑，也不持有
 /// 会话状态。常量装载语义与旧栈 InsnUtil::getIntValue/getLongValue/

@@ -1337,7 +1337,7 @@ void registerStandardMappingFormats(MappingFormatRegistry& registry)
                             [] { return std::make_unique<XmlObfuscatorMapping>(ref("YGuard")); });
     registry.registerFormat(Utf8StringRef::from_cstr("Allatori"),
                             [] { return std::make_unique<XmlObfuscatorMapping>(ref("Allatori")); });
-    // shadow-alias sidecar（#1072）：仅服务显示层，与真实 remap 格式零混写。
+    // shadow-alias sidecar：仅服务显示层，与真实 remap 格式零混写。
     registry.registerFormat(Utf8StringRef::from_cstr("Shadow-Alias"),
                             [] { return std::make_unique<ShadowAliasFormat>(); });
 }

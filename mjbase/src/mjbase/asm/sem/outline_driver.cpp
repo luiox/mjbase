@@ -1,5 +1,5 @@
 /// @file        outline_driver.cpp
-/// @brief       OutlineDriver 实现：逐轮选区/识别/落地/重建的驱动闭环（A7）。
+/// @brief       OutlineDriver 实现：逐轮选区/识别/落地/重建的驱动闭环。
 #include "mjbase/asm/sem/outline_driver.hpp"
 
 namespace mjbase::asm_sem {
@@ -67,7 +67,7 @@ OutlineDriveReport driveOutlines(const OutlineDriveRequest& req)
         RegionSelectRequest selReq{candidates, &view, &unit};
         selReq.frame    = hasFrames ? &frames : nullptr;
         selReq.liveness = &live;
-        selReq.session  = &req.session;   /// v2 排除档身份事实面（A8）
+        selReq.session  = &req.session;   /// v2 排除档身份事实面
         selReq.admit    = [&req, &view, seq](const RegionCandidate& c) {
             return planOutline(
                        OutlineRequest{req.session, req.parent, req.sig, req.resolver,
@@ -77,7 +77,7 @@ OutlineDriveReport driveOutlines(const OutlineDriveRequest& req)
         const RegionDecision d = req.select(req.policy, selReq);
         rec.selectNote = d.note;
         if (!d.accepted) {
-            /// 排除档耗尽（AllExcluded，A8）与零候选同为正常收敛：接力候选
+            /// 排除档耗尽（AllExcluded）与零候选同为正常收敛：接力候选
             /// 被跳过后候选池抽干；其余全拒仍为 SelectRejected（v1 口径）。
             report.note = (d.note == RegionSelectNote::NoCandidates
                            || d.note == RegionSelectNote::AllExcluded)

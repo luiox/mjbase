@@ -99,7 +99,7 @@ std::string versionSuffix(ca::u32 sectionVersion)
     return "-v" + std::to_string(sectionVersion);
 }
 
-/// profile 空即未设置的清单口径（R52/CP-3）下，槽键 profile 与清单条目一致判定。
+/// 清单口径下 profile 空即未设置，槽键 profile 与清单条目一致判定。
 bool profileMatches(const std::optional<Utf8String>& entryProfile, const std::string& expected)
 {
     if (expected.empty()) return !entryProfile.has_value();
@@ -302,7 +302,7 @@ ca::Result<std::vector<DecompileCacheRecord>, ProjectStoreError> parseDecompileR
 }
 
 /// 读已登记 decompile 槽的全部记录；Damaged/不可解释 = 空集（缓存自愈：
-/// 未命中重算 + 同名重写，§8.2-3 同名恢复口径）。
+/// 未命中重算 + 同名重写）。
 std::vector<DecompileCacheRecord> readExistingRecords(const Utf8StringRef&      bundleDir,
                                                       const StoreSectionEntry& entry)
 {
@@ -380,7 +380,7 @@ ca::Result<std::optional<std::vector<ca::u8>>, ProjectStoreError> AnalysisCacheS
         if (toStd(entry.name.ref()) != nameKey) continue;
         if (!xrefEntryMatches(entry, key)) return ca::Ok(std::optional<std::vector<ca::u8>>{});
         // 内容层失配（Damaged）按未命中——缓存可重算，不为它报错；下次同名
-        // 重写即恢复（§8.2-3）。
+        // 重写即恢复。
         auto bytes = readSectionBytes(bundleDir_, entry);
         if (bytes.is_err()) return ca::Ok(std::optional<std::vector<ca::u8>>{});
         auto        content = std::move(bytes).unwrap();
@@ -612,7 +612,7 @@ ca::Result<AnalysisCacheFlushReport, ProjectStoreError> AnalysisCacheStore::flus
         }
     }
 
-    //-- 2. 一笔 manifest 事务提交全部槽（manifest last；RFC 风险 6 的合并
+    //-- 2. 一笔 manifest 事务提交全部槽（manifest last；合并
     //      flush——N 槽/记录只付一次清单事务）。 ------------------------------
     auto committed = commitStoreManifestTransaction(bundleDir_, mutation);
     if (committed.is_err()) return ca::Err(std::move(committed).unwrap_err());

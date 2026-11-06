@@ -1,5 +1,5 @@
 /// @file        reachability_closure_test.cpp
-/// @brief       全程序可达闭包（CHA，schema v9，#159）：闭包 ⊇ 直接边闭包与
+/// @brief       全程序可达闭包（CHA，schema v9）：闭包 ⊇ 直接边闭包与
 ///              虚分派展开差集、clinit 触发链（id/文本分支）、default 冲突
 ///              保守并集、种子三档、指纹 + 档位复用与失效往返、producer 批次
 ///              归属与类域作用域对账、确定性双算、分页与成员判定契约。

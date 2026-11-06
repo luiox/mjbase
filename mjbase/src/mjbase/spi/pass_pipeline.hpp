@@ -307,8 +307,8 @@ struct PassPipelineOptions
     /// 可选诊断收集；容错档位下每跳过一个单元追加一条。调用方拥有并负责清理。
     PassFaultReport* faultReport = nullptr;
 
-    /// @brief A1 帧链接线点：Strict 帧重算 + maxes 采用 + SMT 再生的 resolver
-    ///        注入（design §10.1：实现体在 mjbase——通常传
+    /// @brief 帧链接线点：Strict 帧重算 + maxes 采用 + SMT 再生的 resolver
+    ///        注入（实现体在 mjbase——通常传
     ///        StrictTypeResolverAdapter；nullptr = 不接线，写回保持 relocation-only）。
     ///
     /// 注入后本管线对每个改动方法的语义：lower 前嵌套属性布局适配
@@ -319,7 +319,7 @@ struct PassPipelineOptions
     /// SMT 帧目标悬垂，管线显式失败（不产出缺 SMT 的 V50+ class）。
     jbc::analysis::ITypeResolver* typeResolver = nullptr;
 
-    /// @brief E2 ChangeSet 观察点（design.md libjbc §35）：GlobalToClassPassAdaptor
+    /// @brief ChangeSet 观察点（libjbc 设计文档 §35）：GlobalToClassPassAdaptor
     ///        在一个类的管线成功且变更台账非空时回调——会话仍存活，台账内的
     ///        身份视图存活期 = 会话，消费者须在回调内完成折叠与 intern。
     ///

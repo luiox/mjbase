@@ -2,8 +2,8 @@
 /// @brief       SlotProvenanceView 测试：局部链/入参播种、分支合并多定义、
 ///              DUP 族补充使用边与同 def 占多槽、cat2 布局（合成语料，只读）。
 ///
-/// 判据对照 luiox/mjbase #115 §2.2/§3.4：DUP 族「复制槽不产定义、产使用边」、
-/// 切面槽干净 = provenance 唯一。
+/// 判据口径：DUP 族「复制槽不产定义、产使用边」、切面槽干净 =
+/// provenance 唯一。
 #include <gtest/gtest.h>
 
 #include <algorithm>

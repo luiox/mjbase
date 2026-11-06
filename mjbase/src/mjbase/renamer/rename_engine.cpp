@@ -778,7 +778,7 @@ RenamerRunResult RenamerEngine::run(mjbase::model::ResourceContainer&   containe
     // ── 7. 构造 RenamePlan + NameChangeRecord ──
     std::set<ca::usize> acceptedProposals;
     // 成员改名的 owner 若无类名映射，补恒等类行：Tiny-V2 等类嵌套格式的导出以
-    // 类行为挂载点，缺行会静默丢成员映射（往返恒等验收基准）。
+    // 类行为挂载点，缺行会静默丢成员映射（往返恒等是导出契约）。
     const auto ensureOwnerRow = [&result](const std::string& owner) {
         if (result.record.mapping().getClassMapping(utf8Ref(owner)) == nullptr) {
             result.record.mappingMut().addClass(utf8Ref(owner), utf8Ref(owner));

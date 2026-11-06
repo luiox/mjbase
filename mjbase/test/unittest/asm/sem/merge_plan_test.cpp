@@ -2,12 +2,12 @@
 /// @brief       MergePlan 测试：往返等价验收（outline → inline 对拍原文）+
 ///              识别判据 fail-closed 逐条钉死 + JVM 真跑门（JDK 缺失 SKIP）。
 ///
-/// 往返口径（A4 保守默认，最终口径留 owner 裁决）：语义等价门 = JVM 实际
-/// 运行对拍（-Xverify:all）+ 帧形/指令序列规范化比较——不做字节级逐位相等
-/// （合并产物保留显式编码 aload 0 而原文可为紧凑 aload_0；字节级目标需要
-/// 编码规范化器，列为后续可选批）。规范化口径：紧凑局部形态归一显式形 +
-/// 局部槽按首次出现重编号（A4 自足槽 fresh 的结构等价口径；A5b 盖章后自足
-/// 槽原槽号 exact 对回，见 merge_plan.hpp 头注）+ 分支目标归一到指令序。
+/// 往返口径：语义等价门 = JVM 实际运行对拍（-Xverify:all）+ 帧形/指令
+/// 序列规范化比较——不做字节级逐位相等（合并产物保留显式编码 aload 0
+/// 而原文可为紧凑 aload_0；字节级目标需要编码规范化器，不在本门口径
+/// 内）。规范化口径：紧凑局部形态归一显式形 + 局部槽按首次出现重编号
+/// （无盖章自足槽 fresh 分配的结构等价口径；盖章后自足槽原槽号 exact
+/// 对回，见 merge_plan.hpp 头注）+ 分支目标归一到指令序。
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -76,7 +76,7 @@ MethodSpec pickSpec()
     return m;
 }
 
-/// goto 入边 + 局部参数样本（A3 DupNorm.sum 形态）：区域头标签 = B 臂
+/// goto 入边 + 局部参数样本：区域头标签 = B 臂
 /// goto 目标，区域 = [iload 2, goto]。
 MethodSpec gotoEntrySpec()
 {
@@ -104,8 +104,8 @@ MethodSpec gotoEntrySpec()
     return m;
 }
 
-/// 边界 DUP 形态样本（§3.4 tier-2）：B 臂 = [dup, goto E]，出口栈顶为
-/// 入口值的复制 → retIsEntryCopy（A4 必测形态：调用点复位 DUP 消解）。
+/// 边界 DUP 形态样本（调用点侧栈形重排那一档）：B 臂 = [dup, goto E]，
+/// 出口栈顶为入口值的复制 → retIsEntryCopy（必测形态：调用点复位 DUP 消解）。
 MethodSpec boundaryDupSpec()
 {
     MethodSpec m;
@@ -130,9 +130,9 @@ MethodSpec boundaryDupSpec()
     return m;
 }
 
-/// 自足槽样本（A3 readTrimSpec）：区域先写后读 t（到达定义全在区域内）→
-/// t 不进参数集，A4 回迁时父槽号不可恢复 → fresh 分配（规范化对齐）；
-/// A5b 盖章后原槽号 exact 对回（无章回落 fresh 兼容外来形态）。
+/// 自足槽样本：区域先写后读 t（读的到达定义全在区域内）→ t 不进参数
+/// 集；盖章（kOutlineStampAttr）档回迁时原槽号 exact 对回，无章档父
+/// 槽号不可恢复 → fresh 分配（规范化对齐，兼容外来形态）。
 MethodSpec selfSufficientSpec()
 {
     MethodSpec m;
@@ -164,8 +164,8 @@ MethodSpec selfSufficientSpec()
 }
 
 /// 栈切片样本：区域消费入口栈值（pop 后自产新值）——出口 [7] 与入口 [a]
-/// 前缀失配 → a 为 Stack 参数（调用点免装载）；A4 回溯的装载链含原文
-/// iload（边界滑动的对偶档）。
+/// 前缀失配 → a 为 Stack 参数（调用点免装载）；装载链回溯可含原文
+/// iload（栈参边界滑动的对偶档，不改变合并结果）。
 MethodSpec stackSliceSpec()
 {
     MethodSpec m;
@@ -320,8 +320,8 @@ std::vector<NormInsn> normalizedInsns(jbc::ir::ClassSession& session, jbc::ir::M
     const std::vector<jbc::ir::InsnId>& order = unit.dom.order();
 
     /// 第一遍：原始序列（op / 局部槽首次出现重编号 / 分支目标指令序）+
-    /// goto→下一条 的冗余转移标记（fallthrough ≡ goto-next：A3 outline
-    /// 剥离块间 glue goto，A4 回迁为直落——两侧同删）。
+    /// goto→下一条 的冗余转移标记（fallthrough ≡ goto-next：outline 剥离
+    /// 块间 glue goto，inline 回迁为直落——规范化两侧同删）。
     struct RawEntry
     {
         int     op     = 0;
@@ -453,7 +453,7 @@ std::vector<NormInsn> normalizedBaseline(const Bytes& raw)
     return {};
 }
 
-/// N 的 Code 嵌套盖章行（A5b 结构断言用）：kOutlineStampAttr RawAttr 解
+/// N 的 Code 嵌套盖章行（结构断言用）：kOutlineStampAttr RawAttr 解
 /// u16 计数 + (nSlot, parentSlot) 对序列。
 std::vector<std::pair<ca::u32, ca::u32>> stampRowsOf(jbc::ir::ClassSession& session,
                                                      jbc::ir::MethodId id)
@@ -544,7 +544,7 @@ TEST(MjAsmSemMergePlanTest, RoundtripTargetedCallee)
     expectSameInsns(before, normalizedInsns(*ctx.fixture.session, pickId));
 }
 
-/// 往返（§3.4 tier-2 必测形态）：retIsEntryCopy 的调用点复位 DUP 消解，
+/// 往返（调用点侧栈形重排那一档的必测形态）：retIsEntryCopy 的调用点复位 DUP 消解，
 /// 区域尾 DUP 随体回迁，合并后与原文一致。
 TEST(MjAsmSemMergePlanTest, RoundtripBoundaryDupEntryCopy)
 {
@@ -576,12 +576,12 @@ TEST(MjAsmSemMergePlanTest, RoundtripGotoEntry)
     expectSameInsns(before, normalizedInsns(*session, pickId));
 }
 
-/// 往返（多块区域 + glue goto + 自足槽盖章）：A3 outline 剥离块间
+/// 往返（多块区域 + glue goto + 自足槽盖章）：outline 剥离块间
 /// goto-to-next，inline 回迁为直落（fallthrough ≡ goto-next，规范化两侧
 /// 同删）。区域 = [istore t, goto][iload t, goto]：入口栈切片 [b] 成栈参
-/// （体序幕 iload 0 承载，inline k 档剥离）；t 先写后读为自足槽——A5b
+/// （体序幕 iload 0 承载，inline 侧按 k 档剥离）；t 先写后读为自足槽——
 /// outline 侧盖章 (nSlot=1, parentSlot=2)，inline 消费后原槽号 exact 对回
-/// （去 A4「fresh 槽撞对」豁免，合并产物与原文规范化逐位一致）。
+/// （不靠 fresh 槽撞对原文槽号的形态巧合，合并产物与原文规范化逐位一致）。
 TEST(MjAsmSemMergePlanTest, RoundtripMultiBlockGlueGoto)
 {
     ClassBytesBuilder b("T");
@@ -616,13 +616,13 @@ TEST(MjAsmSemMergePlanTest, RoundtripMultiBlockGlueGoto)
     ASSERT_TRUE(merge.apply(*ctx.fixture.session, ctx.resolver).is_ok());
 
     /// 合并产物与原文规范化逐位一致（glue goto 与尾 goto 均折为直落，t 槽
-    /// 原样对回——不再依赖「fresh 槽撞对原文槽号」的已知形态豁免）。
+    /// 原样对回——无需「fresh 槽撞对原文槽号」的形态豁免）。
     expectSameInsns(before, normalizedInsns(*ctx.fixture.session, pickId));
 }
 
 /// 往返（自足槽盖章 exact 恢复）：区域内声明局部 t（父槽 3）先写后读不进
-/// 参数集——A4 侧 fresh 分配无法对回，A5b outline 侧盖章后原槽号 exact 恢
-/// 复；盖章行落 N 的 Code 嵌套属性（结构断言）。
+/// 参数集——盖章行落 N 的 Code 嵌套属性，inline 按章 exact 恢复原槽号；
+/// 无章形态回落 fresh 分配，父槽号无从对回（结构断言钉住盖章行）。
 TEST(MjAsmSemMergePlanTest, RoundtripSelfSufficientExactSlot)
 {
     ClassBytesBuilder b("T");
@@ -677,7 +677,7 @@ TEST(MjAsmSemMergePlanTest, RoundtripSelfSufficientExactSlot)
     expectSameInsns(before, normalizedInsns(*planCtx.fixture.session, planCtx.pickId()));
 }
 
-/// 无盖章回落 fresh（A4 口径，外来 inline 形态兼容）：剥去 N 的 Code 嵌套
+/// 无盖章回落 fresh（外来 inline 形态兼容）：剥去 N 的 Code 嵌套
 /// 盖章属性后 planInline 仍可识别，自足槽回落 maxLocals 起 fresh 分配，
 /// 规范化对拍与原文一致。
 TEST(MjAsmSemMergePlanTest, StampStrippedFallsBackFresh)
@@ -765,9 +765,9 @@ TEST(MjAsmSemMergePlanTest, RoundtripStackSlice)
     expectSameInsns(before, normalizedInsns(*session, pickId));
 }
 
-/// LNT/LVT 行回收（A3 处置表逆操作）：迁入 N 的行在 inline 后回到父表
-/// （LNT 行号原样、LVT 槽按逆映射还原；区间长度按回迁窗口重建——A3 迁 N
-/// 时原长度已被体尾覆盖，PR 注明的不可恢复项）。
+/// LNT/LVT 行回收（outline 迁移表的逆操作）：迁入 N 的行在 inline 后
+/// 回到父表（LNT 行号原样、LVT 槽按逆映射还原；区间长度按回迁窗口重建
+/// ——迁入 N 时原长度已被体尾覆盖，属不可恢复项）。
 TEST(MjAsmSemMergePlanTest, LntLvtRowMoveBack)
 {
     ClassBytesBuilder b("T");
@@ -1080,7 +1080,7 @@ TEST(MjAsmSemMergePlanTest, JvmGateRoundtripJavac)
     fs::remove_all(scratch, ec);
 }
 
-/// JVM 真跑门（builder 语料 + tier-2 边界 DUP 必测形态）：往返后行为与
+/// JVM 真跑门（builder 语料 + 调用点侧栈形重排的边界 DUP 必测形态）：往返后行为与
 /// 拆分前逐字一致（对照组经 withStackMaps 补 SMT）。
 TEST(MjAsmSemMergePlanTest, JvmGateRoundtripBoundaryDup)
 {

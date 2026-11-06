@@ -18,7 +18,7 @@ void ResourceContainer::addResource(std::string_view uri, std::unique_ptr<IResou
     auto it = resources_.find(uri);
     // 重复条目：按 JVM 类加载实测口径 last-wins 保留末条目。mini jar 对照实验
     // 钉死（JDK 17.0.8）：同名条目垃圾在前读真实类、垃圾在后读垃圾，两次都是
-    // CEN 末现生效——推翻 issue #962 时的 first-wins 误判。实证罐（SSTO-Core，
+    // CEN 末现生效。实证罐（SSTO-Core，
     // 每个被 Dup 类名挂「垃圾 → 垃圾 → 真实类」三条同面条目）在 first-wins 下
     // 整条丢失真实类；末现保留让「工具分析的对象」与「JVM 实际加载的对象」
     // 一致。记录 + 日志告警（宿主入口未注册日志 target 时门面静默丢弃），导入
@@ -134,7 +134,7 @@ std::unordered_map<std::string, ClassFamilyView> buildClassFamilyIndex(
                   });
         // base 缺失而仅存版本化变体的族：并存状态合法（JVM 忽略该树，base 兜
         // 底缺位而已），本层只告警不改写 URI 布局——「最小 N 变体升格 base」
-        // 属输出布局重构，须另批裁决。
+        // 属输出布局重构，当前不改。
         if (family.baseUri.empty()) {
             CA_LOG_WARN("[mjbase] warning: multi-release family '{}' has versioned variants but no base entry (kept as-is)",
                         name.c_str());

@@ -1,6 +1,6 @@
 /// @file        region_select_test.cpp
 /// @brief       RegionSelect 测试：策略全拒面逐条钉死 + 多候选排序 +
-///              冲突保守拒绝 + 准入探针（outlineWhere 形态的策略化）+
+///              冲突保守拒绝 + 准入探针 +
 ///              JVM 真跑端到端小门（策略选区域 → planOutline → apply →
 ///              java 行为对拍；JDK 缺失 SKIP）。
 ///
@@ -95,7 +95,7 @@ MethodSpec ladderSpec()
     return m;
 }
 
-/// 写局部臂样本（判据 3 F6 形态，同 outline_plan_test writeLocalSpec）：
+/// 写局部臂样本（判据 3 F6 形态）：
 /// B 臂写 t（槽 3）且 join 仍读 → 写回集非空；C 臂纯净（goto 出口）。
 MethodSpec writeLocalSpec()
 {
@@ -128,8 +128,8 @@ MethodSpec writeLocalSpec()
     return m;
 }
 
-/// 死写臂样本（F6 正控，同 outline_plan_test deadWriteSpec）：B 臂写 t 但
-/// join 不再读 → 写回集为空，F6 放行（planOutline 判据 3 A3 同判）。
+/// 死写臂样本（F6 正控）：B 臂写 t 但
+/// join 不再读 → 写回集为空，F6 放行（planOutline 判据 3 同判）。
 MethodSpec deadWriteSpec()
 {
     MethodSpec m;
@@ -208,7 +208,7 @@ MethodSpec jsrSpec()
     return m;
 }
 
-/// 接力块样本（A8 排除档形态，apply 调用点块同构）：A（iload a; iload c;
+/// 接力块样本（排除档形态，apply 调用点块同构）：A（iload a; iload c;
 /// ifeq else，出口栈 [a]）→ R 单块 = [dup; invokestatic outline$pick$1;
 /// goto join]（复位 DUP + lone invokestatic + 转发 goto）；else 臂 C
 /// （iconst_5）fallthrough join（F4 形态）；join iadd 收两臂双值栈。
@@ -462,7 +462,7 @@ TEST(MjAsmSemRegionSelectTest, WritebackLivenessPrefilter)
     EXPECT_EQ(ungated.chosen, iWrite);   /// 等尺寸平局按首成员块号破平
 }
 
-/// 判据 3 死写正控：写槽出口后不活跃 → F6 放行（A3 判据口径同向）。
+/// 判据 3 死写正控：写槽出口后不活跃 → F6 放行。
 TEST(MjAsmSemRegionSelectTest, DeadWritePassesWritebackPrefilter)
 {
     ClassBytesBuilder b("T");
@@ -570,7 +570,7 @@ TEST(MjAsmSemRegionSelectTest, NestedAndDuplicateNotConflict)
     EXPECT_EQ(dDup.chosen, 0u);
 }
 
-/// 准入探针（outlineWhere 形态的策略化）：按优先序逐个探测，首个通过者
+/// 准入探针：按优先序逐个探测，首个通过者
 /// 入选；全不通过 → NoneAdmitted（全拒面第三档）。
 TEST(MjAsmSemRegionSelectTest, AdmitProbeWalkAndNoneAdmitted)
 {
@@ -596,8 +596,7 @@ TEST(MjAsmSemRegionSelectTest, AdmitProbeWalkAndNoneAdmitted)
 
 /// JVM 真跑端到端小门：javac 语料 → 策略（全事实面 + planOutline 准入
 /// 探针）选区域 → apply → java 运行行为与拆分前逐字一致（-Xverify:all
-/// 全程验证；JDK 缺失自动 SKIP）。outlineWhere/runJvmGateWhere 枚举形态
-/// 的策略化等价验收。
+/// 全程验证；JDK 缺失自动 SKIP）。
 TEST(MjAsmSemRegionSelectTest, JvmGateStrategyPickedRegionBehaviorPreserved)
 {
     namespace fs = std::filesystem;
@@ -713,10 +712,10 @@ TEST(MjAsmSemRegionSelectTest, JvmGateStrategyPickedRegionBehaviorPreserved)
 
 
 // ---------------------------------------------------------------------------
-// v2 排除档（A8）：合成接力块跳过
+// v2 排除档：合成接力块跳过
 // ---------------------------------------------------------------------------
 
-/// v1 缺省档不排除（A7 现状钉死）：接力形态候选照常进优先序，等尺寸平局
+/// v1 缺省档不排除：接力形态候选照常进优先序，等尺寸平局
 /// 按首成员程序序选中接力块 R；真实臂 C 同在序中。
 TEST(MjAsmSemRegionSelectTest, RelayBlockSelectableByDefault)
 {

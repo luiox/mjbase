@@ -1,5 +1,5 @@
 /// @file        insert_prim_test.cpp
-/// @brief       插入原语直接单测（A5）：标签重锚/fallthrough 批量插入、
+/// @brief       插入原语直接单测：标签重锚/fallthrough 批量插入、
 ///              copy-set 前导装载、DUP 复位发射——小语料逐轴钉死，不借
 ///              outline 间接测。
 #include <gtest/gtest.h>
@@ -178,7 +178,7 @@ TEST(MjAsmSemInsertPrimTest, CopySetLoadPreambleFilterAndSlot)
     EXPECT_EQ(nPrologue[0].a, 0);
 }
 
-/// DUP 复位发射原语：DUP/DUP2 透传（§3.4 tier-2 调用点侧栈形重排）。
+/// DUP 复位发射原语：DUP/DUP2 透传（调用点侧栈形重排那一档）。
 TEST(MjAsmSemInsertPrimTest, EntryDupResetEmission)
 {
     EXPECT_EQ(mjbase::asm_sem::entryDupResetInsn(Op::DUP).op, Op::DUP);
@@ -269,7 +269,7 @@ TEST(MjAsmSemInsertPrimTest, InsertAnchoredAtLabelBatchesStack)
     auto second = mjbase::asm_sem::insertAnchoredAtLabel(ed, anchor, {dup});
     ASSERT_TRUE(second.is_ok());
 
-    /// 执行序：dup（后批）先于 load（前批）——tier-2 DUP 复位先于装载。
+    /// 执行序：dup（后批）先于 load（前批）——调用点侧栈形重排的 DUP 复位先于装载。
     const std::vector<Op> seq = opSequence(*unit);
     ASSERT_EQ(seq.size(), 8u);
     EXPECT_EQ(seq[4], Op::DUP);

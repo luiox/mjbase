@@ -27,7 +27,7 @@ namespace mjbase::mapping {
 /// - 写出恒为 version 2。加法式 = 旧文件照常加载，"旧读新拒"不得发生。
 /// - token 表内唯一（生成侧 CSPRNG 碰撞重生成保证）；读取侧同口径 fail-closed：
 ///   手编文件两符号持同一非空 token8 → schema 错误拒载（诊断点名两条冲突
-///   owner），不静默去重修复（#1156 落刀 N3）。空 token（v1 遗留）不参与。
+///   owner），不静默去重修复。空 token（v1 遗留）不参与。
 ///
 /// 解析产物为 `IntermediateMapping`：oldName 侧 = 真名（raw），newName 侧 =
 /// shadow 显示名，token 列随行（ClassMapping/FieldMapping/MethodMapping::token）。
@@ -76,9 +76,9 @@ ca::Result<IntermediateMapping, ShadowAliasFileError> readShadowAliasFile(
     const ca::str::Utf8StringRef& path);
 
 /// @brief 序列化 sidecar（pretty JSON，条目按真名字典序稳定排列；version 2，
-///        token 非空的条目带 token 列，空则省略——#1156）。
+///        token 非空的条目带 token 列，空则省略）。
 ///
-/// 验收口径：parse(write(parse(x))) 关键字段恒等。
+/// 往返契约：parse(write(parse(x))) 关键字段恒等。
 ca::Result<ca::str::Utf8String, ShadowAliasFileError> writeShadowAliasText(
     const IntermediateMapping& mappings);
 

@@ -1,10 +1,10 @@
-// 分析缓存落盘引擎（RFC 0001 §7 失效键 + §4.1 section 布局 + §10-P3）：xref
+// 分析缓存落盘引擎：xref
 // 整索引槽与条目级 decompile 缓存的二次打开命中、四字段失效（depends/
 // produced_by/section_version/profile）、条目级粒度隔离（编辑一个类只失效该
-// 类）、合并 flush（多槽一次清单事务，风险 6）、同族陈旧槽退役与崩溃残留
-// 由既有恢复扫描兜底（AfterFirstFlush 孤儿 prune / Damaged 同名重写自愈）。
+// 类）、合并 flush（多槽一次清单事务）、同族陈旧槽退役与崩溃残留由既有恢复
+// 扫描兜底（AfterFirstFlush 孤儿 prune / Damaged 同名重写自愈）。
 //
-// 失效键完全沿用 store.json 既有字段（project_store.hpp §4.2），不自造体系。
+// 失效键完全沿用 store.json 既有字段（project_store 的清单事务面），不自造体系。
 #include <gtest/gtest.h>
 
 #include <filesystem>
@@ -240,7 +240,7 @@ TEST(MjAnalysisCacheTest, xrefDamagedSectionRecoversBySameNameRewrite)
     ASSERT_FALSE(miss.is_err());
     EXPECT_FALSE(taken(miss).has_value());
 
-    // 同名重写即恢复（§8.2-3 既有恢复口径）。
+    // 同名重写即恢复（doc:container-cache 既有恢复口径）。
     ASSERT_FALSE(damaged.storeXref(key, refOf("good-again"), "2026-10-23T00:00:10Z").is_err());
     auto after = expectOpen(bundle);
     auto hit   = after.lookupXref(key);
@@ -285,7 +285,7 @@ TEST(MjAnalysisCacheTest, xrefRefusedWhenManifestUnloadable)
         auto store = expectOpen(bundle);
         ASSERT_FALSE(store.storeXref(key, refOf("p"), "2026-10-23T00:00:00Z").is_err());
     }
-    // 降级孤儿态：清单不可载 → open 拒绝、未绑定实例写拒绝（不落新清单，CP-1）。
+    // 降级孤儿态：清单不可载 → open 拒绝、未绑定实例写拒绝（不落新清单）。
     std::error_code ec;
     std::filesystem::remove(bundle / kProjectStoreManifestName, ec);
     ASSERT_FALSE(ec);
@@ -515,7 +515,7 @@ TEST(MjAnalysisCacheTest, decompileDamagedSectionMissesThenSelfHeals)
     ASSERT_FALSE(miss.is_err());
     EXPECT_FALSE(taken(miss).has_value());
 
-    // 重新 put + flush = 同名重写恢复（§8.2-3）。
+    // 重新 put + flush = 同名重写恢复（doc:container-cache 恢复口径）。
     ASSERT_FALSE(damaged.putDecompile(slot, "com/x/A", refOf(digestOf('A')), "class A {}").is_err());
     ASSERT_FALSE(damaged.flush("2026-10-23T00:00:10Z").is_err());
     auto healed = expectOpen(bundle);

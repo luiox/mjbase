@@ -2,13 +2,13 @@
 /// @brief       MethodDriver 测试：方法级编排逐面钉死——多方法确定性名序
 ///              聚合 / 零候选快跳（直线 + jsr 枚举零候选）/ 单方法失败隔离
 ///              （无体方法 ParentUnusable 不阻断）/ 全拒隔离（构造器判据 6
-///              全滤不阻断）/ 空池全量枚举 / drive 档位透传（接力现状 +
-///              A8 收敛档）/ 挑选策略重载破平 / JVM 真跑端到端门（javac
+///              全滤不阻断）/ 空池全量枚举 / drive 档位透传（接力档 +
+///              排除接力档）/ 挑选策略重载破平 / JVM 真跑端到端门（javac
 ///              语料 ≥2 方法编排驱动后 -Xverify:all 行为逐字对拍；JDK 缺
 ///              失 SKIP）。
 ///
 /// 语料纪律同 outline_driver_test：干净臂单区域方法（排除档下每方法恰切
-/// 一层收敛）；驱动器语义注（接力候选形态 / A8 排除档收敛）见
+/// 一层收敛）；驱动器语义注（接力候选形态 / 排除档跳过接力）见
 /// outline_driver_test 文件头注，本文件不重复。会话纪律：方法升格前置
 /// （collectCodeUnits），空池缺省枚举已升格方法——同 SemFixture/既有门口径。
 #include <gtest/gtest.h>
@@ -171,7 +171,7 @@ TEST(MjAsmSemMethodDriveTest, TwoMethodsNameOrderAggregated)
     jbc::analysis::ShapeResolver resolver;
     MethodDriveRequest req{*fixture.session, resolver};
     req.methods                   = {zetaId, alphaId};   /// 乱序池——策略归一
-    req.drivePolicy.excludeOutlineRelay = true;          /// A8 收敛档
+    req.drivePolicy.excludeOutlineRelay = true;          /// 排除接力候选（每方法 1 层收敛）
     const MethodDriveReport report = driveMethods(req);
 
     ASSERT_EQ(report.methods.size(), 2u);
@@ -328,9 +328,9 @@ TEST(MjAsmSemMethodDriveTest, EmptyPoolEnumeratesAllWithCode)
     EXPECT_EQ(report.failedCount, 0u);
 }
 
-/// drive 档位透传（v1 接力现状）：排除档关闭 + 每方法上限 2——单区域
+/// drive 档位透传（v1 接力档）：排除档关闭 + 每方法上限 2——单区域
 /// 方法接力切层至命中上限（IterationCap），证明 drivePolicy / maxRounds
-/// 逐字段透传给 OutlineDriveRequest（A7 行为零改动的编排级钉死）。
+/// 逐字段透传给 OutlineDriveRequest（编排层不改 outline 行为，只透传档位）。
 TEST(MjAsmSemMethodDriveTest, DriveTierPassThroughRelayKept)
 {
     ClassBytesBuilder b("T");
@@ -341,7 +341,7 @@ TEST(MjAsmSemMethodDriveTest, DriveTierPassThroughRelayKept)
     jbc::analysis::ShapeResolver resolver;
     MethodDriveRequest req{*fixture.session, resolver};
     req.methods       = {pickId};
-    req.maxRounds     = 2;   /// 缺省排除档关闭 = v1 接力现状
+    req.maxRounds     = 2;   /// 缺省排除档关闭 = v1 接力档
     const MethodDriveReport report = driveMethods(req);
 
     ASSERT_EQ(report.methods.size(), 1u);
@@ -434,7 +434,7 @@ TEST(MjAsmSemMethodDriveTest, JvmGateTwoMethodOrchestrationBehaviorPreserved)
 
     jbc::analysis::ShapeResolver resolver;
     MethodDriveRequest req{*session, resolver};   /// 空池 = 全量已升格方法
-    req.drivePolicy.excludeOutlineRelay = true;   /// A8 收敛档（每方法 1 层）
+    req.drivePolicy.excludeOutlineRelay = true;   /// 排除接力候选（每方法 1 层收敛）
     const MethodDriveReport report = driveMethods(req);
 
     /// javac 默认构造器 <init> 直线无候选 → 快跳；pick/mix 名序各切 1 层。

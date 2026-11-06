@@ -15,14 +15,14 @@ inline constexpr ca::u32 kMaxInlineCalleeInsns = 32;
 ///
 /// ## 生态位
 ///
-/// C 方法级指令变换组的 method_inliner 对位件（mbase 旧栈同名 pass 的
-/// 新载体重推导；IdentityWrapperInliner 是其「纯转发壳」特化上收件）。
+/// 方法级指令变换组的 method_inliner（mbase 旧栈同名 pass 的
+/// 新载体重推导；IdentityWrapperInliner 只覆盖其中的纯转发壳形态）。
 /// 服务面：混淆器注入的静态纯函数辅助方法与转发链——调用点就地展开，
 /// 消除一次跨方法跳转；壳方法本体保留（删除延后 GlobalUnusedMethodRemover
 /// 管线，与本 pass 无正确性顺序约束）。opt-in，默认链不收，CLI -p 显式
 /// 挂点。
 ///
-/// ## v1 边界（本批做 / 不做）
+/// ## v1 边界（做 / 不做）
 ///
 /// 做：
 /// - 调用点 op 仅认 invokestatic（被调 static）与 invokespecial（被调
@@ -39,7 +39,7 @@ inline constexpr ca::u32 kMaxInlineCalleeInsns = 32;
 /// - 类版本 ≥ 50（SMT 语义）：写回走 prepareNestedAttrsForLayout →
 ///   lower → Strict 帧重算 + maxes 采用 + SMT 再生（frame_rewire 链）。
 ///
-/// 不做（头注挂账，v2 及后续批）：
+/// 已知不覆盖面（留 v2）：
 /// - invokevirtual / invokeinterface 调用点（含 final 收窄面）留 v2；
 /// - 跨类 private（nestmate）与跨包非 public 访问面留 v2；
 /// - switch 被调体、浅循环（回边）被调体留 v2；

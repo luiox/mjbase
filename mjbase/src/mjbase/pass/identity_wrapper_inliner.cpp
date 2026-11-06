@@ -329,7 +329,7 @@ bool isPublicBoxTarget(const TargetRef& t)
     return false;
 }
 
-/// 最终目标从调用者类可达（§5.4.4 访问控制保守面；protected 跨包子类不认）。
+/// 最终目标从调用者类可达（JVMS §5.4.4 访问控制保守面；protected 跨包子类不认）。
 bool targetAccessibleFrom(const TargetRef&                                 t,
                           const std::unordered_map<std::string, ca::u32>& declared,
                           std::string_view                                  callerName)

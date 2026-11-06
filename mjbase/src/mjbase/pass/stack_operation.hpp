@@ -9,7 +9,7 @@ namespace mjbase::pass {
 ///
 /// 语义：只匹配连续的栈操作形状，不跨 label/frame/异常边；
 /// 至少一次替换算 changed；匹配窗口外的栈值保守保持原样。
-/// StackOperationExpander（帧分析展开 DUP 族）属帧链接线批次，不在本件。
+/// StackOperationExpander（帧分析展开 DUP 族）属帧链接线，不在本件。
 ///
 /// 载体（asm/tmatcher）：ReplaceRule 组合子规则 + InsnPlanner 计划面——
 /// 匹配产出 ReplacePlan（窗口 + 替换 Insn 值列表），编辑由本 pass 经
@@ -36,7 +36,7 @@ namespace mjbase::pass {
 ///
 /// 收敛语义声明：窗口纪律（首条豁免：控制流/异常表边界不得锚定窗口
 /// 中部，labelsAnchorAt 覆盖分支与异常表两角色）拒收的窗口按窗口粒度
-/// 跳过、其余计划继续（原挂账兑现；旧载体对异常表锚定整方法保守终止）；
+/// 跳过、其余计划继续；
 /// 纪律门外的 DOM 拒绝仅剩内部错误族，保守终止本方法收敛。全部计划被
 /// 拒收即无进展，防死循环。
 ///

@@ -1,4 +1,4 @@
-/// ToolClassCombiner（批 A 收口件）在真 JVM 上的硬验收：javac 编译多 static
+/// ToolClassCombiner 在真 JVM 上的硬验收：javac 编译多 static
 /// 工具类样本（Main 调用两个工具类；工具类带分支方法与 static final 常量
 /// 字段）→ 合并 → 产物目录真 java 执行搬移后的成员，stdout 与合并前等价；
 /// 反射核对字段 owner 落在合并宿主；产物全量扫描零供体引用。JDK 不可用的

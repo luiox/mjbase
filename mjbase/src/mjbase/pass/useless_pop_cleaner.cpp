@@ -66,9 +66,8 @@ bool isStackRelayOp(jbc::core::Op op)
 /// 帧面可删生产者：纯常量装载——int/long/float/double/string 常量、
 /// ACONST_NULL 与 ldc Class/MethodType/MethodHandle（元数据常量无求值
 /// 副作用；Dynamic/condy 不认领——bootstrap 链有求值副作用）。
-/// 覆盖面按旧栈帧载体（InsnUtil::isConstant 的纯装载子集）收窄：局部
-/// 装载不作帧面生产者（def-use 里装载是恒等搬运、定义归 store，归
-/// DeadLocalStoreRemover 协同，见头文件挂账）。
+/// 覆盖面按帧面语义收窄：局部装载不作帧面生产者（def-use 里装载是恒等搬运、
+/// 定义归 store，归 DeadLocalStoreRemover 协同，见头文件未覆盖清单）。
 bool isFrameRemovableConstProducer(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in)
 {
     ca::i32         iv = 0;
@@ -128,8 +127,8 @@ struct PopPlan
 /// 一份原件（输入需求 = 原件槽宽，DUP 1 槽 / DUP2 2 槽）。收集链上常量
 /// 与可吸收中继。以下形态 fail-closed 返回 false：
 ///   - X 族（DUP_X1/DUP_X2/DUP2_X1/DUP2_X2）与 SWAP 的重排/插底形态
-///     （拷贝与在场值交错，删除面不闭合）——挂账；
-///   - DUP2 的 long/double 双槽直接输入（第二份拷贝天然离场）——挂账；
+///     （拷贝与在场值交错，删除面不闭合）——不吸收；
+///   - DUP2 的 long/double 双槽直接输入（第二份拷贝天然离场）——不吸收；
 ///   - 链上任何标签锚定（分支汇合：直线供源不成立）；
 ///   - 未计划消费穿插（弹值逃逸出认证面）、复合生产者（运算/调用/字段）、
 ///     cat2 常量部分消费（半吃双槽）。
@@ -151,7 +150,7 @@ bool traceRelayChain(const CodeDom& dom, const jbc::ir::ClassSession& session,
         if (method_rewrite_util::labelsAnchorAt(dom, ids[p])) return false;
         if (in->op == jbc::core::Op::NOP) continue;
         if (isStackRelayOp(in->op)) {
-            // 仅 DUP/DUP2 可吸收；重排/插底形态挂账。
+            // 仅 DUP/DUP2 可吸收；重排/插底形态不吸收。
             if (in->op != jbc::core::Op::DUP && in->op != jbc::core::Op::DUP2) return false;
             // 拷贝别名折叠：上方存量 + 窗口需求全部落在中继输出拷贝上，
             // 向下追溯一份原件（unit 槽）；窗口深入原件之下的余量并入。
@@ -166,13 +165,13 @@ bool traceRelayChain(const CodeDom& dom, const jbc::ir::ClassSession& session,
             continue;
         }
         if (in->op == jbc::core::Op::POP || in->op == jbc::core::Op::POP2) {
-            // 穿透仅限本批计划 pop（消费自有溯源认证）；未计划消费 = 弹值
+            // 穿透仅限计划内 pop（消费自有溯源认证）；未计划消费 = 弹值
             // 逃逸出认证面。
             if (planPops.find(ids[p].slot) == planPops.end()) return false;
             above += in->op == jbc::core::Op::POP ? 1u : 2u;
             continue;
         }
-        // 纯常量生产者扣减；cat2 直接进 DUP2 输入 = 双槽形态挂账。
+        // 纯常量生产者扣减；cat2 直接进 DUP2 输入 = 双槽形态不吸收。
         if (!isFrameRemovableConstProducer(session, *in)) return false;
         const bool  cat2  = isCat2ConstProducer(session, *in);
         const ca::u32 width = cat2 ? 2u : 1u;
@@ -184,7 +183,7 @@ bool traceRelayChain(const CodeDom& dom, const jbc::ir::ClassSession& session,
         need -= static_cast<ca::i64>(width);
         if (need < 0) return false;   // DUP 遇 cat2 输入等超宽形态。
         if (dup2Input) {
-            if (cat2) return false;   // DUP2 对 long/double 双槽：挂账。
+            if (cat2) return false;   // DUP2 对 long/double 双槽：不吸收。
             dup2Input = false;
         }
         consts.push_back(ids[p]);
@@ -193,7 +192,7 @@ bool traceRelayChain(const CodeDom& dom, const jbc::ir::ClassSession& session,
 }
 
 /// 中继在场路的计划认证：每个计划从其 pop 直线回溯溯源，溯源常量须与
-/// def 侧互证一致；删除常量的全部使用边必须落在本批计划 pop（逃逸消费
+/// def 侧互证一致；删除常量的全部使用边必须落在计划内 pop（逃逸消费
 /// 者 = 删值破坏他人）；共享常量/中继的计划连通分组，组内删除面槽平衡
 /// 非零（复制逃逸，如 [ICONST_1; DUP; POP] 的第二拷贝离场）整组弃。弃证
 /// 收缩计划集后重算穿透许可，至不动点。返回存活计划（relays 已回填）。

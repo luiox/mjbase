@@ -1,10 +1,10 @@
-// 编辑台账行模型（schema v2 交付 2 的纯数据层）：三型行（txn/anchor/bookmark）
+// 编辑台账行模型（纯数据层）：三型行（txn/anchor/bookmark）
 // 的严格解析与确定性写出、行级违约逐类拒载、活动链结构校验、段内定序、
 // 容器 canonical 序列化与 digest 口径（容器 digest = 基线 section
 // content_hash，一口径两处验证）。
 //
-// 设计定稿见 doc:schema-v2-project-json（上游 RFC 0001
-// §6.2/§6.4）。
+// 设计定稿见 doc:schema-v2-ledger（行格式）与 doc:schema-v2-project-json
+// （digest 口径）。
 #include <gtest/gtest.h>
 
 #include <string>
@@ -387,7 +387,7 @@ TEST(MjLedgerRowTest, sortLedgerRowsPinsAnchorFirstThenTxnThenBookmarks)
 
 TEST(MjLedgerRowTest, canonicalContainerDigestMatchesSectionHashDiscipline)
 {
-    // canonical 序列化（§1.6）：uri 字典序、u64 小端长度前缀；容器 digest 与
+    // canonical 序列化（doc:schema-v2-project-json）：uri 字典序、u64 小端长度前缀；容器 digest 与
     // section content_hash 同一口径（同字节同 SHA-256）。
     const std::vector<ca::u8> payloadA = {'a', 'b', 'c'};
     const std::vector<ca::u8> payloadB = {0x00, 0xff, 0x10, 0x20};

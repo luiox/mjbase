@@ -88,7 +88,7 @@ bool isLongCommutative(Op op)
         || op == Op::LXOR;
 }
 
-/// 常量装载判定（旧栈 InsnUtil::isConstant 对齐 + LDC_W/LDC2_W 读取器
+/// 常量装载判定（与旧栈 mbase InsnUtil::isConstant 对齐 + LDC_W/LDC2_W 读取器
 /// 折叠等价面）：ACONST_NULL..DCONST_1 + BIPUSH/SIPUSH + ldc 族。
 bool isConstPush(const jbc::ir::Insn& in)
 {

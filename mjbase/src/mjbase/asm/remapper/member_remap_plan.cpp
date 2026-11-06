@@ -78,7 +78,7 @@ std::string rewriteMethodDescriptorText(std::string_view desc, MapName&& mapName
     return out;
 }
 
-/// @brief 结构化签名重写：libjbc jbc::type::signature 消费面（B8 8.3 收口）。
+/// @brief 结构化签名重写：libjbc jbc::type::signature 消费面。
 ///
 /// 解析树定界全部类类型出现（parseSignature 自动分派三形态），逐类类型按
 /// **完整内部名**（首段全名 + 后缀段按 '$' 连接，对齐 libjbc

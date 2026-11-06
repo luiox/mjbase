@@ -23,7 +23,7 @@ namespace mjbase::pass {
 namespace {
 
 /// 旧名到新名基段：最后一个 '/' 截断，取 `包前缀 + "Class"`；无 '/' 用 `"Class"`。
-/// 与旧栈 renamedClassBase 逐字节对齐（新名 = 基段 + 全局递增编号）。
+/// 新名 = 基段 + 全局递增编号。
 std::string renamedClassBase(const std::string& oldName)
 {
     const auto slash = oldName.rfind('/');
@@ -56,7 +56,7 @@ struct LoadedClass
     std::shared_ptr<jbc::ir::ClassSession> session;
 };
 
-/// 装载单个 class 资源；空 bytes / 不可解析 / 无类名跳过（对齐旧栈准入）。
+/// 装载单个 class 资源；空 bytes / 不可解析 / 无类名跳过。
 bool loadClass(mjbase::model::ClassResource& resource, const std::string_view uri,
                LoadedClass& out)
 {
@@ -135,11 +135,10 @@ mjbase::spi::PreservedAnalyses ClassRenamer::run(mjbase::model::ResourceContaine
     for (LoadedClass& entry : loaded) {
         // 改写面 = bytecode + annotations + signatures（bytecodeAndMetadata）：
         // 泛型 Signature、Runtime*（Type/Parameter）Annotations 与
-        // AnnotationDefault 的类引用随类映射结构化同步（B8 8.3 收口——
-        // libjbc sig_attr/type_annotation_attr 结构化面接线，签名走解析树
-        // span 手术、注解走 typed 属性模型；此前 bytecodeOnly 面签名/注解
-        // 引用滞留旧名的偏差注记随之退役）。反射字符串/资源面不开启（旧栈
-        // 口径一致，属其他批次语义）。
+        // AnnotationDefault 的类引用随类映射结构化同步——
+        // libjbc sig_attr/type_annotation_attr 结构化面接线（签名走解析树
+        // span 手术、注解走 typed 属性模型）。反射字符串/资源面不开启
+        // （与旧栈默认口径一致）。
         auto remapped = mjbase::asm_remapper::applyMemberRemapPlan(
             *entry.session, plan, mjbase::asm_remapper::RemapPolicy::bytecodeAndMetadata());
         if (remapped.is_err()) {
@@ -164,7 +163,7 @@ mjbase::spi::PreservedAnalyses ClassRenamer::run(mjbase::model::ResourceContaine
 
     if (updated.empty()) return mjbase::spi::PreservedAnalyses::all();
 
-    // 阶段三：提交。先删全部旧条目，再插全部新条目（顺序对齐旧栈，避免
+    // 阶段三：提交。先删全部旧条目，再插全部新条目（避免
     // 「新名恰为另一类旧 URI」时的中间态冲突）。
     auto& resources = container.getResources();
     for (const UpdatedClass& item : updated) {

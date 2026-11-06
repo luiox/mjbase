@@ -222,7 +222,7 @@ bool appendPresetRules(std::string_view rest, std::vector<KeepRule>& out)
     case KeepPreset::Rmi: {
         // RMI 骨架/存根类：rmic 与动态代理按 `<类名>_Stub` 命名约定反射加载，
         // 名字就是契约（无注解、无接口可依）。层级谓词（implements Remote /
-        // Skeleton / Tie）留待层级事实接入后补——见 keep_rule.hpp 挂账。
+        // Skeleton / Tie）留待层级事实接入后补——见 keep_rule.hpp 未覆盖清单。
         static constexpr std::string_view kRmiClasses[] = {
             "**_Stub",
             "**_Skel",
@@ -281,7 +281,7 @@ bool appendPresetRules(std::string_view rest, std::vector<KeepRule>& out)
         return true;
     case KeepPreset::Jaxb:
         // JAXB 代码生成物：ObjectFactory 由 JAXBContext 反射实例化。注解族
-        // （@XmlType / @XmlRootElement 的 getter/setter 面）需注解读取，挂账。
+        // （@XmlType / @XmlRootElement 的 getter/setter 面）需注解读取，未覆盖。
         out.push_back(makeClassRule("**ObjectFactory", "preset +jaxb"));
         return true;
     }

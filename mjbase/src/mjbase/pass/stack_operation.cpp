@@ -286,8 +286,7 @@ mjbase::spi::PreservedAnalyses StackOperationSimplifier::run(
             const tm::ReplacePlan& plan = plans[pi];
 
             // 窗口纪律（首条豁免）：控制流/异常边界不得锚定窗口中部——
-            // 分支目标进入窗内在擦除后语义不保，按窗口粒度跳过（头注
-            // 挂账兑现：不再整方法保守终止）。
+            // 分支目标进入窗内在擦除后语义不保，按窗口粒度跳过。
             const std::vector<InsnId>& order = dom.order();
             bool                       anchored = false;
             for (ca::i32 q = plan.start + 1; q < plan.endExclusive; ++q) {

@@ -428,7 +428,7 @@ std::vector<WindowRule> makeRules()
                     opStep(Op::ISHL), opStep(Op::ISUB)},
                    buildCarryCancelXorFold},
 
-        // ── #44 long 族（lxor/land/lshl 位级恒等式。long 与 int 族窗口形态差
+        // ── long 族（lxor/land/lshl 位级恒等式。long 与 int 族窗口形态差
         // 异：cat2 值占双槽，dup 家族按槽位语义只能把复制品下插 1/2 槽——
         // dup2_x2 在 all-cat2 三值栈 [x,K,v] 上产出 [x,v,K,v]（libjbc
         // dupSlots 与真 JVM 实测一致），且无 dup2_x4、swap 对 cat2 非法——

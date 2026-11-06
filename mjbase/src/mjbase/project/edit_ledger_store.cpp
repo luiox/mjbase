@@ -228,7 +228,7 @@ ca::Result<EditLedgerStore, ProjectStoreError> EditLedgerStore::openBundle(
         store.generation_ = gen;
     }
 
-    //-- 待释放清点（§3.3）：引擎名族下不被活动代引用的已登记 section ----------
+    //-- 待释放清点（doc:schema-v2-ledger）：引擎名族下不被活动代引用的已登记 section ----------
     store.reclaimEngineSections(manifest);
 
     return ca::Ok(std::move(store));
@@ -659,7 +659,7 @@ ca::Result<LedgerFlushReport, ProjectStoreError> EditLedgerStore::flush(
                                                 static_cast<ca::u64>(rows.size()), createdAt));
     report.published.push_back(ledgerName.clone());
 
-    //-- 3. manifest 事务（upsert 新 + 删待释放；删除只指非活动代，§3.4） --------
+    //-- 3. manifest 事务（upsert 新 + 删待释放；删除只指非活动代，doc:schema-v2-ledger） --------
     // 待释放名字若与本批 upsert 相交（新会话事务号自 1 重新生长，overlay 名
     // 复用仍待释放的旧名），以 upsert 重写收场、不再墓碑——同一事务又删又写
     // 是矛盾变异，清单事务会拒绝。
@@ -825,7 +825,7 @@ ca::Result<LedgerCompactReport, ProjectStoreError> EditLedgerStore::compact(
     if (ledgerWritten.is_err()) return ca::Err(std::move(ledgerWritten).unwrap_err());
     auto ledgerPublished = std::move(ledgerWritten).unwrap();
 
-    //-- 3. manifest 换代（仅 upsert 新对；旧对在提交后入待释放，§3.4） ----------
+    //-- 3. manifest 换代（仅 upsert 新对；旧对在提交后入待释放，doc:schema-v2-ledger） ----------
     StoreManifestMutation mutation;
     mutation.upserts.push_back(makeSectionEntry(baselineName.ref(), SectionFormat::Opaque,
                                                 baselinePublished, 0, createdAt));

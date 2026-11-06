@@ -1,10 +1,10 @@
 /// @file        merge_plan.cpp
 /// @brief       MergePlan 识别（planInline）与落地（apply）。
 ///
-/// 判据实现对照 luiox/mjbase #115 §3.5 与头注 A4 口径。槽逆映射的栈参
+/// 判据实现对照 merge_plan.hpp 文件头注的识别口径。槽逆映射的栈参
 /// 边界在「装载链 ⊆ 参数值」内取保守最大剥离（min(V, 装载链长)）——链上
-/// 原代码装载与 N 体序幕装载互为对偶，边界滑动不改变合并结果（#115 §3.5
-/// 往返实测口径）；retIsEntryCopy 判定见 merge_plan.hpp 文件头注。
+/// 原代码装载与 N 体序幕装载互为对偶，边界滑动不改变合并结果；
+/// retIsEntryCopy 判定同见该头注。
 #include "mjbase/asm/sem/merge_plan.hpp"
 
 #include <algorithm>
@@ -57,7 +57,7 @@ jbc::core::AttrSlot* findAttr(jbc::core::ClassFile&              cf,
     return nullptr;
 }
 
-/// 代码锚定嵌套属性归类：LNT / LVT / LVTT / SMT / 盖章（A5b）可识别，
+/// 代码锚定嵌套属性归类：LNT / LVT / LVTT / SMT / 盖章可识别，
 /// 其余 fail-closed。
 enum class NestedKind : ca::u8 { Other, Lnt, Lvt, Lvtt, Smt, Stamp };
 
@@ -71,7 +71,7 @@ NestedKind nestedKindOf(const jbc::core::ClassFile& cf, const jbc::core::AttrSlo
     return NestedKind::Other;
 }
 
-/// 盖章体解析（A5b）：u16 计数 + (nSlot, parentSlot) 对序列（u16 大端）。
+/// 盖章体解析：u16 计数 + (nSlot, parentSlot) 对序列（u16 大端）。
 /// 半截/超长章与重复 nSlot 均为非本设施产物，fail-closed。
 Result<std::unordered_map<ca::u32, ca::u32>, OutlineError> parseStampBody(
     const std::vector<ca::u8>& b)
@@ -275,7 +275,7 @@ Result<MergePlan, OutlineError> planInline(const InlineRequest& req)
         return Err(OutlineError::CallSiteShapeImpure);   /// 自我内联拒绝
     }
 
-    // ---- 类内单调用点计数（#115 §3.5 单调用点口径；代码域扫描）----
+    // ---- 类内单调用点计数（代码域扫描）----
     {
         jbc::ir::MethodUnit* cm = cu.method(calleeId);
         const std::string_view calleeName = cu.symbols().str(cm->name);
@@ -328,16 +328,16 @@ Result<MergePlan, OutlineError> planInline(const InlineRequest& req)
         return Err(OutlineError::UnsupportedAttr);
     }
     for (const jbc::core::AttrSlot& slot : cf.methods[cm->backingIndex].attrs) {
-        /// 方法级属性白名单：A3 产物仅 Code；其余（TypeAnnotations 族等）
+        /// 方法级属性白名单：outline 产物仅 Code；其余（TypeAnnotations 族等）
         /// 重定位面未建模，保守拒。
         if (!cf.cp.utf8Equals(slot.nameCp, "Code")) {
             return Err(OutlineError::UnsupportedAttr);
         }
     }
 
-    /// 自足槽盖章（A5b）：N 的 Code 嵌套 kOutlineStampAttr（RawAttr）承载
+    /// 自足槽盖章：N 的 Code 嵌套 kOutlineStampAttr（RawAttr）承载
     /// outline 侧 (nSlot, parentSlot) 对，槽逆映射消费后自足槽 exact 对回；
-    /// 无章回落 fresh（下方，A4 口径，外来 inline 形态兼容）。半截/重复章
+    /// 无章回落 fresh（下方，外来 inline 形态兼容）。半截/重复章
     /// 均为非本设施产物，fail-closed。
     std::unordered_map<ca::u32, ca::u32> stampBack;
     {
@@ -506,11 +506,11 @@ Result<MergePlan, OutlineError> planInline(const InlineRequest& req)
         plan.stripLoads.push_back(run[run.size() - m + t]);   /// 链尾 m 条（程序序）
     }
 
-    // ---- strip 集 + 锚标签（strip 首条的标签 = A3 入口标签重锚位）----
+    // ---- strip 集 + 锚标签（strip 首条的标签 = outline 侧入口标签重锚位）----
     std::vector<jbc::ir::InsnId> stripSet;
-    /// §3.4 tier-2 对偶：strip 集紧邻复位 DUP/DUP2（m == 链全长，边界即
-    /// strip 前一位）+ 去序幕后区域尾条为 DUP/DUP2 + 首参数与返回值同族
-    /// + 栈参恰 1（k == 1）。tier-2 的 outline 侧条件（prefix == dIn）
+    /// 入口栈顶复制形态对偶：strip 集紧邻复位 DUP/DUP2（m == 链全长，
+    /// 边界即 strip 前一位）、去序幕后区域尾条为 DUP/DUP2、首参数与返回值
+    /// 同族、栈参恰 1（k == 1）。outline 侧该形态的条件（prefix == dIn）
     /// 保证「真切片参数 + 体尾 DUP」的外来同构形态不可能是本设施产物
     /// （该形态 outline 判据 RetNotProduced 拒绝）。
     if (boundaryInsn != nullptr && (boundaryInsn->op == Op::DUP || boundaryInsn->op == Op::DUP2)
@@ -557,7 +557,7 @@ Result<MergePlan, OutlineError> planInline(const InlineRequest& req)
 
     // ---- 槽逆映射：参数槽（k..V-1 ← 装载链装载槽）+ 自足槽（盖章 exact
     //      / 无章 fresh）。盖章表已在 N 形态判据后自 Code 嵌套属性解出
-    //      （stampBack，A5b）；无章条目回落 fresh（A4 口径）----
+    //      （stampBack）；无章条目回落 fresh ----
     plan.freshBase = unit->maxLocals;
     ca::u32 freshCursor = plan.freshBase;
     std::set<ca::u32> selfSlots;
@@ -603,9 +603,9 @@ Result<MergePlan, OutlineError> planInline(const InlineRequest& req)
         back.selfSufficient = true;
         const auto stamped = stampBack.find(s);
         if (stamped != stampBack.end()) {
-            back.parentSlot = stamped->second;   /// 盖章档：原槽 exact 恢复（A5b）
+            back.parentSlot = stamped->second;   /// 盖章档：原槽 exact 恢复
         } else {
-            back.parentSlot = freshCursor;       /// 无章回落 fresh（A4 口径）
+            back.parentSlot = freshCursor;       /// 无章回落 fresh
             ca::u32 w = 1;
             const auto wit = selfWidth.find(s);
             if (wit != selfWidth.end()) {
@@ -643,7 +643,7 @@ Result<MergePlan, OutlineError> planInline(const InlineRequest& req)
     }
     plan.leadingStrip = k;
 
-    // ---- N 的 LNT/LVT 行回收（A3 处置表逆操作；锚点换算回迁体序）----
+    // ---- N 的 LNT/LVT 行回收（outline 侧迁移表的逆操作；锚点换算回迁体序）----
     auto rawExported = nUnit->dom.exportRaw();
     if (rawExported.is_err() || rawExported.unwrap().size() != nOrder.size()) {
         return Err(OutlineError::BadRegionHandles);
@@ -664,7 +664,7 @@ Result<MergePlan, OutlineError> planInline(const InlineRequest& req)
             continue;   /// 随 N 删除（maxes/SMT 均为再生面）
         }
         if (kind == NestedKind::Stamp) {
-            continue;   /// 盖章已在槽逆映射前解出（stampBack，A5b）
+            continue;   /// 盖章已在槽逆映射前解出（stampBack）
         }
         if (kind == NestedKind::Other) {
             return Err(OutlineError::UnsupportedAttr);
@@ -785,10 +785,10 @@ Result<InlineOutcome, OutlineError> MergePlan::apply(jbc::ir::ClassSession& sess
 
     // ---- 步骤 1：回迁体插入（标签锚定逆序 / fallthrough 直插正序）----
     //
-    // 标签口径与 A3 落地镜像：strip 首条（复位 DUP 或首条装载）所锚标签 =
+    // 标签口径与 outline 落地镜像：strip 首条（复位 DUP 或首条装载）所锚标签 =
     // outline 入口标签重锚位，回迁体按执行序逆序逐条插到标签边界，终序 =
     // body 程序序、标签重锚到回迁体首条——strip 集随之失去标签承载，可安全
-    // 删除。fallthrough 形态直插 strip 首条（或调用点）之前。A5 机械上收
+    // 删除。fallthrough 形态直插 strip 首条（或调用点）之前。机械复用
     // insert_prim：标签重锚走 insertAnchoredAtLabel、fallthrough 走
     // insertBeforeInsn（与 OutlinePlan::apply 步骤 2 同原语）。
     jbc::ir::CodeEditor ed{*unit};
@@ -989,7 +989,7 @@ Result<InlineOutcome, OutlineError> MergePlan::apply(jbc::ir::ClassSession& sess
         (void)codeSlot->mutate();
     }
 
-    // ---- 步骤 6：删除 N（A3 建序追加在 methods 尾，删除不扰动在先身份）----
+    // ---- 步骤 6：删除 N（outline 建序追加在 methods 尾，删除不扰动在先身份）----
     if (session.removeMethod(callee).is_err()) {
         return Err(OutlineError::EditFailed);
     }

@@ -23,7 +23,7 @@
 /// - method/field owner 作为类型引用
 /// - 注解和签名中的元数据类型引用（类/字段/方法级 Runtime*Annotations + Signature；
 ///   方法级 AnnotationDefault 与 ParameterAnnotations；Record 组件内嵌注解。
-///   *TypeAnnotation 家族 libjbc 未建模且无用例承载，本批明确放弃）
+///   *TypeAnnotation 家族 libjbc 未建模且无用例承载，明确不采集）
 /// - 结构 class 元数据（EnclosingMethod、nest host/members、permitted subclasses、
 ///   inner classes、record component 描述符）
 /// - class-string 反射使用、常量反射成员查找、method handle、lambda bootstrap 目标
@@ -339,10 +339,10 @@ public:
     /// @brief Remove all collected references and target lookup tables.
     void clear();
 
-    /// @brief E2 局部重建：按 ChangeSet 对单个类做成员级补丁（libjbc design.md §35.4）。
+    /// @brief 局部重建：按 ChangeSet 对单个类做成员级补丁。
     ///
-    /// 与全量 build 的等价性是 E2 硬验收：同一批变换后，本入口补丁出的六张
-    /// 主表与「变换后容器全量重扫」逐项一致（相等性由单元与管线测试钉死）。
+    /// 与全量 build 等价：同一批变换后，本入口补丁出的六张主表与「变换后容器
+    /// 全量重扫」逐项一致（由单元与管线测试钉死）。
     /// 补丁只重扫变更粒度命中的成员/事实面，未变更类的字节码不重解析；主表
     /// 打补丁后派生查询图统一重建。
     ///
@@ -491,7 +491,7 @@ public:
 private:
     void indexSession(jbc::ir::ClassSession& session,
                       const mjbase::asm_analyzer::AliasAnalysis* aliases);
-    /// @brief 类级事实面：类声明 + 超/接口 + 类级元数据类型引用（§35.4 补丁面）。
+    /// @brief 类级事实面：类声明 + 超/接口 + 类级元数据类型引用。
     void indexClassHeader(jbc::ir::ClassSession&  session,
                           std::string_view        className,
                           const ReferenceSite&    classSite);

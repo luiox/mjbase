@@ -12,7 +12,7 @@ namespace mjbase::pass {
 /// 喂给注定弹弃的运算链（典型 [INVOKESTATIC System.nanoTime; POP2] 直弃
 /// 形态，或中间隔若干纯计算）。
 ///
-/// 白名单（声明表，吸收旧栈 issue #678 与 UnusedResultCallEliminater
+/// 白名单（声明表，吸收旧栈与 UnusedResultCallEliminater
 /// 两张表；扩展只增条目）：可安全弹弃的调用——
 ///   - 零参精确条目：System.nanoTime/currentTimeMillis ()J、
 ///     Math.random ()D；

@@ -9,7 +9,7 @@ namespace mjbase::project {
 /// @file class_kind.hpp
 /// @brief class 头形态分类（census kind 列；access + super 派生，不存储）。
 ///
-/// 形态分类是纯 JVM 域知识的投影层切面（#121 B4 钩子）：`entries.kind` 的
+/// 形态分类是纯 JVM 域知识的投影层切面：`entries.kind` 的
 /// 登记语义不变，类级 kind 由 class 头 access 旗标与父类内部名现算。
 /// 并列旗标按 Module > Annotation > Interface > Enum > Record > Class 取先
 /// （对抗语料可能出现矛盾旗标组合，序恒定保证分类确定）。

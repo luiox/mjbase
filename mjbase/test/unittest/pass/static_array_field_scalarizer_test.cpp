@@ -1,4 +1,4 @@
-/// 静态数组字段标量化（#39 第一切片）单测：候选识别与拆分主链
+/// 静态数组字段标量化单测：候选识别与拆分主链
 /// （roundtrip 语义断言：改写 → writeClass → 重读会话 → 指令序列与
 /// 字段表面验证），保守跳过面（非常量下标 / 整体引用 / arraylength /
 /// 无分配 / 重赋 / 名冲突 / 非 private / 引用数组），注册面种子。
@@ -442,7 +442,7 @@ Bytes resourceBytes(ResourceContainer& container, const std::string& uri)
 }
 
 /// ct/TableHost：两类数组字段混合（int 表 + String 表），clinit 分配与写，
-/// 两个读方法（含 checkcast 面）。扩段后两字段都应拆分。
+/// 两个读方法（含 checkcast 面）。两字段都应拆分。
 Bytes buildTableHost()
 {
     FixtureBuilder b("ct/TableHost");
@@ -713,7 +713,7 @@ TEST(MjPassStaticArrayFieldScalarizerContainerTest, ScalarizesTableHostAndLeaves
 }
 
 
-// ── #39 切片 3：引用元素类型精化（Object[] 声明 + 访问点证据） ──
+// ── 引用元素类型精化（Object[] 声明 + 访问点证据） ──
 
 namespace {
 

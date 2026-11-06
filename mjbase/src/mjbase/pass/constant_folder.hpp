@@ -5,8 +5,7 @@
 namespace mjbase::pass {
 
 /// @brief 常量折叠器：把操作数栈上的「常量装载 + 同类型二元运算」极大链
-///        折叠为单条常量装载（移植自 mbase pass/opt 的 ConstantFolder 的
-///        可观测子集）。
+///        折叠为单条常量装载（只覆盖 JVM 可观测的折叠面）。
 ///
 /// @par 策略（链识别算法）
 ///
@@ -82,7 +81,7 @@ namespace mjbase::pass {
 /// - double：+0.0 → DCONST_0；1.0 → DCONST_1；其余 → LDC2_W(cp.addDoubleBits)。
 /// LDC/LDC_W 由 CodeEditor::loadConst 按索引宽度选型。CP 只追加契约：
 /// 索引永不重编号；internInteger 先去重，addLong/addFloatBits/
-/// addDoubleBits 直接追加（ClassSession 无对应 intern 面，见挂账）。
+/// addDoubleBits 直接追加（ClassSession 无对应 intern 面）。
 ///
 /// @par 失败语义
 ///

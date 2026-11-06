@@ -1,5 +1,5 @@
 /// @file        mask_suspect.hpp
-/// @brief       字符串 suspect 旗标扫描（#121 §4.2）：控制字符、零宽字符、
+/// @brief       字符串 suspect 旗标扫描：控制字符、零宽字符、
 ///              异常 Unicode 段与注入形态正则。
 ///
 /// 纯函数面：输入 UTF-8 文本字节，输出四类旗标。入库时按策略打标（v1 只
@@ -46,7 +46,7 @@ struct SuspectFlags final
 /// @brief 扫描文本的 suspect 旗标。
 ///
 /// 字节级旗标（控制/零宽/异常 Unicode）对任意长度线性扫描；注入形态
-/// 正则只对 ≤ kMaskMaxEvaluatedBytes 的输入求值（引擎纪律 §3 长度门），
+/// 正则只对 ≤ kMaskMaxEvaluatedBytes 的输入求值（mask_regex_engine 的长度门纪律），
 /// 超长输入该旗标恒 false——超长本身交由出口长度门走 default_action。
 SuspectFlags scanSuspect(std::string_view text);
 

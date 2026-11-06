@@ -79,7 +79,7 @@
 ///          ldc -222222222; istore t; iload t; istore s; goto B
 ///
 /// `istore t; iload t` 中转弹跳与状态写序列是死存噪声，属 store→load
-/// 转发清理面（见 mjbase issue #45 残留噪声清单），本 pass 不动。
+/// 转发清理面，本 pass 不动。
 ///
 /// ## 栈等价门
 ///

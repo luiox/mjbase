@@ -563,7 +563,7 @@ public:
             }
             if (array.kind == BindingValue::Kind::NameTable) {
                 // 名表：常量下标精确；非常量下标 → AmbiguousString（该 sink 整体
-                // 降 Pending(ambiguous_array)，issue #1026 口径）。
+                // 降 Pending(ambiguous_array)）。
                 BindingValue result = fallback;
                 if (!array.array || array.array->ambiguous ||
                     index.kind != BindingValue::Kind::Int) {

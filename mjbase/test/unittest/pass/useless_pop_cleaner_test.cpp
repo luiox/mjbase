@@ -131,7 +131,7 @@ TEST(UselessPopCleanerTest, wideLocalDoubleLoadPairFoldedByPop2)
 }
 
 // ── 弹宽失配：cat1 装载配 POP2 不动（POP2 还要吃更深一槽，删两指令
-//    非栈中性；双 cat1 半删归帧面批次）──
+//    非栈中性；双 cat1 半删归帧面清理件）──
 TEST(UselessPopCleanerTest, widthMismatchLocalLoadKept)
 {
     // ILOAD_1; POP2; RETURN——保持不动。
@@ -257,7 +257,7 @@ TEST(UselessPopCleanerTest, framePop2HalfSplitBottomRemoved)
 TEST(UselessPopCleanerTest, frameDupAbsorbedByDoublePop)
 {
     // ICONST_1; DUP; POP; POP; RETURN → RETURN。中继拷贝透明（拷贝行沿用
-    // 原定义），两份拷贝的使用边都落在本批计划 pop 上；第二拷贝不离场。
+    // 原定义），两份拷贝的使用边都落在计划内 pop 上；第二拷贝不离场。
     const MethodPassRun r =
         runMethodPass(oneMethod("m", {0x04, 0x59, 0x57, 0x57, 0xb1}),
                       mjbase::pass::UselessPopCleaner{});
@@ -340,7 +340,7 @@ TEST(UselessPopCleanerTest, frameDupEscapedCopyKept)
 TEST(UselessPopCleanerTest, frameDup2Cat2InputKept)
 {
     // LCONST_0; DUP2; POP2; RETURN——cat2 拷贝的第二份天然离场（双槽形态
-    // 挂账）：整体不动。
+    // 不吸收）：整体不动。
     const Bytes in = oneMethod("m", {0x09, 0x5c, 0x58, 0xb1});
     const MethodPassRun r = runMethodPass(in, mjbase::pass::UselessPopCleaner{});
     EXPECT_TRUE(r.pa.areAllPreserved());
@@ -350,7 +350,7 @@ TEST(UselessPopCleanerTest, frameDup2Cat2InputKept)
 // ── 逐中继细化 fail-closed：SWAP 重排中继不在吸收族 ──
 TEST(UselessPopCleanerTest, frameSwapRelayKept)
 {
-    // ICONST_1; ICONST_2; SWAP; POP; POP; RETURN——SWAP 的重排形态挂账：
+    // ICONST_1; ICONST_2; SWAP; POP; POP; RETURN——SWAP 的重排形态不吸收：
     // 整体不动。
     const Bytes in = oneMethod("m", {0x04, 0x05, 0x5f, 0x57, 0x57, 0xb1});
     const MethodPassRun r = runMethodPass(in, mjbase::pass::UselessPopCleaner{});

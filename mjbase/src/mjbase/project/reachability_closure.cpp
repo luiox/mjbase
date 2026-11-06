@@ -123,7 +123,7 @@ struct ClosureGraph
             for (ca::usize i : members) {
                 const MethodNode& m = methods[i];
                 // 族内过滤：非 abstract、非 static、非 private、非 <init>/<clinit>
-                //（构造器与初始化器不经虚分派命中；<clinit> 只走触发边，设计稿 §3）。
+                //（构造器与初始化器不经虚分派命中；<clinit> 只走触发边，doc:reach-closure-cha）。
                 const std::string& name = nameBySlot[m.nameSlot];
                 if (name == "<init>" || name == "<clinit>") continue;
                 if (isVirtualAccess(m.access) && isConcreteAccess(m.access))
@@ -411,7 +411,7 @@ ca::Result<ReachabilityClosureStats, AnalysisDbError> computeAndStoreReachabilit
     }
     // default 方法冲突（sibling 接口同签名声明）：共同实现者的直接接口组内
     // 全部并集，不做 most-specific 裁决（JVM IncompatibleClassChangeError
-    // 场景宁过近似不丢真实执行边，设计稿 §3）。并集对合并顺序不敏感，最终
+    // 场景宁过近似不丢真实执行边，doc:reach-closure-cha）。并集对合并顺序不敏感，最终
     // 分割确定（族成员表再排序去重），无确定性暴露。
     for (const auto& [classId, ifaces] : g.ifacesOfClass) {
         std::unordered_map<ca::u64, ca::usize> firstDeclBySig;

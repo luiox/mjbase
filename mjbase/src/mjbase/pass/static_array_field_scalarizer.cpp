@@ -110,7 +110,7 @@ bool intConstOf(const jbc::ir::ClassSession& session, const jbc::ir::Insn& in, c
     return false;
 }
 
-/// 写窗口值部分的类别判定（第一切片只认单条常量装载，见 pass 头注）：
+/// 写窗口值部分的类别判定（只认单条常量装载，见 pass 头注）：
 /// cat2（long/double）、cat1（int/float）与引用（aconst_null / ldc
 /// String/Class——常量字符串表场景）。
 enum class ValueKind : ca::u8 { Cat1, Cat2, Ref };
@@ -201,7 +201,7 @@ std::string scalarName(std::string_view base, ca::i32 index)
 }
 
 /// 精化后的标量字段描述符：有证据下标用记录的类内部名构引用描述符，
-/// 否则沿用声明元素描述符（#39 切片 3）。
+/// 否则沿用声明元素描述符。
 std::string refinedDescOf(const FieldPlan& plan, ca::i32 index)
 {
     const auto hit = plan.evidence.find(index);
@@ -365,7 +365,7 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
                     const jbc::ir::Insn* third  = k + 2 < order.size() ? md.ref->dom.peek(order[k + 2]) : nullptr;
                     const jbc::ir::Insn* fourth = k + 3 < order.size() ? md.ref->dom.peek(order[k + 3]) : nullptr;
                     if (third != nullptr && third->op == loadOp) {
-                        // 引用元素精化证据：后继 checkcast 目标（#39 切片 3）。
+                        // 引用元素精化证据：后继 checkcast 目标。
                         jbc::ir::InsnId castId{};
                         bool            hasCast = false;
                         if (refElem) {
@@ -399,7 +399,7 @@ mjbase::spi::PreservedAnalyses StaticArrayFieldScalarizer::run(jbc::ir::ClassSes
                     }
                     if (third != nullptr && constLoadMatches(session, *third, valueKind) &&
                         fourth != nullptr && fourth->op == storeOp) {
-                        // 引用元素精化证据：写窗常量值静态型（#39 切片 3）。
+                        // 引用元素精化证据：写窗常量值静态型。
                         if (refElem && third->op != jbc::core::Op::ACONST_NULL) {
                             jbc::ir::ClassSession::ConstSem c;
                             const std::string_view ev =

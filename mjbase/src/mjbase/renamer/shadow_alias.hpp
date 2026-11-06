@@ -49,7 +49,7 @@ struct ShadowAliasEntry
     std::string_view desc       = {};  ///< class 条目为空
     std::string_view rawName    = {};
     std::string_view shadowName = {};
-    /// #1156 引用 token：8 个小写 hex 字符（uint32 %08x 语义），shadow 名分配时
+    /// 引用 token：8 个小写 hex 字符（uint32 %08x 语义），shadow 名分配时
     /// 由 CSPRNG 生成、表内唯一。旧格式 sidecar（v1）加载的条目为空。
     std::string_view token8     = {};
 };
@@ -75,11 +75,11 @@ class ShadowAliasTable
 {
 public:
     /// @brief 从 sidecar 解析产物构造（同符号重复登记以先到者优先）。
-    ///        v2 产物条目的 token 列随行收编（#1156）；token 缺省为空。
+    ///        v2 产物条目的 token 列随行收编；token 缺省为空。
     static ShadowAliasTable fromMapping(const mjbase::mapping::IntermediateMapping& mappings);
 
     /// @brief 导出为 sidecar 产物（writeShadowAliasText / registry "Shadow-Alias" 消费）。
-    ///        token8 随行导出到产物条目 token 列（#1156）。
+    ///        token8 随行导出到产物条目 token 列。
     mjbase::mapping::IntermediateMapping toMapping() const;
 
     /// @brief 登记 class 别名；同一 raw 符号已登记时返回 false（保留先登记者）。
@@ -108,7 +108,7 @@ public:
     std::string_view methodShadow(std::string_view owner, std::string_view raw,
                                   std::string_view desc) const;
 
-    // ── 显示渲染（#1072 钉死：shadow 命中 → "shadow (原始名)"，否则原样；
+    // ── 显示渲染（shadow 命中 → "shadow (原始名)"，否则原样；
     //    两段均经 IdentifierUtil::printReadable 转义，与既有打印口径逐字节一致）──
     /// @brief class 内部名渲染（拼接产物值返回）。
     std::string renderClass(std::string_view raw) const;
@@ -119,7 +119,7 @@ public:
 
     /// @brief 完整成员形式 `owner.name:desc`；未命中输出与既有 printReadable
     ///        拼接逐字节一致。命中时 owner/name 段按 `shadow (raw)` 并列；
-    ///        尾随 ` (完整原始形式)` 只在尾段含前段外信息时输出（#1106 P0-2）。
+    ///        尾随 ` (完整原始形式)` 只在尾段含前段外信息时输出。
     std::string renderMember(std::string_view owner, std::string_view name,
                              std::string_view desc) const;
 
@@ -136,7 +136,7 @@ public:
     /// @brief class 条目精确查询；未登记返回 nullptr（指向 entries_ 内部）。
     const ShadowAliasEntry* classEntry(std::string_view raw) const;
 
-    /// @brief 给缺 token8 的条目补 CSPRNG 随机号（#1156）：8 位小写 hex、表内
+    /// @brief 给缺 token8 的条目补 CSPRNG 随机号：8 位小写 hex、表内
     ///        唯一（碰撞重生成）；已有 token 的条目原样保留（幂等，重跑不换号）。
     ///        随机源 = libca ca::crypto::secure_random_bytes（系统 CSPRNG）；
     ///        系统 RNG 不可用时报 Err（不自造随机源、不静默降级）。
@@ -169,7 +169,7 @@ private:
     std::unordered_map<std::string_view, std::vector<ca::usize>> byRawName_;
 };
 
-/// @brief 一键批量生成机械指代名（#1072 钉死规则）。
+/// @brief 一键批量生成机械指代名。
 ///
 /// - class：全 jar 按内部名字典序全局排序，位置 i（1 起）→ `Class_i`；
 /// - method/field：类内按 (name, desc) 字典序排序，位置 N（1 起）→
@@ -268,7 +268,7 @@ struct RawRenameSpec
 ca::usize rebindShadowRawNames(ShadowAliasTable&                table,
                                const std::vector<RawRenameSpec>& renames);
 
-/// @brief jasm 文本显示层 shadow 改写（#1072 显示层；输出不再是可回编译 jasm）。
+/// @brief jasm 文本显示层 shadow 改写（输出不再是可回编译 jasm）。
 ///
 /// 整 token 替换：class 条目按转义后内部名全 jar 范围替换（含描述符内
 /// `L<name>;` 的 L 前缀连带）；成员条目仅替换 ownerClass 名下的裸名 token 与

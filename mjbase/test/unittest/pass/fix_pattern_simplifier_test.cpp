@@ -751,7 +751,7 @@ TEST(FixPatternSimplifierTest, emptyMethodStaysAllPreserved)
     EXPECT_EQ(fx.writeBack(), before);
 }
 
-// ── 不透明算术恒等式族（规则 12–14，spec 见 issue #44）──
+// ── 不透明算术恒等式族（规则 12–14）──
 
 TEST(FixPatternSimplifierTest, halfAdderWindowFoldsToIadd)
 {
@@ -986,7 +986,7 @@ TEST(FixPatternSimplifierTest, identityFamilyIdempotentOnSecondRun)
     EXPECT_EQ(fx.writeBack(), once);
 }
 
-// ── #44 long 族（规则 15–17：lxor/land/lshl 位级恒等式窗口。long 与 int
+// ── long 族（规则 15–17：lxor/land/lshl 位级恒等式窗口。long 与 int
 // 族窗口形态差异：cat2 dup 家族无法完成 int 的中段栈重排（dup2_x2 下插仅
 // 2 槽、无 dup2_x4、swap 非法），窗口弃用 dup 舞蹈改为直排形态——lsub 按
 // "深减顶"排操作数，语义经真 JVM 硬验收对拍）──
@@ -1185,7 +1185,7 @@ TEST(FixPatternSimplifierTest, chainedLongStagesFold)
     EXPECT_EQ(ops[7], Op::LRETURN);
 }
 
-// ── #44 long 族（规则 18–19：x^x / x cmp x 恒 0；规则 20：转换族往返）──
+// ── long 族（规则 18–19：x^x / x cmp x 恒 0；规则 20：转换族往返）──
 
 TEST(FixPatternSimplifierTest, loadLongDup2LxorFoldsToLconst0)
 {

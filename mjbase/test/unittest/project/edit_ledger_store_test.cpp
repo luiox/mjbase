@@ -1,11 +1,10 @@
-// 编辑台账引擎（schema v2 交付 2 的落盘面）：纯内存链 + bundle 绑定装载、
+// 编辑台账引擎（落盘面）：纯内存链 + bundle 绑定装载、
 // flush 的 manifest last 协议与重开等价、崩溃注入三态（staged 残留 / Damaged
 // 台账拒开 / 孤儿档两路：清单外孤儿 prune、已登记旧代清理）、压缩不变量
 // （压缩前后重放一致、书签零失效、补链、手动显式丢弃列名、阈值边界、压缩
 // 中途崩溃可恢复）。
 //
-// 设计定稿见 doc:schema-v2-ledger（上游 RFC 0001 §6.2/
-// §6.4）；崩溃语义对齐 project_store 既有恢复面（§8.1/§8.2）。
+// 设计定稿见 doc:schema-v2-ledger；崩溃语义对齐 project_store 的恢复面。
 #include <gtest/gtest.h>
 
 #include <cstring>
@@ -770,7 +769,7 @@ TEST(MjLedgerStoreTest, compactionCrashMidwayKeepsOldGenerationAuthoritative)
     const auto  baseline = makeBaseline();
     auto store = makeCompactScenario(baseline, dirStr);
 
-    //-- 崩溃点 1：新基线 section 已写出、清单未切换（§5.4 步骤 1 后）-------------
+    //-- 崩溃点 1：新基线 section 已写出、清单未切换（doc:schema-v2-compaction 步骤 1 后）-------------
     const auto  state2 = replayTo(store, 2, baseline.state);
     const auto  canonical2 = mapToCanonical(state2);
     store = EditLedgerStore();   // 显式释放锁生命线
@@ -789,7 +788,7 @@ TEST(MjLedgerStoreTest, compactionCrashMidwayKeepsOldGenerationAuthoritative)
     ASSERT_FALSE(scanned.is_err());
     EXPECT_EQ(1U, std::move(scanned).unwrap().orphans.size());
 
-    //-- 崩溃点 2：清单已换代、旧代未清理（§5.4 步骤 3 后）-----------------------
+    //-- 崩溃点 2：清单已换代、旧代未清理（doc:schema-v2-compaction 步骤 3 后）-----------------------
     // 正常压缩到保留点 2，随后把旧对重新登记回清单（模拟清理事务未及执行）。
     auto compacted = recovered.compact(LedgerCompactRequest{}, canonical2,
                                        "2026-10-23T00:00:40Z", false);

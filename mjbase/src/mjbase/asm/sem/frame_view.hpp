@@ -1,9 +1,9 @@
 /// @file        frame_view.hpp
-/// @brief       FrameView：方法体逐指令到达帧的只读语义视图（asm/sem 设施层首批）。
+/// @brief       FrameView：方法体逐指令到达帧的只读语义视图（asm/sem 设施层）。
 ///
-/// 设计依据 luiox/mjbase #115 §2.2（D0 设计稿）：FrameView 是设施层的帧
-/// 查询收口——Strict 档（类型精确）+ MethodSig 播种 + 注入 ITypeResolver，
-/// 不可算显式 Err（携带 FrameSummary 诊断），不伪造帧。
+/// 定位：FrameView 是设施层的帧查询面——Strict 档（类型精确）+ MethodSig
+/// 播种 + 注入 ITypeResolver，不可算显式 Err（携带 FrameSummary 诊断），
+/// 不伪造帧。
 ///
 /// 引擎装配与 FrameEngine(FramePolicy::Strict) 同源同档：DomainEngine +
 /// StrictDomain + 签名播种（FrameEngine 本身即 DomainEngine<VType> 的壳）；
@@ -11,7 +11,7 @@
 /// 值行查询按「值」索引（cat2 底槽不计，与 asm/analyzer 的边 index 口径
 /// 一致），比 FrameAt 交付（底槽读作 Top）多一层底槽可辨性。
 ///
-/// 红线（#115 §2.1）：只读、值语义、不驻留编辑状态。视图是构建时快照，
+/// 红线：只读、值语义、不驻留编辑状态。视图是构建时快照，
 /// 方法体任何结构变更后须重建（与 asm/cfg 同口径，不做增量维护）；过期
 /// 句柄的查询探测式返回空，不抛错。
 ///
@@ -35,7 +35,7 @@ namespace mjbase::asm_sem {
 
 /// @brief callable 适配的引用合并策略：ITypeResolver 的最小注入面。
 ///
-/// #115 §2.2 的「ITypeResolver 默认装配为 hierarchy 求解器」由调用方
+/// 「ITypeResolver 默认装配为 hierarchy 求解器」由调用方
 /// 完成——层次求解器在 hierarchy/spi 层，asm/sem 不反向依赖；本适配器让
 /// 装配点收敛为一行 lambda（spi::CommonSuperClassResolver::getCommonSuperClass
 /// 直连即可），测试则以自由函数注入。

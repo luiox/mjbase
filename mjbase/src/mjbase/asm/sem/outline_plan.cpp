@@ -1,7 +1,7 @@
 /// @file        outline_plan.cpp
 /// @brief       OutlinePlan 识别（planOutline）与落地（apply）。
 ///
-/// 判据实现对照 luiox/mjbase #115 §1.1/§3.2/§3.3 与头注 v1 口径。出口侧
+/// 判据实现对照 outline_plan.hpp 文件头注的 v1 口径。出口侧
 /// 帧与切面事实一律取区域末条 goto 的到达帧——区域路径独占、未经出口锚
 /// 汇合点合并；出口锚本身的帧是多路径汇合结果，不做切面依据。
 #include "mjbase/asm/sem/outline_plan.hpp"
@@ -203,7 +203,7 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
         return Err(OutlineError::NotStraightLine);
     }
     if (!req.region.handlers.empty()) {
-        return Err(OutlineError::TryCovered);   /// A2 收紧：v1 只开空 handler 集
+        return Err(OutlineError::TryCovered);   /// v1 只开空 handler 集
     }
 
     // ---- 区域成员展平（块升序 = 程序序；块间成链由 straightLine 保证）----
@@ -336,7 +336,7 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
         ++prefix;
     }
     if (dOut == prefix) {
-        return Err(OutlineError::NoNewTopValue);     /// M == k：v1 不开档
+        return Err(OutlineError::NoNewTopValue);     /// 出口深度 = 前缀长：v1 不开档
     }
     if (dOut != prefix + 1u) {
         return Err(OutlineError::ExitShapeImpure);
@@ -362,10 +362,10 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
         p.desc    = plan.arena.intern(std::string_view(desc.unwrap()));
         plan.params.push_back(std::move(p));
     }
-    const ca::usize stackParamCount = plan.params.size();   /// 栈参数段长（§3.4
-                                                            /// 升格插位用）
+    const ca::usize stackParamCount = plan.params.size();   /// 栈参数段长（原值
+                                                            /// 升格入参时的插位点）
 
-    // ---- 判据 3（A3 随 LivenessView 放开）：写回集 = 被写 ∩ 出口后活跃
+    // ---- 判据 3（LivenessView 活跃面）：写回集 = 被写 ∩ 出口后活跃
     //      须为空；读集剔除「恒被重写」槽（读的到达定义全在区域内）----
     auto builtLive = LivenessView::build(*unit);
     if (builtLive.is_err()) {
@@ -393,8 +393,8 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
     }
     for (const ca::u32 slot : writtenLocals) {
         if (live.localLiveAfter(exitGoto, slot)) {
-            /// 写回集非空：被写槽出口后仍被读，需多值返回通道（§6 决策点 1
-            /// 维持拒绝）。
+            /// 写回集非空：被写槽出口后仍被读，需要多值返回通道；v1
+            /// 无多值返回通道，维持拒绝。
             return Err(OutlineError::RegionWritesLocal);
         }
     }
@@ -468,7 +468,7 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
     if (!produced && !retDefs.empty() && !retDefs.truncated()) {
         /// 区域内 load 推入的局部原值形态（def 落在区域外：入参 Parameter 或
         /// 区域前 store）：原值来自 copy-set 读集局部（区域内 load 的产出）且
-        /// 不是入口栈上已有值（同原值已驻栈 = 边界 DUP 复制形态，§3.4）时，
+        /// 不是入口栈上已有值（同原值已驻栈 = 边界 DUP 复制形态）时，
         /// 视为区域内产出的新栈值；否则 fail-closed。
         bool fromReadLocal = false;
         for (const ca::u32 slot : readLocals) {
@@ -488,7 +488,7 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
     }
     if (!produced && retDefs.size() == 1u && !retDefs.truncated() && prefix >= 1u
         && prefix == dIn && flat.size() >= 2u) {
-        /// §3.4 落临时档（A3，tier-2）：出口栈顶 = 区域末条 DUP/DUP2（cat2
+        /// 入口栈顶复制形态：出口栈顶 = 区域末条 DUP/DUP2（cat2
         /// 形态）对入口栈顶原值的复制——「一条 def 占多槽」跨出口切点。原值
         /// 升格 Stack 入参（公共前缀收缩 1 值），调用点 DUP 复位：副本作
         /// 实参、原值留栈下、返回值落顶插回原位，N 体零改写。dup_x1/SWAP
@@ -527,7 +527,7 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
         }
     }
     if (!produced) {
-        return Err(OutlineError::RetNotProduced);   /// 边界 DUP 复制值形态（tier-3）
+        return Err(OutlineError::RetNotProduced);   /// 其余复制形态：返回值非区域内产出
     }
     auto retDesc = descOf(*retv, OutlineError::UninitCrossing, OutlineError::RetTypeUnknown);
     if (retDesc.is_err()) {
@@ -547,7 +547,7 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
     }
     /// 区域内自足槽（先写后读/恒被重写/纯写，不传参）：排参数区之后，宽度
     /// 按区域写指令的 cat2 形态（N 内 store 占 2 槽）。N 槽 → 原文父槽映射
-    /// 留作盖章行来源（A5b：inline 侧 fresh 分配无法 exact 恢复的挂账面）。
+    /// 留作盖章行来源（inline 侧 fresh 分配无法 exact 恢复原槽号）。
     std::unordered_map<ca::u32, ca::u32> selfOldOf;   /// N 槽 → 原文父槽
     for (const ca::u32 slot : writtenLocals) {
         bool mapped = false;
@@ -579,9 +579,9 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
     //      出口 goto 与块间 goto glue 剥离，其余控制转移 fail-closed ----
     std::vector<ca::i32> orderToBody(order.size(), -1);
     /// 栈切片参数序幕：descriptor 参数落在 N 的局部槽，而区域体从栈上消费
-    /// 它们（S_in）——先按参数序（自下而上）显式装载，区域体入口栈形与
-    /// 原入口切面一致（#115 §3.3 步骤 3 的 Stack 参数承载面；A5 前导装载
-    /// 原语 copySetLoadPreamble，描述符落局部/栈序列消费）。
+    /// 它们——先按参数序（自下而上）显式装载，区域体入口栈形与原入口切面
+    /// 一致。Stack 参数承载面由前导装载原语 copySetLoadPreamble 产出
+    /// （描述符落局部槽、栈序列按参数序消费）。
     for (jbc::ir::Insn& load :
          copySetLoadPreamble(plan.params, SlotCopy::Kind::Stack, true)) {
         plan.body.push_back(load);
@@ -632,9 +632,9 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
         return Err(OutlineError::NoNewTopValue);   /// 纯 goto 区域无新值可返
     }
 
-    /// 自足槽盖章行（A5b）：按 N 体首现序记录 (nSlot, 原文父槽)。apply 落
+    /// 自足槽盖章行：按 N 体首现序记录 (nSlot, 原文父槽)。apply 落
     /// N 的 Code 嵌套 kOutlineStampAttr 属性，planInline 消费后 exact 恢复
-    /// 原布局；无盖章时 inline 侧回落 fresh 分配（A4 口径，外来形态兼容）。
+    /// 原布局；无盖章时 inline 侧回落 fresh 分配（外来形态兼容）。
     {
         std::set<ca::u32> stamped;
         for (const jbc::ir::Insn& in : plan.body) {
@@ -650,7 +650,7 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
         }
     }
 
-    // ---- 命名：outline$<原简单名>$<序号>（确定性方案，owner 拍板前占位）----
+    // ---- 命名：outline$<原简单名>$<序号>（确定性方案）----
     const std::string parentName(cu.symbols().str(mu->name));
     plan.newName = plan.arena.intern(std::string_view(
         "outline$" + simpleMethodName(parentName) + "$" + std::to_string(req.sequence)));
@@ -700,7 +700,7 @@ Result<OutlinePlan, OutlineError> planOutline(const OutlineRequest& req)
                 /// fail-closed 终点规则重定向，行语义保持诚实——javac 全方法
                 /// 参数行即此形态）；两端点均在区域内 → 迁 N 重锚定；恰一
                 /// 端点落入区域（真越切点）→ 默认 fail-closed，宽松开关下
-                /// 裁剪（父表删除、记 lvtDrops 诊断；#115 §6 决策点 3）。
+                /// 裁剪（父表删除、记 lvtDrops 诊断）。
                 const bool startIn = row.startPc >= firstPc && row.startPc < regionEndPc;
                 const bool endIn   = rowEnd > firstPc && rowEnd <= regionEndPc;
                 if (!startIn && !endIn) {
@@ -836,8 +836,8 @@ Result<void, OutlineError> OutlinePlan::validate() const
             return Err(OutlineError::MalformedPlan);
         }
     }
-    /// 盖章行（A5b）：nSlot 唯一且每行都能对回重编号表（原文父槽 ↔ N 槽
-    /// 同源，防手拼处方漂移）。
+    /// 盖章行：nSlot 唯一且每行都能对回重编号表（原文父槽 ↔ N 槽
+    /// 同源，防手工拼装的计划漂移）。
     std::set<ca::u32> stamped;
     for (const SlotStamp& s : selfStamps) {
         bool matched = false;
@@ -923,7 +923,7 @@ Result<OutlineOutcome, OutlineError> OutlinePlan::apply(jbc::ir::ClassSession& s
     seed.maxStack  = 2;
     {
         /// 种子 maxLocals：参数区 + 区域自足槽（含 cat2 高半槽余量；最终由
-        /// applyComputedMaxes 收口）。
+        /// applyComputedMaxes 采用计算值覆盖）。
         ca::u32 nLocals = paramSlots == 0u ? 1u : paramSlots;
         for (const LocalRemap& r : locals) {
             nLocals = std::max(nLocals, r.newSlot + 2u);
@@ -964,14 +964,13 @@ Result<OutlineOutcome, OutlineError> OutlinePlan::apply(jbc::ir::ClassSession& s
     // ---- 步骤 2：调用点替换（边界 DUP 复位 + 局部入参装载 + invokestatic
     //      + 转发 goto）----
     //
-    // 入边口径（A3 修复）：goto 入边形态下参数装载块必须随入边走——标签
-    // 锚定首条装载（或 retIsEntryCopy 的 DUP），分支入边与 fallthrough 都
-    // 先过装载再达调用点。A2 把标签重锚到 invokestatic、装载落在标签之前，
-    // 入边绕过装载 → JVM VerifyError「Inconsistent stack height」（#115
-    // §3.3 实测缺陷，DupNorm 语料复现）。A5 机械上收 insert_prim：标签重
-    // 锚走 insertAnchoredAtLabel（逆序落标签边界、标签重锚首条装载）、
-    // fallthrough 走 insertBeforeInsn；局部入参装载序列走 copySetLoad-
-    // Preamble，DUP 复位发射走 entryDupResetInsn。
+    // 入边口径：goto 入边形态下参数装载块必须随入边走——标签锚定首条
+    // 装载（或 retIsEntryCopy 的 DUP），分支入边与 fallthrough 都先过装载
+    // 再达调用点；标签若重锚到装载之前，入边会绕过装载，JVM 报
+    // VerifyError「Inconsistent stack height」。
+    // 机械复用 insert_prim：标签重锚走 insertAnchoredAtLabel（逆序落标签
+    // 边界、标签重锚首条装载）、fallthrough 走 insertBeforeInsn；局部入参
+    // 装载序列走 copySetLoadPreamble，DUP 复位发射走 entryDupResetInsn。
     const ca::u32 callCp = session.internMethodRef(
         thisClass, std::string_view(newName), std::string_view(newDesc));
     jbc::ir::Insn call;
@@ -983,9 +982,9 @@ Result<OutlineOutcome, OutlineError> OutlinePlan::apply(jbc::ir::ClassSession& s
     const bool emitEntryDup = retIsEntryCopy && !body.empty()
                               && (body.back().op == jbc::core::Op::DUP
                                   || body.back().op == jbc::core::Op::DUP2);
-    /// 调用点 preamble（程序序）：[复位 DUP] + 局部入参装载。§3.4 tier-2：
+    /// 调用点 preamble（程序序）：[复位 DUP] + 局部入参装载。retIsEntryCopy 时：
     /// DUP 先行复制入口栈顶（副本作实参、原值留栈下、返回值落顶插回原位）；
-    /// 栈切片参数免装载（值已在栈上，S_in 自底向上 = 参数序）。
+    /// 栈切片参数免装载（值已在栈上，入口栈切片自底向上 = 参数序）。
     std::vector<jbc::ir::Insn> preamble;
     if (emitEntryDup) {
         preamble.push_back(entryDupResetInsn(body.back().op));
@@ -1275,7 +1274,7 @@ Result<OutlineOutcome, OutlineError> OutlinePlan::apply(jbc::ir::ClassSession& s
         (void)nCode->mutate();
     }
 
-    // ---- 步骤 7b：自足槽盖章属性（A5b：RawAttr 承载 u16 计数 + (nSlot,
+    // ---- 步骤 7b：自足槽盖章属性（RawAttr 承载 u16 计数 + (nSlot,
     //      parentSlot) 对；未知嵌套属性 JVM 忽略、decodeAttr 兜底 RawAttr，
     //      planInline 消费后原槽号 exact 对回）----
     if (!selfStamps.empty()) {

@@ -1,7 +1,7 @@
-// 角色化容器栈（RFC 0001 §5 容器抽象 / §10-P5）：解析序 primary > library
+// 角色化容器栈：解析序 primary > library
 // （挂载序）> runtime 的 first-wins、重复条目记录（resource_container.hpp
 // 现状语义的栈级对应物）、角色过滤遍历、卸载后引用一致性（被遮蔽副本浮现）
-// 与复合寻址扩展位（单容器形态可解析；嵌套 bang 链显式拒绝 = 本期只落接口）。
+// 与复合寻址扩展位（单容器形态可解析；嵌套 bang 链显式拒绝 = 当前只落接口）。
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -78,7 +78,7 @@ TEST(MjModelContainerStackTest, libraryResolutionFollowsMountOrderWithinRole)
     MountedContainerSet stack;
     ASSERT_FALSE(stack.mount("lib-1", ContainerRole::Library, &first).is_err());
     ASSERT_FALSE(stack.mount("lib-2", ContainerRole::Library, &second).is_err());
-    // 同角色按挂载序 first-wins（RFC §5.2 解析序的 role 内细则）。
+    // 同角色按挂载序 first-wins（解析序的 role 内细则）。
     EXPECT_EQ(classOf(stack.resolve("com/x/A.class"))->get().back(), kPrimaryMark);
 }
 

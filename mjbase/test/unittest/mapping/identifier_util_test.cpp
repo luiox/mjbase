@@ -45,7 +45,7 @@ TEST(MjMappingIdentifierUtilTest, BackslashEscaped)
     EXPECT_EQ(IdentifierUtil::printReadable("\\"), "\\u005C");
 }
 
-// ── printReadable：长 run 省略（issue #320 原文场景）──────────
+// ── printReadable：长 run 省略 ────────────────────────────────
 TEST(MjMappingIdentifierUtilTest, LongSpaceRunCollapsed)
 {
     std::string spaces(32767, ' ');
@@ -140,8 +140,8 @@ TEST(MjMappingIdentifierUtilTest, LoneSurrogatePreserved)
     EXPECT_EQ(IdentifierUtil::unescapeUnicode("\\uD800"), "\xED\xA0\x80");
 }
 
-// ── 增补平面：代理对出码 + 重组（\uXXXX 格式只表达 BMP，B4 census 转义
-//    契约要求补充平面类名全码位域无损） ─────────────────────────────────
+// ── 增补平面：代理对出码 + 重组（\uXXXX 格式只表达 BMP，census 转义契约
+//    要求补充平面类名全码位域无损） ─────────────────────────────────
 
 TEST(MjMappingIdentifierUtilTest, SupplementaryPlaneEscapedAsSurrogatePair)
 {
@@ -197,7 +197,7 @@ TEST(MjMappingIdentifierUtilTest, UnescapeRecombinesSurrogatePairs)
 
 TEST(MjMappingIdentifierUtilTest, SupplementaryPlaneRoundTrip)
 {
-    // escape(unescape(x)) 全码位域逐字节闭合（B4 census 转义契约）：
+    // escape(unescape(x)) 全码位域逐字节闭合（census 转义契约）：
     // 控制字符、BMP 高位、增补平面、lone surrogate 混排样本。
     const std::string sample = std::string("a") + '\t' + '\x01' + "\xC3\xA9" +
                                "\xF0\x9F\x98\x80" + "\xED\xA0\x80" + "z";

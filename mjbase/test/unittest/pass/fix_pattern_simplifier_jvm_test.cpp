@@ -1,4 +1,4 @@
-// FixPatternSimplifier 真 JVM 硬验收（C 方法级指令变换组首件）：
+// FixPatternSimplifier 真 JVM 硬验收：
 // CodeDom 直构分支语料（无 StackMapTable）→ fixture 面经 A1 链补帧（V50+
 // 真验证器门）→ mjbase 方法级管线变换（changed 方法的帧由管线同一条链再生，
 // 未 changed 方法的帧原样保留）→ 变换产物交真 java 执行，stdout 必须与原样本
@@ -204,7 +204,7 @@ std::shared_ptr<jbc::ir::ClassSession> buildProbeSession()
     return s;
 }
 
-/// 变换：FixPatternSimplifier 经方法级管线（注入 A1 帧链接线——changed 方法
+/// 变换：FixPatternSimplifier 经方法级管线（注入 帧链接线——changed 方法
 /// 的 SMT 悬垂后由同一条链再生）。
 Bytes transformClass(std::shared_ptr<jbc::ir::ClassSession> session,
                      mjbase::spi::StrictTypeResolverAdapter& typeResolver)
@@ -293,7 +293,7 @@ TEST(FixPatternSimplifierJvm, TransformedClassesRunOnRealJvm)
     const auto beforeOut = test::jdk::runWithRunnerOutcome(tc, before);
     ASSERT_TRUE(beforeOut.ok()) << "原样本运行失败:\n" << beforeOut.output;
 
-    // ── 2. 变换（fresh 会话 + A1 帧链接线：changed 方法帧再生，未 changed
+    // ── 2. 变换（fresh 会话 + 帧链接线：changed 方法帧再生，未 changed
     //       方法的基线帧原样保留）→ 落盘 ──
     auto transformSession = sessionFromBytes(baseline);
     ASSERT_NE(transformSession, nullptr);

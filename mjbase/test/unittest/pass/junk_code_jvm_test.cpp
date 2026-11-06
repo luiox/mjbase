@@ -1,6 +1,6 @@
-// JunkCodeInserter（B 批）+ A 批变换族在真 JVM 上的硬验收：
-// javac 编译真实样本（V52，带 LNT/SMT）→ mjbase 管线（A 批四 pass + B 批垃圾
-// 分支 + StrictTypeResolverAdapter 注入的 A1 帧链接线）→ 变换产物交真 java
+// JunkCodeInserter+ A 批变换族在真 JVM 上的硬验收：
+// javac 编译真实样本（V52，带 LNT/SMT）→ mjbase 管线（四个方法级 pass + B 批垃圾
+// 分支 + StrictTypeResolverAdapter 注入的 帧链接线）→ 变换产物交真 java
 // 执行，stdout 必须与原样本一致——A1 链再生（Strict 帧 → maxes 采用 → SMT
 // 挂回）的帧被真验证器接受的直接证据。
 //
@@ -106,7 +106,7 @@ Bytes readClassBytes(const fs::path& path)
     return Bytes(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
-/// 变换单类：A 批四 pass + JunkCodeInserter，管线注入 StrictTypeResolverAdapter。
+/// 变换单类：四个方法级 pass + JunkCodeInserter，管线注入 StrictTypeResolverAdapter。
 /// 返回写回字节（管线抛错即测试失败——A1 链在真实样本上必须完整走通）。
 Bytes transformClass(const Bytes& corpus)
 {

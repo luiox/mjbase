@@ -50,7 +50,7 @@ public:
 
 private:
     DictionaryMode mode_;
-    // -- arena 死亡点声明（memory-governance-plan §5-P1③）--
+    // -- arena 死亡点声明--
     // 本成员持有本生成器私有的 Utf8StringArena：generateDictionary() 各模式生成
     // 的名字全部 arena_.intern 后存入 dictionary_，getName() 返回的视图即指向
     // 它们。视图寿命 = 本对象寿命；死亡点：随持有者析构（使用点均为 pass 内的

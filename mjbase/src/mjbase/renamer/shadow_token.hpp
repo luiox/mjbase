@@ -1,26 +1,25 @@
 /// @file        shadow_token.hpp
-/// @brief       #1156 shadow 引用 token —— resolve(s, pos) 单一收口 + name 槽文法。
+/// @brief       shadow 引用 token —— resolve(s, pos) 单一收口 + name 槽文法。
 ///
-/// 规范：shadow-reference-token-spec（唯一事实源）
-///   §2 语法   ClassRef  := "${Class_" 1*DIGIT "." 8*HEXDIG "}"
-///             MemberRef := ClassRef "." 1*(shadow 段) "." 8*HEXDIG
-///             转义      $${...} 表示字面 "${"
-///   §3 位置三分 解析是文法驱动的：展开只发生在文法标识槽；字符串常量/注释
-///             恒等、永不解析（文法上不是标识槽，本收口根本不会被调用——
-///             该性质由测试钉住，而非运行时检查）。
-///   §4 中段裁定 `${` 出现在类型名/操作数中段（非段首）不展开、不静默：
-///             二进制名文法不含花括号，未标记的引用形状混入裸名 =
-///             调用方笔误 → Descriptor 类型段与 JasmBody 裸引用部
-///             fail-loud（malformed-handle）；name 槽保持整串二选一
-///             （raw 零漂移，verifyRaw 提供核表响亮路径）；`$${` 显式
-///             转义两槽均保留字面（调用方自证字面意图）。
-///   §6 错误四分类 unknown-handle / malformed-handle / raw-not-found /
-///             ambiguous-member，各自带固定修复动作；缺 sidecar 时任何引用
-///             形状 → 硬报错（missing-sidecar），不静默回落裸名。
+/// 文法与解析规则（本头注即准绳，代码与之同步）：
+///   语法   ClassRef  := "${Class_" 1*DIGIT "." 8*HEXDIG "}"
+///          MemberRef := ClassRef "." 1*(shadow 段) "." 8*HEXDIG
+///          转义      $${...} 表示字面 "${"
+///   位置三分 解析是文法驱动的：展开只发生在文法标识槽；字符串常量/注释
+///          恒等、永不解析（文法上不是标识槽，本收口根本不会被调用——
+///          该性质由测试钉住，而非运行时检查）。
+///   中段裁定 `${` 出现在类型名/操作数中段（非段首）不展开、不静默：
+///          二进制名文法不含花括号，未标记的引用形状混入裸名 =
+///          调用方笔误 → Descriptor 类型段与 JasmBody 裸引用部
+///          fail-loud（malformed-handle）；name 槽保持整串二选一
+///          （raw 零漂移，verifyRaw 提供核表响亮路径）；`$${` 显式
+///          转义两槽均保留字面（调用方自证字面意图）。
+///   错误四分类 unknown-handle / malformed-handle / raw-not-found /
+///          ambiguous-member，各自带固定修复动作；缺 sidecar 时任何引用
+///          形状 → 硬报错（missing-sidecar），不静默回落裸名。
 ///
-/// 边界：Name/Descriptor/JasmBody 槽已实现。实修：查表命中面一律按值/optional 交付——
-/// findClassByHandle 返回指向 findByShadowName 临时 vector 内部的指针（悬垂
-/// UB，mjt 仓 9e72e9f 已修），本移植自始不带该形状。
+/// 边界：Name/Descriptor/JasmBody 三槽均已实现。查表命中面一律按值/optional
+/// 交付，不返回指向临时容器内部的指针。
 #pragma once
 
 #include <optional>
@@ -31,7 +30,7 @@
 
 namespace mjbase::renamer {
 
-/// @brief 解析位置（§3 位置三分）。单一收口按位置分派，后续扩展在此枚举上加
+/// @brief 解析位置（文法的三槽划分）。单一收口按位置分派，后续扩展在此枚举上加
 ///        分支，不再新开解析入口——保证「展开只发生在文法标识槽」有唯一守门点。
 enum class ShadowSlotPosition
 {
@@ -45,7 +44,7 @@ enum class ShadowSlotPosition
     JasmBody,
 };
 
-/// @brief §2 文法形状分类（纯词法，无表参与；形状判定先于任何查表，
+/// @brief 引用形状分类（纯词法，无表参与；形状判定先于任何查表，
 ///        这是「两错误码永不 fall-through」的结构保证）。
 enum class ShadowRefForm
 {
@@ -87,7 +86,7 @@ struct ShadowRefParts
 ///   手滑响亮报错）。
 ShadowRefParts parseShadowRef(std::string_view input);
 
-/// @brief §6 错误分类（四分类 + 缺 sidecar 硬报错）。
+/// @brief 错误分类（四分类 + 缺 sidecar 硬报错）。
 enum class ShadowSlotError
 {
     None,
@@ -101,12 +100,12 @@ enum class ShadowSlotError
     /// 二元 handle（类 + 成员影子名）命中多条重载、无 desc 区分不了。
     /// 修复动作：补 raw desc。
     AmbiguousMember,
-    /// 缺 sidecar 而输入为引用形状（§6 末行硬报错，不静默回落裸名）。
+    /// 缺 sidecar 而输入为引用形状（硬报错，不静默回落裸名）。
     /// 修复动作：加载 sidecar（MCP shadow_generate / `mjt shadow -i <jar>`）。
     MissingSidecar,
 };
 
-/// @brief 错误码字（消息前缀，与报告处方口径一致）：
+/// @brief 错误码字（消息前缀，与诊断消息里的修复动作同一套字面）：
 ///        "unknown-handle" / "malformed-handle" / "raw-not-found" /
 ///        "ambiguous-member" / "missing-sidecar"；None → 空串。
 const char* shadowSlotErrorCode(ShadowSlotError error);
@@ -130,7 +129,7 @@ struct ShadowSlotQuery
 };
 
 /// @brief 解析结果。error != None 时 message 含「码字: 诊断 + owner 上下文 +
-///        §6 固定修复动作」；error == None 时 raw/descriptor/kind 有效。
+///        固定修复动作」；error == None 时 raw/descriptor/kind 有效。
 struct ShadowSlotResult
 {
     ShadowSlotError  error = ShadowSlotError::None;
@@ -141,7 +140,7 @@ struct ShadowSlotResult
     bool             fromHandle = false;       ///< true = Ref 展开发生；false = raw 恒等
 };
 
-/// @brief resolve(s, pos) 单一收口（§3 name 槽行；唯一解析入口）。
+/// @brief resolve(s, pos) 单一收口（整串二选一语义；唯一解析入口）。
 ///
 /// 整串 = Ref 或 raw 二选一，永不 fall-through：
 /// - Ref 形状（ClassRef/MemberRef）：只查表。命中 → 展开为真实名；
@@ -160,7 +159,7 @@ ShadowSlotResult resolveShadowSlot(const ShadowAliasTable& table,
                                    const std::string&      input,
                                    const ShadowSlotQuery&  query = {});
 
-/// @brief Descriptor 槽（§3 位置三分之描述符行）：字段/方法描述符内
+/// @brief Descriptor 槽（三槽之描述符位）：字段/方法描述符内
 ///        `L…;` 段的类型位展开。
 ///
 /// 文法（纯描述符，泛型签名不在内）：
@@ -179,7 +178,7 @@ ShadowSlotResult resolveShadowSlot(const ShadowAliasTable& table,
 ShadowSlotResult resolveShadowDescriptor(const ShadowAliasTable& table,
                                          const std::string&      input);
 
-/// @brief JasmBody 槽（§3 位置三分之操作数行）：引用型指令操作数展开。
+/// @brief JasmBody 槽（三槽之操作数位）：引用型指令操作数展开。
 ///
 /// 输入 = 单条指令的引用型操作数（助记符之后；iinc/数字等非引用操作数由
 /// 调用方不分派本槽）。文法（对齐 rewriteJasmForDisplay 的显示形态）：
@@ -214,12 +213,12 @@ std::optional<ShadowAliasEntry> resolveShadowHandleEntry(const ShadowAliasTable&
                                                          const std::string&      handle,
                                                          ShadowSlotResult&       result);
 
-/// @brief 条目的引用句柄（§2 形态，供回显工具发放）。
+/// @brief 条目的引用句柄（ClassRef/MemberRef 形态，供回显工具发放）。
 ///
 /// class 条目 → `${Class_N.token8}`；成员条目 →
 /// `${Class_N.token8}.{shadow}.{token8}`（需 owner 类条目存在）。
 /// 不可构造时返回空：缺 token8（v1 遗留）、类影子名非 `Class_<序号>` 形
-/// （手工名不在 §2 文法内，通路是 rename）、成员影子名段出文法字符、
+/// （手工名不在引用文法内，通路是 rename）、成员影子名段出文法字符、
 /// 成员条目的 owner 类条目缺失。
 std::string shadowRefHandleOf(const ShadowAliasTable& table, const ShadowAliasEntry& entry);
 

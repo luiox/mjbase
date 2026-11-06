@@ -87,7 +87,7 @@ ca::core::Result<NameSuggestionFile, SuggestionFileError> parseNameSuggestionFil
 ca::core::Result<NameSuggestionFile, SuggestionFileError> readNameSuggestionFile(
     std::string_view path);
 
-/// @brief 序列化为审阅稿 JSON（pretty）。验收口径：parse(write(parse(x))) 关键字段恒等。
+/// @brief 序列化为审阅稿 JSON（pretty）。往返契约：parse(write(parse(x))) 关键字段恒等。
 ca::core::Result<std::string, SuggestionFileError> writeNameSuggestionText(
     const NameSuggestionFile& file);
 

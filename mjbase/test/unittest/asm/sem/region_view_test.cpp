@@ -2,8 +2,8 @@
 /// @brief       RegionView 测试：直线/菱形/循环回边的 SESE 候选枚举、
 ///              try 边界的异常同质旗标与 jsr 语形旗标（合成语料，只读 golden）。
 ///
-/// 判据对照 luiox/mjbase #115 §1.1/§3.1：单入口单出口（判据 1）过滤生效；
-/// 异常同质（判据 4）与 jsr/ret（判据 5）以旗标/事实交付。
+/// 判据口径：单入口单出口（判据 1）过滤生效；异常同质（判据 4）与
+/// jsr/ret（判据 5）以旗标/事实交付。
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -146,7 +146,7 @@ TEST(MjAsmSemRegionViewTest, LoopHeadAndBodyCandidate)
 
     /// 两个候选：头 + 体（入口 (A,B)，越出 D）；体单独的环形候选
     /// （入口 (B,C)，经回边 C→B 越出回 B——结构上单入口单出口，是否
-    /// 可 outline 由栈形判据（A2）裁决）。
+    /// 可 outline 由栈形判据裁决）。
     ASSERT_EQ(cs.size(), 2u);
     bool foundLoop = false;
     bool foundBody = false;

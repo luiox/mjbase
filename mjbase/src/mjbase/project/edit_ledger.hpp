@@ -18,18 +18,17 @@ namespace mjbase::project {
 /// @brief 编辑台账的行级数据模型：三种行（事务/锚/书签）的严格解析与确定性
 ///        写出、条目 digest 与容器 canonical digest 口径、活动链校验。
 ///
-/// 设计定稿见 doc:schema-v2-ledger（上游 RFC 0001 §6.2/
-/// §6.4）。行模型是纯数据层：不知道容器对象，只认 uri + digest + overlay 引用；
+/// 设计定稿见 doc:schema-v2-ledger。行模型是纯数据层：不知道容器对象，只认 uri + digest + overlay 引用；
 /// 重放与状态物料化由消费方（workspace）在其容器载体上执行。本模块与
 /// project_store 同为 libca 叶子，不依赖 model。
 
-/// @brief 台账行版本（行级自描述；行级演进不触清单版本，RFC 风险 1 缓解）。
+/// @brief 台账行版本（行级自描述；行级演进不触清单版本）。
 inline constexpr ca::u32 kLedgerRowVersion = 1;
 
 /// @brief 台账引擎自述串（section 的 produced_by；仅诊断用）。
 inline constexpr const char* kLedgerEngineName = "mjbase-edit-ledger/1";
 
-/// @brief 台账 section 名前缀与代际命名（设计文档 §3.1）。
+/// @brief 台账 section 名前缀与代际命名（doc:schema-v2-ledger）。
 ///
 /// 活动代 = 清单中 `edit-ledger-<n>` 的最大 n；`edit-baseline-<n>` 与同号 ledger
 /// 配对（缺配对基线 = 基线取原始容器）。每次重写台账都换新代号，永不覆写
@@ -46,7 +45,7 @@ enum class LedgerEntryOp : ca::u8
     Remove,   ///< uri 存在，整条删除（after 恒空串，无 payload）
 };
 
-/// @brief 事务内单条目的前后 digest 链记录（RFC §6.2 entries[]）。
+/// @brief 事务内单条目的前后 digest 链记录。
 struct LedgerEntry
 {
     ca::str::Utf8String uri;       ///< 条目 URI（非空）
@@ -96,7 +95,7 @@ struct LedgerTransaction
     }
 };
 
-/// @brief 压缩锚行（row=anchor）：基线推进记录与补链（设计文档 §5.5）。
+/// @brief 压缩锚行（row=anchor）：基线推进记录与补链（doc:schema-v2-compaction）。
 struct LedgerAnchor
 {
     ca::u64             txn = 0;             ///< 基线对应的事务号（state(txn) = 基线）
@@ -199,7 +198,7 @@ inline ca::str::Utf8String ledgerDigestOfBytes(const ca::u8* data, ca::usize siz
     return sectionContentHash(data, size);
 }
 
-/// @brief 容器 canonical 序列化器（设计文档 §1.6）。
+/// @brief 容器 canonical 序列化器（doc:schema-v2-project-json）。
 ///
 /// 口径：条目按 uri 字典序逐项拼接 len(uri, u64 小端) + uri 字节 +
 /// len(payload, u64 小端) + payload 字节。容器 digest = 对累计字节求
@@ -230,7 +229,7 @@ private:
 std::vector<ca::u8> serializeContainerEntries(
     const std::vector<std::pair<ca::str::Utf8String, std::vector<ca::u8>>>& sortedEntries);
 
-/// @brief 遍历 canonical 容器字节（§1.6 口径；visitor 返回 false 提前终止）。
+/// @brief 遍历 canonical 容器字节（doc:schema-v2-project-json 口径；visitor 返回 false 提前终止）。
 ///        截断/长度越界 = Section 错（基线字节已过 content_hash 校验，违约即
 ///        写方 bug 或存储损坏，fail-closed）。
 ca::Result<void, ProjectStoreError> forEachContainerEntry(

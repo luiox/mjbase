@@ -6,8 +6,7 @@ namespace mjbase::pass {
 
 /// @brief 冗余空检查清除器：删除「ALOAD 0 + INVOKESTATIC
 ///        java/util/Objects.requireNonNull (Ljava/lang/Object;)Ljava/lang/Object;
-///        + POP」三指令组（移植自 mbase pass/opt/dead_code_remover 的
-///        UnusedCheckCleaner）。
+///        + POP」三指令组（dead_code_remover 拆出的空检查段）。
 ///
 /// 语义：
 ///   - 仅实例方法参与（静态方法无 this，ALOAD 0 装载的是参数，删引用探测

@@ -6,10 +6,10 @@ namespace mjbase::pass {
 
 /// @brief GOTO 重排器：把 GOTO 目标尾段整体搬移，使 GOTO 退化为可消除的
 ///        fallthrough 冗余跳转（对齐旧栈 mbase pass/opt/jump_label_layout 的
-///        GotoRearranger 可观测面；标签布局族第二件，消费 libjbc 0.4.19
+///        GotoRearranger 可观测面；属标签布局族，消费 libjbc 0.4.19
 ///        moveRange 区间搬移原语）。
 ///
-/// 首件窗口（宁窄勿错）：方法内 GOTO/GOTO_W 前向跳过中间段 M、目标标签 L
+/// 窗口形态（宁窄勿错）：方法内 GOTO/GOTO_W 前向跳过中间段 M、目标标签 L
 /// 锚定的尾段 S = [L, 方法末)。用 moveRange（kHeadFollows）把 S 整体搬到
 /// GOTO 之后，L 随段迁移锚定 GOTO 的新顺序后继，GOTO 的目标与紧邻后继
 /// 重合，按家族同款 fallthrough 等价整删（RedundantJumpRemover 的边界
@@ -29,11 +29,11 @@ namespace mjbase::pass {
 ///     StillUsed——先验证后动手，把失败排除在搬移之前。
 ///   - 单前驱门：L 的前驱恰好只有该 GOTO。M 尾的 fallthrough（M 尾为非
 ///     终结指令）在 M 沉底后变成方法末悬空 fallthrough，verifier 拒载；
-///     显式分支前驱虽由句柄锚定保边，首件把多前驱目标块的布局改写整体
+///     显式分支前驱虽由句柄锚定保边，多前驱目标块的布局改写整体
 ///     排除（宁窄勿错）。
 ///   - 环形门：段内任一指令的控制目标（分支/switch 全部 target）锚定段外
 ///     → 拒动。段→前方的回边构成跨段循环，循环体跨段重排需逐边证明帧链
-///     与布局效果，首件不证。
+///     与布局效果，本 pass 不证。
 ///
 /// 策略：kHeadFollows——L 的语义就是「段入口」，必须随段迁移才能使 GOTO
 /// 目标与新顺序后继重合；kHeadStays 会把入口标签留在原段位承接 M 的
@@ -43,7 +43,7 @@ namespace mjbase::pass {
 /// 段几何，erase 的无顺序后继/异常边界引用）都在搬移前由门与形态排除；
 /// moveRange 本身校验先于变更、原子落盘。防御层：erase 意外 Err 时不
 /// 回滚——搬移后的布局仍是语义等价的合法形态，记改写重开快照即可，该
-/// GOTO 的目标已变邻接、被本件窗口排除，无死循环。
+/// GOTO 的目标已变邻接、被本 pass 窗口排除，无死循环。
 ///
 /// 帧面：不做显式帧操作（与 RedundantJumpRemover 同口径）——管线 lower
 /// 后 rewireFramesAfterLower 以 Strict 全量重算 + SMT 再生；本变换不引入

@@ -6,7 +6,7 @@
 
 namespace mjbase::pass {
 
-/// @brief 类成员排序器（移植自 mbase pass/opt/class_member_sorter）。
+/// @brief 类成员排序器：按稳定序重排类内字段与方法表。
 ///
 /// 排序键：
 ///   - 字段：先按描述符、再按名称的字典序（稳定排序，同键保原相对序）；
@@ -18,7 +18,7 @@ namespace mjbase::pass {
 /// （unit().fields / unit().methods）与 backing（ClassFile::fields/methods 的
 /// MemberInfo 序列）两侧，同排列同步重排；双面落盘与 MethodUnit.backingIndex
 /// 同步由类级结构编辑原语（mjbase::spi::reorderClassFields / reorderClassMethods，
-/// pass-contract §1 双面落盘义务的 API 化）承担，本 pass 只构造排列与声明 PA。
+/// doc:pass-contract-scope 双面落盘义务的 API 化）承担，本 pass 只构造排列与声明 PA。
 /// MethodUnit.backingIndex 随重排改指新物理位，保证后续 promote/lower 的正确性
 /// （成员条目整体移动，Code 属性内容不受触碰，方法稳定身份 MethodId 随骨架走）。
 /// 排序未发生时返回 all()（不触发无谓重序列化）；发生排序返回 none()（类/成员

@@ -182,7 +182,7 @@ TEST(MjKeepRulePresetTest, AddPresetProgrammaticPath)
     EXPECT_TRUE(set.matchesMember("x/Y", "readResolve", "()Ljava/lang/Object;"));
 }
 
-// RMI：骨架/存根类按名字反射加载；层级谓词挂账，只落命名部分。
+// RMI：骨架/存根类按名字反射加载；层级谓词未覆盖，只落命名部分。
 TEST(MjKeepRulePresetTest, RmiPresetCoversSkeletonClassNamesAndRemoteRefCtor)
 {
     const auto parsed = KeepRuleSet::parse("preset +rmi\n");
@@ -200,7 +200,7 @@ TEST(MjKeepRulePresetTest, RmiPresetCoversSkeletonClassNamesAndRemoteRefCtor)
     EXPECT_FALSE(set.matchesMember("com/foo/Payroll_Stub", "<init>", "()V"));
 }
 
-// EJB：容器按名反射调用生命周期回调；注解族挂账，只落回调名。
+// EJB：容器按名反射调用生命周期回调；注解族未覆盖，只落回调名。
 TEST(MjKeepRulePresetTest, EjbPresetCoversLifecycleCallbacks)
 {
     const auto parsed = KeepRuleSet::parse("preset ejb\n");
@@ -272,7 +272,7 @@ TEST(MjKeepRulePresetTest, SwingPresetCoversPluggableLookAndFeelEntries)
     EXPECT_FALSE(set.matchesMember("com/foo/MyButton", "getUI", "()Ljava/lang/Object;"));
 }
 
-// JAXB：只保 ObjectFactory（反射实例化入口）；注解族挂账。
+// JAXB：只保 ObjectFactory（反射实例化入口）；注解族未覆盖。
 TEST(MjKeepRulePresetTest, JaxbPresetCoversObjectFactoryOnly)
 {
     const auto parsed = KeepRuleSet::parse("preset +jaxb\n");

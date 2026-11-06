@@ -1,5 +1,5 @@
 /// @file        method_driver.cpp
-/// @brief       MethodDriver 实现：方法挑选定序 + 逐方法驱动编排（A9）。
+/// @brief       MethodDriver 实现：方法挑选定序 + 逐方法驱动编排。
 #include "mjbase/asm/sem/method_driver.hpp"
 
 #include <algorithm>
@@ -84,7 +84,7 @@ MethodDriveReport driveMethods(const MethodDriveRequest& req)
             sig.thisClass = cu.symbols().str(cu.thisClass);
         }
 
-        /// 逐方法驱动（A7/A8 档位透传）；单方法失败不阻断编排——失败
+        /// 逐方法驱动（档位透传）；单方法失败不阻断编排——失败
         /// 原因记录在该方法的驱动报告里。
         OutlineDriveRequest driveReq{req.session, id, sig, req.resolver};
         driveReq.policy          = req.drivePolicy;

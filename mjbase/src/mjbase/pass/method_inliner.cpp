@@ -816,7 +816,7 @@ RewriteOutcome rewriteClass(LoadedClass&                                 entry,
             mjbase::memberKeyOf(pool, mjbase::classKeyOf(pool, selfName),
                                 unit.symbols().str(mu.name), unit.symbols().str(mu.desc));
         // 堆分配 scope：unique_ptr 局部持有、地址互异且贯穿本次调用
-        //（pass-contract §1 自造 scope 的地址唯一自证）。
+        //（doc:pass-contract-scope 自造 scope 的地址唯一自证）。
         const auto scope = std::make_unique<mjbase::spi::MethodScope>(mjbase::spi::MethodScope{
             mjbase::spi::MethodTarget{key, mu.id, unit.symbols().str(mu.name),
                                       unit.symbols().str(mu.desc), mu.access, session},

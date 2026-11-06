@@ -6,7 +6,7 @@
 /// 嵌套注解使 decodeAttr 栈溢出（AAC 壳 oo.class 实证，MSVC ASAN 抓到第一
 /// 现场）。同族解码面均已有界：jbc/type/signature.cpp kMaxNesting=255、
 /// libjclassfile annotation_reader DepthGuard——唯 attr_codec 注解族缺守卫
-/// （上游条目挂账，跟进修复合入后本守卫退役）。
+/// （libjbc 侧尚未补，本守卫为其代偿；上游修复合入后移除本守卫）。
 ///
 /// 本预检按同一语法对原始属性字节做迭代走查（显式栈，不递归），只在能
 /// 证明嵌套超限时拒绝；形状歧义 / 截断 / 未知 target_type 一律放行——那些

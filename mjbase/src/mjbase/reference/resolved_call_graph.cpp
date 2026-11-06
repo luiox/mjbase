@@ -208,8 +208,7 @@ void ResolvedCallGraph::build(const mjbase::reference::ReferenceIndex& index,
 
 // ── RTA（rapid type analysis）精度档 ─────────────────────────────
 //
-// 入口可达性驱动 + 已实例化类型集合收窄虚分派。两个阶段（语义与旧栈当前实现
-// 对齐）：
+// 入口可达性驱动 + 已实例化类型集合收窄虚分派。两个阶段：
 //
 // 1. fixpoint：worklist 闭包同时增长「可达方法集」与「已实例化类型集」。
 //    可达方法体内的 `new T`（TypeInstruction + NEW）激活 T；T 激活时重估组件
@@ -286,8 +285,8 @@ void ResolvedCallGraph::buildRta(const mjbase::reference::ReferenceIndex& index,
     // 类链解析：从 type 沿 super 链向上找第一个 ownerSet 命中类。
     // second = 是否走满（终止于 java/lang/Object）；未走满说明父链有其他悬挂
     // 尾部（容器外缺失父类），解析结果不可知，调用方须保守放行。Object 判定
-    // 按链尾名字等价——旧栈未登记 Object 时自动合成补位条目、以 objectIndex
-    // 为链终点；mjbase 类图不自动合成，未登记的 Object 以悬挂键出现在链尾，
+    // 按链尾名字等价；mjbase 类图不自动合成，未登记的 Object
+    // 以悬挂键出现在链尾，
     // 名字即身份。
     auto resolveClassChain = [&](std::string_view type,
                                  const std::unordered_set<std::string_view>& ownerSet) {
@@ -306,7 +305,7 @@ void ResolvedCallGraph::buildRta(const mjbase::reference::ReferenceIndex& index,
 
     // landed owner 名下的组件条目补入闭包（继承未覆写的目标由此进边）。
     //
-    // 口径固化（自旧栈评审）：此处不受调用点接收者静态类型门控——可达方法集
+    // 口径固化：此处不受调用点接收者静态类型门控——可达方法集
     // 按落点 owner 全量入闭包，是偏保守的有意设计（门控仅收窄边表的目标选取，
     // 不收缩 worklist，从而不影响实例化发现）。边表收窄后会出现「方法可达但无
     // 任何入边」的表里差异，属设计选择，勿当缺陷修。
@@ -316,8 +315,8 @@ void ResolvedCallGraph::buildRta(const mjbase::reference::ReferenceIndex& index,
         }
     };
 
-    // T 的祖先闭包（ClassKey id 集）：super 链（含自身）+ 接口闭包——旧栈
-    // ancestors() 单查询即含接口；mjbase 两查询拆分，此处拼合同一口径。外部
+    // T 的祖先闭包（ClassKey id 集）：super 链（含自身）+ 接口闭包——
+    // mjbase 两查询拆分，此处拼合同一口径。外部
     // 类型返回空集——外部实例的分派链全在外部，落不到容器声明条目（外部实例
     // 化不激活任何组件）。
     auto closureOf = [&](std::string_view type) {
@@ -395,7 +394,7 @@ void ResolvedCallGraph::buildRta(const mjbase::reference::ReferenceIndex& index,
 
     // 折入 instantiated[rs.folded..]：首次询问为全量，其后为增量。
     //
-    // 不变量（自旧栈评审固化）：循环体内 evaluateResolution → enqueueFeasible
+    // 不变量：循环体内 evaluateResolution → enqueueFeasible
     // → enqueue 链只增长可达集/worklist，绝不触发 instantiate——instantiate
     // 仅由 process() 的类型引用扫描调用（与 foldRoot 无调用边），物化阶段更是
     // fixpoint 结束后 instantiated 已封口。故循环内不增长：end 在进入前快照
@@ -526,7 +525,7 @@ void ResolvedCallGraph::buildRta(const mjbase::reference::ReferenceIndex& index,
 
     for (ca::usize cursor = 0; cursor < worklist.size(); ++cursor) {
         // 值快照：process 内 enqueue 会让 worklist 重分配，引用传参在增长后
-        // 即悬垂（旧栈 ASan 实证 UAF 的同款修复）；三个 string_view 的拷贝
+        // 即悬垂；三个 string_view 的拷贝
         // 成本可忽略，fixpoint 语义不变。
         const MethodRefKey current = worklist[cursor];
         process(current);

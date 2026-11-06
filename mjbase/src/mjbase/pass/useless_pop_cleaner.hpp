@@ -61,7 +61,7 @@ namespace mjbase::pass {
 ///     隔距离的 [装载; …; POP] 删除需连同 store 活跃性一起判，归
 ///     DeadLocalStoreRemover 的链式删除合同，不在本件重复。
 ///
-/// 挂账（帧面余件）：X 族/SWAP 重排中继的吸收（需要复制面与重排面的
+/// 未覆盖（帧面）：X 族/SWAP 重排中继的吸收（需要复制面与重排面的
 /// 联合栈推理，现 fail-closed）。LDC(class/MethodType/MethodHandle) 纯
 /// 生产者已认领（Dynamic/condy 不认领——bootstrap 链有求值副作用）；
 /// 帧面删除后窗口面的再收敛归管线重复驱动，本件单次运行各相位各走

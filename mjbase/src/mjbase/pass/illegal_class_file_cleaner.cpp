@@ -34,7 +34,7 @@ using jbc::core::MemberInfo;
 /// 任一步抛出该级零产出，返回 false、调用方拿原 bytes 继续走 libjbc 级
 /// （边界外不许异常逃逸）。
 ///
-/// transformer 以整体接入：除 5 条挂账规则（属性级 CP 校验剔除、越界跳转/
+/// transformer 以整体接入：除 5 条前置级规则（属性级 CP 校验剔除、越界跳转/
 /// LDC 的 RETURN 桩替换、LVT/LVTT/LNT 修剪、BSM 表压缩与 condy 池手术、无效
 /// MethodHandle 池清除）外，还携带同一规则面一体的单例属性去重与
 /// type-annotation 目标修剪——拆出单项需改 libjclassfile 公共面，本线不碰
@@ -152,7 +152,7 @@ mjbase::spi::PreservedAnalyses IllegalClassFileCleaner::run(mjbase::model::Resou
         auto*       cls      = ca::core::tag_cast::cast<mjbase::model::ClassResource>(resource.get());
         const auto& original = cls->get();
 
-        // 两级流水：libjclassfile 前置级（慢而稳，5 条挂账规则）→ libjbc 级
+        // 两级流水：libjclassfile 前置级（慢而稳，5 条规则）→ libjbc 级
         // （快而净，2 条结构规则）。每级独立原子：级内任一步失败该级零产出、
         // 原样放行，不产出部分结果；级间以字节衔接。
         std::vector<ca::u8> current = original;

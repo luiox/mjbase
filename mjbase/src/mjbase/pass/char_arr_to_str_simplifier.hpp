@@ -5,8 +5,7 @@
 namespace mjbase::pass {
 
 /// @brief char[] → String 化简器：把「定长 char 数组逐元素常量填充」的构建
-///        序列改写为字符串常量装载（移植自 mbase pass/opt/
-///        char_arr_to_str_simplifier）。
+///        序列改写为字符串常量装载。
 ///
 /// 匹配矩阵：
 ///

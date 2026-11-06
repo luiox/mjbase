@@ -29,7 +29,7 @@ using mjbase::asm_analyzer::DefUseEdge;
 using mjbase::asm_analyzer::DefUseSlot;
 using mjbase::asm_analyzer::MethodDefUse;
 
-/// 白名单声明表（旧栈 issue #678 + UnusedResultCallEliminater 白名单合并）：
+/// 白名单声明表（旧栈弹弃调用白名单与 UnusedResultCallEliminater 白名单合并）：
 /// 可安全弹弃的调用。零参精确条目 + Math/StrictMath 纯函数名家族条目；
 /// 扩展只增条目，不改判定逻辑。
 struct DiscardableCall
@@ -206,13 +206,12 @@ mjbase::spi::PreservedAnalyses DeadSideEffectFreeCallRemover::run(mjbase::spi::M
     (void)mam;
     CodeDom& dom = scope.code.dom;
     if (dom.order().empty()) return mjbase::spi::PreservedAnalyses::all();
-    // 异常表不再整件跳过（原「handler 入口值无定义边」挂账的精细化）：
-    // 弹值消费只发生在正常流——异常抛出点栈清空，handler 入口帧由帧引擎
-    // 合成为 [exceptionRef]，exceptionRef 无指令定义，以它为种子的窗口在
-    // closeChain 处不可入链（负向结论不受异常表影响）。链区间的异常表
-    // 语义由两道门保证：区间标签门（try 端点/handler 入口锚定在 pop 或
-    // 非头链成员即拒收窗口）+ 应用面 eraseBatch 前置校验（成员被 exc
-    // 边界锚定 = 链头形态，整组在任何变更之前拒绝，组级原子无半删）。
+    // 异常表不整件跳过：弹值消费只发生在正常流——异常抛出点栈清空，handler
+    // 入口帧由帧引擎合成为 [exceptionRef]，exceptionRef 无指令定义，以它为
+    // 种子的窗口在 closeChain 处不可入链（负向结论不受异常表影响）。链区间
+    // 的异常表语义由两道门保证：区间标签门（try 端点/handler 入口锚定在 pop
+    // 或非头链成员即拒收窗口）+ 应用面 eraseBatch 前置校验（成员被 exc 边界
+    // 锚定 = 链头形态，整组在任何变更之前拒绝，组级原子无半删）。
     const jbc::analysis::MethodSig sig{
         (scope.access & mjbase::hierarchy::kAccStatic) != 0, scope.desc};
     const MethodDefUse du =
