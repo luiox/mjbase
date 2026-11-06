@@ -63,10 +63,24 @@ RST 写作约定（中文正文的坑，实测）：
   与代码同步的事实（schema_version、锁定依赖版本）集中一处定义，不跨文档复述。
 - 首段写状态行：`状态：定稿/草案/部分落地（已落地面见本文 §X）`。
 
+Doxygen 写作约定（`///` 走 markdown 解析，坑同样实测）：
+
+- 尖括号占位符与 JVM 特殊名（`<init>`、`var<槽位号>`、`overlay-<txn>-<seq>`）必须包
+  进行内代码，否则被当 HTML 标签报 "Unsupported xml/html tag"。
+- 行首 `-` / `+` 是列表标记：`@brief` 换行续行不能以 `+` 开头（会把后文判成非法列表项）。
+- 反斜杠字面量（`\t`、`\n`）包进行内代码，否则被当命令报 "Found unknown command"。
+- `@ref 目标` 会吞掉紧随的中文标点，目标名后要留空格并用两参形式
+  `@ref 目标 "显示文字"`；指向类型名的出处直接写行内代码，不用 `@ref`。
+- 模块级背景/定位用 `/// @defgroup <slug> <标题>` 放在 umbrella header 顶部，
+  文件名即锚点；组与文件注释各说一半，不复述。
+- 门禁松紧档写在 `mjbase/Doxyfile`：`WARN_AS_ERROR=YES` 挡写错的文档，
+  `WARN_IF_INCOMPLETE_DOC=NO` 暂不挡漏写 `@param`（存量 14 处，收紧见该文件注记）。
+
 命令：
 
 ```sh
 sphinx-build -b html -E -W --keep-going mjbase/doc mjbase/doc/_build   # -E：增量会吞掉旧警告
+doxygen mjbase/Doxyfile                                                # 微观层，从仓根执行
 python mjbase/doc/check_refs.py                                       # 代码引用面校验
 ```
 

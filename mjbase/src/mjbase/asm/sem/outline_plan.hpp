@@ -225,7 +225,7 @@ public:
     // ---- 处方数据（planOutline 填装）----
 
     jbc::ir::MethodId parent{};             ///< 父方法身份
-    ca::str::Utf8StringRef newName;         ///< 合成方法名（outline$<名>$<序>）
+    ca::str::Utf8StringRef newName;         ///< 合成方法名（`outline$<名>$<序>`）
     ca::str::Utf8StringRef newDesc;         ///< 合成描述符
     ca::u32 newAccess = 0x0002u | 0x0008u | 0x1000u;  ///< private|static|synthetic
 

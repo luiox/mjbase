@@ -72,7 +72,7 @@
 ///
 /// ## 键契约（MemberKey / alias 文本互通）
 ///
-/// 方法/字段身份一律是 @ref mjbase::MemberKey（三段驻留 id），经本索引自有
+/// 方法/字段身份一律是 `mjbase::MemberKey`（三段驻留 id），经本索引自有
 /// KeyPool 建键（`pool()` 暴露，键随索引存活——与 asm/classpath CallGraph 同款
 /// 「图自有池」纪律）；查询面同时收 MemberKey 与 (owner,name,desc) 文本三段，
 /// 文本入参 intern 进同一池。与 mjbase::analysis::alias_analysis 的互通走**文本

@@ -378,7 +378,7 @@ ca::Result<ca::str::Utf8String, ProjectStoreError> readSectionBytes(
 ///   自产封闭记录，writer bug 在 flush 当场抓住，不落成明日 Damaged。
 /// - formatRetained 条目（清单载有不识别 format 的收容段）**不可 upsert
 ///   覆写**（§9.3"可整体删除但不可改写"）——先显式 remove，再另行登记新段。
-/// - removals：removeSection 墓碑（§6.3）——flush 时删 sections/<name>.<ext>
+/// - removals：removeSection 墓碑（§6.3）——flush 时删 `sections/<name>.<ext>`
 ///   文件 + 删清单条目；对当前清单不存在的名字报 Schema 错；与 upserts 同名
 ///   相交 = Schema（一笔事务内又删又写，语义矛盾）。
 /// - created_at/updated_at 语义归生产者：upsert 是整体替换，替换时时间戳由
@@ -411,7 +411,7 @@ struct StoreManifestMutation
 ///    清单提交之前（旧清单完好）。
 /// 4. **应用变更** → writeStoreManifestText 全量确定性写出（写出前校验
 ///    失败同样零触盘）。
-/// 5. **提交**：staged tmp/txn-<pid>-<mono>/store.json → 单次换名到 bundle
+/// 5. **提交**：staged `tmp/txn-<pid>-<mono>/store.json` → 单次换名到 bundle
 ///    根（唯一提交点；撞读者句柄重试 3×50ms 耗尽 = Io；重试 = 清扫本次
 ///    txn 后重跑全序列，同字节幂等，R45/P2——staged 残留不作为重试依据）
 ///    → 自清扫本次 txn（他人/开期残留归 open 期恢复扫描 §8.2-1 的动作面，

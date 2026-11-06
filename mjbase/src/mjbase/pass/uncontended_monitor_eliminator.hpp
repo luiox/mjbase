@@ -9,11 +9,11 @@ namespace mjbase::pass {
 ///        junk synchronized 块的无害化）。
 ///
 /// 识别形（全部逐指令相邻 + 无标签锚定）：
-///   [NEW X; DUP; (ARG)*; INVOKESPECIAL X.<init>(...)V; ASTORE L]   头
+///   [NEW X; DUP; (ARG)*; INVOKESPECIAL X.`<init>`(...)V; ASTORE L]   头
 ///   ... [ALOAD L; MONITORENTER] ... [ALOAD L; MONITOREXIT]          成对尾
 /// 实参游程 ARG 逐条认领无副作用指令（常量推入，condy 不认领；局部装载
 /// 族含紧凑形）——可整组擦除；任何调用/字段访问/分配/dup 形/iinc 不认领，
-/// 首个不认领指令不是本类 <init> 即整头拒收。整组 eraseBatch 摘除（组级
+/// 首个不认领指令不是本类 `<init>` 即整头拒收。整组 eraseBatch 摘除（组级
 /// 原子：异常表边界锚定任一成员由编辑器前置校验整组拒绝）。
 ///
 /// 语义论证：对象由 NEW 诞生、唯一存储 L、L 的全部读点都是监控接收者

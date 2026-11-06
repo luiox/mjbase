@@ -72,7 +72,7 @@ namespace mjbase::pass {
 /// （owner.name+desc）命中壳表；最终目标从调用者类可达——容器内声明：
 /// public，或同类（private 恒可达），或同包（package-private/protected，
 /// **protected 的跨包子类调用不认**，保守首切面）；容器外目标只认 JDK
-/// 装拆箱白名单（八个 box 类的 valueOf/<x>Value，皆 public final 类）。
+/// 装拆箱白名单（八个 box 类的 `valueOf`/`<x>Value`，皆 public final 类）。
 /// 编码目标 owner 是壳类子类的静态解析形态不进表（§5.4.3.3 上扫未建模）。
 ///
 /// ## 放弃与幂等

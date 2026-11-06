@@ -71,7 +71,7 @@ public:
     /// @brief 返回直接父类内部名；不存在 / 无 super 返回空视图。
     std::string_view superClassOf(std::string_view internalName) const;
 
-    /// @brief owner 类内是否存在精确 (name, desc) 方法声明（含 <init>/<clinit>）。
+    /// @brief owner 类内是否存在精确 (name, desc) 方法声明（含 `<init>`/`<clinit>`）。
     bool methodExists(std::string_view owner, std::string_view name,
                       std::string_view desc) const;
 

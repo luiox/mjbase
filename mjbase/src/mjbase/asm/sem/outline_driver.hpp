@@ -71,7 +71,7 @@ const char* to_string(OutlineDriveNote note) noexcept;
 /// @brief 单轮记录（已 apply 的轮次；值语义）。
 struct OutlineDriveRound
 {
-    ca::u32   sequence = 0;          ///< 本轮命名序号（outline$<名>$<序>）
+    ca::u32   sequence = 0;          ///< 本轮命名序号（`outline$<名>$<序>`）
     ca::usize candidateCount = 0;    ///< 本轮重建后的候选数
     ca::usize chosen = 0;            ///< 选中候选下标（本轮候选集内）
     ca::usize chosenMemberCount = 0; ///< 选中候选成员块数（内层优先断言面）
@@ -95,7 +95,7 @@ struct OutlineDriveRequest
     /// 迭代上限（显式参数，缺省保守——防组合爆炸；v1 策略面存在接力候选
     /// 形态，上限是唯一护栏，见文件头注）。
     ca::u32 maxRounds = 16;
-    /// 命名序号起点（合成方法名 outline$<名>$<序> 的首序）。
+    /// 命名序号起点（合成方法名 `outline$<名>$<序>` 的首序）。
     ca::u32 sequenceBase = 1;
     /// LVT/LVTT 越切点行处置开关透传（同 OutlineRequest 口径：缺省拒绝，
     /// true 时 applier 裁剪记 lvtDrops）。

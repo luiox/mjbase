@@ -9,7 +9,7 @@ namespace mjbase::pass {
 ///        StringConcatFactory.makeConcatWithConstants（javac 9+ 拼接规范形）。
 ///
 /// 识别窗（严格直线，逐指令相邻）：
-///   [NEW StringBuilder; DUP; (LDC String)?; INVOKESPECIAL <init>;(String)?V;
+///   [NEW StringBuilder; DUP; (LDC String)?; INVOKESPECIAL `<init>`;(String)?V;
 ///    (ARG; INVOKEVIRTUAL append(X))+ ; INVOKEVIRTUAL toString()Q-String;]
 /// 改写：NEW 原位改写为 INVOKEDYNAMIC（参数随后按原位压栈），DUP/init/
 /// append/toString 批量 erase（fallthrough 重定向链式闭合）。栈形净效应

@@ -85,3 +85,4 @@ ref_samples/
 /mjbase/src/mjbase/i18n_mjbase_translations.generated.hpp
 ### 文档构建产物 ###
 /mjbase/doc/_build/
+/mjbase/doc/_apidoc/

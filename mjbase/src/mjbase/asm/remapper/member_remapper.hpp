@@ -2,7 +2,7 @@
 /// @brief       把 MemberRemapPlan 应用到一个 libjbc 类会话的改写器。
 ///
 /// 改写载体为 libjbc backing
-/// DOM（@ref jbc::core::ClassFile），方法体经 promote/CodeDom/lower 往返，
+/// DOM（`jbc::core::ClassFile`），方法体经 promote/CodeDom/lower 往返，
 /// 指令 CP 操作数经会话语义层（setMember/setClass/setString + intern）
 /// 重指向——不改写任何常量池 Utf8 条目内容，只做条目级重指向/追加，
 /// 规避 Utf8 跨面共享误伤。

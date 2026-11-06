@@ -49,8 +49,26 @@ jobs:
           path: mjbase/doc/_build
           retention-days: 14
 
-      # 微观层（Doxygen）随「模块注记折进头文件」那批一起接：
-      # 头文件 /// 注释是微观契约层，doc/ 是宏观规格层，两站独立。
+      # 微观层：Doxygen 只吃头文件 /// 注释，与 RST 站互不干涉。
+      # 版本必须钉死（与本地实测同版）：Doxyfile 的 WARN_* 档随版本增减标签，
+      # apt 里的老版本会把「不认识的标签」报成告警，WARN_AS_ERROR 下直接变红。
+      - name: Install Doxygen (pinned 1.18.0)
+        run: |
+          curl -fsSL https://www.doxygen.nl/files/doxygen-1.18.0.linux.bin.tar.gz -o /tmp/dox.tar.gz
+          mkdir -p "$HOME/doxygen"
+          tar xzf /tmp/dox.tar.gz -C "$HOME/doxygen" --strip-components=1
+          echo "$HOME/doxygen/bin" >> "$GITHUB_PATH"
+          doxygen --version
+
+      - name: Build API docs (WARN_AS_ERROR)
+        run: doxygen mjbase/Doxyfile
+
+      - name: Upload API site
+        uses: actions/upload-artifact@v4
+        with:
+          name: mjbase-doc-apidoc
+          path: mjbase/doc/_apidoc/html
+          retention-days: 14
 
   build-and-test-linux:
     name: build & test (linux)

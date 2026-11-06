@@ -115,7 +115,7 @@ struct MethodDriveRequest
     RegionSelectFn driveSelect = &selectRegion;
     /// 每方法迭代上限（显式参数，缺省保守——防组合爆炸，同 A7 口径）。
     ca::u32 maxRounds = 16;
-    /// 命名序号起点（逐方法生效：合成方法名 outline$<名>$<序> 按父方法
+    /// 命名序号起点（逐方法生效：合成方法名 `outline$<名>$<序>` 按父方法
     /// 名分域，不同方法间不冲突，序号各自从起点起）。
     ca::u32 sequenceBase = 1;
     /// LVT/LVTT 越切点行处置开关透传（同 OutlineRequest 口径）。
