@@ -68,7 +68,7 @@ std::optional<ca::str::Utf16String> jasmOf(const Bytes& bytes)
         ADD_FAILURE() << "jasm disassemble failed";
         return std::nullopt;
     }
-    return printed.value->source;
+    return std::move(printed.value->source);
 }
 
 /// 容器 + 单类资源装配。
@@ -163,7 +163,7 @@ std::string staticFixture()
 {
     return std::string(".super java/lang/Object\n"
                        ".class public super t/T1 {\n")
-           + kStubBsm
+           + std::string(kStubBsm)
            + "    .method public static real (I)I {\n"
              "      code: {\n"
              "        bipush 7\n"
@@ -174,7 +174,7 @@ std::string staticFixture()
              "      code: {\n"
              "        iload_0\n"
              "        invokedynamic enc (I)I { "
-           + kBsmHandleRef
+           + std::string(kBsmHandleRef)
            + " } { }\n"
              "        ireturn\n"
              "      }\n"
@@ -183,7 +183,7 @@ std::string staticFixture()
              "      code: {\n"
              "        iload_0\n"
              "        invokedynamic miss (I)I { "
-           + kBsmHandleRef
+           + std::string(kBsmHandleRef)
            + " } { }\n"
              "        ireturn\n"
              "      }\n"
@@ -196,7 +196,7 @@ std::string virtualFixture()
 {
     return std::string(".super java/lang/Object\n"
                        ".class public super t/Vt {\n")
-           + kStubBsm
+           + std::string(kStubBsm)
            + "    .method public mul (I)I {\n"
              "      code: {\n"
              "        bipush 2\n"
@@ -209,7 +209,7 @@ std::string virtualFixture()
              "        aload_0\n"
              "        iload_1\n"
              "        invokedynamic vmul (Lt/Vt;I)I { "
-           + kBsmHandleRef
+           + std::string(kBsmHandleRef)
            + " } { }\n"
              "        ireturn\n"
              "      }\n"
@@ -223,7 +223,7 @@ std::string interfaceFixture()
 {
     return std::string(".super java/lang/Object\n"
                        ".class public super t/I3 {\n")
-           + kStubBsm
+           + std::string(kStubBsm)
            + "    .method public add (I)I {\n"
              "      code: {\n"
              "        bipush 1\n"
@@ -236,7 +236,7 @@ std::string interfaceFixture()
              "        aload_0\n"
              "        iload_1\n"
              "        invokedynamic iadd (Lt/I3;I)I { "
-           + kBsmHandleRef
+           + std::string(kBsmHandleRef)
            + " } { }\n"
              "        ireturn\n"
              "      }\n"
@@ -250,7 +250,7 @@ std::string shuffleFixture()
 {
     return std::string(".super java/lang/Object\n"
                        ".class public super t/T4 {\n")
-           + kStubBsm
+           + std::string(kStubBsm)
            + "    .method public static real2 (I)I {\n"
              "      code: {\n"
              "        bipush 3\n"
@@ -263,7 +263,7 @@ std::string shuffleFixture()
              "        iload_0\n"
              "        ldc \"meta\"\n"
              "        invokedynamic dec (ILjava/lang/String;)I { "
-           + kBsmHandleRef
+           + std::string(kBsmHandleRef)
            + " } { }\n"
              "        ireturn\n"
              "      }\n"
