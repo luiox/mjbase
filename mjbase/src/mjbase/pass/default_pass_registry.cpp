@@ -66,6 +66,8 @@
 #include "mjbase/pass/static_array_field_scalarizer.hpp"
 #include "mjbase/pass/unused_check_cleaner.hpp"
 #include "mjbase/pass/unused_member_remover.hpp"
+#include "mjbase/pass/static_value_collection.hpp"
+#include "mjbase/pass/static_value_inlining.hpp"
 
 namespace mjbase::spi {
 
@@ -519,6 +521,20 @@ PassNameRegistry makeDefaultRegistry()
     seed(reg.registerGlobalPass(
         "MethodInliner", [] { return std::make_unique<mjbase::pass::MethodInliner>(); },
         "Inline provable-pure small static/private method bodies into their call sites."));
+    // opt pass 波次（静态常量收集 + GETSTATIC 读点物化两件组，Recaf 侦察
+    // 第一吸收项）：收集件只读评估 clinit 常量/纯算术写 + ConstantValue
+    // 属性面，产出 pinned 视图；物化件消费视图把读点原位物化为常量装载。
+    // 链上没有收集件时物化件严格 no-op（独立启停）。判据与拒绝面见
+    // doc:static-value-inlining-spec。标签：scope:global /
+    // action:collect|rewrite / stability:opt-in（默认链不收，CLI -p 显式挂点）。
+    seed(reg.registerGlobalPass(
+        "StaticValueCollection",
+        [] { return std::make_unique<mjbase::pass::StaticValueCollection>(); },
+        "Collect clinit constant writes and ConstantValue attributes into a cross-pass view."));
+    seed(reg.registerGlobalPass(
+        "StaticValueInlining",
+        [] { return std::make_unique<mjbase::pass::StaticValueInlining>(); },
+        "Materialize GETSTATIC reads of collected static constants into constant loads."));
     return reg;
 }
 
