@@ -40,6 +40,7 @@
 #include "mjbase/pass/redundant_load_val_eliminator.hpp"
 #include "mjbase/pass/remove_method_calls.hpp"
 #include "mjbase/pass/stack_operation.hpp"
+#include "mjbase/pass/stack_operation_expander.hpp"
 #include "mjbase/pass/try_catch_cleanup.hpp"
 #include "mjbase/pass/strength_reducer.hpp"
 #include "mjbase/pass/tool_class_combiner.hpp"
@@ -138,6 +139,14 @@ PassNameRegistry makeDefaultRegistry()
         "StackOperationSimplifier",
         [] { return std::make_unique<mjbase::pass::StackOperationSimplifier>(); },
         "Fold redundant stack-operation windows to a fixpoint (dup/pop family)."));
+    // opt pass 波次（栈操作家族第二件，#104）：常量 producer 上 DUP 族按帧
+    // 溯源展开——复制槽位改由原常量装载克隆独立供给。判据与纪律声明见
+    // pass 头注与 doc:stack-op-expander-spec。标签：scope:method /
+    // action:expand / stability:opt-in（默认链不收，CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "StackOperationExpander",
+        [] { return std::make_unique<mjbase::pass::StackOperationExpander>(); },
+        "Expand DUP-family copies of constant producers via frame origin tracking."));
     // opt pass 波次（C 方法级指令变换组第一件）：常量 char 数组构造的
     // `new String(char[])` 整窗折叠为字符串 ldc。标签：scope:method /
     // action:fold / stability:opt-in（默认链不收，CLI -p 显式挂点）。

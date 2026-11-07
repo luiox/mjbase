@@ -15,6 +15,7 @@
 #include "mjbase/pass/nop_remover.hpp"
 #include "mjbase/pass/redundant_load_val_eliminator.hpp"
 #include "mjbase/pass/stack_operation.hpp"
+#include "mjbase/pass/stack_operation_expander.hpp"
 #include "mjbase/pass/strength_reducer.hpp"
 #include "mjbase/pass/unused_check_cleaner.hpp"
 #include "mjbase/pass/unused_member_remover.hpp"
@@ -83,6 +84,22 @@ ca::usize registerBuiltinPipelines()
                                      return std::make_unique<mjbase::pass::StackOperationSimplifier>();
                                  },
                                  "StackOperationSimplifier");
+                             return b;
+                         },
+                         PassStability::OptIn);
+
+    // 栈操作家族第二件（#104）：常量 producer DUP 族帧面展开，供后续窗口
+    // 匹配（store/load 中转、比较折叠）看见完整操作数来源；展开后接
+    // stack-op-simplify 可再折叠回等价形。
+    reg.registerPipeline("phase.stack-op-expand",
+                         "Expand DUP-family copies of constant producers (opt-in)",
+                         [] {
+                             PipelineBuilder b;
+                             b.addMethodPass(
+                                 [] {
+                                     return std::make_unique<mjbase::pass::StackOperationExpander>();
+                                 },
+                                 "StackOperationExpander");
                              return b;
                          },
                          PassStability::OptIn);
