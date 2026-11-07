@@ -23,7 +23,10 @@ mjbase 是基于 libjbc 的跨类程序分析与变换库。
 - 注释：Doxygen `///` 行注释；`/** */` 禁止。无 RTTI。
 - 测试：gtest，`TEST(Mj<Module>Test, Name)`。构造指令序列直接用
   `jbc::ir::CodeDom`（append + createLabel 组合，不需要 classfile）；
-  需要类字节时参考 libjbc 独立仓（luiox/libjbc）`demo/control_flow.cpp` 的手工字节模式。
+  需要类字节时一律 jasm 文本装配（`mjbase/jasm` 的 JvmJasmService，范例
+  `method_inliner_test`），禁手写 classfile 字节——opcode/属性字段的
+  putU8/putU16 拼装与字节级 builder 一律不用；非法形态（坏帧类）允许从
+  装配合法类出发做单点最小偏差。完整纪律见 `mjbase/doc/test-fixtures.rst`。
 
 ## 文档规范
 
