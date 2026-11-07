@@ -23,6 +23,7 @@ mjbase 设计规格
    method-inliner
    indy-inline-spec
    stack-op-expander
+   enum-name-restore-spec
    pass-contract
    pass-catalog
    plugin-api

@@ -17,6 +17,7 @@
 #include "mjbase/pass/constant_switch_folder.hpp"
 #include "mjbase/pass/const_char_array_string_folder.hpp"
 #include "mjbase/pass/enum_cast_check_remover.hpp"
+#include "mjbase/pass/enum_name_restorer.hpp"
 #include "mjbase/pass/constant_folder.hpp"
 #include "mjbase/pass/devirtualize_single_target.hpp"
 #include "mjbase/pass/entry_slot_swap_normalizer.hpp"
@@ -162,6 +163,12 @@ PassNameRegistry makeDefaultRegistry()
         "EnumCastCheckRemover",
         [] { return std::make_unique<mjbase::pass::EnumCastCheckRemover>(); },
         "Remove provably redundant enum values() INVOKEVIRTUAL/CHECKCAST adjacent pairs."));
+    // 枚举名恢复（Recaf 第三吸收项）：clinit 泄漏常量真名 → 产家族映射
+    // （IntermediateMapping，挂容器 AM），字节零改动；改名执行交映射消费面。
+    // 标签：scope:global / action:recover / stability:opt-in。
+    seed(reg.registerGlobalPass(
+        "EnumNameRestorer", [] { return std::make_unique<mjbase::pass::EnumNameRestorer>(); },
+        "Produce rename mappings from enum <clinit> leaked constant names (bytes untouched)."));
     // opt pass 扩段（C 方法级指令变换组）：固定模式简化——位运算族 + 死代码族 +
     // 整数比较常量偏移折叠 + 同 slot store/load 中转消除。标签：scope:method /
     // action:simplify / stability:opt-in（默认链不收，CLI -p 显式挂点）。
