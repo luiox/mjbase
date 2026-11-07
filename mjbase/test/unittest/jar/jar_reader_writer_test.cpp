@@ -1,6 +1,7 @@
 /// @file        jar_reader_writer_test.cpp
 /// @brief       jar 读/写测试：读真 jar、缺文件错误、写读回环、空 jar、UTF-8 条目名回环、
-///              目录条目政策（无目录输入零合成 / 显式目录原样保留）与容器级 round-trip。
+///              目录条目政策（无目录输入零合成 / 显式目录原样保留）、零长条目内容回空
+///              （jzip readJvm 签名扫描推断的读侧收口）与容器级 round-trip。
 ///
 /// 5 用例断言逐一对应：
 /// throw → Result 错误通道（is_err 断言），std::string → Utf8String。
@@ -12,6 +13,7 @@
 
 #include <algorithm>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "mjbase/jar/jar_reader.hpp"
@@ -25,16 +27,17 @@ namespace {
 /// C 字符串字面量 → 借用视图（字面量静态存储，视图长期有效）。
 ca::str::Utf8StringRef S(const char* s) { return ca::str::Utf8StringRef::from_cstr(s); }
 
-/// 读取 jar 的条目名集（listJarEntries 只解析元数据不解压，条目序 = 归档序）。
-std::vector<std::string> readEntryNames(const Utf8StringRef& path)
+/// 读取 jar 全部条目的名字与内容字节（JvmJarReader 数据面，条目序 = 归档序）。
+std::vector<std::pair<std::string, std::vector<ca::u8>>> readEntries(const Utf8StringRef& path)
 {
-    auto entries = listJarEntries(path);
-    EXPECT_TRUE(entries.is_ok());
-    if (entries.is_err()) return {};
-    std::vector<std::string> names;
-    for (const auto& info : std::move(entries).unwrap())
-        names.push_back(info.name.to_std_string());
-    return names;
+    JvmJarReader                                             reader(path);
+    std::vector<std::pair<std::string, std::vector<ca::u8>>> out;
+    auto result = reader.read([&](const ca::str::Utf8String& name, const std::vector<ca::u8>& data) {
+        out.emplace_back(name.to_std_string(), data);
+    });
+    EXPECT_TRUE(result.is_ok());
+    if (result.is_err()) out.clear();
+    return out;
 }
 
 }   // namespace
@@ -65,6 +68,70 @@ TEST(MjJarReaderTest, readNonExistentJar)
     ASSERT_TRUE(result.is_err());
     const auto kind = std::move(result).unwrap_err().kind;
     EXPECT_EQ(kind, JarError::Kind::FileNotFound);
+}
+
+// ── 零长条目读侧 guard（jzip readJvm 签名扫描推断的收口）──────────
+
+// 0 字节 STORED 条目按规范回空内容，与条目名无关（目录占位条目与普通 0 字节
+// 文件条目同路径）。未收口的旧行为：jzip 的 JvmZipReader 对 0 字节 STORED
+// 条目按"扫到下一签名"推断数据区，把相邻原始头字节当条目内容回吐（字节级
+// 取证：目录条目在前回吐 77 字节邻接 LFH+数据、目录条目收尾回吐 99 字节
+// CEN）；CEN 收养侧对显式大小 0 不重对齐，垃圾直达 STORED 直通。夹具为
+// 手工构造的确定性 jar（test_resource/jar/zero_size_*.jar，python zipfile
+// 可正常打开）。
+TEST(MjJarReaderTest, readZeroSizeStoredEntriesReturnEmptyContent)
+{
+    const std::vector<ca::u8> payloadA = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                                          0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+                                          0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+                                          0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+                                          0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+                                          0x28, 0x29};
+
+    struct Case
+    {
+        const char*         jar;
+        std::vector<size_t> emptyIndices;   // 期待空内容的条目位序
+        size_t              dataIndex;      // 期待 42 字节 payload 的条目位序
+    };
+    const Case cases[] = {
+        {"mjbase/test_resource/jar/zero_size_dir_then_file.jar", {0}, 1},
+        {"mjbase/test_resource/jar/zero_size_dir_last.jar", {1}, 0},
+    };
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.jar);
+        const auto entries = readEntries(S(c.jar));
+        ASSERT_EQ(entries.size(), 2u);
+        for (const size_t i : c.emptyIndices) {
+            EXPECT_TRUE(entries[i].second.empty())
+                << "entry: " << entries[i].first << " got " << entries[i].second.size()
+                << " bytes of garbage";
+        }
+        EXPECT_EQ(entries[c.dataIndex].second, payloadA);
+    }
+
+    // 普通 0 字节 STORED 文件条目：与目录条目同一 guard 通路，内容回空。
+    const auto fileCase = readEntries(S("mjbase/test_resource/jar/zero_size_file_then_file.jar"));
+    ASSERT_EQ(fileCase.size(), 2u);
+    EXPECT_EQ(fileCase[0].first, "empty.bin");
+    EXPECT_TRUE(fileCase[0].second.empty());
+    EXPECT_EQ(fileCase[1].first, "b.txt");
+    EXPECT_EQ(fileCase[1].second.size(), 30u);
+    EXPECT_EQ(fileCase[1].second[0], ca::u8{0x42});
+}
+
+// 0 字节 DEFLATED 条目（空 deflate 流占 2 字节，现实工具链写法）：内容按规范
+// 回空。guard 统一按 CEN 权威未压缩大小收口，DEFLATED 空条目同样不进解压通路
+// （空流解压结果亦为空，行为一致）。
+TEST(MjJarReaderTest, readZeroSizeDeflatedEntryReturnsEmptyContent)
+{
+    const auto entries = readEntries(S("mjbase/test_resource/jar/zero_size_deflated.jar"));
+    ASSERT_EQ(entries.size(), 2u);
+    EXPECT_EQ(entries[0].first, "z.txt");
+    EXPECT_TRUE(entries[0].second.empty());
+    EXPECT_EQ(entries[1].first, "c.txt");
+    EXPECT_EQ(entries[1].second.size(), 20u);
+    EXPECT_EQ(entries[1].second[0], ca::u8{0x43});
 }
 
 // ── JarWriter + JvmJarReader roundtrip ──────────────────────────
@@ -218,15 +285,21 @@ TEST(MjJarWriterTest, writePreservesExplicitDirEntries)
     EXPECT_EQ(names[0], "com/");
     EXPECT_EQ(names[1], "com/example/");
     EXPECT_EQ(names[2], "com/example/B.class");
-    // 目录条目 0 字节：经 listJarEntries 的元数据口径断言（JvmJarReader 对
-    // 0 字节 STORED 目录条目会回吐原始邻接头字节，见 jzip readJvm 扫描语义，
-    // 数据面断言不在此用例展开）。
+    // 目录条目 0 字节：元数据口径（listJarEntries）与数据面口径（JvmJarReader
+    // 内容回空，零长条目读侧 guard）双断言。
     auto entries = listJarEntries(S(tmpPath));
     ASSERT_TRUE(entries.is_ok());
     for (const auto& info : std::move(entries).unwrap()) {
         if (!info.name.is_empty() && info.name.byte_at(info.name.byte_length() - 1) == '/') {
             EXPECT_EQ(info.uncompressedSize, 0u) << info.name.to_std_string();
             EXPECT_EQ(info.compressedSize, 0u) << info.name.to_std_string();
+        }
+    }
+    const auto contents = readEntries(S(tmpPath));
+    ASSERT_EQ(contents.size(), 3u);
+    for (const auto& entry : contents) {
+        if (!entry.first.empty() && entry.first.back() == '/') {
+            EXPECT_TRUE(entry.second.empty()) << "entry: " << entry.first;
         }
     }
 
@@ -236,7 +309,8 @@ TEST(MjJarWriterTest, writePreservesExplicitDirEntries)
 // ── 容器级 round-trip（真实 jar 文件进出，两端目录条目政策对齐）────
 
 // 输入 jar 无目录条目（夹具 roundtrip_nodirs.jar）：导入容器再导出，
-// 产物条目集与输入全等——目录占位零新增。
+// 产物条目集与输入全等——目录占位零新增。对比口径为逐条目名字 + 内容字节
+// 全等（含条目序）。
 TEST(MjJarWriterTest, containerRoundtripNoDirInputStaysDirFree)
 {
     const char* inPath = "mjbase/test_resource/jar/roundtrip_nodirs.jar";
@@ -246,16 +320,20 @@ TEST(MjJarWriterTest, containerRoundtripNoDirInputStaysDirFree)
     const auto outPath = test::getTempOutPath("mjbase_jar_roundtrip_nodirs.jar");
     ASSERT_TRUE(mjbase::model::ResourceHelper::exportToJar(container, outPath.string()).is_ok());
 
-    auto inNames  = readEntryNames(S(inPath));
-    auto outNames = readEntryNames(
-        S(outPath.string().c_str()));
-    EXPECT_EQ(inNames, outNames);
+    const auto in  = readEntries(S(inPath));
+    const auto out = readEntries(S(outPath.string().c_str()));
+    ASSERT_EQ(in.size(), out.size());
+    for (size_t i = 0; i < in.size(); ++i) {
+        EXPECT_EQ(in[i].first, out[i].first) << "entry index: " << i;
+        EXPECT_EQ(in[i].second, out[i].second) << "entry: " << in[i].first;
+    }
 
     std::remove(outPath.string().c_str());
 }
 
 // 输入 jar 带显式目录条目（夹具 roundtrip_withdirs.jar）：导入导出后
-// 目录条目原样保留，无丢失也无新增。
+// 目录条目原样保留，无丢失也无新增。对比口径含目录条目——名字与内容字节
+// （目录条目内容为空）逐条目全等。
 TEST(MjJarWriterTest, containerRoundtripWithDirInputPreservesDirs)
 {
     const char* inPath = "mjbase/test_resource/jar/roundtrip_withdirs.jar";
@@ -265,12 +343,17 @@ TEST(MjJarWriterTest, containerRoundtripWithDirInputPreservesDirs)
     const auto outPath = test::getTempOutPath("mjbase_jar_roundtrip_withdirs.jar");
     ASSERT_TRUE(mjbase::model::ResourceHelper::exportToJar(container, outPath.string()).is_ok());
 
-    auto inNames  = readEntryNames(S(inPath));
-    auto outNames = readEntryNames(S(outPath.string().c_str()));
-    EXPECT_EQ(inNames, outNames);
-    EXPECT_FALSE(inNames.empty());
-    EXPECT_TRUE(std::any_of(inNames.begin(), inNames.end(),
-                            [](const std::string& n) { return n == "com/"; }));
+    const auto in  = readEntries(S(inPath));
+    const auto out = readEntries(S(outPath.string().c_str()));
+    ASSERT_EQ(in.size(), out.size());
+    for (size_t i = 0; i < in.size(); ++i) {
+        EXPECT_EQ(in[i].first, out[i].first) << "entry index: " << i;
+        EXPECT_EQ(in[i].second, out[i].second) << "entry: " << in[i].first;
+    }
+    EXPECT_FALSE(in.empty());
+    EXPECT_TRUE(std::any_of(in.begin(), in.end(), [](const auto& e) {
+        return e.first == "com/";
+    }));
 
     std::remove(outPath.string().c_str());
 }
