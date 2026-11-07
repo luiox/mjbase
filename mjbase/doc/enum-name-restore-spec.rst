@@ -64,9 +64,18 @@ clinit 内恰好一处 ``INVOKESTATIC <本类>.<数组方法> ()[L<本类>;``，
 
     ICONST_3
     ANEWARRAY <本类>
-    DUP; ICONST_0; GETSTATIC <本类>.<常量0> L<本类>; AASTORE
-    DUP; ICONST_1; GETSTATIC <本类>.<常量1> L<本类>; AASTORE
-    DUP; ICONST_2; GETSTATIC <本类>.<常量2> L<本类>; AASTORE
+    DUP
+    ICONST_0
+    GETSTATIC <本类>.<常量0> L<本类>;
+    AASTORE
+    DUP
+    ICONST_1
+    GETSTATIC <本类>.<常量1> L<本类>;
+    AASTORE
+    DUP
+    ICONST_2
+    GETSTATIC <本类>.<常量2> L<本类>;
+    AASTORE
     ARETURN
 
 调用位名字为 ``values`` 的位置混入公有桥，或出现第二处匹配，均整类病态拒。形状 B
@@ -92,28 +101,68 @@ Recaf 参考实现的收紧点（Recaf 按单形状采信）。
 3. 两形状 jasm 前后对照
 -----------------------
 
-混淆前（javac 产物语义等价 jasm，双常量示例）：
+混淆前（可直接经 JvmJasmService 装配的 jasm 文本，双常量示例；单测夹具即
+其三常量版）：
 
 .. code-block:: text
 
-    .class public super enum Color {
+    .super java/lang/Enum
+    .class public super final enum Color {
         .field public static final enum RED LColor;
         .field public static final enum GREEN LColor;
         .field private static final synthetic $VALUES [LColor;
+        .method private <init> (Ljava/lang/String;I)V {
+            code: {
+                aload_0
+                aload_1
+                iload_2
+                invokespecial java/lang/Enum.<init> (Ljava/lang/String;I)V
+                return
+            }
+        }
+        .method public static values ()[LColor; {
+            code: {
+                aconst_null
+                areturn
+            }
+        }
+        .method public static valueOf (Ljava/lang/String;)LColor; {
+            code: {
+                aconst_null
+                areturn
+            }
+        }
         .method private static synthetic $values ()[LColor; {
             code: {
                 iconst_2
                 anewarray Color
-                dup; iconst_0; getstatic Color.RED LColor;; aastore
-                dup; iconst_1; getstatic Color.GREEN LColor;; aastore
+                dup
+                iconst_0
+                getstatic Color.RED LColor;
+                aastore
+                dup
+                iconst_1
+                getstatic Color.GREEN LColor;
+                aastore
                 areturn
             }
         }
         .method static <clinit> ()V {
             code: {
-                new Color; dup; ldc "RED";   iconst_0; invokespecial Color.<init>(Ljava/lang/String;I)V; putstatic Color.RED LColor;
-                new Color; dup; ldc "GREEN"; iconst_1; invokespecial Color.<init>(Ljava/lang/String;I)V; putstatic Color.GREEN LColor;
-                invokestatic Color.$values ()[LColor;; putstatic Color.$VALUES [LColor;
+                new Color
+                dup
+                ldc "RED"
+                iconst_0
+                invokespecial Color.<init> (Ljava/lang/String;I)V
+                putstatic Color.RED LColor;
+                new Color
+                dup
+                ldc "GREEN"
+                iconst_1
+                invokespecial Color.<init> (Ljava/lang/String;I)V
+                putstatic Color.GREEN LColor;
+                invokestatic Color.$values ()[LColor;
+                putstatic Color.$VALUES [LColor;
                 return
             }
         }
@@ -123,24 +172,63 @@ Recaf 参考实现的收紧点（Recaf 按单形状采信）。
 
 .. code-block:: text
 
-    .class public super enum Color {
+    .super java/lang/Enum
+    .class public super final enum Color {
         .field public static final enum a-b LColor;
         .field public static final enum c-d LColor;
         .field private static final synthetic A-B [LColor;
+        .method private <init> (Ljava/lang/String;I)V {
+            code: {
+                aload_0
+                aload_1
+                iload_2
+                invokespecial java/lang/Enum.<init> (Ljava/lang/String;I)V
+                return
+            }
+        }
+        .method public static values ()[LColor; {
+            code: {
+                aconst_null
+                areturn
+            }
+        }
+        .method public static valueOf (Ljava/lang/String;)LColor; {
+            code: {
+                aconst_null
+                areturn
+            }
+        }
         .method private static synthetic sv-z ()[LColor; {
             code: {
                 iconst_2
                 anewarray Color
-                dup; iconst_0; getstatic Color.a-b LColor;; aastore
-                dup; iconst_1; getstatic Color.c-d LColor;; aastore
+                dup
+                iconst_0
+                getstatic Color.a-b LColor;
+                aastore
+                dup
+                iconst_1
+                getstatic Color.c-d LColor;
+                aastore
                 areturn
             }
         }
         .method static <clinit> ()V {
             code: {
-                new Color; dup; ldc "RED";   iconst_0; invokespecial Color.<init>(Ljava/lang/String;I)V; putstatic Color.a-b LColor;
-                new Color; dup; ldc "GREEN"; iconst_1; invokespecial Color.<init>(Ljava/lang/String;I)V; putstatic Color.c-d LColor;
-                invokestatic Color.sv-z ()[LColor;; putstatic Color.A-B [LColor;
+                new Color
+                dup
+                ldc "RED"
+                iconst_0
+                invokespecial Color.<init> (Ljava/lang/String;I)V
+                putstatic Color.a-b LColor;
+                new Color
+                dup
+                ldc "GREEN"
+                iconst_1
+                invokespecial Color.<init> (Ljava/lang/String;I)V
+                putstatic Color.c-d LColor;
+                invokestatic Color.sv-z ()[LColor;
+                putstatic Color.A-B [LColor;
                 return
             }
         }
@@ -212,7 +300,8 @@ Recaf 参考实现的收紧点（Recaf 按单形状采信）。
 7. 测试面
 ---------
 
-``test/unittest/pass/enum_name_restorer_test.cpp``：手拼夹具全矩阵（全形状
-恢复、正名/合法短名两态不动、六路拒绝面、幂等二跑、注册挂名、字节零改动）。
+``test/unittest/pass/enum_name_restorer_test.cpp``：jasm 装配夹具全矩阵
+（JvmJasmService 汇编、汇编器 frame 分析拒收不可验证栈形；全形状恢复、
+正名/合法短名两态不动、六路拒绝面、幂等二跑、注册挂名、字节零改动）。
 ``test/unittest/pass/enum_name_restorer_jvm_test.cpp``：javac 真产物硬验收
 （正名零映射 → remapper 混淆态反演断言 → 映射经 remapper 应用复原字段名）。
