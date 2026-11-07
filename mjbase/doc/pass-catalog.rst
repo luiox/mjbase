@@ -12,7 +12,7 @@ mjbase pass 族目录（pass-catalog）
 覆盖面与分族
 ------------
 
-覆盖面是 ``mjbase/src/mjbase/pass/default_pass_registry.cpp``\ 注册的全部 82 个 pass：22 个容器级（``GlobalPass``\ ）、21 个类级（``ClassPass``\ ）、39 个方法级（``MethodPass``\ ）。分族依据是注册表标签（``scope``\ /\ ``action``\ /\ ``stability``\ ）与各头注自报的家族名，按职责分十族；成员清单与族内分工全部以现状为准。
+覆盖面是 ``mjbase/src/mjbase/pass/default_pass_registry.cpp``\ 注册的全部 83 个 pass：22 个容器级（``GlobalPass``\ ）、21 个类级（``ClassPass``\ ）、40 个方法级（``MethodPass``\ ）。分族依据是注册表标签（``scope``\ /\ ``action``\ /\ ``stability``\ ）与各头注自报的家族名，按职责分十族；成员清单与族内分工全部以现状为准。
 
 两个全族惯例：
 
@@ -866,6 +866,17 @@ TryCatchCleanup
 - 判据锚：透明重抛须 handler 不被共享、正常流不可达、无重叠表项；NPE 形与自捕抛形有栈深门槛与锚入标签守卫。
 - 拒绝面：域分析失败、JSR/RET、描述符或标签解析不齐——对应规则放弃、保守保留；乱序条目保留（合法类文件允许）；任一不确定整条保留。
 - 验收门：``try_catch_cleanup_test``\ 。
+
+.. _pass-catalog-duplicate-catch-merging:
+
+DuplicateCatchMerging
+^^^^^^^^^^^^^^^^^^^^^
+
+- 职责：重复 catch 表项合并——表序相邻 + 同 handler 锚点 + 同 catch 类型面 + 区间无间隙的两表项并为一条（保护区取并集），零指令改写、handler 入口 pc 与 StackMapTable 帧表不动（不越 TryCatchCleanup 的界：不做不可抛删除）。
+- 判据锚：表序相邻（中间表项会在并集区间内抢先命中，不保真）、start/handler 可锚定且区间非空、handler 解析到同一指令（同锚即同体）、类型面同型（双方 any 视为同面）、min(end) >= max(start)（相切/相交/包含均并）。
+- 拒绝面：异型对不并（联合面在单 catchCp 编码下只有 any 可表达，扩 any 会把其他异常类型引入 handler）；有间隙不并（并集新保护间隙指令）；悬空 start/handler 或空区间不并；catchCp 畸形不并。Recaf 原件的体去重面（不同 handler 体一致 → 剪体 + GOTO 重定向 + 帧重算）不在本件（指令面改写，依赖帧链接线），差异逐条申报见头注。
+- 验收门：``duplicate_catch_merging_test``\ 。
+- 链序：与 TryCatchCleanup 同族正交（本件只缩表项数、不改指令），幂等二跑 no-op。
 
 .. _pass-catalog-redundant-jump-remover:
 

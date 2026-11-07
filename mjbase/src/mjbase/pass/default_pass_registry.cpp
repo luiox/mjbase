@@ -27,6 +27,7 @@
 #include "mjbase/pass/flattening_reverser.hpp"
 #include "mjbase/pass/goto_rearranger.hpp"
 #include "mjbase/pass/duplicate_annotation_remover.hpp"
+#include "mjbase/pass/duplicate_catch_merging.hpp"
 #include "mjbase/pass/identity_wrapper_inliner.hpp"
 #include "mjbase/pass/illegal_class_file_cleaner.hpp"
 #include "mjbase/pass/illegal_varargs_remover.hpp"
@@ -405,6 +406,17 @@ PassNameRegistry makeDefaultRegistry()
         [] { return std::make_unique<mjbase::pass::TryCatchCleanup>(); },
         "Clean up redundant try-catch entries: transparent rethrow, "
         "impossible catch, NPE shape, self-caught throw."));
+    // 重复 catch 表项合并（Recaf DuplicateCatchMergingTransformer 表项面吸收）：
+    // 表序相邻 + 同 handler 锚点 + 同 catch 类型面 + 区间无间隙的两表项合并
+    // 为一条（保护区取并集），零指令改写、handler 入口 pc 与 StackMapTable
+    // 帧表不动；不越 TryCatchCleanup 的界（不做不可抛删除）。判据与 Recaf
+    // 差异申报见 pass 头注。标签：scope:method / action:rewrite /
+    // stability:opt-in（默认链不收，CLI -p 显式挂点）。
+    seed(reg.registerMethodPass(
+        "DuplicateCatchMerging",
+        [] { return std::make_unique<mjbase::pass::DuplicateCatchMerging>(); },
+        "Merge adjacent exception-table entries sharing one handler anchor, "
+        "catch type and gapless ranges (bytes of code untouched)."));
     // opt pass 波次（标签布局族首件）：目标落在顺序后继前置边界的跳转
     // 消解——GOTO 整条删除（fallthrough 等价），条件跳原位换 POP/POP;POP
     // （分支与汇合重合，条件值被丢弃，弹宽对齐谓词元数）。方法末 GOTO
