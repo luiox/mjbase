@@ -16,6 +16,7 @@ mjbase 设计规格
    refs-id-design
    semantic-fp-spec
    library-identification
+   member-census-design
    analysis-project-schema-v2
    analysis-cache-and-container-stack
    reachability-closure-design
