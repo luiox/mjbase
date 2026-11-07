@@ -37,6 +37,13 @@ using mjbase::spi::PreservedAnalyses;
 using mjbase::spi::ResolvedIndyTarget;
 using TestResolver = TableIndyResolver;
 
+/// jasm 源面 UTF-16 载体（jasm_service_test 同款局部助手）。
+ca::str::Utf16String utf16(const std::string& value)
+{
+    return ca::str::Utf16String::from_utf8_string(ca::str::Utf8StringRef::from_data(
+        reinterpret_cast<const ca::u8*>(value.data()), value.size()));
+}
+
 /// javac 真样本：lambda + 字符串拼接（生成面两态）+ 三个 indy 站点的 BSM 与
 /// 直接目标（jasm 夹具经 invokedynamic 引到这里）。
 constexpr const char* kSampleSrc = R"JAVA(

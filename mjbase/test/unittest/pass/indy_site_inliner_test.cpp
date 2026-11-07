@@ -27,7 +27,6 @@
 
 namespace {
 
-namespace fs = std::filesystem;
 
 using Bytes = std::vector<ca::u8>;
 
@@ -37,6 +36,13 @@ using mjbase::spi::PreservedAnalyses;
 using mjbase::spi::ResolvedIndyTarget;
 
 using TestResolver = TableIndyResolver;
+
+/// jasm 源面 UTF-16 载体（jasm_service_test 同款局部助手）。
+ca::str::Utf16String utf16(const std::string& value)
+{
+    return ca::str::Utf16String::from_utf8_string(ca::str::Utf8StringRef::from_data(
+        reinterpret_cast<const ca::u8*>(value.data()), value.size()));
+}
 
 /// jasm 源装配成类字节（major 61；装配失败显红返回 nullopt）。
 std::optional<Bytes> assemble(const std::string& jasm)

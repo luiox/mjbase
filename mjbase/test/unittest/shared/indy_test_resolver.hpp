@@ -15,20 +15,21 @@ class TableIndyResolver : public mjbase::spi::IndyResolver
 public:
     struct Spec
     {
-        std::string_view         site;      ///< 匹配 IndySiteFacts::siteName
-        ResolvedIndyTarget::Form form = ResolvedIndyTarget::Form::Static;
-        std::string_view         owner;
-        std::string_view         name;
-        std::string_view         desc;
-        ca::u32                  trailing = 0;   ///< 尾部元数据实参个数
-        bool                     fail     = false;   ///< true = 应答 ResolveFailed
+        std::string_view                      site;      ///< 匹配 IndySiteFacts::siteName
+        mjbase::spi::ResolvedIndyTarget::Form form =
+            mjbase::spi::ResolvedIndyTarget::Form::Static;
+        std::string_view owner;
+        std::string_view name;
+        std::string_view desc;
+        ca::u32          trailing = 0;   ///< 尾部元数据实参个数
+        bool             fail     = false;   ///< true = 应答 ResolveFailed
     };
 
     explicit TableIndyResolver(std::vector<Spec> specs) : specs_(std::move(specs)) {}
 
     std::string_view name() const override { return "TestTable"; }
 
-    ca::core::Result<ResolvedIndyTarget, mjbase::spi::IndyResolverError>
+    ca::core::Result<mjbase::spi::ResolvedIndyTarget, mjbase::spi::IndyResolverError>
         resolve(const mjbase::spi::IndySiteFacts& site) override
     {
         for (const Spec& spec : specs_) {
