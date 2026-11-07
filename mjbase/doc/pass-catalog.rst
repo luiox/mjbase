@@ -12,7 +12,7 @@ mjbase pass 族目录（pass-catalog）
 覆盖面与分族
 ------------
 
-覆盖面是 ``mjbase/src/mjbase/pass/default_pass_registry.cpp``\ 注册的全部 83 个 pass：22 个容器级（``GlobalPass``\ ）、21 个类级（``ClassPass``\ ）、40 个方法级（``MethodPass``\ ）。分族依据是注册表标签（``scope``\ /\ ``action``\ /\ ``stability``\ ）与各头注自报的家族名，按职责分十族；成员清单与族内分工全部以现状为准。
+覆盖面是 ``mjbase/src/mjbase/pass/default_pass_registry.cpp``\ 注册的全部 84 个 pass：23 个容器级（``GlobalPass``\ ）、21 个类级（``ClassPass``\ ）、40 个方法级（``MethodPass``\ ）。分族依据是注册表标签（``scope``\ /\ ``action``\ /\ ``stability``\ ）与各头注自报的家族名，按职责分十族；成员清单与族内分工全部以现状为准。
 
 两个全族惯例：
 
@@ -90,6 +90,14 @@ KotlinNameRestorer
 
 - 一行条目：Kotlin 名还原——消费 Kotlin Metadata 收集件（``KotlinMetadataCollectionAnalysis``\ ）的模型与双向类名映射，按「描述符唯一匹配」产类/成员改名映射（属性 field/getter/setter 三槽 + 函数扩展接收者首参 + JvmName 注解类名兜底 + setter mutability 门 + ``$``\ 合成名消解），产出 ``IntermediateMapping``\ 家族映射挂容器 AM，字节零改动；逐条判据（唯一匹配口径、访问器命名约定、冲突消解优先级）与 Recaf 差异申报见 :doc:`kotlin-name-restoration-spec`\ （规格篇）。单测 ``kotlin_name_restoration_test``\ 。
 - 链序：只产映射不改名，改名执行交映射消费面组合，依赖收集件经同一容器 AM 惰性取（还原 pass 壳幂等自举）；标签 ``scope:global``\ /\ ``stability:opt-in``\ 。
+
+.. _pass-catalog-source-name-restorer:
+
+SourceNameRestorer
+^^^^^^^^^^^^^^^^^^
+
+- 一行条目：源文件名还原——类 ``SourceFile``\ 属性值与类名不一致时产类名映射（真值源 = SourceFile）：值整体匹配「1..50 个 ASCII word 字符 + .java/.kt 后缀」且剥离后缀的源名为合法 Java 标识符（Recaf 无标识符门，本件收紧）时，按「包前缀 + 源名」产 ``addClass``\ 条目挂容器 AM，已正名零条目，字节零改动；具名内部类（InnerClasses 本类行带 outer）与匿名/局部形态（EnclosingMethod）跳过——它们沿用外围类 SourceFile，不跳过会与外围类映射相撞。逐条判据与 Recaf 差异申报（形状门 ASCII 显式化、标识符门收紧、同目标冲突不消解）见 ``source_name_restoration.hpp``\ 头注。单测 ``source_name_restoration_test``\ 。
+- 链序：只产映射不改名，改名执行交映射消费面组合；标签 ``scope:global``\ /\ ``stability:opt-in``\ 。
 
 .. _pass-catalog-global-structure:
 

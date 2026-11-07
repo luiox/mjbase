@@ -41,6 +41,7 @@
 #include "mjbase/pass/junk_code_inserter.hpp"
 #include "mjbase/pass/kotlin_name_restoration.hpp"
 #include "mjbase/pass/meta_info_remover.hpp"
+#include "mjbase/pass/source_name_restoration.hpp"
 #include "mjbase/pass/method_inliner.hpp"
 #include "mjbase/pass/nop_remover.hpp"
 #include "mjbase/pass/pop_unused_local_variables.hpp"
@@ -196,6 +197,13 @@ PassNameRegistry makeDefaultRegistry()
     seed(reg.registerGlobalPass(
         "KotlinNameRestorer", [] { return std::make_unique<mjbase::pass::KotlinNameRestorer>(); },
         "Produce rename mappings from Kotlin metadata models (bytes untouched)."));
+    // 源文件名还原（Recaf SourceNameRestorationTransformer 吸收件）：类
+    // SourceFile 属性值与类名不一致时产类名映射（真值源 = SourceFile），字节
+    // 零改动；改名执行交映射消费面。判据与 Recaf 差异申报见 pass 头注。
+    // 标签：scope:global / action:recover / stability:opt-in（默认链不收）。
+    seed(reg.registerGlobalPass(
+        "SourceNameRestorer", [] { return std::make_unique<mjbase::pass::SourceNameRestorer>(); },
+        "Produce rename mappings from remaining SourceFile attributes (bytes untouched)."));
     // opt pass 扩段（C 方法级指令变换组）：固定模式简化——位运算族 + 死代码族 +
     // 整数比较常量偏移折叠 + 同 slot store/load 中转消除。标签：scope:method /
     // action:simplify / stability:opt-in（默认链不收，CLI -p 显式挂点）。
