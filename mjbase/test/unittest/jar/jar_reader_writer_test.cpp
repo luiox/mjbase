@@ -1,17 +1,22 @@
 /// @file        jar_reader_writer_test.cpp
-/// @brief       jar 读/写测试：读真 jar、缺文件错误、写读回环、空 jar、UTF-8 条目名回环。
+/// @brief       jar 读/写测试：读真 jar、缺文件错误、写读回环、空 jar、UTF-8 条目名回环、
+///              目录条目政策（无目录输入零合成 / 显式目录原样保留）与容器级 round-trip。
 ///
 /// 5 用例断言逐一对应：
 /// throw → Result 错误通道（is_err 断言），std::string → Utf8String。
 /// readHelloJar 的 fixture 借用 mbase 冻结线的 test_resource（单测 rundir 是
 /// 仓库根，路径与 mbase 原用例字面相同）；临时产物按约定只落 <root>/test/。
 #include <gtest/gtest.h>
+#include <test_helper.hpp>
 #include <cstdio>
 
+#include <algorithm>
+#include <string>
 #include <vector>
 
 #include "mjbase/jar/jar_reader.hpp"
 #include "mjbase/jar/jar_writer.hpp"
+#include "mjbase/model/resource_helper.hpp"
 
 using namespace mjbase::jar;
 
@@ -19,6 +24,18 @@ namespace {
 
 /// C 字符串字面量 → 借用视图（字面量静态存储，视图长期有效）。
 ca::str::Utf8StringRef S(const char* s) { return ca::str::Utf8StringRef::from_cstr(s); }
+
+/// 读取 jar 的条目名集（listJarEntries 只解析元数据不解压，条目序 = 归档序）。
+std::vector<std::string> readEntryNames(const Utf8StringRef& path)
+{
+    auto entries = listJarEntries(path);
+    EXPECT_TRUE(entries.is_ok());
+    if (entries.is_err()) return {};
+    std::vector<std::string> names;
+    for (const auto& info : std::move(entries).unwrap())
+        names.push_back(info.name.to_std_string());
+    return names;
+}
 
 }   // namespace
 
@@ -112,8 +129,9 @@ TEST(MjJarWriterTest, writeAndReadRoundtripWithUtf8EntryName)
     });
     ASSERT_TRUE(writeResult.is_ok());
 
-    // JarWriter 会为路径分量自动补目录条目（"com/"、"com/example/"、"资源/"），
-    // 读取端会收到它们：2 个文件条目 + 3 个目录条目。目录条目名以 '/' 结尾。
+    // 目录条目政策：写入端只保留显式给出的目录条目。本用例未给任何目录条目，
+    // 产物不得合成 "com/"、"com/example/"、"资源/" 占位：2 个文件条目、
+    // 0 个目录条目。
     int  fileEntries = 0;
     int  dirEntries  = 0;
     bool foundClass  = false;
@@ -136,9 +154,192 @@ TEST(MjJarWriterTest, writeAndReadRoundtripWithUtf8EntryName)
     });
     ASSERT_TRUE(readResult.is_ok());
     EXPECT_EQ(fileEntries, 2);
-    EXPECT_EQ(dirEntries, 3);
+    EXPECT_EQ(dirEntries, 0);
     EXPECT_TRUE(foundClass);
     EXPECT_TRUE(foundText);
 
     std::remove(tmpPath);
+}
+
+// ── 目录条目政策 ────────────────────────────────────────────────
+
+// 最小复现案（boar-main.jar 现场的缩小版）：无目录条目的双类 jar 进出，
+// 产物条目集必须与写入条目集全等——零目录占位新增。旧实现会为
+// "com/example/B.class" 自动补 "com/"、"com/example/" 两条 STORED 占位。
+TEST(MjJarWriterTest, writeNoDirEntriesKeepsEntrySetExact)
+{
+    const char* tmpPath = "test/tmp_jar_nodirs_policy.jar";
+
+    const ca::str::Utf8String nestedName = ca::str::Utf8String::from_cstr("com/example/B.class");
+    const std::vector<ca::u8> payload    = {0xCA, 0xFE, 0xBA, 0xBE};
+
+    JarWriter writer(S(tmpPath));
+    auto writeResult = writer.write([&](IEntryWriter& ew) {
+        ew.writeEntry(S("A.class"), payload);
+        ew.writeEntry(nestedName.ref(), payload);
+    });
+    ASSERT_TRUE(writeResult.is_ok());
+
+    std::vector<std::string> names;
+    JvmJarReader reader(S(tmpPath));
+    auto readResult = reader.read([&](const ca::str::Utf8String& name, const std::vector<ca::u8>&) {
+        names.push_back(name.to_std_string());
+    });
+    ASSERT_TRUE(readResult.is_ok());
+    ASSERT_EQ(names.size(), 2u);
+    EXPECT_EQ(names[0], "A.class");
+    EXPECT_EQ(names[1], nestedName.to_std_string());
+
+    std::remove(tmpPath);
+}
+
+// 输入端显式给出目录条目 → 原样保留：名字逐字节保真、内容 0 字节，
+// 不额外合成缺失的父目录，也不重复展开同名目录条目。
+TEST(MjJarWriterTest, writePreservesExplicitDirEntries)
+{
+    const char* tmpPath = "test/tmp_jar_withdirs_policy.jar";
+
+    const std::vector<ca::u8> payload = {0xCA, 0xFE, 0xBA, 0xBE};
+    JarWriter writer(S(tmpPath));
+    auto writeResult = writer.write([&](IEntryWriter& ew) {
+        ew.writeEntry(S("com/"), std::vector<ca::u8>{});
+        ew.writeEntry(S("com/example/"), std::vector<ca::u8>{});
+        ew.writeEntry(S("com/example/B.class"), payload);
+    });
+    ASSERT_TRUE(writeResult.is_ok());
+
+    std::vector<std::string> names;
+    JvmJarReader reader(S(tmpPath));
+    auto readResult = reader.read([&](const ca::str::Utf8String& name, const std::vector<ca::u8>&) {
+        names.push_back(name.to_std_string());
+    });
+    ASSERT_TRUE(readResult.is_ok());
+    ASSERT_EQ(names.size(), 3u);
+    EXPECT_EQ(names[0], "com/");
+    EXPECT_EQ(names[1], "com/example/");
+    EXPECT_EQ(names[2], "com/example/B.class");
+    // 目录条目 0 字节：经 listJarEntries 的元数据口径断言（JvmJarReader 对
+    // 0 字节 STORED 目录条目会回吐原始邻接头字节，见 jzip readJvm 扫描语义，
+    // 数据面断言不在此用例展开）。
+    auto entries = listJarEntries(S(tmpPath));
+    ASSERT_TRUE(entries.is_ok());
+    for (const auto& info : std::move(entries).unwrap()) {
+        if (!info.name.is_empty() && info.name.byte_at(info.name.byte_length() - 1) == '/') {
+            EXPECT_EQ(info.uncompressedSize, 0u) << info.name.to_std_string();
+            EXPECT_EQ(info.compressedSize, 0u) << info.name.to_std_string();
+        }
+    }
+
+    std::remove(tmpPath);
+}
+
+// ── 容器级 round-trip（真实 jar 文件进出，两端目录条目政策对齐）────
+
+// 输入 jar 无目录条目（夹具 roundtrip_nodirs.jar）：导入容器再导出，
+// 产物条目集与输入全等——目录占位零新增。
+TEST(MjJarWriterTest, containerRoundtripNoDirInputStaysDirFree)
+{
+    const char* inPath = "mjbase/test_resource/jar/roundtrip_nodirs.jar";
+
+    mjbase::model::ResourceContainer container;
+    ASSERT_TRUE(mjbase::model::ResourceHelper::importFromJar(container, inPath).is_ok());
+    const auto outPath = test::getTempOutPath("mjbase_jar_roundtrip_nodirs.jar");
+    ASSERT_TRUE(mjbase::model::ResourceHelper::exportToJar(container, outPath.string()).is_ok());
+
+    auto inNames  = readEntryNames(S(inPath));
+    auto outNames = readEntryNames(
+        S(outPath.string().c_str()));
+    EXPECT_EQ(inNames, outNames);
+
+    std::remove(outPath.string().c_str());
+}
+
+// 输入 jar 带显式目录条目（夹具 roundtrip_withdirs.jar）：导入导出后
+// 目录条目原样保留，无丢失也无新增。
+TEST(MjJarWriterTest, containerRoundtripWithDirInputPreservesDirs)
+{
+    const char* inPath = "mjbase/test_resource/jar/roundtrip_withdirs.jar";
+
+    mjbase::model::ResourceContainer container;
+    ASSERT_TRUE(mjbase::model::ResourceHelper::importFromJar(container, inPath).is_ok());
+    const auto outPath = test::getTempOutPath("mjbase_jar_roundtrip_withdirs.jar");
+    ASSERT_TRUE(mjbase::model::ResourceHelper::exportToJar(container, outPath.string()).is_ok());
+
+    auto inNames  = readEntryNames(S(inPath));
+    auto outNames = readEntryNames(S(outPath.string().c_str()));
+    EXPECT_EQ(inNames, outNames);
+    EXPECT_FALSE(inNames.empty());
+    EXPECT_TRUE(std::any_of(inNames.begin(), inNames.end(),
+                            [](const std::string& n) { return n == "com/"; }));
+
+    std::remove(outPath.string().c_str());
+}
+
+// ── 条目路径规范化 ──────────────────────────────────────────────
+
+// 规范化折叠形状：'\'→'/'、连续 '/' 与 "." 段剔除、".." 按段折叠（含目录
+// 条目形状，尾斜杠保留）。各形状归一为不同名字，读回条目集逐名对账。
+TEST(MjJarWriterTest, writeEntryNameNormalizationCollapsesShapes)
+{
+    const char* tmpPath = "test/tmp_jar_normalize_shapes.jar";
+
+    const std::vector<ca::u8> payload = {0xCA, 0xFE, 0xBA, 0xBE};
+    JarWriter writer(S(tmpPath));
+    auto writeResult = writer.write([&](IEntryWriter& ew) {
+        ew.writeEntry(S("a\\b.class"), payload);        // → a/b.class
+        ew.writeEntry(S("x//y.class"), payload);        // → x/y.class
+        ew.writeEntry(S("./p.class"), payload);         // → p.class
+        ew.writeEntry(S("q/./r.class"), payload);       // → q/r.class
+        ew.writeEntry(S("s/../t.class"), payload);      // → t.class
+        ew.writeEntry(S("d/./e/"), std::vector<ca::u8>{});   // → d/e/（目录）
+        ew.writeEntry(S("u\\"), std::vector<ca::u8>{});      // → u/（目录）
+    });
+    ASSERT_TRUE(writeResult.is_ok());
+
+    std::vector<std::string> names;
+    JvmJarReader reader(S(tmpPath));
+    auto readResult = reader.read([&](const ca::str::Utf8String& name, const std::vector<ca::u8>&) {
+        names.push_back(name.to_std_string());
+    });
+    ASSERT_TRUE(readResult.is_ok());
+    ASSERT_EQ(names.size(), 7u);
+    // 归档序 = 原始名字排序（排序发生在规范化之前，与既有行为一致）：
+    // "./p.class" < "a\\b.class" < "d/./e/" < "q/./r.class" < "s/../t.class"
+    // < "u\\" < "x//y.class"。
+    EXPECT_EQ(names[0], "p.class");
+    EXPECT_EQ(names[1], "a/b.class");
+    EXPECT_EQ(names[2], "d/e/");
+    EXPECT_EQ(names[3], "q/r.class");
+    EXPECT_EQ(names[4], "t.class");
+    EXPECT_EQ(names[5], "u/");
+    EXPECT_EQ(names[6], "x/y.class");
+
+    std::remove(tmpPath);
+}
+
+// 非法条目名拒写：规范化后逃出根（"../a.class"、"a/../../b.class"）或为空
+// （""、"."、".."、"./"、"/"、"a/.."）→ Err(BadEntryName)，err.path 为非法
+// 条目名；首条非法即中止，输出文件不落盘。
+TEST(MjJarWriterTest, writeRejectsNamesThatEscapeRootOrAreEmpty)
+{
+    const char* const badNames[] = {
+        "", ".", "..", "./", "/", "../a.class", "a/../../b.class", "a/..",
+    };
+    for (const char* bad : badNames) {
+        const char* tmpPath = "test/tmp_jar_badname_reject.jar";
+        std::remove(tmpPath);
+        JarWriter writer(S(tmpPath));
+        auto writeResult = writer.write(
+            [&](IEntryWriter& ew) { ew.writeEntry(S(bad), std::vector<ca::u8>{0xCA}); });
+        ASSERT_TRUE(writeResult.is_err()) << "entry name: " << bad;
+        const auto err = std::move(writeResult).unwrap_err();
+        EXPECT_EQ(err.kind, JarError::Kind::BadEntryName) << "entry name: " << bad;
+        EXPECT_EQ(err.path.to_std_string(), bad);
+    }
+
+    // 首条非法即中止：输出文件从未写出。
+    JvmJarReader reader(S("test/tmp_jar_badname_reject.jar"));
+    auto readResult = reader.read([&](const ca::str::Utf8String&, const std::vector<ca::u8>&) {});
+    ASSERT_TRUE(readResult.is_err());
+    EXPECT_EQ(std::move(readResult).unwrap_err().kind, JarError::Kind::FileNotFound);
 }

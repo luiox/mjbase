@@ -22,10 +22,11 @@ struct JarError
         OpenFailed,     ///< 文件打开失败（读/写共用）
         ReadFailed,     ///< 读取失败（更细一档）
         WriteFailed,    ///< 写出失败：磁盘满/断连等 IO 错误
+        BadEntryName,   ///< 写出条目名非法：路径规范化后为空或逃出根（../ 逃逸等）
     };
 
     Kind kind = Kind::OpenFailed;
-    Utf8String path;   ///< 出错文件路径（原始字节直通，不校验 UTF-8）
+    Utf8String path;   ///< 出错路径（原始字节直通，不校验 UTF-8）；BadEntryName 时为非法条目名
 };
 
 }   // namespace mjbase::jar

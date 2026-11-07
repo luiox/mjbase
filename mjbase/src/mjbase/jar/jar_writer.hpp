@@ -1,5 +1,9 @@
 /// @file        jar_writer.hpp
-/// @brief       JAR 条目写入接口：回调式收集 → 排序 → 目录条目补全 → DEFLATE 写出。
+/// @brief       JAR 条目写入接口：回调式收集 → 排序 → 目录条目政策保持 → DEFLATE 写出。
+///
+/// 目录条目政策：只保留调用方显式给出的目录条目（名字以 '/' 结尾），不为
+/// 文件条目自动补父目录占位——输入没有目录条目的 jar，产物一个目录占位
+/// 都不造；输入已有的原样保留。
 ///
 /// 差异点：错误通道 throw →
 /// Result<void, JarError>；条目名/路径用 ca::str::Utf8String 家族（jzip 条目
@@ -33,6 +37,10 @@ public:
     /// 写入一个条目。
     /// @param entryName 条目路径
     /// @param content   条目内容
+    ///
+    /// 条目名在写出时做路径规范化：'\' → '/'、折叠连续 '/'、剔除 "." 段、
+    /// 按段折叠 ".."；规范化后逃出根或为空的名字非法，整个 write 以
+    /// Err(JarError::Kind::BadEntryName) 拒绝（err.path 为非法条目名）。
     ///
     /// mbase 按值接收 std::string 以吃住临时对象的移动；本版形参为借用视图
     /// （Utf8StringRef），条目名在收集器内单次复制驻留，语义等价且调用方

@@ -30,14 +30,54 @@ struct Collector : IEntryWriter
     }
 };
 
-// 将路径分隔符统一为 POSIX 风格（jzip 条目名域以 std::string 为边界类型）。
-std::string normalize_path(const std::string& name)
+// BadEntryName 错误载荷：path 装非法条目名本身（诊断指向出问题的条目，
+// 而非输出 jar——写出失败时调用方拿到的是能定位资源的名字）。
+JarError badEntryNameError(const std::string& entryName)
 {
-    std::string out = name;
-    for (auto& ch : out) {
+    JarError err;
+    err.kind = JarError::Kind::BadEntryName;
+    err.path = Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(entryName.data()),
+                                               entryName.size());
+    return err;
+}
+
+// 条目路径规范化（写侧唯一入口）：'\' → '/' 统一 POSIX 分隔符（jzip 条目名域
+// 以 std::string 为边界类型）；折叠连续 '/'；剔除 "." 段；按段折叠 ".."
+// （a/../b → b）。折叠后逃出根（../ 开头、a/../.. 等）或得到空路径（空名、
+// "."、"a/../" 等）的条目名非法——jar 条目没有"根外"与"无名"形态，返回
+// Err(BadEntryName) 拒写。尾斜杠（目录条目标记）原样保留。字节级处理：
+// UTF-8 多字节序列不含 0x2F/0x5C，按字节切段不破坏多字节字符。
+Result<std::string, JarError> normalize_path(const std::string& name)
+{
+    std::string unified = name;
+    for (auto& ch : unified) {
         if (ch == '\\') ch = '/';
     }
-    return out;
+
+    const bool trailingSlash = !unified.empty() && unified.back() == '/';
+    std::vector<std::string> segments;
+    ca::usize                segStart = 0;
+    for (ca::usize i = 0; i <= unified.size(); ++i) {
+        if (i != unified.size() && unified[i] != '/') continue;
+        std::string segment = unified.substr(segStart, i - segStart);
+        segStart            = i + 1;
+        if (segment.empty() || segment == ".") continue;   // 连续 '/' 与 "." 段
+        if (segment == "..") {
+            if (segments.empty()) return Err(badEntryNameError(name));   // 逃出根
+            segments.pop_back();
+            continue;
+        }
+        segments.push_back(std::move(segment));
+    }
+    if (segments.empty()) return Err(badEntryNameError(name));   // 空路径形态
+
+    std::string out;
+    for (const auto& segment : segments) {
+        out += segment;
+        out += '/';
+    }
+    if (!trailingSlash) out.pop_back();
+    return Ok(std::move(out));
 }
 
 // fs 层错误 → jar 错误（写侧）：打开失败与写出失败分开（对应 mbase 的两种 throw，
@@ -56,7 +96,7 @@ JarError::Kind writeErrorKind(ca::fs::FsError e)
     }
 }
 
-// 将收集的条目写入 jar：排序 → 生成目录条目 → 写入文件条目（DEFLATE 压缩）
+// 将收集的条目写入 jar：排序 → 目录条目政策保持 → 写入文件条目（DEFLATE 压缩）
 Result<void, JarError> writeArchive(const Utf8StringRef& path, Collector& collector)
 {
     auto dosTime = current_dos_time();
@@ -69,18 +109,22 @@ Result<void, JarError> writeArchive(const Utf8StringRef& path, Collector& collec
     });
 
     jzip::ZipArchive                archive;
-    std::unordered_set<std::string> dirs;
+    std::unordered_set<std::string> writtenDirNames;
 
     for (auto& [name, data] : collector.entries) {
-        auto entryName = normalize_path(name.to_std_string());
+        auto entryNameResult = normalize_path(name.to_std_string());
+        if (entryNameResult.is_err()) return Err(std::move(entryNameResult).unwrap_err());
+        auto entryName = std::move(entryNameResult).unwrap();   // 非空（normalize 保证）
 
-        // 为每级路径创建 STORED 目录条目（仅首次遇到时）
-        auto slash = entryName.find('/');
-        while (slash != std::string::npos) {
-            std::string dirPath = entryName.substr(0, slash + 1);
-            if (dirs.insert(dirPath).second) {
+        // 目录条目政策：只保留调用方显式给出的目录条目（名字以 '/' 结尾，
+        // 内容忽略），不为文件条目自动补父目录占位——输入 jar 没有目录条目
+        // 时产物一个目录占位都不造（boar-main.jar 实证：旧实现为每个文件
+        // 条目凭空补 'META-INF/'、'grunteon/' 等 STORED 占位，纯结构污染；
+        // JVM 忽略目录条目，占位无任何语义收益）；输入已有的原样保留。
+        if (entryName.back() == '/') {
+            if (writtenDirNames.insert(entryName).second) {
                 auto dirEntry = std::make_unique<jzip::LocalFileHeader>();
-                dirEntry->setFileName(dirPath);
+                dirEntry->setFileName(entryName);
                 dirEntry->setCompressionMethod(0);   // STORED
                 dirEntry->setCompressedSize(0);
                 dirEntry->setUncompressedSize(0);
@@ -91,11 +135,8 @@ Result<void, JarError> writeArchive(const Utf8StringRef& path, Collector& collec
                 dirEntry->setOffset(0);
                 archive.addPart(std::move(dirEntry));
             }
-            slash = entryName.find('/', slash + 1);
+            continue;
         }
-
-        // 跳过纯目录条目（已在上面处理）
-        if (!entryName.empty() && entryName.back() == '/') continue;
 
         // 计算 CRC32 并对非空数据执行 DEFLATE 压缩
         auto       local = std::make_unique<jzip::LocalFileHeader>();
