@@ -230,33 +230,43 @@ bool superChainPure(const std::string&                                   name,
 bool hasConstantValueAttr(const jbc::core::ClassFile& cf, const jbc::core::MemberInfo& f)
 {
     for (const jbc::core::AttrSlot& slot : f.attrs) {
-        if (cf.utf8Equals(slot.nameCp, "ConstantValue")) return true;
+        if (cf.cp.utf8Equals(slot.nameCp, "ConstantValue")) return true;
     }
     return false;
 }
 
-/// ConstantValue 属性值解析：解码面（reader 产物）与 Raw 槽（SFDI 写入
-/// 形态）双路，CP 值条目按 tag 分派；不支持形态返回 false。
+/// ConstantValue 属性值解析（const 只读面，不触发 lazy 解码——decodeAttr 是
+/// 可变入口）：优先读槽上已解码体（ConstantValueAttr / RawAttr 双形态），
+/// 未解码则走源字节 span 直读（JVMS 4.7.2 体恰为 u2 CP 索引）。CP 值条目
+/// 按 tag 分派，不支持形态返回 false。
 bool constantValueOf(const jbc::core::ClassFile& cf, const jbc::core::MemberInfo& f,
                      StaticValue& out)
 {
     for (const jbc::core::AttrSlot& slot : f.attrs) {
-        if (!cf.utf8Equals(slot.nameCp, "ConstantValue")) continue;
+        if (!cf.cp.utf8Equals(slot.nameCp, "ConstantValue")) continue;
         ca::u32 idx = 0;
-        auto    decoded = cf.decodeAttr(slot);
-        if (decoded.is_err()) return false;
-        if (std::move(decoded).unwrap()->kind() == jbc::core::AttrKind::ConstantValue) {
-            idx = ca::core::tag_cast::cast<const jbc::core::ConstantValueAttr*>(slot.peek())
-                      ->constantValueCp;
+        if (const jbc::core::AttrBody* body = slot.peek(); body != nullptr) {
+            if (body->kind() == jbc::core::AttrKind::ConstantValue) {
+                idx = ca::core::tag_cast::cast<const jbc::core::ConstantValueAttr>(body)
+                          ->constantValueCp;
+            }
+            else if (body->kind() == jbc::core::AttrKind::Raw) {
+                const auto* raw = ca::core::tag_cast::cast<const jbc::core::RawAttr>(body);
+                if (raw == nullptr || raw->bytes().size() != 2) return false;
+                idx = (static_cast<ca::u32>(raw->bytes()[0]) << 8) |
+                      static_cast<ca::u32>(raw->bytes()[1]);
+            }
+            else {
+                return false;
+            }
         }
-        else if (slot.peek()->kind() == jbc::core::AttrKind::Raw) {
-            const auto* raw = ca::core::tag_cast::cast<const jbc::core::RawAttr*>(slot.peek());
-            if (raw == nullptr || raw->bytes().size() != 2) return false;
-            idx = (static_cast<ca::u32>(raw->bytes()[0]) << 8) |
-                  static_cast<ca::u32>(raw->bytes()[1]);
+        else if (cf.hasSource() && slot.data.length >= 2) {
+            const jbc::core::ByteView src = cf.source();
+            idx = (static_cast<ca::u32>(src[slot.data.offset]) << 8) |
+                  static_cast<ca::u32>(src[slot.data.offset + 1]);
         }
         else {
-            return false;
+            return false;   // 无解码体且无源字节：证据不可得，fail closed
         }
         if (!cf.cp.valid(idx)) return false;
         const jbc::core::ConstantPool::Entry& e = cf.cp.at(idx);
@@ -281,7 +291,7 @@ bool constantValueOf(const jbc::core::ClassFile& cf, const jbc::core::MemberInfo
         case jbc::core::CpTag::String:
             if (!cf.cp.valid(e.a)) return false;
             out.kind = StaticValue::Kind::Str;
-            out.str.assign(cf.utf8Of(e.a));
+            out.str.assign(cf.utf8(e.a));
             return true;
         default:
             return false;
