@@ -2,7 +2,9 @@
 /// @brief       LVT 重建/丢弃 pass 单测：变换后重算（陈旧表修复、内联后
 ///              重建）、丢弃口径、可验证性门槛（不可信名/多名槽/desc 矛盾
 ///              落 var 形态与推断 desc）、cat2 物理槽跳号、与
-///              LocalVariableAnnotator 双向组合、无 LVT 类安全通过、幂等。
+///              LocalVariableAnnotator 双向组合、无 LVT 类安全通过、幂等、
+///              注册面与 opt-in 接线钉形（默认注册表种子 + 管线配置启用
+///              生效 + default-optimize 零变化）。
 ///
 /// 载体口径：方法体一律 jasm 文本装配（JvmJasmService）；pc 锚点用 quick
 /// 形助记符（istore_1/lstore_2 等，定长单字节）保持可推演。陈旧调试表
@@ -35,6 +37,11 @@
 #include "mjbase/pass/local_variable_table_rebuilder.hpp"
 #include "mjbase/pass/method_inliner.hpp"
 #include "mjbase/spi/analysis_manager.hpp"
+#include "mjbase/spi/pass_manager.hpp"
+#include "mjbase/spi/pass_name_registry.hpp"
+#include "mjbase/spi/pass_registry.hpp"
+#include "mjbase/spi/pipeline_builder.hpp"
+#include "mjbase/spi/pipeline_config.hpp"
 
 using mjbase::model::ClassResource;
 using mjbase::model::ResourceContainer;
@@ -617,4 +624,95 @@ TEST(MjPassLocalVariableTableRebuilderTest, IdempotentSecondRun)
         expectRows(readLvtRows(*second.session),
                    {{0, 4, "n", "I", 0}, {2, 2, "x", "I", 1}});
     }
+}
+
+// ── e) 注册面与 opt-in 接线：默认注册表种子 + 管线配置启用 + 默认链零变化 ──
+
+/// 注册名 = 真实类名，scope 标签 class；注册表工厂产默认口径（Rebuild）
+/// 实例且开箱可用（#104 StackOperationExpander 同款注册钉形）。
+TEST(MjPassLocalVariableTableRebuilderTest, RegisteredAsLocalVariableTableRebuilder)
+{
+    using mjbase::spi::PassScope;
+    mjbase::spi::PassNameRegistry& reg = mjbase::spi::defaultPassRegistry();
+    EXPECT_TRUE(reg.has("LocalVariableTableRebuilder"));
+    const auto found = reg.find("LocalVariableTableRebuilder");
+    ASSERT_TRUE(found.is_ok());
+    EXPECT_EQ(found.unwrap().scope, PassScope::Class);
+    EXPECT_FALSE(found.unwrap().description.empty());
+
+    auto created = reg.createClassPass("LocalVariableTableRebuilder");
+    ASSERT_TRUE(created.is_ok());
+    const Bytes bytes = withLvt(assembleClass("RG", "public static f (I)I", kIntBody), 0,
+                                {{0, 9, "n", "I", 0}, {3, 6, "x", "I", 1}});
+    auto createdSession = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
+    ASSERT_TRUE(createdSession.is_ok());
+    auto                              session = std::move(createdSession).unwrap();
+    ca::str::Utf8StringArena          arena;
+    mjbase::spi::ClassAnalysisManager cam(arena);
+    const auto pa = std::move(created).unwrap()->run(*session, cam);
+    EXPECT_TRUE(pa.changed()) << "注册表工厂默认 Rebuild 口径开箱可用";
+    expectRows(readLvtRows(*session), {{0, 4, "n", "I", 0}, {2, 2, "x", "I", 1}});
+}
+
+/// opt-in 启用形态集成钉形：管线配置 JSON 直引注册名 → applyConfigTo 装配
+/// → 容器管线真跑 → 陈旧 LVT 重算（全链路经默认注册表工厂，无直接构造）。
+TEST(MjPassLocalVariableTableRebuilderTest, PipelineConfigOptInEnablesRebuild)
+{
+    ResourceContainer container;
+    const Bytes       staleBytes =
+        withLvt(assembleClass("PI", "public static f (I)I", kIntBody), 0,
+                {{0, 9, "n", "I", 0}, {3, 6, "x", "I", 1}});
+    addClassResource(container, "PI.class", staleBytes);
+
+    const auto loaded = mjbase::spi::loadPipelineConfig(
+        R"json({"version":1,"passes":[{"pass":"LocalVariableTableRebuilder"}]})json",
+        mjbase::spi::defaultPassRegistry());
+    ASSERT_TRUE(loaded.is_ok()) << loaded.unwrap_err().detail;
+    EXPECT_EQ(loaded.unwrap().sequence.size(), static_cast<ca::usize>(1));
+    EXPECT_EQ(loaded.unwrap().sequence[0].scope, mjbase::spi::PassScope::Class);
+
+    mjbase::spi::PipelineBuilder builder;
+    ASSERT_TRUE(mjbase::spi::applyConfigTo(mjbase::spi::defaultPassRegistry(),
+                                           loaded.unwrap(), builder)
+                    .is_ok());
+    EXPECT_EQ(builder.classPassCount(), static_cast<ca::usize>(1));
+    EXPECT_EQ(builder.classPassNames(),
+              (std::vector<std::string>{"LocalVariableTableRebuilder"}));
+
+    mjbase::spi::PassJobContext job;
+    auto                        mgr = builder.buildNestedPipeline(job);
+    const auto                  ran = mjbase::spi::runContainerPipeline(container, mgr, job);
+    ASSERT_TRUE(ran.is_ok()) << ran.unwrap_err().detail;
+
+    expectRows(readLvtRowsOfBytes(containerBytes(container, "PI.class")),
+               {{0, 4, "n", "I", 0}, {2, 2, "x", "I", 1}});
+}
+
+/// 默认行为零变化：default-optimize 组成不含本 pass（opt-in 不入链），
+/// 跑陈旧表类 LVT 原样悬垂（不配置时不生效）。
+TEST(MjPassLocalVariableTableRebuilderTest, DefaultChainLeavesStaleTableUntouched)
+{
+    (void)mjbase::spi::registerBuiltinPipelines();
+    const auto& pipelines = mjbase::spi::PassRegistry::instance();
+    ASSERT_TRUE(pipelines.hasPipeline("default-optimize"));
+    const auto pipeline = pipelines.getPipeline("default-optimize");
+    EXPECT_TRUE(pipeline.classPassNames().empty()) << "默认链无类级段";
+    const auto names = pipeline.methodPassNames();
+    for (const std::string& name : names) {
+        EXPECT_NE(name, "LocalVariableTableRebuilder") << "opt-in 不入默认链";
+    }
+
+    ResourceContainer container;
+    const Bytes       staleBytes =
+        withLvt(assembleClass("PD", "public static f (I)I", kIntBody), 0,
+                {{0, 9, "n", "I", 0}, {3, 6, "x", "I", 1}});
+    addClassResource(container, "PD.class", staleBytes);
+
+    mjbase::spi::PassJobContext job;
+    auto                        mgr = pipeline.buildNestedPipeline(job);
+    const auto                  ran = mjbase::spi::runContainerPipeline(container, mgr, job);
+    ASSERT_TRUE(ran.is_ok()) << ran.unwrap_err().detail;
+    // 默认链不收：陈旧表原样悬垂。
+    expectRows(readLvtRowsOfBytes(containerBytes(container, "PD.class")),
+               {{0, 9, "n", "I", 0}, {3, 6, "x", "I", 1}});
 }

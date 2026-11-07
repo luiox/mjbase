@@ -33,6 +33,7 @@
 #include "mjbase/pass/line_number_remover.hpp"
 #include "mjbase/pass/local_constant_propagation.hpp"
 #include "mjbase/pass/local_variable_annotator.hpp"
+#include "mjbase/pass/local_variable_table_rebuilder.hpp"
 #include "mjbase/pass/junk_code_inserter.hpp"
 #include "mjbase/pass/meta_info_remover.hpp"
 #include "mjbase/pass/method_inliner.hpp"
@@ -100,6 +101,17 @@ PassNameRegistry makeDefaultRegistry()
         "LocalVariableAnnotator",
         [] { return std::make_unique<mjbase::pass::LocalVariableAnnotator>(); },
         "Rewrite LocalVariableTable with varN names and dataflow-promoted types."));
+    // 局部变量表重建/丢弃（变换后调试表收口件，#180 注册接线）：内联、死代码
+    // 清理、跳转重排后按存活区间重算 LVT（保真口径：可信名/描述符沿用原表
+    // 可验证项）或显式丢弃口径摘除 LVT/LVTT。改写所有产物的调试表形态——
+    // 挂默认链会全局改变产物形状，默认链不收（#104 StackOperationExpander
+    // 同款 opt-in 挂点），经管线配置显式启用。标签：scope:class /
+    // action:annotate / stability:opt-in。
+    seed(reg.registerClassPass(
+        "LocalVariableTableRebuilder",
+        [] { return std::make_unique<mjbase::pass::LocalVariableTableRebuilder>(); },
+        "Rebuild or drop method LocalVariableTable entries after transforms "
+        "(faithful names preserved, ranges recomputed; LVTT dropped)."));
     // A 批（方法体改写族，纯指令变换）：默认链收尾清理件 + 冗余装载消除 +
     // 字符串族化简 + 冗余空检查清除。
     seed(reg.registerMethodPass(
