@@ -27,6 +27,7 @@ mjbase 设计规格
    enum-name-restore-spec
    cycle-class-scan-spec
    kotlin-metadata-collect-spec
+   kotlin-name-restoration-spec
    test-fixtures
    pass-contract
    pass-catalog

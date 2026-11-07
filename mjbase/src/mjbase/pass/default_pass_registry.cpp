@@ -38,6 +38,7 @@
 #include "mjbase/pass/long_annotation_remover.hpp"
 #include "mjbase/pass/local_variable_table_rebuilder.hpp"
 #include "mjbase/pass/junk_code_inserter.hpp"
+#include "mjbase/pass/kotlin_name_restoration.hpp"
 #include "mjbase/pass/meta_info_remover.hpp"
 #include "mjbase/pass/method_inliner.hpp"
 #include "mjbase/pass/nop_remover.hpp"
@@ -186,6 +187,14 @@ PassNameRegistry makeDefaultRegistry()
     seed(reg.registerGlobalPass(
         "EnumNameRestorer", [] { return std::make_unique<mjbase::pass::EnumNameRestorer>(); },
         "Produce rename mappings from enum <clinit> leaked constant names (bytes untouched)."));
+    // Kotlin 名还原（Recaf KotlinNameRestorationTransformer 组合式吸收）：消费
+    // Kotlin Metadata 收集件模型，按描述符唯一匹配产类/成员改名映射（含
+    // JvmName 注解类名兜底与 setter mutability 门），字节零改动；改名执行交
+    // 映射消费面。判据与 Recaf 差异申报见 doc:kotlin-name-restoration-spec。
+    // 标签：scope:global / action:recover / stability:opt-in（默认链不收）。
+    seed(reg.registerGlobalPass(
+        "KotlinNameRestorer", [] { return std::make_unique<mjbase::pass::KotlinNameRestorer>(); },
+        "Produce rename mappings from Kotlin metadata models (bytes untouched)."));
     // opt pass 扩段（C 方法级指令变换组）：固定模式简化——位运算族 + 死代码族 +
     // 整数比较常量偏移折叠 + 同 slot store/load 中转消除。标签：scope:method /
     // action:simplify / stability:opt-in（默认链不收，CLI -p 显式挂点）。

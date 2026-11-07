@@ -959,6 +959,12 @@ ca::core::Result<KtVariable, KotlinMetadataError> parseProperty(std::string_view
             hasId = true;
             id    = wireInt(f);
             break;
+        case 6:
+            // setter_parameter 在场 = var 属性（还原件 setter 槽 mutability
+            // 门）；消息内容不消费，只记在场位。
+            if (f.wire != 2) continue;
+            var.hasSetter = true;
+            break;
         case 30:
             if (f.wire != 2) continue;
             {
@@ -968,7 +974,7 @@ ca::core::Result<KtVariable, KotlinMetadataError> parseProperty(std::string_view
             }
             break;
         default:
-            break;   ///< 属性接收者/setter 参数/context receiver 不进面（申报边界）
+            break;   ///< 属性接收者/context receiver 不进面（申报边界）
         }
     }
     if (hasName) {
