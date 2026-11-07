@@ -167,7 +167,7 @@ Bytes assemble(const std::string_view jasm)
     auto                         name   = utf16(std::string(jasm).substr(0, 12) + ".jasm");
     auto                         source = utf16(std::string(jasm));
     auto                         built  = service.assemble(name.ref(), source.ref());
-    ADD_FAILURE_IF(!built.isOk()) << "jasm assemble failed";
+    if (!built.isOk()) ADD_FAILURE() << "jasm assemble failed";
     if (!built.isOk()) return {};
     return built.value->bytes;
 }

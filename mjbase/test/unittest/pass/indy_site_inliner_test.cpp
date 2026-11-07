@@ -92,7 +92,7 @@ std::pair<PreservedAnalyses, const Bytes*>
     const auto               pa = pass.run(container, gam);
     const auto*              res = ca::core::tag_cast::cast<mjbase::model::ClassResource*>(
         container.getResource(uri));
-    ADD_FAILURE_IF(res == nullptr) << "class resource missing: " << uri;
+    if (res == nullptr) ADD_FAILURE() << "class resource missing: " << uri;
     return {pa, res == nullptr ? nullptr : &res->get()};
 }
 
