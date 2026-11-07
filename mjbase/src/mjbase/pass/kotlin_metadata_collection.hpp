@@ -74,6 +74,10 @@ struct KtVariable
     ca::str::Utf8StringRef name;             ///< 名（串表 resolve 后）
     KtType                 type;             ///< 类型
     bool                   hasType = false;  ///< false = d1 未给类型（映射面落 Object）
+    /// 仅属性面有意义：Property.setter_parameter 在场 = var 属性（val 恒
+    /// false；参数/构造器面恒 false）。还原件（KotlinNameRestoration）以此
+    /// 做 setter 槽 mutability 门——val 属性上偶然同形的用户方法不得误恢复。
+    bool hasSetter = false;
 };
 
 /// @brief Kotlin 函数模型（名 + 返回 + 参数 + 扩展接收者）。
