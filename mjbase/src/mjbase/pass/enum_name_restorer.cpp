@@ -157,11 +157,13 @@ bool analyzeEnumClass(jbc::ir::ClassSession& session, IntermediateMapping& mappi
     const std::string_view thisName = unit.symbols().str(unit.thisClass);
     if ((session.backing().access & kAccEnum) == 0) return false;
 
-    const std::string constDesc  = "L" + std::string(thisName) + ";";
-    const std::string valuesDesc = "[" + constDesc;
+    const std::string constDesc        = "L" + std::string(thisName) + ";";
+    const std::string valuesDesc       = "[" + constDesc;
+    const std::string valuesMethodDesc = "()" + valuesDesc;   // 数组支撑方法描述符
 
-    // 锚 2：values/valueOf 桥签名在。
-    if (unit.findMethod("values", valuesDesc) == jbc::ir::kNoMethod) return false;
+    // 锚 2：values/valueOf 桥签名在（方法描述符带 () 前缀，勿与数组字段
+    // 描述符 [L<本类>; 混用）。
+    if (unit.findMethod("values", valuesMethodDesc) == jbc::ir::kNoMethod) return false;
     if (unit.findMethod("valueOf", "(Ljava/lang/String;)" + constDesc) == jbc::ir::kNoMethod) {
         return false;
     }
@@ -185,7 +187,7 @@ bool analyzeEnumClass(jbc::ir::ClassSession& session, IntermediateMapping& mappi
         if (in == nullptr || in->op != jbc::core::Op::INVOKESTATIC) continue;
         jbc::ir::ClassSession::MemberSem ref;
         if (!session.memberOf(*in, ref)) continue;
-        if (ref.owner != thisName || ref.desc != valuesDesc) continue;
+        if (ref.owner != thisName || ref.desc != valuesMethodDesc) continue;
         if (ref.name == "values") return false;   // 公有桥出现在调用位：病态
         if (valuesCallSeen) return false;         // 多处数组初始化调用：病态
         valuesCallSeen   = true;
@@ -202,7 +204,7 @@ bool analyzeEnumClass(jbc::ir::ClassSession& session, IntermediateMapping& mappi
     if (!valuesCallSeen || arrField.empty()) return false;
 
     // 数组方法体：GETSTATIC 本类 L本类; 出现序 = 数组序。
-    const ca::usize valuesIdx = unit.findMethod(valuesMethodName, valuesDesc);
+    const ca::usize valuesIdx = unit.findMethod(valuesMethodName, valuesMethodDesc);
     if (valuesIdx == jbc::ir::kNoMethod) return false;
     if (!jbc::ir::hasCode(session, valuesIdx)) return false;
     auto valuesPromoted = jbc::ir::promoteMethod(session, valuesIdx);
@@ -288,7 +290,7 @@ bool analyzeEnumClass(jbc::ir::ClassSession& session, IntermediateMapping& mappi
         produced = true;
     }
     if (valuesMethodName != kCanonicalValuesMethod && isIllegalIdentifier(valuesMethodName)) {
-        mapping.addMethod(utf8Ref(thisName), utf8Ref(valuesDesc), utf8Ref(valuesMethodName),
+        mapping.addMethod(utf8Ref(thisName), utf8Ref(valuesMethodDesc), utf8Ref(valuesMethodName),
                           utf8Ref(kCanonicalValuesMethod));
         produced = true;
     }

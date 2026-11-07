@@ -176,7 +176,9 @@ JavacSample compileAndObfuscate(const test::jdk::JdkToolchain& tc, const fs::pat
     obfPlan.mapField(owner, "GREEN", constDesc, owner, "c-d", constDesc);
     obfPlan.mapField(owner, "BLUE", constDesc, owner, "e-f", constDesc);
     obfPlan.mapField(owner, "$VALUES", valuesDesc, owner, "A-B", valuesDesc);
-    obfPlan.mapMethod(owner, "$values", valuesDesc, owner, "sv-z", valuesDesc);
+    // 方法描述符带 () 前缀：$values 是 ()[L本类;，勿与数组字段 [L本类; 混用。
+    const std::string valuesFnDesc = "()" + valuesDesc;
+    obfPlan.mapMethod(owner, "$values", valuesFnDesc, owner, "sv-z", valuesFnDesc);
     s.obf = remapClass(s.orig, obfPlan);
     EXPECT_FALSE(s.obf.empty());
     return s;
@@ -202,12 +204,13 @@ TEST(EnumNameRestorerJvm, RestoresJavacObfuscatedEnumAndRoundTrips)
                                        &compileErr))
         << compileErr;
 
-    const std::string owner     = "hb/jvm/enumrestore/Color";
-    const std::string constDesc  = "L" + owner + ";";
-    const std::string valuesDesc = "[" + constDesc;
-    const JavacSample sample    = compileAndObfuscate(tc, gate);
-    const Bytes       orig      = sample.orig;
-    const Bytes       plain      = readClassBytes(binDir / "hb/jvm/enumrestore/Plain.class");
+    const std::string owner        = "hb/jvm/enumrestore/Color";
+    const std::string constDesc    = "L" + owner + ";";
+    const std::string valuesDesc   = "[" + constDesc;
+    const std::string valuesFnDesc = "()" + valuesDesc;
+    const JavacSample sample      = compileAndObfuscate(tc, gate);
+    const Bytes       orig        = sample.orig;
+    const Bytes       plain       = readClassBytes(binDir / "hb/jvm/enumrestore/Plain.class");
     ASSERT_FALSE(orig.empty());
 
     // ── 2. 正名态：判据形状命中但合法名不动 → 零映射 ──
@@ -262,7 +265,7 @@ TEST(EnumNameRestorerJvm, RestoresJavacObfuscatedEnumAndRoundTrips)
     EXPECT_EQ(mappedField(mapping, owner, "c-d", constDesc), "GREEN");
     EXPECT_EQ(mappedField(mapping, owner, "e-f", constDesc), "BLUE");
     EXPECT_EQ(mappedField(mapping, owner, "A-B", valuesDesc), "$VALUES");
-    EXPECT_EQ(mappedMethod(mapping, owner, "sv-z", valuesDesc), "$values");
+    EXPECT_EQ(mappedMethod(mapping, owner, "sv-z", valuesFnDesc), "$values");
     EXPECT_TRUE(mapping.getClasses().empty());
 
     // ── 6. 消费闭环：映射经 remapper 应用回混淆态 → 字段名复原 ──
@@ -294,9 +297,10 @@ TEST(EnumNameRestorerJvm, ObfClinitJudgeProbe)
         compileAndObfuscate(tc, test::getTopProjectPath() / "test/jvm_gate_enum_restore");
     ASSERT_FALSE(sample.obf.empty());
 
-    const std::string owner      = "hb/jvm/enumrestore/Color";
-    const std::string constDesc  = "L" + owner + ";";
-    const std::string valuesDesc = "[" + constDesc;
+    const std::string owner        = "hb/jvm/enumrestore/Color";
+    const std::string constDesc    = "L" + owner + ";";
+    const std::string valuesDesc   = "[" + constDesc;
+    const std::string valuesFnDesc = "()" + valuesDesc;
 
     auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(sample.obf));
     ASSERT_TRUE(sessionResult.is_ok()) << "obf session open failed";
@@ -306,7 +310,7 @@ TEST(EnumNameRestorerJvm, ObfClinitJudgeProbe)
 
     // 门 1：形态锚（ACC_ENUM + 双桥 + 三常量字段带 ACC_ENUM）。
     EXPECT_NE(session->backing().access & 0x4000, 0) << "门1: 类 ACC_ENUM";
-    EXPECT_NE(unit.findMethod("values", valuesDesc), jbc::ir::kNoMethod) << "门1: values 桥";
+    EXPECT_NE(unit.findMethod("values", valuesFnDesc), jbc::ir::kNoMethod) << "门1: values 桥";
     EXPECT_NE(unit.findMethod("valueOf", "(Ljava/lang/String;)" + constDesc), jbc::ir::kNoMethod)
         << "门1: valueOf 桥";
     for (const char* fname : {"a-b", "c-d", "e-f"}) {
@@ -342,7 +346,7 @@ TEST(EnumNameRestorerJvm, ObfClinitJudgeProbe)
             ADD_FAILURE() << "门2: clinit[" << i << "] INVOKESTATIC memberOf 失败";
             continue;
         }
-        if (std::string{ref.owner} != owner || std::string{ref.desc} != valuesDesc) continue;
+        if (std::string{ref.owner} != owner || std::string{ref.desc} != valuesFnDesc) continue;
         ++valuesCalls;
         valuesCallName = std::string{ref.name};
         const jbc::ir::Insn* nxt = cu->dom.peek(cu->dom.order()[i + 1]);
@@ -358,7 +362,7 @@ TEST(EnumNameRestorerJvm, ObfClinitJudgeProbe)
 
     // 门 2.5：数组方法体 GETSTATIC 序。
     {
-        const ca::usize valuesIdx = unit.findMethod(valuesCallName, valuesDesc);
+        const ca::usize valuesIdx = unit.findMethod(valuesCallName, valuesFnDesc);
         ASSERT_NE(valuesIdx, jbc::ir::kNoMethod) << "门2.5: findMethod " << valuesCallName;
         ASSERT_TRUE(jbc::ir::hasCode(*session, valuesIdx));
         auto vp = jbc::ir::promoteMethod(*session, valuesIdx);

@@ -113,9 +113,10 @@ std::string enumJasmSource(const EnumFixture& fx)
     s += "      invokespecial java/lang/Enum.<init> (Ljava/lang/String;I)V\n      return\n";
     s += "    }\n  }\n";
 
-    // values/valueOf 桥（判据只查存在性；桩体 aconst_null 收口）。
+    // values/valueOf 桥（判据只查存在性；桩体 aconst_null 收口）。方法
+    // 描述符带 () 前缀：values 桥 ()[L本类;，勿与数组字段 [L本类; 混用。
     if (fx.valuesBridge) {
-        s += "  .method public static values " + valuesDesc + " {\n    code: {\n";
+        s += "  .method public static values ()" + valuesDesc + " {\n    code: {\n";
         s += "      aconst_null\n      areturn\n    }\n  }\n";
     }
     if (fx.valueOfBridge) {
@@ -125,7 +126,7 @@ std::string enumJasmSource(const EnumFixture& fx)
 
     // 数组合成方法：iconst_3; anewarray; {dup; iconst_k; getstatic; aastore}×3;
     // areturn。shuffleArray 时前两位 getstatic 对调（互证失败面）。
-    s += "  .method private static synthetic " + fx.valuesName + " " + valuesDesc
+    s += "  .method private static synthetic " + fx.valuesName + " ()" + valuesDesc
          + " {\n    code: {\n";
     s += "      iconst_3\n      anewarray " + owner + "\n";
     const std::array<std::string, 3> seq =
@@ -151,7 +152,7 @@ std::string enumJasmSource(const EnumFixture& fx)
         }
     }
     if (fx.arrayShape) {
-        s += "      invokestatic " + owner + "." + fx.valuesName + " " + valuesDesc + "\n";
+        s += "      invokestatic " + owner + "." + fx.valuesName + " ()" + valuesDesc + "\n";
         s += "      putstatic " + owner + "." + fx.arrField + " " + valuesDesc + "\n";
     }
     s += "      return\n    }\n  }\n";
@@ -227,13 +228,14 @@ TEST(EnumNameRestorerTest, restoresIllegalObfuscatedNames)
 
     const auto& mapping = runPass(container, gam);
 
-    const std::string constDesc  = "L" + fx.owner + ";";
-    const std::string valuesDesc = "[" + constDesc;
+    const std::string constDesc     = "L" + fx.owner + ";";
+    const std::string valuesDesc    = "[" + constDesc;
+    const std::string valuesFnDesc  = "()" + valuesDesc;
     EXPECT_EQ(mappedField(mapping, fx.owner, "a-b", constDesc), "RED");
     EXPECT_EQ(mappedField(mapping, fx.owner, "c-d", constDesc), "GREEN");
     EXPECT_EQ(mappedField(mapping, fx.owner, "e-f", constDesc), "BLUE");
     EXPECT_EQ(mappedField(mapping, fx.owner, "A-B", valuesDesc), "$VALUES");
-    EXPECT_EQ(mappedMethod(mapping, fx.owner, "sv-z", valuesDesc), "$values");
+    EXPECT_EQ(mappedMethod(mapping, fx.owner, "sv-z", valuesFnDesc), "$values");
     // 无关查询不串线。
     EXPECT_TRUE(mappedField(mapping, fx.owner, "RED", constDesc).empty());
     EXPECT_TRUE(mapping.getClasses().empty());   // 类名映射零条
@@ -421,11 +423,12 @@ TEST(EnumNameRestorerTest, clinitShapeProbe)
     EXPECT_EQ(thisName, "t/Color");
     EXPECT_NE(session->backing().access & 0x4000, 0) << "ACC_ENUM lost";
 
-    const std::string constDesc  = "L" + std::string(thisName) + ";";
-    const std::string valuesDesc = "[" + constDesc;
+    const std::string constDesc    = "L" + std::string(thisName) + ";";
+    const std::string valuesDesc   = "[" + constDesc;
+    const std::string valuesFnDesc = "()" + valuesDesc;
 
     // 桥与字段面。
-    EXPECT_NE(unit.findMethod("values", valuesDesc), jbc::ir::kNoMethod) << "values bridge";
+    EXPECT_NE(unit.findMethod("values", valuesFnDesc), jbc::ir::kNoMethod) << "values bridge";
     EXPECT_NE(unit.findMethod("valueOf", "(Ljava/lang/String;)" + constDesc), jbc::ir::kNoMethod)
         << "valueOf bridge";
     int enumFields = 0;
@@ -489,7 +492,7 @@ TEST(EnumNameRestorerTest, clinitShapeProbe)
         ASSERT_TRUE(session->memberOf(*in, ref)) << "invokestatic memberOf";
         EXPECT_EQ(std::string{ref.owner}, "t/Color");
         EXPECT_EQ(std::string{ref.name}, "sv-z");
-        EXPECT_EQ(std::string{ref.desc}, valuesDesc);
+        EXPECT_EQ(std::string{ref.desc}, valuesFnDesc);
     }
     {
         const jbc::ir::Insn* in = cuRef->dom.peek(order[19]);
@@ -502,7 +505,7 @@ TEST(EnumNameRestorerTest, clinitShapeProbe)
     EXPECT_EQ(opAt(20), jbc::core::Op::RETURN);
 
     // 数组方法体 getstatic 序。
-    const ca::usize valuesIdx = unit.findMethod("sv-z", valuesDesc);
+    const ca::usize valuesIdx = unit.findMethod("sv-z", valuesFnDesc);
     ASSERT_NE(valuesIdx, jbc::ir::kNoMethod);
     ASSERT_TRUE(jbc::ir::hasCode(*session, valuesIdx));
     auto vp = jbc::ir::promoteMethod(*session, valuesIdx);
