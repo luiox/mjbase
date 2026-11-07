@@ -22,6 +22,7 @@ mjbase 设计规格
    reachability-closure-design
    method-inliner
    pass-contract
+   pass-catalog
    plugin-api
    upstream-libjbc-annotation-recursion
    module-map
