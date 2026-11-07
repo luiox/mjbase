@@ -75,12 +75,13 @@ constexpr std::string_view kCtor = R"JASM(  .method public <init> ()V {
 
 /// 类骨架：classDirectives 为类级指令文本（.sourcefile / .inner /
 /// .outer-class，raw string 定界的固定片段；可为空），members 为成员体。
-Bytes buildClass(const std::string& internalName, const std::string& classDirectives,
-                 const std::string& members)
+Bytes buildClass(std::string_view internalName, std::string_view classDirectives,
+                 std::string_view members)
 {
-    const std::string source = R"JASM(.super java/lang/Object
-.class public super )JASM" + internalName + R"JASM( {
-)JASM" + classDirectives + members + R"JASM(}
+    const std::string source =
+        R"JASM(.super java/lang/Object
+.class public super )JASM" + std::string(internalName) + R"JASM( {
+)JASM" + std::string(classDirectives) + std::string(members) + R"JASM(}
 )JASM";
     return assembleJasm(source);
 }
@@ -89,8 +90,9 @@ Bytes buildClass(const std::string& internalName, const std::string& classDirect
 void loadClass(ResourceContainer& container, const std::string& internalName,
                const std::string& classDirectives)
 {
-    container.addResource(internalName + ".class",
-                          std::make_unique<ClassResource>(internalName + ".class",
+    const std::string uri = internalName + ".class";
+    container.addResource(uri,
+                          std::make_unique<ClassResource>(uri,
                                                           buildClass(internalName,
                                                                      classDirectives, kCtor)));
 }
