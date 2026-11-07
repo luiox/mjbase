@@ -58,7 +58,7 @@ mjbase 的吸收不照搬一比一。Recaf 的形态是「独立删除 pass 挂�
 3. UnusedClassRemover opt-in 接线
 ---------------------------------
 
-构造参数 ``removeInheritanceCycles``（默认 false）承载接线，语义四条：
+构造参数 ``removeInheritanceCycles``\ （默认 false）承载接线，语义四条：
 
 - **默认关 = 既有语义逐字节一致**：flag 关时不做环扫描、不进任何新判定分支，
   删除集与改写面与接线前完全一致（回归用例以「可达环全保 + 容器字节恒等」
