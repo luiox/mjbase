@@ -38,7 +38,8 @@ ca::str::Utf16String utf16Of(const std::string& value)
         reinterpret_cast<const ca::u8*>(value.data()), value.size()));
 }
 
-/// jasm 源码 → class 字节（汇编失败逐条报诊断并致命，夹具错误不静默）。
+/// jasm 源码 → class 字节（汇编失败逐条报诊断并致命，夹具错误不静默；
+/// 失败时附整份源码与行号定位，供 CI 日志直读）。
 Bytes assembleJasm(const std::string& source)
 {
     mjbase::jasm::JvmJasmService service;
@@ -47,9 +48,15 @@ Bytes assembleJasm(const std::string& source)
     const auto           result     = service.assemble(sourceName.ref(), text.ref());
     if (!result.isOk() || !result.value.has_value()) {
         for (const auto& d : result.diagnostics) {
-            ADD_FAILURE() << "jasm: " << d.message.to_utf8_string().to_std_string();
+            std::string where;
+            if (d.location.has_value()) {
+                where = " [line " + std::to_string(d.location->line) + " col "
+                        + std::to_string(d.location->column) + "]";
+            }
+            ADD_FAILURE() << "jasm" << where << ": "
+                          << d.message.to_utf8_string().to_std_string();
         }
-        ADD_FAILURE() << "jasm 汇编失败";
+        ADD_FAILURE() << "jasm 汇编失败，源码如下：\n" << source;
         return {};
     }
     return result.value->bytes;
