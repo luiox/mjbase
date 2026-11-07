@@ -20,6 +20,7 @@ mjbase 设计规格
    analysis-project-schema-v2
    analysis-cache-and-container-stack
    reachability-closure-design
+   method-inliner
    pass-contract
    plugin-api
    upstream-libjbc-annotation-recursion
