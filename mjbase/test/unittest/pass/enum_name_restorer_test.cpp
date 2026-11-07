@@ -367,20 +367,21 @@ TEST(EnumNameRestorerTest, idempotentSecondRun)
     EnumFixture                      fx;
     loadClass(container, fx);
 
+    const auto ownerRef = ca::str::Utf8StringRef::from_string_view(fx.owner);
     ca::str::Utf8StringArena           arena1;
     mjbase::spi::GlobalAnalysisManager gam1(arena1);
     const auto&                        first = runPass(container, gam1);
-    const auto* firstFields = first.getClassFieldMappings(fx.owner);
+    const auto* firstFields = first.getClassFieldMappings(ownerRef);
     ASSERT_NE(firstFields, nullptr);
     const ca::usize firstCount = firstFields->size();
 
     const auto& second = runPass(container, gam1);
-    EXPECT_EQ(second.getClassFieldMappings(fx.owner), firstFields);   // 缓存命中同址
+    EXPECT_EQ(second.getClassFieldMappings(ownerRef), firstFields);   // 缓存命中同址
 
     ca::str::Utf8StringArena           arena2;
     mjbase::spi::GlobalAnalysisManager gam2(arena2);
     const auto&                        third = runPass(container, gam2);
-    const auto* thirdFields = third.getClassFieldMappings(fx.owner);
+    const auto* thirdFields = third.getClassFieldMappings(ownerRef);
     ASSERT_NE(thirdFields, nullptr);
     ASSERT_EQ(thirdFields->size(), firstCount);
     for (ca::usize k = 0; k < firstCount; ++k) {

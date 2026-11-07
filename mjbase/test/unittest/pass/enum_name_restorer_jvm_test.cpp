@@ -110,14 +110,15 @@ mjbase::asm_remapper::MemberRemapPlan planFromMapping(
     const mjbase::mapping::IntermediateMapping& mapping, const std::string& owner)
 {
     mjbase::asm_remapper::MemberRemapPlan plan;
-    const auto* fields = mapping.getClassFieldMappings(owner);
+    const auto  ownerRef = ca::str::Utf8StringRef::from_string_view(owner);
+    const auto* fields   = mapping.getClassFieldMappings(ownerRef);
     if (fields != nullptr) {
         for (const auto& f : *fields) {
             plan.mapField(owner, std::string_view{f.oldName}, std::string_view{f.desc}, owner,
                           std::string_view{f.newName}, std::string_view{f.desc});
         }
     }
-    const auto* methods = mapping.getClassMethodMappings(owner);
+    const auto* methods = mapping.getClassMethodMappings(ownerRef);
     if (methods != nullptr) {
         for (const auto& m : *methods) {
             plan.mapMethod(owner, std::string_view{m.oldName}, std::string_view{m.desc}, owner,
