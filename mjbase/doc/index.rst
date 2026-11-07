@@ -26,6 +26,7 @@ mjbase 设计规格
    stack-op-expander
    enum-name-restore-spec
    cycle-class-scan-spec
+   kotlin-metadata-collect-spec
    test-fixtures
    pass-contract
    pass-catalog
