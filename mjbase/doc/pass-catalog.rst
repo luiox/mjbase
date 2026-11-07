@@ -193,7 +193,7 @@ IdentityWrapperInliner
 MethodInliner
 ^^^^^^^^^^^^^
 
-- 一行条目：预算内纯函数小方法体克隆进调用点（v1 现状，``invokestatic``\ /同类 ``invokespecial``\ 调用点；单测 ``method_inliner_test``\ + JVM 真跑门 ``method_inliner_jvm_test``\ ）。适用情况与算法规格独立成篇 ``mjbase/doc/method-inliner.rst``\ （在途，待其合并后本节接 :doc: 链接）。
+- 一行条目：预算内纯函数小方法体克隆进调用点；适用情况、逐面判据与前后 jasm 对照见 :doc:`method-inliner`\ （规格篇）。单测 ``method_inliner_test``\ + JVM 真跑门 ``method_inliner_jvm_test``\ 。
 
 .. _pass-catalog-redundant-invoke-remover:
 
