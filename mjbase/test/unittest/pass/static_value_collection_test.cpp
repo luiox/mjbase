@@ -79,7 +79,7 @@ FixtureBuilder constClassFixture()
     appendBytes(code, putStatic(ei));
     appendBytes(code, {0x0e});                    // dconst_0
     appendBytes(code, putStatic(fi));
-    appendBytes(code, {0x0a});                    // fconst_0
+    appendBytes(code, {0x0b});                    // fconst_0
     appendBytes(code, putStatic(gi));
     appendBytes(code, cat(ldc1(str), putStatic(si)));
     appendBytes(code, kReturn);
@@ -417,7 +417,7 @@ TEST(MjPassStaticValueCollectionTest, RejectsFamilyMismatchPair)
     const ca::u16 di = b.fieldRef("T", "d", "D");
     Bytes code;
     appendBytes(code, cat(bipush(42), putStatic(ai)));
-    appendBytes(code, cat({0x0a}, putStatic(di)));   // fconst_0 写 D 字段
+    appendBytes(code, cat({0x0b}, putStatic(di)));   // fconst_0 写 D 字段
     appendBytes(code, kReturn);
     b.addMethod({"<clinit>", "()V", std::move(code), kAccStaticMethod});
 
