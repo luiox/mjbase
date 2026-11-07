@@ -1,5 +1,10 @@
 /// LineNumberRemover 单测：只摘 Code 嵌套 LineNumberTable，保 LVT 与指令载荷；
 /// 条件 PA（无 LNT 时 all）。
+///
+/// 夹具纪律：类骨架一律 jasm 文本装配（JvmJasmService），指令体片段
+/// R"JASM 定界；LineNumberTable 走 jasm 原生 .line 行号指令。LocalVariableTable
+/// 不在 jasm 覆盖面——纪律例外②：装配产物上以 CF 写入面挂 RawAttr 形空
+/// LVT，构造仅限属性本体，模拟上游 javac 的 LVT 发射工序。
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -7,22 +12,38 @@
 #include <string>
 
 #include "jbc/core/class_file.hpp"
+#include "jbc/core/attribute.hpp"
 #include "jbc/ir/units.hpp"
 
 #include "mjbase/pass/line_number_remover.hpp"
 #include "mjbase/spi/analysis_manager.hpp"
+#include "shared/jasm_fixture.hpp"
 #include "shared/structural_pass_util.hpp"
 
 using namespace mjbase::test;
 
 namespace {
 
-std::shared_ptr<jbc::ir::ClassSession> makeSession(FixtureBuilder builder)
+/// 装配 → 建会话 → Code 嵌套挂空 LVT（RawAttr {count=0}）。
+std::shared_ptr<jbc::ir::ClassSession> makeSessionWithLvt(const Bytes& assembled)
 {
-    const Bytes bytes  = builder.assemble();
-    auto        result = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
-    EXPECT_TRUE(result.is_ok());
-    return std::move(result).unwrap();
+    auto made = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(assembled));
+    EXPECT_TRUE(made.is_ok());
+    if (!made.is_ok()) return nullptr;
+    auto                session = std::move(made).unwrap();
+    jbc::core::ClassFile& cf = session->backing();
+    EXPECT_EQ(cf.methods.size(), 1u);
+    if (cf.methods.size() != 1u) return nullptr;
+    auto decoded = cf.decodeCode(cf.methods[0]);
+    EXPECT_TRUE(decoded.is_ok());
+    if (decoded.is_err()) return nullptr;
+    jbc::core::CodeAttr* code = std::move(decoded).unwrap();
+    EXPECT_NE(code, nullptr);
+    if (code == nullptr) return nullptr;
+    code->attrs.push_back(jbc::core::AttrSlot::makeNew(
+        cf.cp.addUtf8("LocalVariableTable"),
+        std::make_unique<jbc::core::RawAttr>(std::vector<ca::u8>{0x00, 0x00})));
+    return session;
 }
 
 std::set<std::string> codeAttrNames(jbc::core::ClassFile& cf, jbc::core::MemberInfo& m)
@@ -42,11 +63,20 @@ std::set<std::string> codeAttrNames(jbc::core::ClassFile& cf, jbc::core::MemberI
 
 TEST(MjPassLineNumberRemoverTest, StripsLineNumbersKeepsLocalVariables)
 {
-    FixtureBuilder builder("T");
-    builder.addMethod({"m", "()V", nopReturn(), 0x0009, {}, 1, 1, {},
-                       {{"LineNumberTable", Bytes{0x00, 0x01, 0x00, 0x00, 0x00, 0x2A}},
-                        {"LocalVariableTable", Bytes{0x00, 0x00}}}});
-    auto session = makeSession(builder);
+    // .line 42 产原生 LNT（1 行：pc0 → 42，与原夹具 LNT 字节同形）。
+    const Bytes assembled = assembleJasm(R"JASM(.super java/lang/Object
+.class public super T {
+  .method public static m ()V {
+    code: {
+      line 42
+      nop
+      return
+    }
+  }
+}
+)JASM");
+    auto      session     = makeSessionWithLvt(assembled);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena          arena;
     mjbase::spi::ClassAnalysisManager cam(arena);
@@ -63,10 +93,19 @@ TEST(MjPassLineNumberRemoverTest, StripsLineNumbersKeepsLocalVariables)
 
 TEST(MjPassLineNumberRemoverTest, KeepsMethodWithoutLineNumbers)
 {
-    FixtureBuilder builder("T");
-    builder.addMethod({"m", "()V", nopReturn(), 0x0009, {}, 1, 1, {},
-                       {{"LocalVariableTable", Bytes{0x00, 0x00}}}});
-    auto session = makeSession(builder);
+    // 无 .line → 无 LNT，仅挂 LVT。
+    const Bytes assembled = assembleJasm(R"JASM(.super java/lang/Object
+.class public super T {
+  .method public static m ()V {
+    code: {
+      nop
+      return
+    }
+  }
+}
+)JASM");
+    auto      session     = makeSessionWithLvt(assembled);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena          arena;
     mjbase::spi::ClassAnalysisManager cam(arena);

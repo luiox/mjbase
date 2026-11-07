@@ -2,8 +2,15 @@
 // 覆写消除、尾部死写（修正扩展）、读取保槽、旧栈控制流孔洞闭合（跳出到
 // 区间后读取的两 store 全保）、iinc 边保护、cat2 宽度、分析失败跳过、
 // 幂等、注册面。
+//
+// 夹具纪律：DomFixture 用例是数据流域夹具不涉字节；分析失败形态的类
+// 容器一律 jasm 文本装配（JvmJasmService），指令体片段 R"JASM 定界。空栈
+// IADD 形态装配器 frame 门拒收，按纪律例外①申报：从装配合法类出发单点
+// 最小偏差（一个指令字节回改）+ 改动前后 relaxed validate 自检。
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <iterator>
 #include <vector>
 
 #include "jbc/core/opcode.hpp"
@@ -13,6 +20,7 @@
 
 #include "fix_pattern_fixture.hpp"
 #include "method_pass_test_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 using jbc::core::Op;
@@ -20,11 +28,15 @@ using jbc::core::Op;
 namespace {
 
 /// 单方法容器（分析失败形态用；DomFixture 构不出非法帧形）。
-Bytes oneMethod(Bytes code)
+Bytes oneMethod()
 {
-    FixtureBuilder b("t/U");
-    b.addMethod({"m", "()V", std::move(code)});
-    return b.assemble();
+    return assembleMethodClass("m", "()V",
+                               R"JASM(      iconst_1
+      iconst_2
+      iadd
+      istore_1
+      return
+)JASM");
 }
 
 }   // namespace
@@ -173,13 +185,26 @@ TEST(RedundantStoreEliminaterTest, paramSlotStoreReadKept)
     ASSERT_EQ(opsOf(fx).size(), 5u);
 }
 
-// ── 分析失败（空栈 IADD）→ 整件跳过 ──
+// ── 分析失败（空栈下溢）→ 整件跳过 ──
 TEST(RedundantStoreEliminaterTest, failedAnalysisSkips)
 {
-    const Bytes in = oneMethod({0x60, 0x3c, 0xb1});
-    const MethodPassRun r = runMethodPass(in, mjbase::pass::RedundantStoreEliminater{});
+    // 形态非 Verifier 合法（空栈 POP 下溢），jasm 装配器 frame 门拒收——
+    // 纪律例外①：从装配合法类出发单点最小偏差（ICONST_1 → POP 一字节回
+    // 改，栈下溢），改动前后各做一次 relaxed validate 自检，仅钉防御面：
+    // 分析失败不动。
+    const Bytes legal = oneMethod();
+    expectValidateOk(legal);
+    const std::vector<ca::u8> want{0x04, 0x05, 0x60, 0x3c, 0xb1};   // 指令体字节模式
+    const auto                at = std::search(legal.begin(), legal.end(), want.begin(),
+                                               want.end());
+    ASSERT_NE(at, legal.end()) << "指令体字节模式未命中";
+    Bytes illegal = legal;
+    illegal[static_cast<ca::usize>(at - legal.begin())] = 0x57;   // ICONST_1 → POP
+    expectValidateFail(illegal);
+
+    const MethodPassRun r = runMethodPass(illegal, mjbase::pass::RedundantStoreEliminater{});
     EXPECT_TRUE(r.pa.areAllPreserved());
-    EXPECT_EQ(r.out, in);
+    EXPECT_EQ(r.out, illegal);
 }
 
 // ── 幂等 ──

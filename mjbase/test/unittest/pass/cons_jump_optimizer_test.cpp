@@ -16,6 +16,7 @@
 #include "mjbase/spi/pass_name_registry.hpp"
 
 #include "method_pass_test_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 using jbc::core::Op;
@@ -23,12 +24,11 @@ namespace jan = jbc::analysis;
 
 namespace {
 
-/// 单方法容器（可指定描述子——折叠产物常含 ireturn）。
-Bytes oneMethodI(std::string_view desc, Bytes code)
+/// 单方法容器（可指定描述子——折叠产物常含 ireturn）。jasm 文本装配，
+/// 指令体片段 R"JASM 定界。
+Bytes oneMethodI(std::string_view desc, std::string_view codeBody)
 {
-    FixtureBuilder b("t/C");
-    b.addMethod({"m", desc, std::move(code)});
-    return b.assemble();
+    return assembleMethodClass("m", desc, codeBody, "t/C");
 }
 
 }   // namespace
@@ -38,10 +38,18 @@ TEST(ConsJumpOptimizerTest, oneSlotTakenRewritesHeadToGoto)
 {
     // ICONST_0(0) IFEQ→pc6(1) ICONST_5(4) IRETURN(5) BIPUSH 7(6) IRETURN(8)。
     // 0==0 恒真 → GOTO；死落径 ICONST_5/IRETURN 保留（结构级清理另归）。
-    const MethodPassRun r =
-        runMethodPass(oneMethodI("()I", {0x03, 0x99, 0x00, 0x05, 0x08, 0xac,
-                                         0x10, 0x07, 0xac}),
-                      mjbase::pass::ConsJumpOptimizer{});
+    const MethodPassRun r = runMethodPass(
+        oneMethodI(
+            "()I",
+            R"JASM(      iconst_0
+      ifeq L
+      iconst_5
+      ireturn
+      L:
+      bipush 7
+      ireturn
+)JASM"),
+        mjbase::pass::ConsJumpOptimizer{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     ASSERT_EQ(ops.size(), 5u);
@@ -57,9 +65,16 @@ TEST(ConsJumpOptimizerTest, oneSlotTakenRewritesHeadToGoto)
 TEST(ConsJumpOptimizerTest, oneSlotNotTakenDeletesWindow)
 {
     // ICONST_1(0) IFEQ→pc4(1) ICONST_5(4) IRETURN(5)。1==0 恒假 → 两删。
-    const MethodPassRun r =
-        runMethodPass(oneMethodI("()I", {0x04, 0x99, 0x00, 0x03, 0x08, 0xac}),
-                      mjbase::pass::ConsJumpOptimizer{});
+    const MethodPassRun r = runMethodPass(
+        oneMethodI(
+            "()I",
+            R"JASM(      iconst_1
+      ifeq L
+      L:
+      iconst_5
+      ireturn
+)JASM"),
+        mjbase::pass::ConsJumpOptimizer{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     ASSERT_EQ(ops.size(), 2u);
@@ -71,9 +86,16 @@ TEST(ConsJumpOptimizerTest, oneSlotNotTakenDeletesWindow)
 TEST(ConsJumpOptimizerTest, nullTakenRewritesToGoto)
 {
     // ACONST_NULL(0) IFNULL→pc5(1) RETURN(4) RETURN(5)。
-    const MethodPassRun r =
-        runMethodPass(oneMethodI("()V", {0x01, 0xc6, 0x00, 0x04, 0xb1, 0xb1}),
-                      mjbase::pass::ConsJumpOptimizer{});
+    const MethodPassRun r = runMethodPass(
+        oneMethodI(
+            "()V",
+            R"JASM(      aconst_null
+      ifnull L
+      return
+      L:
+      return
+)JASM"),
+        mjbase::pass::ConsJumpOptimizer{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     ASSERT_EQ(ops.size(), 3u);
@@ -84,9 +106,16 @@ TEST(ConsJumpOptimizerTest, nullTakenRewritesToGoto)
 // ── 空窗恒假：[ACONST_NULL; IFNONNULL] → 整窗删除 ──
 TEST(ConsJumpOptimizerTest, nullNotTakenDeletesWindow)
 {
-    const MethodPassRun r =
-        runMethodPass(oneMethodI("()V", {0x01, 0xc7, 0x00, 0x04, 0xb1, 0xb1}),
-                      mjbase::pass::ConsJumpOptimizer{});
+    const MethodPassRun r = runMethodPass(
+        oneMethodI(
+            "()V",
+            R"JASM(      aconst_null
+      ifnonnull L
+      return
+      L:
+      return
+)JASM"),
+        mjbase::pass::ConsJumpOptimizer{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     ASSERT_EQ(ops.size(), 2u);
@@ -98,9 +127,17 @@ TEST(ConsJumpOptimizerTest, nullNotTakenDeletesWindow)
 TEST(ConsJumpOptimizerTest, twoSlotTakenRewritesHeadToGoto)
 {
     // ICONST_2(0) ICONST_3(1) IF_ICMPLT→pc6(2) RETURN(5) RETURN(6)。2<3 恒真。
-    const MethodPassRun r =
-        runMethodPass(oneMethodI("()V", {0x05, 0x06, 0xa1, 0x00, 0x04, 0xb1, 0xb1}),
-                      mjbase::pass::ConsJumpOptimizer{});
+    const MethodPassRun r = runMethodPass(
+        oneMethodI(
+            "()V",
+            R"JASM(      iconst_2
+      iconst_3
+      if_icmplt L
+      return
+      L:
+      return
+)JASM"),
+        mjbase::pass::ConsJumpOptimizer{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     ASSERT_EQ(ops.size(), 3u);
@@ -113,9 +150,17 @@ TEST(ConsJumpOptimizerTest, twoSlotTakenRewritesHeadToGoto)
 // ── 双槽恒假：[ICONST_3; ICONST_2; IF_ICMPLT] → 三指令全删 ──
 TEST(ConsJumpOptimizerTest, twoSlotNotTakenDeletesWindow)
 {
-    const MethodPassRun r =
-        runMethodPass(oneMethodI("()V", {0x06, 0x05, 0xa1, 0x00, 0x04, 0xb1, 0xb1}),
-                      mjbase::pass::ConsJumpOptimizer{});
+    const MethodPassRun r = runMethodPass(
+        oneMethodI(
+            "()V",
+            R"JASM(      iconst_3
+      iconst_2
+      if_icmplt L
+      return
+      L:
+      return
+)JASM"),
+        mjbase::pass::ConsJumpOptimizer{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     ASSERT_EQ(ops.size(), 2u);
@@ -128,7 +173,15 @@ TEST(ConsJumpOptimizerTest, interiorLabelBlocksFold)
 {
     // ICONST_0(0) IFEQ→pc4(1) RETURN(4) GOTO→pc1(5)。外部跳转落在条件跳转
     // 上：其栈值等待这次消费，折叠拒收。
-    const Bytes in = oneMethodI("()V", {0x03, 0x99, 0x00, 0x03, 0xb1, 0xa7, 0xff, 0xfc});
+    const Bytes in = oneMethodI(
+        "()V",
+        R"JASM(      iconst_0
+      Lb:
+      ifeq L
+      L:
+      return
+      goto Lb
+)JASM");
     const MethodPassRun r = runMethodPass(in, mjbase::pass::ConsJumpOptimizer{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
@@ -139,9 +192,17 @@ TEST(ConsJumpOptimizerTest, headLabelFoldsThrough)
 {
     // ICONST_1(0) IFEQ→pc4(1) RETURN(4) GOTO→pc0(5)。1==0 恒假 → 两删，
     // 头标签经 fallthrough 链重定向到 RETURN。
-    const MethodPassRun r =
-        runMethodPass(oneMethodI("()V", {0x04, 0x99, 0x00, 0x03, 0xb1, 0xa7, 0xff, 0xfb}),
-                      mjbase::pass::ConsJumpOptimizer{});
+    const MethodPassRun r = runMethodPass(
+        oneMethodI(
+            "()V",
+            R"JASM(      Lh:
+      iconst_1
+      ifeq L
+      L:
+      return
+      goto Lh
+)JASM"),
+        mjbase::pass::ConsJumpOptimizer{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     ASSERT_EQ(ops.size(), 2u);
@@ -154,8 +215,16 @@ TEST(ConsJumpOptimizerTest, headLabelFoldsThrough)
 // ── 类型失配拒绝：ACONST_NULL 配数值谓词（IFEQ）不入矩阵 ──
 TEST(ConsJumpOptimizerTest, nullProducerWithIntPredicateNotFolded)
 {
-    // Verifier 非法形态，钉防御面：不做跨类型语义假设。
-    const Bytes in = oneMethodI("()V", {0x01, 0x99, 0x00, 0x03, 0xb1, 0xb1});
+    // Verifier 非法形态（ifeq 消费 null 引用），钉防御面：不做跨类型语义
+    // 假设。装配器对该形态放行（relaxed 面收），直接装配。
+    const Bytes in = oneMethodI(
+        "()V",
+        R"JASM(      aconst_null
+      ifeq L
+      return
+      L:
+      return
+)JASM");
     const MethodPassRun r = runMethodPass(in, mjbase::pass::ConsJumpOptimizer{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
@@ -164,7 +233,14 @@ TEST(ConsJumpOptimizerTest, nullProducerWithIntPredicateNotFolded)
 // ── 类型失配拒绝：int 常量配空谓词（IFNULL）不入矩阵 ──
 TEST(ConsJumpOptimizerTest, intProducerWithNullPredicateNotFolded)
 {
-    const Bytes in = oneMethodI("()V", {0x03, 0xc6, 0x00, 0x04, 0xb1, 0xb1});
+    const Bytes in = oneMethodI(
+        "()V",
+        R"JASM(      iconst_0
+      ifnull L
+      return
+      L:
+      return
+)JASM");
     const MethodPassRun r = runMethodPass(in, mjbase::pass::ConsJumpOptimizer{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
@@ -173,9 +249,17 @@ TEST(ConsJumpOptimizerTest, intProducerWithNullPredicateNotFolded)
 // ── 引用比较谓词（IF_ACMPEQ）不入矩阵：双 int 常量配 ACMP 不折叠 ──
 TEST(ConsJumpOptimizerTest, acmpPredicateNotInMatrix)
 {
-    // 旧栈对这类 Verifier 非法形态按谓词表假值整窗删除（防御怪癖），本
-    // 实现显式拒绝。
-    const Bytes in = oneMethodI("()V", {0x03, 0x04, 0xa5, 0x00, 0x04, 0xb1, 0xb1});
+    // 旧栈对这类 Verifier 非法形态（双 int 配引用比较谓词）按谓词表假值
+    // 整窗删除（防御怪癖），本实现显式拒绝。装配器放行，直接装配。
+    const Bytes in = oneMethodI(
+        "()V",
+        R"JASM(      iconst_0
+      iconst_1
+      if_acmpeq L
+      return
+      L:
+      return
+)JASM");
     const MethodPassRun r = runMethodPass(in, mjbase::pass::ConsJumpOptimizer{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
@@ -201,21 +285,27 @@ TEST(ConsJumpOptimizerTest, registeredByName)
 // 字节逐位不变，且 Strict 帧数据流对结果 ok。
 TEST(ConsJumpOptimizerTest, booleanDiamondWithGotoIntoConditionUnchanged)
 {
-    const Bytes in = oneMethodI("([Ljava/lang/Object;)Z", {
-        0x2a,               // 0  aload_0
-        0xc6, 0x00, 0x10,   // 1  ifnull -> 17（空栈边进 L2）
-        0x2a,               // 4  aload_0
-        0xbe,               // 5  arraylength
-        0x9a, 0x00, 0x07,   // 6  ifne -> 13
-        0x04,               // 9  iconst_1
-        0xa7, 0x00, 0x04,   // 10 goto -> 14（携值边直指条件跳转）
-        0x03,               // 13 iconst_0（L0）
-        0x99, 0x00, 0x07,   // 14 ifeq -> 21（L1，窗口内部锚）
-        0x04,               // 17 iconst_1（L2）
-        0xa7, 0x00, 0x04,   // 18 goto -> 22
-        0x03,               // 21 iconst_0（L3）
-        0xac,               // 22 ireturn（L4）
-    });
+    const Bytes in = oneMethodI(
+        "([Ljava/lang/Object;)Z",
+        R"JASM(      aload_0
+      ifnull L2
+      aload_0
+      arraylength
+      ifne L0
+      iconst_1
+      goto L1
+      L0:
+      iconst_0
+      L1:
+      ifeq L3
+      L2:
+      iconst_1
+      goto L4
+      L3:
+      iconst_0
+      L4:
+      ireturn
+)JASM");
     const MethodPassRun r =
         runMethodPass(in, mjbase::pass::ConsJumpOptimizer{}, mjbase::pass::ConstantFolder{},
                       mjbase::pass::FixPatternSimplifier{}, mjbase::pass::NopRemover{},
