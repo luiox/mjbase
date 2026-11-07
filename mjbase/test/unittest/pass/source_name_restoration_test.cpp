@@ -7,7 +7,8 @@
 //
 // 夹具纪律：类骨架一律 jasm 文本装配（JvmJasmService；SourceFile / InnerClasses
 // / EnclosingMethod 三面 jasm 方言均有指令（.sourcefile / .inner / .outer-class），
-// 不走 CF 级写面），固定片段 R"JASM 定界，变量插入处保留 + 拼接。
+// 不走 CF 级写面），固定片段 R"JASM 定界，变量插入处保留 + 拼接；类级指令
+// 必须落 .class 行之前（解析器在类体解析期清空类级待挂区，体内指令静默丢弃）。
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -75,13 +76,16 @@ constexpr std::string_view kCtor = R"JASM(  .method public <init> ()V {
 
 /// 类骨架：classDirectives 为类级指令文本（.sourcefile / .inner /
 /// .outer-class，raw string 定界的固定片段；可为空），members 为成员体。
+/// 类级指令必须落在 .class 行之前：jasm 解析器进入类体解析时清空类级
+/// 待挂区、类体结束后丢弃，体内类级指令会被静默忽略。
 Bytes buildClass(std::string_view internalName, std::string_view classDirectives,
                  std::string_view members)
 {
     const std::string source =
         R"JASM(.super java/lang/Object
-.class public super )JASM" + std::string(internalName) + R"JASM( {
-)JASM" + std::string(classDirectives) + std::string(members) + R"JASM(}
+)JASM" + std::string(classDirectives) + R"JASM(.class public super )JASM"
+        + std::string(internalName) + R"JASM( {
+)JASM" + std::string(members) + R"JASM(}
 )JASM";
     return assembleJasm(source);
 }
@@ -128,7 +132,7 @@ TEST(SourceNameRestorerTest, restoresRenamedClass)
     ResourceContainer                  container;
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
-    loadClass(container, "t/a", R"JASM(  .sourcefile "Foo.java"
+    loadClass(container, "t/a", R"JASM(.sourcefile "Foo.java"
 )JASM");
 
     const auto& mapping = runPass(container, gam);
@@ -144,7 +148,7 @@ TEST(SourceNameRestorerTest, ktSuffixAccepted)
     ResourceContainer                  container;
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
-    loadClass(container, "t/a", R"JASM(  .sourcefile "Foo.kt"
+    loadClass(container, "t/a", R"JASM(.sourcefile "Foo.kt"
 )JASM");
 
     const auto& mapping = runPass(container, gam);
@@ -157,7 +161,7 @@ TEST(SourceNameRestorerTest, canonicalNameZeroEntries)
     ResourceContainer                  container;
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
-    loadClass(container, "t/Foo", R"JASM(  .sourcefile "Foo.java"
+    loadClass(container, "t/Foo", R"JASM(.sourcefile "Foo.java"
 )JASM");
 
     const auto& mapping = runPass(container, gam);
@@ -182,7 +186,7 @@ TEST(SourceNameRestorerTest, malformedSuffixRejected)
     ResourceContainer                  container;
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
-    loadClass(container, "t/a", R"JASM(  .sourcefile "Foo.java.bak"
+    loadClass(container, "t/a", R"JASM(.sourcefile "Foo.java.bak"
 )JASM");
 
     const auto& mapping = runPass(container, gam);
@@ -195,7 +199,7 @@ TEST(SourceNameRestorerTest, whitespaceRejected)
     ResourceContainer                  container;
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
-    loadClass(container, "t/a", R"JASM(  .sourcefile "Foo Bar.java"
+    loadClass(container, "t/a", R"JASM(.sourcefile "Foo Bar.java"
 )JASM");
 
     const auto& mapping = runPass(container, gam);
@@ -208,7 +212,7 @@ TEST(SourceNameRestorerTest, digitLeadingRejected)
     ResourceContainer                  container;
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
-    loadClass(container, "t/a", R"JASM(  .sourcefile "1Foo.java"
+    loadClass(container, "t/a", R"JASM(.sourcefile "1Foo.java"
 )JASM");
 
     const auto& mapping = runPass(container, gam);
@@ -222,7 +226,7 @@ TEST(SourceNameRestorerTest, overlengthRejected)
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
     const std::string longName = std::string(51, 'a') + ".java";
-    loadClass(container, "t/a", "  .sourcefile \"" + longName + "\"\n");
+    loadClass(container, "t/a", ".sourcefile \"" + longName + "\"\n");
 
     const auto& mapping = runPass(container, gam);
     EXPECT_TRUE(mapping.isEmpty());
@@ -236,8 +240,8 @@ TEST(SourceNameRestorerTest, namedInnerClassSkipped)
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
     loadClass(container, "t/Foo$Bar",
-              R"JASM(  .inner { name: Bar, inner: t/Foo$Bar, outer: t/Foo }
-  .sourcefile "Foo.java"
+              R"JASM(.inner { name: Bar, inner: t/Foo$Bar, outer: t/Foo }
+.sourcefile "Foo.java"
 )JASM");
 
     const auto& mapping = runPass(container, gam);
@@ -251,8 +255,8 @@ TEST(SourceNameRestorerTest, anonymousEnclosingSkipped)
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
     loadClass(container, "t/Foo$1",
-              R"JASM(  .sourcefile "Foo.java"
-  .outer-class t/Foo
+              R"JASM(.sourcefile "Foo.java"
+.outer-class t/Foo
 )JASM");
 
     const auto& mapping = runPass(container, gam);
@@ -266,7 +270,7 @@ TEST(SourceNameRestorerTest, nameShapeAloneNotSkipped)
     ResourceContainer                  container;
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
-    loadClass(container, "t/a$1", R"JASM(  .sourcefile "Foo.java"
+    loadClass(container, "t/a$1", R"JASM(.sourcefile "Foo.java"
 )JASM");
 
     const auto& mapping = runPass(container, gam);
@@ -279,7 +283,7 @@ TEST(SourceNameRestorerTest, defaultPackageNoPrefix)
     ResourceContainer                  container;
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
-    loadClass(container, "a", R"JASM(  .sourcefile "Foo.java"
+    loadClass(container, "a", R"JASM(.sourcefile "Foo.java"
 )JASM");
 
     const auto& mapping = runPass(container, gam);
@@ -292,11 +296,11 @@ TEST(SourceNameRestorerTest, multiClassIndependent)
     ResourceContainer                  container;
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
-    loadClass(container, "t/a", R"JASM(  .sourcefile "Foo.java"
+    loadClass(container, "t/a", R"JASM(.sourcefile "Foo.java"
 )JASM");
-    loadClass(container, "t/b", R"JASM(  .sourcefile "Bar.kt"
+    loadClass(container, "t/b", R"JASM(.sourcefile "Bar.kt"
 )JASM");
-    loadClass(container, "t/Keep", R"JASM(  .sourcefile "Keep.java"
+    loadClass(container, "t/Keep", R"JASM(.sourcefile "Keep.java"
 )JASM");
 
     const auto& mapping = runPass(container, gam);
@@ -312,7 +316,7 @@ TEST(SourceNameRestorerTest, bytesUntouched)
     ResourceContainer                  container;
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
-    loadClass(container, "t/a", R"JASM(  .sourcefile "Foo.java"
+    loadClass(container, "t/a", R"JASM(.sourcefile "Foo.java"
 )JASM");
     const Bytes inBytes = classResource(container, "t/a.class")->get();
 
@@ -325,7 +329,7 @@ TEST(SourceNameRestorerTest, bytesUntouched)
 TEST(SourceNameRestorerTest, idempotentSecondRun)
 {
     ResourceContainer container;
-    loadClass(container, "t/a", R"JASM(  .sourcefile "Foo.java"
+    loadClass(container, "t/a", R"JASM(.sourcefile "Foo.java"
 )JASM");
 
     const auto nameRef = ca::str::Utf8StringRef::from_string_view("t/a");
