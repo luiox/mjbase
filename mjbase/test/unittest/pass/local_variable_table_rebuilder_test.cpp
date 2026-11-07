@@ -4,27 +4,31 @@
 ///              落 var 形态与推断 desc）、cat2 物理槽跳号、与
 ///              LocalVariableAnnotator 双向组合、无 LVT 类安全通过、幂等。
 ///
-/// 载体：FixtureBuilder 装配最小 classfile（Code 嵌套 LVT/LVTT 载荷由
-/// 用例内 UTF8 CP 物化），方法体为直行字节（无分支 → 无 SMT 面）。断言
-/// 走「重建 → 重读 backing Code 嵌套表事实」口径；组合用例把
+/// 载体口径：方法体一律 jasm 文本装配（JvmJasmService）；pc 锚点用 quick
+/// 形助记符（istore_1/lstore_2 等，定长单字节）保持可推演。陈旧调试表
+/// 经 libjbc typed 属性模型挂载（LocalVariableTableAttr/
+/// LineNumberTableAttr + AttrSlot::makeNew + Code 槽置脏），不走字节拼装。
+/// 断言走「重建 → 重读 backing Code 嵌套表事实」口径；组合用例把
 /// LocalVariableAnnotator（容器级）与 MethodInliner（容器级，与
 /// method_inliner_test 同款驱动）真件接入驱动路径。
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <cstdint>
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
 
+#include "jbc/core/attribute.hpp"
 #include "jbc/core/class_file.hpp"
 #include "jbc/core/writer.hpp"
 #include "jbc/ir/units.hpp"
 #include "libca/core/tag_cast.hpp"
 
+#include "mjbase/jasm/jvm_jasm_service.hpp"
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/pass/local_variable_annotator.hpp"
@@ -32,96 +36,178 @@
 #include "mjbase/pass/method_inliner.hpp"
 #include "mjbase/spi/analysis_manager.hpp"
 
-#include "shared/structural_pass_util.hpp"
-
 using mjbase::model::ClassResource;
 using mjbase::model::ResourceContainer;
 using mjbase::pass::LocalVariableTableRebuilder;
 using mjbase::pass::LocalVariableTableRebuilderOptions;
 using mjbase::pass::LvtRebuildMode;
-using mjbase::test::Bytes;
-using mjbase::test::FixtureBuilder;
-using mjbase::test::putU16;
-using mjbase::test::putU8;
 
 namespace {
 
-constexpr ca::u16 kAccPublic = 0x0001;
-constexpr ca::u16 kAccStatic = 0x0008;
+using Bytes = std::vector<ca::u8>;
 
-// ── 直行方法体（无分支；pc 注释即重建后的期望锚点）──
+/// 行事实规格：(startPc, length, name, desc, slot)。
+using LvtRowSpec = std::tuple<ca::u32, ca::u32, std::string_view, std::string_view, ca::u32>;
+
+// ── jasm 文本装配 ──
+
+ca::str::Utf16String utf16(const std::string& value)
+{
+    return ca::str::Utf16String::from_utf8_string(ca::str::Utf8StringRef::from_data(
+        reinterpret_cast<const ca::u8*>(value.data()), value.size()));
+}
+
+/// jasm 文本汇编最小类（单方法；汇编失败即测试失败，诊断逐条落地）。
+Bytes assembleClass(const std::string& className, const std::string& methodDecl,
+                    std::string_view instructions)
+{
+    mjbase::jasm::JvmJasmService service;
+    const std::string source =
+        ".super java/lang/Object\n.class public super " + className + " {\n  .method "
+        + methodDecl + " {\n    code: {\n" + std::string(instructions)
+        + "    }\n  }\n}\n";
+    const auto sourceName = utf16(className + ".jasm");
+    const auto sourceText = utf16(source);
+    const auto result     = service.assemble(sourceName.ref(), sourceText.ref());
+    if (!result.isOk() || !result.value.has_value()) {
+        for (const auto& d : result.diagnostics) {
+            ADD_FAILURE() << "jasm: " << d.message.to_utf8_string().to_std_string();
+        }
+        ADD_FAILURE() << "jasm 汇编失败";
+        return {};
+    }
+    return result.value->bytes;
+}
+
+// ── 直行方法体（quick 形助记符定长单字节；pc 注释即重建后的期望锚点）──
 
 /// f(I)I：pc0 iconst_0；pc1 istore_1；pc2 iload_1；pc3 ireturn（len 4）。
 /// 存活段：slot0 形参 [0,4)；slot1 [2,4)，均 I。
-Bytes intLocalBody()
-{
-    Bytes code;
-    putU8(code, 0x03);   // iconst_0
-    putU8(code, 0x3C);   // istore_1
-    putU8(code, 0x1B);   // iload_1
-    putU8(code, 0xAC);   // ireturn
-    return code;
-}
+constexpr std::string_view kIntBody =
+    "      iconst_0\n      istore_1\n      iload_1\n      ireturn\n";
 
 /// g(J)J：pc0 lconst_0；pc1 lstore_2；pc2 lload_2；pc3 lreturn（len 4）。
-/// 存活段：slot0 形参 J [0,4)（占槽 0-1）；slot2 [2,4) J（cat2 物理槽）。
-Bytes longLocalBody()
-{
-    Bytes code;
-    putU8(code, 0x09);   // lconst_0
-    putU8(code, 0x3F);   // lstore_2
-    putU8(code, 0x1F);   // lload_2
-    putU8(code, 0xAD);   // lreturn
-    return code;
-}
-
-/// o()Ljava/lang/Object;：pc0-1 ldc "s"；pc2 astore_1；pc3 aload_1；
-/// pc4 areturn（len 5）。slot1 [3,5)，Strict 推断 Ljava/lang/String;。
-Bytes refLocalBody(FixtureBuilder& b)
-{
-    Bytes code;
-    putU8(code, 0x12);                  // ldc
-    putU16(code, b.strConst("s"));      // String 常量
-    putU8(code, 0x4C);                  // astore_1
-    putU8(code, 0x2B);                  // aload_1
-    putU8(code, 0xB0);                  // areturn
-    return code;
-}
+/// slot2 为 cat2 物理槽（占 2/3 两槽，行只落 2）。
+constexpr std::string_view kLongBody =
+    "      lconst_0\n      lstore_2\n      lload_2\n      lreturn\n";
 
 /// 实例方法 m()V：pc0 aload_0；pc1 pop；pc2 return（len 3）。
-/// 存活段：slot0 this [0,3)，描述符 L<class>;。
-Bytes thisBody()
+constexpr std::string_view kThisBody =
+    "      aload_0\n      pop\n      return\n";
+
+/// o()Ljava/lang/Object;：pc0 new String（3B）；pc3 dup；pc4 invokespecial
+/// <init>（3B）；pc7 astore_1；pc8 aload_1；pc9 areturn（len 10）。
+/// slot1 存活段 [8,10)，Strict 推断 Ljava/lang/String;。
+constexpr std::string_view kRefBody =
+    "      new java/lang/String\n      dup\n"
+    "      invokespecial java/lang/String.<init> ()V\n"
+    "      astore_1\n      aload_1\n      areturn\n";
+
+/// H.k(I)I 被调体：pc0 iconst_5；pc1 istore_1；pc2 iload_1；pc3 iload_0；
+/// pc4 iadd；pc5 ireturn（纯、无调用面）。
+constexpr std::string_view kCalleeBody =
+    "      iconst_5\n      istore_1\n      iload_1\n      iload_0\n      iadd\n      ireturn\n";
+
+/// C.m(I)I 调用体：pc0 iconst_1；pc1 iload_0；pc2 invokestatic H.k（3B）；
+/// pc5 iadd；pc6 ireturn（len 7，栈形可验证）。
+constexpr std::string_view kCallerBody =
+    "      iconst_1\n      iload_0\n      invokestatic H.k (I)I\n      iadd\n      ireturn\n";
+
+// ── 陈旧调试表挂载（typed 属性模型；挂载后写回字节再交 pass）──
+
+Bytes withVarTable(const Bytes& bytes, ca::usize methodIdx, std::string_view attrName,
+                   const std::vector<LvtRowSpec>& rows)
 {
-    Bytes code;
-    putU8(code, 0x2A);   // aload_0
-    putU8(code, 0x57);   // pop
-    putU8(code, 0xB1);   // return
-    return code;
+    auto created = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
+    EXPECT_TRUE(created.is_ok());
+    if (!created.is_ok()) return bytes;
+    auto session = std::move(created).unwrap();
+    jbc::core::ClassFile& cf = session->backing();
+    jbc::core::AttrSlot*  codeSlot = nullptr;
+    for (jbc::core::AttrSlot& slot : cf.methods[methodIdx].attrs) {
+        if (cf.cp.utf8Equals(slot.nameCp, "Code")) codeSlot = &slot;
+    }
+    EXPECT_NE(codeSlot, nullptr) << "Code 槽缺失";
+    if (codeSlot == nullptr) return bytes;
+    auto decoded = cf.decodeAttr(*codeSlot);
+    EXPECT_TRUE(decoded.is_ok());
+    if (decoded.is_err()) return bytes;
+    auto* codeAttr = ca::core::tag_cast::cast<jbc::core::CodeAttr>(decoded.unwrap());
+    EXPECT_NE(codeAttr, nullptr);
+    if (codeAttr == nullptr) return bytes;
+
+    auto table = std::make_unique<jbc::core::LocalVariableTableAttr>();
+    table->rows.reserve(rows.size());
+    for (const auto& [start, length, name, desc, slot] : rows) {
+        jbc::core::LocalVariableTableAttr::Row out;
+        out.startPc = start;
+        out.length  = length;
+        out.nameCp  = cf.cp.addUtf8(name);
+        out.descCp  = cf.cp.addUtf8(desc);
+        out.slot    = slot;
+        table->rows.push_back(out);
+    }
+    codeAttr->attrs.push_back(
+        jbc::core::AttrSlot::makeNew(cf.cp.addUtf8(attrName), std::move(table)));
+    (void)codeSlot->mutate();
+    auto written = jbc::core::writeClass(cf);
+    EXPECT_TRUE(written.is_ok());
+    if (written.is_err()) return bytes;
+    return std::move(written).unwrap();
 }
 
-/// Code 嵌套 LVT/LVTT 载荷（JVMS 4.7.13/4.7.14 同构布局）。
-/// 行 = (startPc, length, name, desc, slot)；名字/描述符经 builder 物化。
-Bytes varTablePayload(FixtureBuilder&                                    b,
-                      const std::vector<std::tuple<ca::u32, ca::u32, std::string_view,
-                                                   std::string_view, ca::u32>>& rows)
+Bytes withLvt(const Bytes& bytes, ca::usize methodIdx, const std::vector<LvtRowSpec>& rows)
 {
-    Bytes p;
-    putU16(p, static_cast<ca::u16>(rows.size()));
-    for (const auto& [start, length, name, desc, slot] : rows) {
-        putU16(p, static_cast<ca::u16>(start));
-        putU16(p, static_cast<ca::u16>(length));
-        putU16(p, b.utf8(name));
-        putU16(p, b.utf8(desc));
-        putU16(p, static_cast<ca::u16>(slot));
-    }
-    return p;
+    return withVarTable(bytes, methodIdx, "LocalVariableTable", rows);
 }
+
+Bytes withLvtt(const Bytes& bytes, ca::usize methodIdx, const std::vector<LvtRowSpec>& rows)
+{
+    return withVarTable(bytes, methodIdx, "LocalVariableTypeTable", rows);
+}
+
+/// LNT 挂载（typed LineNumberTableAttr；丢弃口径的「不在收口面」对照物）。
+Bytes withLnt(const Bytes& bytes, ca::usize methodIdx,
+              const std::vector<std::pair<ca::u32, ca::u32>>& rows)
+{
+    auto created = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
+    EXPECT_TRUE(created.is_ok());
+    if (!created.is_ok()) return bytes;
+    auto session = std::move(created).unwrap();
+    jbc::core::ClassFile& cf = session->backing();
+    jbc::core::AttrSlot*  codeSlot = nullptr;
+    for (jbc::core::AttrSlot& slot : cf.methods[methodIdx].attrs) {
+        if (cf.cp.utf8Equals(slot.nameCp, "Code")) codeSlot = &slot;
+    }
+    EXPECT_NE(codeSlot, nullptr) << "Code 槽缺失";
+    if (codeSlot == nullptr) return bytes;
+    auto decoded = cf.decodeAttr(*codeSlot);
+    EXPECT_TRUE(decoded.is_ok());
+    if (decoded.is_err()) return bytes;
+    auto* codeAttr = ca::core::tag_cast::cast<jbc::core::CodeAttr>(decoded.unwrap());
+    EXPECT_NE(codeAttr, nullptr);
+    if (codeAttr == nullptr) return bytes;
+
+    auto table = std::make_unique<jbc::core::LineNumberTableAttr>();
+    for (const auto& [startPc, line] : rows) {
+        table->rows.push_back({startPc, line});
+    }
+    codeAttr->attrs.push_back(jbc::core::AttrSlot::makeNew(
+        cf.cp.addUtf8("LineNumberTable"), std::move(table)));
+    (void)codeSlot->mutate();
+    auto written = jbc::core::writeClass(cf);
+    EXPECT_TRUE(written.is_ok());
+    if (written.is_err()) return bytes;
+    return std::move(written).unwrap();
+}
+
+// ── pass 驱动与断言面 ──
 
 struct RebuildRun
 {
-    std::shared_ptr<jbc::ir::ClassSession>    session;
-    mjbase::spi::PreservedAnalyses            pa;
-    LocalVariableTableRebuilder::Stats        stats;
+    std::shared_ptr<jbc::ir::ClassSession> session;
+    mjbase::spi::PreservedAnalyses         pa;
+    LocalVariableTableRebuilder::Stats     stats;
 };
 
 RebuildRun runRebuild(const Bytes& bytes, const LocalVariableTableRebuilderOptions& opts = {})
@@ -151,9 +237,9 @@ struct LvtRow
 
 std::vector<LvtRow> readLvtRows(jbc::ir::ClassSession& session, ca::usize methodIdx = 0)
 {
-    std::vector<LvtRow>   out;
-    jbc::core::ClassFile& cf = session.backing();
-    auto                  decoded = cf.decodeCode(cf.methods[methodIdx]);
+    std::vector<LvtRow>      out;
+    jbc::core::ClassFile&    cf      = session.backing();
+    auto                     decoded = cf.decodeCode(cf.methods[methodIdx]);
     if (decoded.is_err()) return out;
     jbc::core::CodeAttr* code = decoded.unwrap();
     if (code == nullptr) return out;
@@ -183,9 +269,9 @@ std::vector<LvtRow> readLvtRows(jbc::ir::ClassSession& session, ca::usize method
 /// Code 嵌套属性名集合（LVT/LVTT/LNT 有无断言面）。
 std::set<std::string> codeAttrNames(jbc::ir::ClassSession& session, ca::usize methodIdx = 0)
 {
-    std::set<std::string>   out;
-    jbc::core::ClassFile&   cf  = session.backing();
-    auto                    decoded = cf.decodeCode(cf.methods[methodIdx]);
+    std::set<std::string>    out;
+    jbc::core::ClassFile&    cf      = session.backing();
+    auto                     decoded = cf.decodeCode(cf.methods[methodIdx]);
     if (decoded.is_err()) return out;
     const jbc::core::CodeAttr* code = decoded.unwrap();
     if (code == nullptr) return out;
@@ -205,9 +291,9 @@ std::vector<LvtRow> readLvtRowsOfBytes(const Bytes& bytes, ca::usize methodIdx =
 }
 
 /// 行事实断言：expected = (startPc, length, name, desc, slot)，按 (startPc, slot) 序。
-void expectRows(const std::vector<LvtRow>&                                 actual,
+void expectRows(const std::vector<LvtRow>& actual,
                 const std::vector<std::tuple<ca::u32, ca::u32, std::string, std::string,
-                                             ca::u32>>&                    expected)
+                                             ca::u32>>& expected)
 {
     ASSERT_EQ(actual.size(), expected.size());
     for (ca::usize i = 0; i < expected.size(); ++i) {
@@ -236,8 +322,8 @@ Bytes containerBytes(ResourceContainer& container, const std::string& uri)
 /// LocalVariableAnnotator 真件驱动（容器级，与生产一致）。
 void runAnnotator(ResourceContainer& container)
 {
-    ca::str::Utf8StringArena           arena;
-    mjbase::spi::GlobalAnalysisManager gam(arena);
+    ca::str::Utf8StringArena             arena;
+    mjbase::spi::GlobalAnalysisManager   gam(arena);
     mjbase::pass::LocalVariableAnnotator pass;
     (void)pass.run(container, gam);
 }
@@ -245,9 +331,9 @@ void runAnnotator(ResourceContainer& container)
 /// MethodInliner 真件驱动（容器级，与 method_inliner_test 同款驱动）。
 void runInliner(ResourceContainer& container)
 {
-    ca::str::Utf8StringArena           arena;
+    ca::str::Utf8StringArena         arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
-    mjbase::pass::MethodInliner        pass;
+    mjbase::pass::MethodInliner      pass;
     (void)pass.run(container, gam);
 }
 
@@ -257,14 +343,10 @@ void runInliner(ResourceContainer& container)
 
 TEST(MjPassLocalVariableTableRebuilderTest, RebuildsStaleRangesAndCarriesTrustedNames)
 {
-    FixtureBuilder b("R");
-    b.addMethod({"f", "(I)I", intLocalBody(), kAccPublic | kAccStatic, {}, 1, 2,
-                 {},
-                 {{"LocalVariableTable",
-                   varTablePayload(b,
-                                   {{0, 9, "n", "I", 0},       // 越界 length
-                                    {3, 6, "x", "I", 1}})}}});   // 错位 startPc + 越界
-    const auto run = runRebuild(b.assemble());
+    const Bytes bytes = withLvt(assembleClass("R", "public static f (I)I", kIntBody), 0,
+                                {{0, 9, "n", "I", 0},          // 越界 length
+                                 {3, 6, "x", "I", 1}});        // 错位 startPc + 越界
+    const auto run = runRebuild(bytes);
 
     EXPECT_TRUE(run.pa.changed());
     expectRows(readLvtRows(*run.session),
@@ -283,48 +365,25 @@ TEST(MjPassLocalVariableTableRebuilderTest, RebuildsStaleRangesAndCarriesTrusted
 TEST(MjPassLocalVariableTableRebuilderTest, RebuildsAfterInlinerTransformation)
 {
     ResourceContainer container;
-    {
-        // H.k(I)I public static 纯：iconst_5; istore_1; iload_1; iload_0; iadd; ireturn
-        FixtureBuilder bh("H");
-        Bytes callee;
-        putU8(callee, 0x04);          // iconst_5
-        putU8(callee, 0x3C);          // istore_1
-        putU8(callee, 0x1B);          // iload_1
-        putU8(callee, 0x1A);          // iload_0
-        putU8(callee, 0x60);          // iadd
-        putU8(callee, 0xAC);          // ireturn
-        bh.addMethod({"k", "(I)I", std::move(callee), kAccPublic | kAccStatic, {}, 2, 2});
-        addClassResource(container, "H.class", bh.assemble());
-    }
-    {
-        // C.m(I)I：iload_0; invokestatic H.k; iadd; ireturn（len 6）。
-        // 陈旧 LVT：形参行罩住内联前全长。
-        FixtureBuilder bc("C");
-        const ca::u16 ref = bc.methodRef("H", "k", "(I)I");
-        Bytes caller;
-        putU8(caller, 0x1A);                       // iload_0
-        putU8(caller, 0xB8); putU16(caller, ref);  // invokestatic H.k
-        putU8(caller, 0x60);                       // iadd
-        putU8(caller, 0xAC);                       // ireturn
-        bc.addMethod({"m", "(I)I", std::move(caller), kAccPublic | kAccStatic, {}, 2, 1,
-                      {},
-                      {{"LocalVariableTable", varTablePayload(bc, {{0, 6, "n", "I", 0}})}}});
-        addClassResource(container, "C.class", bc.assemble());
-    }
+    addClassResource(container, "H.class",
+                     assembleClass("H", "public static k (I)I", kCalleeBody));
+    const Bytes callerBytes = assembleClass("C", "public static m (I)I", kCallerBody);
+    // 陈旧 LVT：形参行罩住内联前全长（len 7）。
+    addClassResource(container, "C.class", withLvt(callerBytes, 0, {{0, 7, "n", "I", 0}}));
 
     runInliner(container);
     const auto run = runRebuild(containerBytes(container, "C.class"));
 
     EXPECT_TRUE(run.pa.changed());
-    // 内联后布局（base=1）：pc0 iload_0；pc1 istore 1（实参落槽）；pc3 iconst_5；
-    // pc4 istore 2（被调 slot1→2）；pc6 iload 2；pc8 iload 1；pc10 iadd；
-    // pc11 goto；pc14 iload_0；pc15 iadd；pc16 ireturn（len 17）。
-    // 形参名 n 保真沿用（内联 lower 的端点映射已到全长）；被调新槽无原表
-    // 依据 → var 形态兜底。
+    // 内联后布局（static 被调，base=1）：pc0 iconst_1；pc1 iload_0（原实参
+    // 装载）；pc2 istore 1（实参落被调槽 0）；pc4 iconst_5；pc5 istore 2
+    // （被调 slot1→2）；pc7 iload 2；pc9 iload 1；pc11 iadd；pc12 goto；
+    // pc15 iadd；pc16 ireturn（len 17）。形参名 n 保真沿用；被调两新槽无
+    // 原表依据 → var 形态兜底。
     expectRows(readLvtRows(*run.session),
                {{0, 17, "n", "I", 0},
-                {3, 14, "var1", "I", 1},
-                {6, 11, "var2", "I", 2}});
+                {4, 13, "var1", "I", 1},
+                {7, 10, "var2", "I", 2}});
     EXPECT_EQ(run.stats.carriedNames, 1u);
     EXPECT_EQ(run.stats.varNames, 2u);
 }
@@ -333,15 +392,13 @@ TEST(MjPassLocalVariableTableRebuilderTest, RebuildsAfterInlinerTransformation)
 
 TEST(MjPassLocalVariableTableRebuilderTest, DropModeStripsLvtAndLvtt)
 {
-    FixtureBuilder b("DR");
-    b.addMethod({"f", "(I)I", intLocalBody(), kAccPublic | kAccStatic, {}, 1, 2,
-                 {},
-                 {{"LineNumberTable", Bytes{0x00, 0x01, 0x00, 0x00, 0x00, 0x2A}},
-                  {"LocalVariableTable", varTablePayload(b, {{0, 4, "n", "I", 0}})},
-                  {"LocalVariableTypeTable", varTablePayload(b, {{0, 4, "n", "TT;", 0}})}}});
+    const Bytes bare = assembleClass("DR", "public static f (I)I", kIntBody);
+    const Bytes bytes =
+        withLnt(withLvtt(withLvt(bare, 0, {{0, 4, "n", "I", 0}}), 0, {{0, 4, "n", "TT;", 0}}),
+                0, {{0, 42}});
     LocalVariableTableRebuilderOptions opts;
-    opts.mode                        = LvtRebuildMode::Drop;
-    const auto run                   = runRebuild(b.assemble(), opts);
+    opts.mode      = LvtRebuildMode::Drop;
+    const auto run = runRebuild(bytes, opts);
 
     EXPECT_TRUE(run.pa.changed());
     const auto names = codeAttrNames(*run.session);
@@ -367,13 +424,11 @@ TEST(MjPassLocalVariableTableRebuilderTest, UntrustedOrAmbiguousNamesFallToVarFo
 {
     {
         // 不可信名（非 ASCII 字节）：名落 var1，desc 与声明和解一致仍为 I。
-        FixtureBuilder b("U");
         const std::string weird = "\xC3\xA5x";   // 首字节 ≥0x80 → lvtNameTrustworthy 拒绝
-        b.addMethod({"h", "(I)I", intLocalBody(), kAccPublic | kAccStatic, {}, 1, 2,
-                     {},
-                     {{"LocalVariableTable",
-                       varTablePayload(b, {{0, 4, "p", "I", 0}, {3, 6, weird, "I", 1}})}}});
-        const auto run = runRebuild(b.assemble());
+        const Bytes       bytes =
+            withLvt(assembleClass("U", "public static h (I)I", kIntBody), 0,
+                    {{0, 4, "p", "I", 0}, {3, 6, weird, "I", 1}});
+        const auto run = runRebuild(bytes);
         EXPECT_TRUE(run.pa.changed());
         expectRows(readLvtRows(*run.session),
                    {{0, 4, "p", "I", 0},          // 可信名沿用
@@ -383,12 +438,10 @@ TEST(MjPassLocalVariableTableRebuilderTest, UntrustedOrAmbiguousNamesFallToVarFo
     }
     {
         // 槽多名（作用域复用，位置对应不可证）：整槽 var 形态。
-        FixtureBuilder b("AM");
-        b.addMethod({"h", "(I)I", intLocalBody(), kAccPublic | kAccStatic, {}, 1, 2,
-                     {},
-                     {{"LocalVariableTable",
-                       varTablePayload(b, {{0, 1, "a", "I", 1}, {1, 3, "b", "I", 1}})}}});
-        const auto run = runRebuild(b.assemble());
+        const Bytes bytes =
+            withLvt(assembleClass("AM", "public static h (I)I", kIntBody), 0,
+                    {{0, 1, "a", "I", 1}, {1, 3, "b", "I", 1}});
+        const auto run = runRebuild(bytes);
         EXPECT_TRUE(run.pa.changed());
         const auto rows = readLvtRows(*run.session);
         ASSERT_EQ(rows.size(), 2u);
@@ -397,12 +450,10 @@ TEST(MjPassLocalVariableTableRebuilderTest, UntrustedOrAmbiguousNamesFallToVarFo
     }
     {
         // desc 矛盾（声明 J、实际存 int）：声明不可验证 → 落推断值 I。
-        FixtureBuilder b("DC");
-        b.addMethod({"h", "(I)I", intLocalBody(), kAccPublic | kAccStatic, {}, 1, 2,
-                     {},
-                     {{"LocalVariableTable",
-                       varTablePayload(b, {{0, 9, "n", "I", 0}, {3, 6, "x", "J", 1}})}}});
-        const auto run = runRebuild(b.assemble());
+        const Bytes bytes =
+            withLvt(assembleClass("DC", "public static h (I)I", kIntBody), 0,
+                    {{0, 9, "n", "I", 0}, {3, 6, "x", "J", 1}});
+        const auto run = runRebuild(bytes);
         EXPECT_TRUE(run.pa.changed());
         expectRows(readLvtRows(*run.session),
                    {{0, 4, "n", "I", 0},
@@ -415,37 +466,32 @@ TEST(MjPassLocalVariableTableRebuilderTest, UntrustedOrAmbiguousNamesFallToVarFo
 TEST(MjPassLocalVariableTableRebuilderTest, KeepsObjectSlotAndCarriesThis)
 {
     {
-        // Object 声明槽存 String：可证兼容（javac 擦除槽形态）→ 保 Object，
-        // 不做 Annotator 式类型提升。
-        FixtureBuilder b("OB");
-        b.addMethod({"o", "()Ljava/lang/Object;", refLocalBody(b), kAccPublic | kAccStatic,
-                     {}, 1, 2,
-                     {},
-                     {{"LocalVariableTable",
-                       varTablePayload(b, {{0, 9, "obj", "Ljava/lang/Object;", 1}})}}});
-        const auto run = runRebuild(b.assemble());
+        // Object 声明槽存 String（Strict 推断 Ljava/lang/String; 与声明
+        // Object 形态可证兼容——javac 擦除槽形态）→ 保 Object，不做
+        // Annotator 式类型提升。
+        const Bytes bytes =
+            withLvt(assembleClass("OB", "public static o ()Ljava/lang/Object;", kRefBody), 0,
+                    {{0, 99, "obj", "Ljava/lang/Object;", 1}});
+        const auto run = runRebuild(bytes);
         EXPECT_TRUE(run.pa.changed());
-        expectRows(readLvtRows(*run.session), {{3, 2, "obj", "Ljava/lang/Object;", 1}});
+        expectRows(readLvtRows(*run.session), {{8, 2, "obj", "Ljava/lang/Object;", 1}});
     }
     {
         // 实例方法 this 行：可信名 + 声明 desc 与种子一致 → 逐字保留。
-        FixtureBuilder b("IR");
-        b.addMethod({"m", "()V", thisBody(), kAccPublic, {}, 1, 1,
-                     {},
-                     {{"LocalVariableTable", varTablePayload(b, {{0, 3, "this", "LIR;", 0}})}}});
-        const auto run = runRebuild(b.assemble());
+        const Bytes bytes =
+            withLvt(assembleClass("IR", "public m ()V", kThisBody), 0,
+                    {{0, 3, "this", "LIR;", 0}});
+        const auto run = runRebuild(bytes);
         EXPECT_TRUE(run.pa.changed());
         expectRows(readLvtRows(*run.session), {{0, 3, "this", "LIR;", 0}});
         EXPECT_EQ(run.stats.carriedNames, 1u);
     }
     {
         // cat2：long 局部占物理槽 2（隐含槽 3 不发行），编号自然跳号。
-        FixtureBuilder b("CG");
-        b.addMethod({"g", "(J)J", longLocalBody(), kAccPublic | kAccStatic, {}, 2, 4,
-                     {},
-                     {{"LocalVariableTable",
-                       varTablePayload(b, {{0, 99, "v", "J", 0}, {0, 99, "w", "J", 2}})}}});
-        const auto run = runRebuild(b.assemble());
+        const Bytes bytes =
+            withLvt(assembleClass("CG", "public static g (J)J", kLongBody), 0,
+                    {{0, 99, "v", "J", 0}, {0, 99, "w", "J", 2}});
+        const auto run = runRebuild(bytes);
         EXPECT_TRUE(run.pa.changed());
         expectRows(readLvtRows(*run.session),
                    {{0, 4, "v", "J", 0},
@@ -458,9 +504,8 @@ TEST(MjPassLocalVariableTableRebuilderTest, KeepsObjectSlotAndCarriesThis)
 TEST(MjPassLocalVariableTableRebuilderTest, PassesClassWithoutLocalVariableTable)
 {
     {
-        FixtureBuilder b("N");
-        b.addMethod({"f", "(I)I", intLocalBody(), kAccPublic | kAccStatic, {}, 1, 2});
-        const auto run = runRebuild(b.assemble());
+        const Bytes bytes = assembleClass("N", "public static f (I)I", kIntBody);
+        const auto  run   = runRebuild(bytes);
         EXPECT_TRUE(run.pa.changed()) << "重建口径：无原表也按存活区间新建";
         expectRows(readLvtRows(*run.session),
                    {{0, 4, "var0", "I", 0},
@@ -469,11 +514,10 @@ TEST(MjPassLocalVariableTableRebuilderTest, PassesClassWithoutLocalVariableTable
         EXPECT_EQ(run.stats.varNames, 2u);
     }
     {
-        FixtureBuilder b("N2");
-        b.addMethod({"f", "(I)I", intLocalBody(), kAccPublic | kAccStatic, {}, 1, 2});
+        const Bytes bytes = assembleClass("N2", "public static f (I)I", kIntBody);
         LocalVariableTableRebuilderOptions opts;
         opts.mode      = LvtRebuildMode::Drop;
-        const auto run = runRebuild(b.assemble(), opts);
+        const auto run = runRebuild(bytes, opts);
         EXPECT_FALSE(run.pa.changed()) << "丢弃口径：无表零改动";
         EXPECT_EQ(run.stats.droppedMethods, 0u);
     }
@@ -483,11 +527,10 @@ TEST(MjPassLocalVariableTableRebuilderTest, PassesClassWithoutLocalVariableTable
 
 TEST(MjPassLocalVariableTableRebuilderTest, RebuildsFromLvttOnlyFixture)
 {
-    FixtureBuilder b("LO");
-    b.addMethod({"f", "(I)I", intLocalBody(), kAccPublic | kAccStatic, {}, 1, 2,
-                 {},
-                 {{"LocalVariableTypeTable", varTablePayload(b, {{0, 4, "n", "TT;", 1}})}}});
-    const auto run = runRebuild(b.assemble());
+    const Bytes bytes =
+        withLvtt(assembleClass("LO", "public static f (I)I", kIntBody), 0,
+                 {{0, 4, "n", "TT;", 1}});
+    const auto run = runRebuild(bytes);
     EXPECT_TRUE(run.pa.changed());
     const auto names = codeAttrNames(*run.session);
     EXPECT_EQ(names.count("LocalVariableTypeTable"), 0u);
@@ -503,12 +546,10 @@ TEST(MjPassLocalVariableTableRebuilderTest, ComposesWithLocalVariableAnnotator)
     {
         // Annotator → Rebuilder：varN 规范形是重建的不动点（零改动确认）。
         ResourceContainer container;
-        FixtureBuilder    b("AF");
-        b.addMethod({"f", "(I)I", intLocalBody(), kAccPublic | kAccStatic, {}, 1, 2,
-                     {},
-                     {{"LocalVariableTable",
-                       varTablePayload(b, {{0, 4, "x", "I", 0}, {3, 6, "y", "I", 1}})}}});
-        addClassResource(container, "AF.class", b.assemble());
+        const Bytes       bytes =
+            withLvt(assembleClass("AF", "public static f (I)I", kIntBody), 0,
+                    {{0, 4, "x", "I", 0}, {3, 6, "y", "I", 1}});
+        addClassResource(container, "AF.class", bytes);
         runAnnotator(container);
 
         const Bytes annotated = containerBytes(container, "AF.class");
@@ -522,12 +563,10 @@ TEST(MjPassLocalVariableTableRebuilderTest, ComposesWithLocalVariableAnnotator)
         // Rebuilder → Annotator：保真名沿用、范围修复；Annotator 随后按自身
         // 契约把保真名归一为 varN（双向组合各归各位，互不越界）。
         ResourceContainer container;
-        FixtureBuilder    b("RA");
-        b.addMethod({"f", "(I)I", intLocalBody(), kAccPublic | kAccStatic, {}, 1, 2,
-                     {},
-                     {{"LocalVariableTable",
-                       varTablePayload(b, {{0, 4, "x", "I", 0}, {3, 6, "y", "I", 1}})}}});
-        addClassResource(container, "RA.class", b.assemble());
+        const Bytes       bytes =
+            withLvt(assembleClass("RA", "public static f (I)I", kIntBody), 0,
+                    {{0, 4, "x", "I", 0}, {3, 6, "y", "I", 1}});
+        addClassResource(container, "RA.class", bytes);
 
         {
             const auto first = runRebuild(containerBytes(container, "RA.class"));
@@ -551,19 +590,16 @@ TEST(MjPassLocalVariableTableRebuilderTest, ComposesWithLocalVariableAnnotator)
 
 TEST(MjPassLocalVariableTableRebuilderTest, IdempotentSecondRun)
 {
-    FixtureBuilder b("R2");
-    b.addMethod({"f", "(I)I", intLocalBody(), kAccPublic | kAccStatic, {}, 1, 2,
-                 {},
-                 {{"LocalVariableTable",
-                   varTablePayload(b, {{0, 9, "n", "I", 0}, {3, 6, "x", "I", 1}})}}});
-    const Bytes original = b.assemble();
+    const Bytes original =
+        withLvt(assembleClass("R2", "public static f (I)I", kIntBody), 0,
+                {{0, 9, "n", "I", 0}, {3, 6, "x", "I", 1}});
 
     const auto first = runRebuild(original);
     EXPECT_TRUE(first.pa.changed());
 
     // 同会话二次运行（重建槽已解码）。
     {
-        ca::str::Utf8StringArena         arena;
+        ca::str::Utf8StringArena          arena;
         mjbase::spi::ClassAnalysisManager cam(arena);
         LocalVariableTableRebuilder       pass;
         const auto pa = pass.run(*first.session, cam);
