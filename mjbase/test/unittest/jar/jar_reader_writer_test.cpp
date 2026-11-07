@@ -274,3 +274,72 @@ TEST(MjJarWriterTest, containerRoundtripWithDirInputPreservesDirs)
 
     std::remove(outPath.string().c_str());
 }
+
+// ── 条目路径规范化 ──────────────────────────────────────────────
+
+// 规范化折叠形状：'\'→'/'、连续 '/' 与 "." 段剔除、".." 按段折叠（含目录
+// 条目形状，尾斜杠保留）。各形状归一为不同名字，读回条目集逐名对账。
+TEST(MjJarWriterTest, writeEntryNameNormalizationCollapsesShapes)
+{
+    const char* tmpPath = "test/tmp_jar_normalize_shapes.jar";
+
+    const std::vector<ca::u8> payload = {0xCA, 0xFE, 0xBA, 0xBE};
+    JarWriter writer(S(tmpPath));
+    auto writeResult = writer.write([&](IEntryWriter& ew) {
+        ew.writeEntry(S("a\\b.class"), payload);        // → a/b.class
+        ew.writeEntry(S("x//y.class"), payload);        // → x/y.class
+        ew.writeEntry(S("./p.class"), payload);         // → p.class
+        ew.writeEntry(S("q/./r.class"), payload);       // → q/r.class
+        ew.writeEntry(S("s/../t.class"), payload);      // → t.class
+        ew.writeEntry(S("d/./e/"), std::vector<ca::u8>{});   // → d/e/（目录）
+        ew.writeEntry(S("u\\"), std::vector<ca::u8>{});      // → u/（目录）
+    });
+    ASSERT_TRUE(writeResult.is_ok());
+
+    std::vector<std::string> names;
+    JvmJarReader reader(S(tmpPath));
+    auto readResult = reader.read([&](const ca::str::Utf8String& name, const std::vector<ca::u8>&) {
+        names.push_back(name.to_std_string());
+    });
+    ASSERT_TRUE(readResult.is_ok());
+    ASSERT_EQ(names.size(), 7u);
+    // 归档序 = 原始名字排序（排序发生在规范化之前，与既有行为一致）：
+    // "./p.class" < "a\\b.class" < "d/./e/" < "q/./r.class" < "s/../t.class"
+    // < "u\\" < "x//y.class"。
+    EXPECT_EQ(names[0], "p.class");
+    EXPECT_EQ(names[1], "a/b.class");
+    EXPECT_EQ(names[2], "d/e/");
+    EXPECT_EQ(names[3], "q/r.class");
+    EXPECT_EQ(names[4], "t.class");
+    EXPECT_EQ(names[5], "u/");
+    EXPECT_EQ(names[6], "x/y.class");
+
+    std::remove(tmpPath);
+}
+
+// 非法条目名拒写：规范化后逃出根（"../a.class"、"a/../../b.class"）或为空
+// （""、"."、".."、"./"、"/"、"a/.."）→ Err(BadEntryName)，err.path 为非法
+// 条目名；首条非法即中止，输出文件不落盘。
+TEST(MjJarWriterTest, writeRejectsNamesThatEscapeRootOrAreEmpty)
+{
+    const char* const badNames[] = {
+        "", ".", "..", "./", "/", "../a.class", "a/../../b.class", "a/..",
+    };
+    for (const char* bad : badNames) {
+        const char* tmpPath = "test/tmp_jar_badname_reject.jar";
+        std::remove(tmpPath);
+        JarWriter writer(S(tmpPath));
+        auto writeResult = writer.write(
+            [&](IEntryWriter& ew) { ew.writeEntry(S(bad), std::vector<ca::u8>{0xCA}); });
+        ASSERT_TRUE(writeResult.is_err()) << "entry name: " << bad;
+        const auto err = std::move(writeResult).unwrap_err();
+        EXPECT_EQ(err.kind, JarError::Kind::BadEntryName) << "entry name: " << bad;
+        EXPECT_EQ(err.path.to_std_string(), bad);
+    }
+
+    // 首条非法即中止：输出文件从未写出。
+    JvmJarReader reader(S("test/tmp_jar_badname_reject.jar"));
+    auto readResult = reader.read([&](const ca::str::Utf8String&, const std::vector<ca::u8>&) {});
+    ASSERT_TRUE(readResult.is_err());
+    EXPECT_EQ(std::move(readResult).unwrap_err().kind, JarError::Kind::FileNotFound);
+}
