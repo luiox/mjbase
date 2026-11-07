@@ -56,14 +56,14 @@ using mjbase::pass::KotlinMetadataError;
 
 /// 最小构造器（jasm 实例类形状：aload_0 转发 super 构造；std::string 以
 /// 供夹具 body 拼接）。
-const std::string kCtor =
-    "  .method public <init> ()V {\n"
-    "    code: {\n"
-    "      aload_0\n"
-    "      invokespecial java/lang/Object.<init> ()V\n"
-    "      return\n"
-    "    }\n"
-    "  }\n";
+const std::string kCtor = R"JASM(  .method public <init> ()V {
+    code: {
+      aload_0
+      invokespecial java/lang/Object.<init> ()V
+      return
+    }
+  }
+)JASM";
 
 /// UTF-8 → UTF-16（jasm 服务入参口径）。
 ca::str::Utf16String utf16Of(const std::string& s)
@@ -76,8 +76,10 @@ ca::str::Utf16String utf16Of(const std::string& s)
 Bytes assembleClass(const std::string& internalName, const std::string& body)
 {
     mjbase::jasm::JvmJasmService service;
-    const std::string source = ".super java/lang/Object"
-                               "\n.class public super " + internalName + " {\n" + body + "}\n";
+    const std::string source = R"JASM(.super java/lang/Object
+.class public super )JASM" + internalName + R"JASM( {
+)JASM" + body + R"JASM(}
+)JASM";
     const auto sourceName = utf16Of(internalName + ".jasm");
     const auto sourceText = utf16Of(source);
     const auto result     = service.assemble(sourceName.ref(), sourceText.ref());
@@ -357,14 +359,25 @@ Bytes svcFixture()
     MetadataSpec spec;
     spec.payload = frameD1(stt, cls);
     spec.d2      = {"app.Svc", "value", "java/lang/String", "compute", "kotlin/Int", "x"};
-    const std::string body = kCtor +
-        "  .field private b Ljava/lang/String;\n"
-        "  .method public a ()Ljava/lang/String; {\n    code: {\n"
-        "      aconst_null\n      areturn\n    }\n  }\n"
-        "  .method public c (Ljava/lang/String;)V {\n    code: {\n"
-        "      return\n    }\n  }\n"
-        "  .method public m (I)I {\n    code: {\n"
-        "      iconst_0\n      ireturn\n    }\n  }\n";
+    const std::string body = kCtor + R"JASM(  .field private b Ljava/lang/String;
+  .method public a ()Ljava/lang/String; {
+    code: {
+      aconst_null
+      areturn
+    }
+  }
+  .method public c (Ljava/lang/String;)V {
+    code: {
+      return
+    }
+  }
+  .method public m (I)I {
+    code: {
+      iconst_0
+      ireturn
+    }
+  }
+)JASM";
     return withKotlinMetadata(assembleClass("app/a", body), spec);
 }
 
@@ -379,12 +392,19 @@ Bytes valDecoyFixture()
     MetadataSpec spec;
     spec.payload = frameD1(stt, cls);
     spec.d2      = {"app.Vault", "token", "java/lang/String"};
-    const std::string body = kCtor +
-        "  .field private t Ljava/lang/String;\n"
-        "  .method public g ()Ljava/lang/String; {\n    code: {\n"
-        "      aconst_null\n      areturn\n    }\n  }\n"
-        "  .method public r (Ljava/lang/String;)V {\n    code: {\n"
-        "      return\n    }\n  }\n";
+    const std::string body = kCtor + R"JASM(  .field private t Ljava/lang/String;
+  .method public g ()Ljava/lang/String; {
+    code: {
+      aconst_null
+      areturn
+    }
+  }
+  .method public r (Ljava/lang/String;)V {
+    code: {
+      return
+    }
+  }
+)JASM";
     return withKotlinMetadata(assembleClass("app/v", body), spec);
 }
 
@@ -412,9 +432,12 @@ Bytes boardFixture()
     MetadataSpec spec;
     spec.payload = frameD1(stt, cls);
     spec.d2      = {"app.Board", "link", "app.Cell", "kotlin/Unit"};
-    const std::string body = kCtor +
-        "  .method public q (Lapp/c;)V {\n    code: {\n"
-        "      return\n    }\n  }\n";
+    const std::string body = kCtor + R"JASM(  .method public q (Lapp/c;)V {
+    code: {
+      return
+    }
+  }
+)JASM";
     return withKotlinMetadata(assembleClass("app/d", body), spec);
 }
 
@@ -429,12 +452,19 @@ Bytes isPrefixFixture()
     MetadataSpec spec;
     spec.payload = frameD1(stt, cls);
     spec.d2      = {"app.Probe", "isActive", "kotlin/Boolean"};
-    const std::string body = kCtor +
-        "  .field private f Z\n"
-        "  .method public h ()Z {\n    code: {\n"
-        "      iconst_0\n      ireturn\n    }\n  }\n"
-        "  .method public s (Z)V {\n    code: {\n"
-        "      return\n    }\n  }\n";
+    const std::string body = kCtor + R"JASM(  .field private f Z
+  .method public h ()Z {
+    code: {
+      iconst_0
+      ireturn
+    }
+  }
+  .method public s (Z)V {
+    code: {
+      return
+    }
+  }
+)JASM";
     return withKotlinMetadata(assembleClass("app/i", body), spec);
 }
 
@@ -449,12 +479,20 @@ Bytes forwarderFixture()
     MetadataSpec spec;
     spec.payload = frameD1(stt, cls);
     spec.d2      = {"app.Flag", "flag", "kotlin/Boolean"};
-    const std::string body = kCtor +
-        "  .field private f Z\n"
-        "  .method public g ()Z {\n    code: {\n"
-        "      iconst_0\n      ireturn\n    }\n  }\n"
-        "  .method public static access$g ()Z {\n    code: {\n"
-        "      iconst_0\n      ireturn\n    }\n  }\n";
+    const std::string body = kCtor + R"JASM(  .field private f Z
+  .method public g ()Z {
+    code: {
+      iconst_0
+      ireturn
+    }
+  }
+  .method public static access$g ()Z {
+    code: {
+      iconst_0
+      ireturn
+    }
+  }
+)JASM";
     return withKotlinMetadata(assembleClass("app/f", body), spec);
 }
 
@@ -471,9 +509,13 @@ Bytes conflictFixture()
     MetadataSpec spec;
     spec.payload = frameD1(stt, cls);
     spec.d2      = {"app.Box", "data", "kotlin/Int", "read"};
-    const std::string body = kCtor +
-        "  .method public z ()I {\n    code: {\n"
-        "      iconst_0\n      ireturn\n    }\n  }\n";
+    const std::string body = kCtor + R"JASM(  .method public z ()I {
+    code: {
+      iconst_0
+      ireturn
+    }
+  }
+)JASM";
     return withKotlinMetadata(assembleClass("app/x", body), spec);
 }
 
@@ -494,10 +536,14 @@ Bytes jvmNameWinsFixture()
     MetadataSpec spec;
     spec.payload = frameD1(stt, cls);
     spec.d2      = {"app.Widget", "label", "java/lang/String"};
-    const std::string body = kCtor +
-        "  .field private b Ljava/lang/String;\n"
-        "  .method public a ()Ljava/lang/String; {\n    code: {\n"
-        "      aconst_null\n      areturn\n    }\n  }\n";
+    const std::string body = kCtor + R"JASM(  .field private b Ljava/lang/String;
+  .method public a ()Ljava/lang/String; {
+    code: {
+      aconst_null
+      areturn
+    }
+  }
+)JASM";
     return withClassAnnotations(assembleClass("app/w", body), spec, std::string{"RealWidget"});
 }
 
@@ -514,14 +560,24 @@ Bytes canonicalFacadeFixture()
     spec.k       = 2;   ///< 文件门面（Package 载荷进 k=2 解析器）
     spec.payload = frameD1(stt, pkg);
     spec.d2      = {"value", "java/lang/String", "run", "kotlin/Unit"};
-    const std::string body = kCtor +
-        "  .field private value Ljava/lang/String;\n"
-        "  .method public getValue ()Ljava/lang/String; {\n    code: {\n"
-        "      aconst_null\n      areturn\n    }\n  }\n"
-        "  .method public setValue (Ljava/lang/String;)V {\n    code: {\n"
-        "      return\n    }\n  }\n"
-        "  .method public run ()V {\n    code: {\n"
-        "      return\n    }\n  }\n";
+    const std::string body = kCtor + R"JASM(  .field private value Ljava/lang/String;
+  .method public getValue ()Ljava/lang/String; {
+    code: {
+      aconst_null
+      areturn
+    }
+  }
+  .method public setValue (Ljava/lang/String;)V {
+    code: {
+      return
+    }
+  }
+  .method public run ()V {
+    code: {
+      return
+    }
+  }
+)JASM";
     return withKotlinMetadata(assembleClass("app/n", body), spec);
 }
 
@@ -536,13 +592,21 @@ Bytes multiCandidateFixture()
     MetadataSpec spec;
     spec.payload = frameD1(stt, cls);
     spec.d2      = {"app.Multi", "value", "java/lang/String"};
-    const std::string body = kCtor +
-        "  .field private p1 Ljava/lang/String;\n"
-        "  .field private p2 Ljava/lang/String;\n"
-        "  .method public g1 ()Ljava/lang/String; {\n    code: {\n"
-        "      aconst_null\n      areturn\n    }\n  }\n"
-        "  .method public g2 ()Ljava/lang/String; {\n    code: {\n"
-        "      aconst_null\n      areturn\n    }\n  }\n";
+    const std::string body = kCtor + R"JASM(  .field private p1 Ljava/lang/String;
+  .field private p2 Ljava/lang/String;
+  .method public g1 ()Ljava/lang/String; {
+    code: {
+      aconst_null
+      areturn
+    }
+  }
+  .method public g2 ()Ljava/lang/String; {
+    code: {
+      aconst_null
+      areturn
+    }
+  }
+)JASM";
     return withKotlinMetadata(assembleClass("app/m2", body), spec);
 }
 
@@ -561,9 +625,13 @@ Bytes extFacadeFixture()
     spec.k       = 2;
     spec.payload = frameD1(stt, pkg);
     spec.d2      = {"plusInt", "kotlin/Int", "x", "kotlin/Long", "kotlin/Boolean"};
-    const std::string body = kCtor +
-        "  .method public p (IJ)Z {\n    code: {\n"
-        "      iconst_0\n      ireturn\n    }\n  }\n";
+    const std::string body = kCtor + R"JASM(  .method public p (IJ)Z {
+    code: {
+      iconst_0
+      ireturn
+    }
+  }
+)JASM";
     return withKotlinMetadata(assembleClass("app/e", body), spec);
 }
 
