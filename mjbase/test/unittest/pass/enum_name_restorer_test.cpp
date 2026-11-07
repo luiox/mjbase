@@ -391,6 +391,127 @@ TEST(EnumNameRestorerTest, idempotentSecondRun)
     }
 }
 
+// ─── 形状契约探测：夹具 clinit 经会话 promote 后的判据上游逐拍断言 ──────
+// （判据读取的每个语义视图——op 序 / memberOf / constOf / classOf /
+//  findMethod / 字段 access——在此钉死；判据产出异常时先看本用例。）
+TEST(EnumNameRestorerTest, clinitShapeProbe)
+{
+    mjbase::model::ResourceContainer container;
+    EnumFixture                      fx;
+    loadClass(container, fx);
+
+    const mjbase::model::ClassResource* res = classResource(container, (fx.owner + ".class").c_str());
+    ASSERT_NE(res, nullptr);
+    auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(res->get()));
+    ASSERT_TRUE(sessionResult.is_ok()) << "session open failed";
+    auto                session  = std::move(sessionResult).unwrap();
+    jbc::ir::ClassUnit& unit     = session->unit();
+    const std::string_view thisName = unit.symbols().str(unit.thisClass);
+    EXPECT_EQ(thisName, "t/Color");
+    EXPECT_NE(session->backing().access & 0x4000, 0) << "ACC_ENUM lost";
+
+    const std::string constDesc  = "L" + std::string(thisName) + ";";
+    const std::string valuesDesc = "[" + constDesc;
+
+    // 桥与字段面。
+    EXPECT_NE(unit.findMethod("values", valuesDesc), jbc::ir::kNoMethod) << "values bridge";
+    EXPECT_NE(unit.findMethod("valueOf", "(Ljava/lang/String;)" + constDesc),
+              jbc::ir::kNoMethod)
+        << "valueOf bridge";
+    int enumFields = 0;
+    for (const auto& f : unit.fields) {
+        const std::string fname = std::string{unit.symbols().str(f.name)};
+        if (unit.symbols().str(f.desc) == constDesc && (f.access & 0x4000) != 0) ++enumFields;
+    }
+    EXPECT_EQ(enumFields, 3) << "ACC_ENUM constant fields";
+
+    // clinit 指令序逐拍。
+    const ca::usize clinitIdx = unit.findMethod("<clinit>", "()V");
+    ASSERT_NE(clinitIdx, jbc::ir::kNoMethod);
+    ASSERT_TRUE(jbc::ir::hasCode(*session, clinitIdx));
+    auto promoted = jbc::ir::promoteMethod(*session, clinitIdx);
+    ASSERT_TRUE(promoted.is_ok()) << "promote clinit failed";
+    auto cuRef = std::move(promoted).unwrap();
+    const auto order = cuRef->dom.order();
+    EXPECT_EQ(order.size(), 22u) << "clinit insn count";
+
+    auto opAt = [&](ca::usize i) {
+        const jbc::ir::Insn* in = cuRef->dom.peek(order[i]);
+        return in == nullptr ? jbc::core::Op::NOP : in->op;
+    };
+    EXPECT_EQ(opAt(0), jbc::core::Op::NEW);
+    {
+        const jbc::ir::Insn* in = cuRef->dom.peek(order[0]);
+        EXPECT_EQ(std::string{session->classOf(*in)}, "t/Color") << "NEW classOf";
+    }
+    EXPECT_EQ(opAt(1), jbc::core::Op::DUP);
+    {
+        const jbc::ir::Insn* in = cuRef->dom.peek(order[2]);
+        ASSERT_EQ(in->op, jbc::core::Op::LDC);
+        jbc::ir::ClassSession::ConstSem c;
+        ASSERT_TRUE(session->constOf(*in, c)) << "ldc constOf";
+        ASSERT_EQ(c.kind, jbc::ir::ClassSession::ConstSem::Kind::String);
+        EXPECT_EQ(std::string{c.str}, "RED") << "leak name";
+    }
+    EXPECT_EQ(opAt(3), jbc::core::Op::ICONST_0);
+    {
+        const jbc::ir::Insn* in = cuRef->dom.peek(order[4]);
+        ASSERT_EQ(in->op, jbc::core::Op::INVOKESPECIAL);
+        jbc::ir::ClassSession::MemberSem ref;
+        ASSERT_TRUE(session->memberOf(*in, ref)) << "invokespecial memberOf";
+        EXPECT_EQ(std::string{ref.owner}, "t/Color");
+        EXPECT_EQ(std::string{ref.name}, "<init>");
+        EXPECT_EQ(std::string{ref.desc}, "(Ljava/lang/String;I)V");
+    }
+    {
+        const jbc::ir::Insn* in = cuRef->dom.peek(order[5]);
+        ASSERT_EQ(in->op, jbc::core::Op::PUTSTATIC);
+        jbc::ir::ClassSession::MemberSem ref;
+        ASSERT_TRUE(session->memberOf(*in, ref)) << "putstatic memberOf";
+        EXPECT_EQ(std::string{ref.owner}, "t/Color");
+        EXPECT_EQ(std::string{ref.name}, "a-b");
+        EXPECT_EQ(std::string{ref.desc}, constDesc);
+    }
+    {
+        const jbc::ir::Insn* in = cuRef->dom.peek(order[19]);
+        ASSERT_EQ(in->op, jbc::core::Op::INVOKESTATIC);
+        jbc::ir::ClassSession::MemberSem ref;
+        ASSERT_TRUE(session->memberOf(*in, ref)) << "invokestatic memberOf";
+        EXPECT_EQ(std::string{ref.owner}, "t/Color");
+        EXPECT_EQ(std::string{ref.name}, "sv-z");
+        EXPECT_EQ(std::string{ref.desc}, valuesDesc);
+    }
+    {
+        const jbc::ir::Insn* in = cuRef->dom.peek(order[20]);
+        ASSERT_EQ(in->op, jbc::core::Op::PUTSTATIC);
+        jbc::ir::ClassSession::MemberSem ref;
+        ASSERT_TRUE(session->memberOf(*in, ref)) << "arr putstatic memberOf";
+        EXPECT_EQ(std::string{ref.name}, "A-B");
+        EXPECT_EQ(std::string{ref.desc}, valuesDesc);
+    }
+    EXPECT_EQ(opAt(21), jbc::core::Op::RETURN);
+
+    // 数组方法体 getstatic 序。
+    const ca::usize valuesIdx = unit.findMethod("sv-z", valuesDesc);
+    ASSERT_NE(valuesIdx, jbc::ir::kNoMethod);
+    ASSERT_TRUE(jbc::ir::hasCode(*session, valuesIdx));
+    auto vp = jbc::ir::promoteMethod(*session, valuesIdx);
+    ASSERT_TRUE(vp.is_ok()) << "promote $values failed";
+    auto vcu = std::move(vp).unwrap();
+    std::vector<std::string> gs;
+    for (const jbc::ir::InsnId id : vcu->dom.order()) {
+        const jbc::ir::Insn* in = vcu->dom.peek(id);
+        if (in == nullptr || in->op != jbc::core::Op::GETSTATIC) continue;
+        jbc::ir::ClassSession::MemberSem ref;
+        if (!session->memberOf(*in, ref)) continue;
+        gs.emplace_back(ref.name);
+    }
+    ASSERT_EQ(gs.size(), 3u) << "array getstatic count";
+    EXPECT_EQ(gs[0], "a-b");
+    EXPECT_EQ(gs[1], "c-d");
+    EXPECT_EQ(gs[2], "e-f");
+}
+
 // ─── 注册挂名面：名字可解析且产出本 pass ───────────────────────────────
 TEST(EnumNameRestorerTest, registrableByName)
 {
