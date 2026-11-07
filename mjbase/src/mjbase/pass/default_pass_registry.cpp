@@ -33,6 +33,7 @@
 #include "mjbase/pass/line_number_remover.hpp"
 #include "mjbase/pass/local_constant_propagation.hpp"
 #include "mjbase/pass/local_variable_annotator.hpp"
+#include "mjbase/pass/long_annotation_remover.hpp"
 #include "mjbase/pass/local_variable_table_rebuilder.hpp"
 #include "mjbase/pass/junk_code_inserter.hpp"
 #include "mjbase/pass/meta_info_remover.hpp"
@@ -489,6 +490,16 @@ PassNameRegistry makeDefaultRegistry()
         "SpecificAnnotationRemover",
         [] { return std::make_unique<mjbase::pass::SpecificAnnotationRemover>(); },
         "Remove annotations matching the configured blacklist."));
+    // Recaf 差距吸收 R4 批（判据小件三件，注解面体积/重复判据 + varargs 位
+    // 修复）：巨型注解删除（体积启发——描述符长度阈值，与黑名单/形状判据
+    // 正交，阈值默认 150 可经管线配置 maxLength 调）。判据面与 Recaf 差异
+    // 声明见头注。标签：scope:class / action:eliminate / stability:opt-in
+    // （默认链不收，管线配置显式挂点）。
+    seed(reg.registerClassPass(
+        "LongAnnotationRemover",
+        [] { return std::make_unique<mjbase::pass::LongAnnotationRemover>(); },
+        "Remove annotations whose type descriptor length reaches the threshold "
+        "(default 150; configurable via pipeline params)."));
     // opt pass 扩段（类级首件，mbase 治理版移植）：<clinit> 单次写入的常量
     // 内联进字段 ConstantValue + 删除等价初始化指令对；多次 PUTSTATIC 预扫描
     // 计数保守跳过。标签：scope:class / action:propagate / stability:opt-in
