@@ -22,6 +22,7 @@ mjbase 设计规格
    reachability-closure-design
    method-inliner
    stack-op-expander
+   enum-name-restore-spec
    pass-contract
    pass-catalog
    plugin-api
