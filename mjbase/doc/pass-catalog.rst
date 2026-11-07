@@ -12,7 +12,7 @@ mjbase pass 族目录（pass-catalog）
 覆盖面与分族
 ------------
 
-覆盖面是 ``mjbase/src/mjbase/pass/default_pass_registry.cpp``\ 注册的全部 73 个 pass：17 个容器级（``GlobalPass``\ ）、17 个类级（``ClassPass``\ ）、39 个方法级（``MethodPass``\ ）。分族依据是注册表标签（``scope``\ /\ ``action``\ /\ ``stability``\ ）与各头注自报的家族名，按职责分十族；成员清单与族内分工全部以现状为准。
+覆盖面是 ``mjbase/src/mjbase/pass/default_pass_registry.cpp``\ 注册的全部 77 个 pass：21 个容器级（``GlobalPass``\ ）、17 个类级（``ClassPass``\ ）、39 个方法级（``MethodPass``\ ）。分族依据是注册表标签（``scope``\ /\ ``action``\ /\ ``stability``\ ）与各头注自报的家族名，按职责分十族；成员清单与族内分工全部以现状为准。
 
 两个全族惯例：
 
@@ -74,6 +74,14 @@ LocalVariableAnnotator
 - 拒绝面：Strict 失败降 BestEffort 帧，仍失败则仅按存储指令推基本类型、引用类型保留原声明；升格、帧、写回失败逐方法跳过，解析或写回失败的类原样保留（``Stats``\ 计数观测）。
 - 验收门：``local_variable_annotator_test``\ 。
 - 链序：只改调试属性，指令、StackMapTable、maxes 一律不动。
+
+.. _pass-catalog-enum-name-restorer:
+
+EnumNameRestorer
+^^^^^^^^^^^^^^^^
+
+- 一行条目：枚举名恢复——扫容器内枚举类，从 ``<clinit>``\ 泄漏的字符串 ldc 真名按双形状判据（构造点窗口与 ``$values``\ 数组形状互证）产出 ``IntermediateMapping``\ 家族映射挂容器 AM，字节零改动；逐条判据（形态锚、双形状互证、名字口径）与边界申报见 :doc:`enum-name-restore-spec`\ （规格篇）。单测 ``enum_name_restorer_test``\ + JVM 真跑门 ``enum_name_restorer_jvm_test``\ 。
+- 链序：只产映射不改名，改名执行交映射消费面组合；标签 ``scope:global``\ /\ ``stability:opt-in``\ 。
 
 .. _pass-catalog-global-structure:
 
@@ -164,7 +172,7 @@ MethodCallRemover
 3. 容器级调用面与常量面
 -----------------------
 
-容器级、改写调用点或常量布局的件。多数成员的等价性论证依赖「容器即全程序」的封闭世界公理（各头注逐件声明），opt-in 由使用者担保。
+容器级、改写调用点或常量布局的件；常量面为「只读收集 + 读点物化」两件组。多数成员的等价性论证依赖「容器即全程序」的封闭世界公理（各头注逐件声明），opt-in 由使用者担保。
 
 .. _pass-catalog-devirtualize-single-target:
 
@@ -194,6 +202,14 @@ MethodInliner
 ^^^^^^^^^^^^^
 
 - 一行条目：预算内纯函数小方法体克隆进调用点；适用情况、逐面判据与前后 jasm 对照见 :doc:`method-inliner`\ （规格篇）。单测 ``method_inliner_test``\ + JVM 真跑门 ``method_inliner_jvm_test``\ 。
+
+.. _pass-catalog-indy-site-inliner:
+
+IndySiteInliner
+^^^^^^^^^^^^^^^
+
+- 一行条目：indy 站点内联——消费注入的 IndyResolver 产出，把混淆器家族的 invokedynamic 站点改写为直接成员调用；生成面语义两族（\ ``LambdaMetafactory``\ /\ ``StringConcatFactory``\ ）采集即排除，SPI 契约、改写判据矩阵与前后 jasm 对照见 :doc:`indy-inline-spec`\ （规格篇）。单测 ``indy_site_inliner_test``\ + JVM 真跑门 ``indy_site_inliner_jvm_test``\ 。
+- 链序：注册工厂无 resolver 时严格 no-op，插件/宿主层经构造注入 resolver 后生效；标签 ``scope:global``\ /\ ``stability:opt-in``\ 。
 
 .. _pass-catalog-redundant-invoke-remover:
 
@@ -227,6 +243,22 @@ GlobalStrPoolOptimizer
 - 拒绝面：任一类资源不可解析整件放弃（普查全量性）；改写方法 lower 或序列化失败整件放弃（两阶段提交）。改写是净栈中性替换，分支目标帧不漂移、无需帧再生。
 - 验收门：``global_str_pool_optimizer_test``\ 。
 - 链序：字符串内容面失效（改写返回 ``none()``\ ）——下游字符串常量假设须在本件之后重查。
+
+.. _pass-catalog-static-value-collection:
+
+StaticValueCollection
+^^^^^^^^^^^^^^^^^^^^^
+
+- 一行条目：静态常量收集（容器级只读件）——逐类评估 ``<clinit>``\ 走廊对本类 static 字段的常量/纯算术写，连同 static final 字段的既有 ConstantValue 属性面，产出 pinned 的 ``StaticValueView``\ （字节零改动）；走廊纯度、单写者普查、值面求值等逐桶判据见 :doc:`static-value-inlining-spec`\ （规格篇）。单测 ``static_value_collection_test``\ 。
+- 链序：视图 pinned 发布供物化件消费，与写侧 StaticFieldDefaultInliner 同管线可链、互不依赖；标签 ``scope:global``\ /\ ``stability:opt-in``\ 。
+
+.. _pass-catalog-static-value-inlining:
+
+StaticValueInlining
+^^^^^^^^^^^^^^^^^^^
+
+- 一行条目：GETSTATIC 读点物化——消费收集件发布的视图，把容器内命中读点原位物化为等值常量装载（消一次字段读）；读点位置、类别匹配、volatile 复核、CP 容量逐桶判据与前后 jasm 对照见 :doc:`static-value-inlining-spec`\ （规格篇）。单测 ``static_value_inlining_test``\ + JVM 真跑门 ``static_value_inlining_jvm_test``\ 。
+- 链序：链上没有收集件（或视图无内容）时严格 no-op，两件独立启停；标签 ``scope:global``\ /\ ``stability:opt-in``\ 。
 
 .. _pass-catalog-meta-family:
 
