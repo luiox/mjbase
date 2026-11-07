@@ -14,6 +14,7 @@
 #include "jbc/core/reader.hpp"
 #include "jbc/core/writer.hpp"
 
+#include "mjbase/analysis/cycle_class_scan.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/reference/global_reachability.hpp"
 #include "mjbase/reference/reference_index_analysis.hpp"
@@ -375,8 +376,9 @@ mjbase::spi::PreservedAnalyses EmptyClassRemover::run(mjbase::model::ResourceCon
 // ── UnusedClassRemover ───────────────────────────────────────────────────────
 
 UnusedClassRemover::UnusedClassRemover(
-    std::shared_ptr<const mjbase::reference::KeepRuleSet> keepRules)
-    : keepRules_(std::move(keepRules))
+    std::shared_ptr<const mjbase::reference::KeepRuleSet> keepRules,
+    bool removeInheritanceCycles)
+    : keepRules_(std::move(keepRules)), removeInheritanceCycles_(removeInheritanceCycles)
 {}
 
 mjbase::spi::PreservedAnalyses UnusedClassRemover::run(mjbase::model::ResourceContainer&     container,
@@ -433,9 +435,29 @@ mjbase::spi::PreservedAnalyses UnusedClassRemover::run(mjbase::model::ResourceCo
     mjbase::reference::GlobalReachability reachability;
     reachability.build(index, callGraph, resolvedCallGraph, options);
 
-    // 没有根（library jar、无 main、无资源根）时保持不变——调用方提供显式保留
-    // 策略前不删库型容器。
-    if (reachability.reachableClasses().empty()) return mjbase::spi::PreservedAnalyses::all();
+    // opt-in 循环继承腐坏判据（判据件 mjbase/analysis/cycle_class_scan）：
+    // 环类 JVM 装载必败（ClassCircularityError），删除判据独立于可达性闭包，
+    // 故在「无根保留」守卫之前求值；keep 名单此刻已含 keep 规则命中，命中的
+    // 环类照常保留（keep 面只加不减）。扫描集合只在本作用域存活，环名落成
+    // 自持 std::string。判据关闭时零额外扫描，行为与既有逐字节一致。
+    std::unordered_set<std::string> cycleNames;
+    if (removeInheritanceCycles_) {
+        const std::vector<mjbase::analysis::ScannedClass> scanned =
+            mjbase::analysis::scanClassResources(container);
+        for (const std::string_view name :
+             mjbase::analysis::findInheritanceCycleClasses(scanned)) {
+            if (resourceKeepNames.count(std::string(name)) == 0) {
+                cycleNames.emplace(name);
+            }
+        }
+    }
+
+    // 没有根（library jar、无 main、无资源根）且无环类命中时保持不变——
+    // 调用方提供显式保留策略前不删库型容器；环类装载必败，opt-in 判据不受
+    // 该守卫门控。
+    if (reachability.reachableClasses().empty() && cycleNames.empty()) {
+        return mjbase::spi::PreservedAnalyses::all();
+    }
 
     std::vector<std::string> toRemove;
     for (const auto& [uri, resource] : container.getResources()) {
@@ -450,7 +472,7 @@ mjbase::spi::PreservedAnalyses UnusedClassRemover::run(mjbase::model::ResourceCo
         if (className.empty()) {
             return mjbase::spi::PreservedAnalyses::all();
         }
-        if (!reachability.isClassReachable(className)) {
+        if (!reachability.isClassReachable(className) || cycleNames.count(className) != 0) {
             toRemove.emplace_back(uri);
         }
     }

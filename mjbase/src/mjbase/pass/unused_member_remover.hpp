@@ -128,6 +128,12 @@ private:
 ///
 /// @param keepRules 可选 keep 规则集（默认无）：规则命中的类进 keep 名单，其
 ///         声明方法同步提升为根方法（与资源 keep 同名类策略一致）。
+/// @param removeInheritanceCycles opt-in 循环继承腐坏判据（默认关，行为与
+///        既有逐字节一致）。开启后容器内环类（判据口径见
+///        doc:cycle-class-scan-spec）加入删除集：环类 JVM 装载必败
+///        （ClassCircularityError），判据独立于可达性，「无根整 pass 保留」
+///        守卫对环类删除不生效；keep 面（资源 keep 名单 + keep 规则）照常
+///        只加不减，命中的环类照常保留。
 ///
 /// @par 标签
 /// - `scope:global`
@@ -137,13 +143,15 @@ class UnusedClassRemover : public mjbase::spi::GlobalPass
 {
 public:
     explicit UnusedClassRemover(
-        std::shared_ptr<const mjbase::reference::KeepRuleSet> keepRules = nullptr);
+        std::shared_ptr<const mjbase::reference::KeepRuleSet> keepRules = nullptr,
+        bool removeInheritanceCycles = false);
 
     mjbase::spi::PreservedAnalyses run(mjbase::model::ResourceContainer&     container,
                                        mjbase::spi::GlobalAnalysisManager& am) override;
 
 private:
     std::shared_ptr<const mjbase::reference::KeepRuleSet> keepRules_;
+    bool removeInheritanceCycles_ = false;
 };
 
 /// @brief 从可达类中删除不可达字段（档位决定可见性候选面，默认非 public）。
