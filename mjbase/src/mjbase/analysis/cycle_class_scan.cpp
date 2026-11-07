@@ -26,8 +26,8 @@ struct CycleNode
 std::vector<std::string_view> findInheritanceCycleClasses(
     const std::vector<ScannedClass>& scanned)
 {
-    // 节点登记：同名重复扫描类首个成节点，后续同名类不另立节点（判据按名
-    // 报告，视角下是同一类身份；其边不再并入，口径确定且与登记序无关）。
+    // 节点登记：同名重复扫描类首个成节点（先到先得），后续同名类不另立
+    // 节点、其边不再并入——判据按名报告，同一内部名视角下是同一类身份。
     std::unordered_map<std::string_view, ca::usize> byName;
     std::vector<CycleNode>                          nodes;
     nodes.reserve(scanned.size());

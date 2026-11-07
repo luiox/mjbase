@@ -224,8 +224,9 @@ TEST(MjPassUnusedClassRemoverCycleTest, OptInKeepGuardPreservesKeptCycleClass)
     mjbase::model::ResourceContainer container;
     addReachableCycleFixture(container);
     const auto before = snapshotClassBytes(container);
-    // META-INF/services：服务名与提供者内容行均进资源 keep 名单，内容行点名 X。
-    const std::string service = "com.example.X\n";
+    // META-INF/services：服务名与提供者内容行均进资源 keep 名单，内容行以类
+    // 内部名点名 X（内容行走二名 '.'→'/' 归一，"X" 即类内部名）。
+    const std::string service = "X\n";
     container.addResource(
         "META-INF/services/com.example.X",
         std::make_unique<mjbase::model::UnknownResource>(

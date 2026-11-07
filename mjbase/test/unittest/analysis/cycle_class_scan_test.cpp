@@ -179,17 +179,36 @@ TEST(MjAnalysisCycleClassScanTest, SecondScanIsIdempotent)
     expectCycles(scanCycleNamesSorted(container), first);
 }
 
-// 用例：同名重复扫描类合并到首个节点（后续同名类不另立节点、边不并入）。
-// 第二份 Dup 的 super 指向 Dup 自己——若边被并入会产自环伪命中，零命中
-// 即钉死「不并入」口径。
+// 用例：同名重复扫描类首个成节点（先到先得）——后到同名类的边不并入。
+// 容器迭代序对同名重复条目不保证先后，直接构造扫描集合控制两个方向：
+// 自环变体先到 → 按名报告 {"Dup"}；正常变体先到 → 自环边不并入，零命中。
 TEST(MjAnalysisCycleClassScanTest, DuplicateNamesCollapseToFirstNode)
 {
-    mjbase::model::ResourceContainer container;
-    addJasmClass(container, "Dup", "java/lang/Object");
-    // 同一内部名第二份资源（super 指向自身，边不并入才零命中）。
-    addClassResource(container, "Dup-again.class",
-                     assembleClass("Dup", "Dup", ""));
-    expectCycles(scanCycleNamesSorted(container), {});
+    const Bytes selfSuper = assembleClass("Dup", "Dup", "");
+    const Bytes normal    = assembleClass("Dup", "java/lang/Object", "");
+    const auto makeScanned = [](const Bytes& bytes) {
+        auto made = jbc::ir::makeSessionFromBytes(
+            jbc::core::ByteView{bytes.data(), bytes.size()});
+        EXPECT_TRUE(made.is_ok());
+        if (made.is_err()) return mjbase::analysis::ScannedClass{};
+        mjbase::analysis::ScannedClass scanned;
+        scanned.session = std::move(made).unwrap();
+        scanned.name =
+            scanned.session->unit().symbols().str(scanned.session->unit().thisClass);
+        return scanned;
+    };
+
+    const auto cycleNamesOf = [](const std::vector<mjbase::analysis::ScannedClass>& scanned) {
+        std::vector<std::string> names;
+        for (const std::string_view name :
+             mjbase::analysis::findInheritanceCycleClasses(scanned)) {
+            names.emplace_back(name);
+        }
+        return names;
+    };
+
+    expectCycles(cycleNamesOf({makeScanned(selfSuper), makeScanned(normal)}), {"Dup"});
+    expectCycles(cycleNamesOf({makeScanned(normal), makeScanned(selfSuper)}), {});
 }
 
 // 用例：畸形类字节 fail-open（scanClassResources 跳过，不产出事实），
