@@ -3,7 +3,7 @@
 全程序方法可达闭包入分析数据库设计（analysis-db schema v9，#159）
 =================================================================
 
-状态：草案，2026-11-05。待评审，未落地。analysis-db 总体设计与身份模型见 :ref:`analysis-db`\ ；本设计是 #159（全程序方法可达闭包，CHA 先行 / RTA 后置）的落地定案：闭包输入源、CHA 语义口径、落库形态、失效与版本门四个决策点全部裁决，PoC 数字见 §7。既有内存态可达性设施（reference 模块 GlobalReachability / ResolvedCallGraph）不动；本设计把闭包作为派生事实落入分析库，供 callgraph 类工具与普查投影扩展消费。
+状态：定稿，已落地。analysis-db 总体设计与身份模型见 :ref:`analysis-db`\ ；本设计已落地定案（全程序方法可达闭包，CHA 先行 / RTA 后置）：闭包输入源、CHA 语义口径、落库形态、失效与版本门四个决策点全部裁决，PoC 数字见 §7。既有内存态可达性设施（reference 模块 GlobalReachability / ResolvedCallGraph）不动；本设计把闭包作为派生事实落入分析库，供 callgraph 类工具与普查投影扩展消费。
 
 1. 现状与问题
 -------------
