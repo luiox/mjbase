@@ -12,7 +12,7 @@ mjbase pass 族目录（pass-catalog）
 覆盖面与分族
 ------------
 
-覆盖面是 ``mjbase/src/mjbase/pass/default_pass_registry.cpp``\ 注册的全部 82 个 pass：22 个容器级（``GlobalPass``\ ）、21 个类级（``ClassPass``\ ）、39 个方法级（``MethodPass``\ ）。分族依据是注册表标签（``scope``\ /\ ``action``\ /\ ``stability``\ ）与各头注自报的家族名，按职责分十族；成员清单与族内分工全部以现状为准。
+覆盖面是 ``mjbase/src/mjbase/pass/default_pass_registry.cpp``\ 注册的全部 84 个 pass：23 个容器级（``GlobalPass``\ ）、21 个类级（``ClassPass``\ ）、40 个方法级（``MethodPass``\ ）。分族依据是注册表标签（``scope``\ /\ ``action``\ /\ ``stability``\ ）与各头注自报的家族名，按职责分十族；成员清单与族内分工全部以现状为准。
 
 两个全族惯例：
 
@@ -90,6 +90,14 @@ KotlinNameRestorer
 
 - 一行条目：Kotlin 名还原——消费 Kotlin Metadata 收集件（``KotlinMetadataCollectionAnalysis``\ ）的模型与双向类名映射，按「描述符唯一匹配」产类/成员改名映射（属性 field/getter/setter 三槽 + 函数扩展接收者首参 + JvmName 注解类名兜底 + setter mutability 门 + ``$``\ 合成名消解），产出 ``IntermediateMapping``\ 家族映射挂容器 AM，字节零改动；逐条判据（唯一匹配口径、访问器命名约定、冲突消解优先级）与 Recaf 差异申报见 :doc:`kotlin-name-restoration-spec`\ （规格篇）。单测 ``kotlin_name_restoration_test``\ 。
 - 链序：只产映射不改名，改名执行交映射消费面组合，依赖收集件经同一容器 AM 惰性取（还原 pass 壳幂等自举）；标签 ``scope:global``\ /\ ``stability:opt-in``\ 。
+
+.. _pass-catalog-source-name-restorer:
+
+SourceNameRestorer
+^^^^^^^^^^^^^^^^^^
+
+- 一行条目：源文件名还原——类 ``SourceFile``\ 属性值与类名不一致时产类名映射（真值源 = SourceFile）：值整体匹配「1..50 个 ASCII word 字符 + .java/.kt 后缀」且剥离后缀的源名为合法 Java 标识符（Recaf 无标识符门，本件收紧）时，按「包前缀 + 源名」产 ``addClass``\ 条目挂容器 AM，已正名零条目，字节零改动；具名内部类（InnerClasses 本类行带 outer）与匿名/局部形态（EnclosingMethod）跳过——它们沿用外围类 SourceFile，不跳过会与外围类映射相撞。逐条判据与 Recaf 差异申报（形状门 ASCII 显式化、标识符门收紧、同目标冲突不消解）见 ``source_name_restoration.hpp``\ 头注。单测 ``source_name_restoration_test``\ 。
+- 链序：只产映射不改名，改名执行交映射消费面组合；标签 ``scope:global``\ /\ ``stability:opt-in``\ 。
 
 .. _pass-catalog-global-structure:
 
@@ -866,6 +874,17 @@ TryCatchCleanup
 - 判据锚：透明重抛须 handler 不被共享、正常流不可达、无重叠表项；NPE 形与自捕抛形有栈深门槛与锚入标签守卫。
 - 拒绝面：域分析失败、JSR/RET、描述符或标签解析不齐——对应规则放弃、保守保留；乱序条目保留（合法类文件允许）；任一不确定整条保留。
 - 验收门：``try_catch_cleanup_test``\ 。
+
+.. _pass-catalog-duplicate-catch-merging:
+
+DuplicateCatchMerging
+^^^^^^^^^^^^^^^^^^^^^
+
+- 职责：重复 catch 表项合并——表序相邻 + 同 handler 锚点 + 同 catch 类型面 + 区间无间隙的两表项并为一条（保护区取并集），零指令改写、handler 入口 pc 与 StackMapTable 帧表不动（不越 TryCatchCleanup 的界：不做不可抛删除）。
+- 判据锚：表序相邻（中间表项会在并集区间内抢先命中，不保真）、start/handler 可锚定且区间非空、handler 解析到同一指令（同锚即同体）、类型面同型（双方 any 视为同面）、min(end) >= max(start)（相切/相交/包含均并）。
+- 拒绝面：异型对不并（联合面在单 catchCp 编码下只有 any 可表达，扩 any 会把其他异常类型引入 handler）；有间隙不并（并集新保护间隙指令）；悬空 start/handler 或空区间不并；catchCp 畸形不并。Recaf 原件的体去重面（不同 handler 体一致 → 剪体 + GOTO 重定向 + 帧重算）不在本件（指令面改写，依赖帧链接线），差异逐条申报见头注。
+- 验收门：``duplicate_catch_merging_test``\ 。
+- 链序：与 TryCatchCleanup 同族正交（本件只缩表项数、不改指令），幂等二跑 no-op。
 
 .. _pass-catalog-redundant-jump-remover:
 
