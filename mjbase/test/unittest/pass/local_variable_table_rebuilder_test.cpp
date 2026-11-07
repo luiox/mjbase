@@ -477,10 +477,11 @@ TEST(MjPassLocalVariableTableRebuilderTest, KeepsObjectSlotAndCarriesThis)
         expectRows(readLvtRows(*run.session), {{8, 2, "obj", "Ljava/lang/Object;", 1}});
     }
     {
-        // 实例方法 this 行：可信名 + 声明 desc 与种子一致 → 逐字保留。
+        // 实例方法 this 行：陈旧行（越界 length）重写回界内时，可信名 +
+        // 种子一致的声明 desc 逐字保留。
         const Bytes bytes =
             withLvt(assembleClass("IR", "public m ()V", kThisBody), 0,
-                    {{0, 3, "this", "LIR;", 0}});
+                    {{0, 9, "this", "LIR;", 0}});
         const auto run = runRebuild(bytes);
         EXPECT_TRUE(run.pa.changed());
         expectRows(readLvtRows(*run.session), {{0, 3, "this", "LIR;", 0}});
