@@ -56,7 +56,7 @@ JarError::Kind writeErrorKind(ca::fs::FsError e)
     }
 }
 
-// 将收集的条目写入 jar：排序 → 生成目录条目 → 写入文件条目（DEFLATE 压缩）
+// 将收集的条目写入 jar：排序 → 目录条目政策保持 → 写入文件条目（DEFLATE 压缩）
 Result<void, JarError> writeArchive(const Utf8StringRef& path, Collector& collector)
 {
     auto dosTime = current_dos_time();
@@ -69,18 +69,20 @@ Result<void, JarError> writeArchive(const Utf8StringRef& path, Collector& collec
     });
 
     jzip::ZipArchive                archive;
-    std::unordered_set<std::string> dirs;
+    std::unordered_set<std::string> writtenDirNames;
 
     for (auto& [name, data] : collector.entries) {
         auto entryName = normalize_path(name.to_std_string());
 
-        // 为每级路径创建 STORED 目录条目（仅首次遇到时）
-        auto slash = entryName.find('/');
-        while (slash != std::string::npos) {
-            std::string dirPath = entryName.substr(0, slash + 1);
-            if (dirs.insert(dirPath).second) {
+        // 目录条目政策：只保留调用方显式给出的目录条目（名字以 '/' 结尾，
+        // 内容忽略），不为文件条目自动补父目录占位——输入 jar 没有目录条目
+        // 时产物一个目录占位都不造（boar-main.jar 实证：旧实现为每个文件
+        // 条目凭空补 'META-INF/'、'grunteon/' 等 STORED 占位，纯结构污染；
+        // JVM 忽略目录条目，占位无任何语义收益）；输入已有的原样保留。
+        if (!entryName.empty() && entryName.back() == '/') {
+            if (writtenDirNames.insert(entryName).second) {
                 auto dirEntry = std::make_unique<jzip::LocalFileHeader>();
-                dirEntry->setFileName(dirPath);
+                dirEntry->setFileName(entryName);
                 dirEntry->setCompressionMethod(0);   // STORED
                 dirEntry->setCompressedSize(0);
                 dirEntry->setUncompressedSize(0);
@@ -91,11 +93,8 @@ Result<void, JarError> writeArchive(const Utf8StringRef& path, Collector& collec
                 dirEntry->setOffset(0);
                 archive.addPart(std::move(dirEntry));
             }
-            slash = entryName.find('/', slash + 1);
+            continue;
         }
-
-        // 跳过纯目录条目（已在上面处理）
-        if (!entryName.empty() && entryName.back() == '/') continue;
 
         // 计算 CRC32 并对非空数据执行 DEFLATE 压缩
         auto       local = std::make_unique<jzip::LocalFileHeader>();
