@@ -21,6 +21,7 @@ mjbase 设计规格
    analysis-cache-and-container-stack
    reachability-closure-design
    method-inliner
+   stack-op-expander
    pass-contract
    pass-catalog
    plugin-api
