@@ -13,6 +13,8 @@ mjbase 设计规格
    :caption: 设计与契约
 
    analysis-database
+   semantic-fp-spec
+   library-identification
    analysis-project-schema-v2
    analysis-cache-and-container-stack
    reachability-closure-design
