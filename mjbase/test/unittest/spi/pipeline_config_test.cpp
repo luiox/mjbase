@@ -403,6 +403,37 @@ TEST(PipelineConfigTest, RejectsDuplicateParamKey)
         PipelineConfigErrorKind::InvalidField, "duplicate param key");
 }
 
+//-- 声明表扩面：LocalVariableTableRebuilder（#180 注册接线批） ------------
+
+TEST(PipelineConfigTest, LoadsLocalVariableTableRebuilderPrefixParam)
+{
+    const auto loaded = loadPipelineConfig(
+        R"json({"version":1,"passes":[{"pass":"LocalVariableTableRebuilder",
+                                        "params":{"prefix":"v"}}]})json",
+        defaultPassRegistry());
+    ASSERT_TRUE(loaded.is_ok()) << loaded.unwrap_err().detail;
+    const LoadedPipelineConfig config = loaded.unwrap();
+    ASSERT_EQ(config.sequence.size(), static_cast<ca::usize>(1));
+    EXPECT_EQ(config.sequence[0].scope, PassScope::Class);
+    ASSERT_EQ(config.sequence[0].params.size(), static_cast<ca::usize>(1));
+    EXPECT_EQ(config.sequence[0].params[0].key, "prefix");
+    EXPECT_EQ(config.sequence[0].params[0].value.kind(), PipelineConfigParamKind::String);
+    ASSERT_TRUE(std::holds_alternative<std::string>(config.sequence[0].params[0].value.value));
+    EXPECT_EQ(std::get<std::string>(config.sequence[0].params[0].value.value), "v");
+}
+
+TEST(PipelineConfigTest, RejectsLocalVariableTableRebuilderUndeclaredAndMismatchedParams)
+{
+    // mode 是枚举面（Rebuild/Drop），不在 v1 标量家族：键按 UnknownParamKey
+    // 拒，声明随 phase 2 注入接线落（doc:pipeline-config-spec 分阶段口径）。
+    expectRejected(
+        R"json({"version":1,"passes":[{"pass":"LocalVariableTableRebuilder","params":{"mode":"drop"}}]})json",
+        PipelineConfigErrorKind::UnknownParamKey, "mode");
+    expectRejected(
+        R"json({"version":1,"passes":[{"pass":"LocalVariableTableRebuilder","params":{"prefix":42}}]})json",
+        PipelineConfigErrorKind::ParamTypeMismatch, "prefix");
+}
+
 TEST(PipelineConfigTest, RejectsParamsOnPassWithoutDeclaredSchema)
 {
     expectRejected(

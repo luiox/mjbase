@@ -78,6 +78,13 @@ const std::vector<PassParamSchema>& paramSchemaTable()
           {"replaceNames", PipelineConfigParamKind::Bool},
           {"prefix",       PipelineConfigParamKind::String}},
         },
+        // LocalVariableTableRebuilderOptions 标量面：仅 prefix（String）。
+        // mode 是枚举（Rebuild/Drop），不在 v1 标量家族——JSON 编码随 phase 2
+        // 「参数 → 工厂闭包注入」接线一并落（此前携带 mode 键按 UnknownParamKey
+        // 拒，注册表工厂无参是既定契约，见 doc:pipeline-config-spec）。
+        {"LocalVariableTableRebuilder",
+         {{"prefix", PipelineConfigParamKind::String}},
+        },
     };
     return table;
 }

@@ -41,8 +41,8 @@
 /// 失败降 BestEffort（本 pass 只有单会话层次图，跨类合并需求更弱），
 /// 仍失败则仅按存储指令推导基本类型，引用类型落声明或 Object。
 ///
-/// 本 pass opt-in：default pass registry 未注册、默认链不收，调用方经
-/// 显式构造实例或自定义管线挂点驱动。
+/// 本 pass opt-in：已注册默认表（LocalVariableTableRebuilder，scope:class），
+/// 默认链不收——经管线配置直引启用或显式构造实例驱动。
 #pragma once
 
 #include <string>

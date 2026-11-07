@@ -367,6 +367,13 @@ SpecificAnnotationRemover
 - 拒绝面：布局不符/截尾整槽保守保持原样；部分摘除留槽（参数行数与行序保持）。
 - 验收门：家族套件 + golden 对拍（SpecificAnnotationRemover 道）。
 
+.. _pass-catalog-local-variable-table-rebuilder:
+
+LocalVariableTableRebuilder
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- 一行条目（调试表收口独立件，非本节清理家族 14 件成员）：变换后 LVT 按存活区间重算（保真口径：可信名/描述符沿用原表可验证项，落 ``var<槽位>``\ 兜底）或显式丢弃口径摘除 LVT/LVTT；与 LocalVariableAnnotator（规范化件）的边界、两口径与幂等声明见 ``local_variable_table_rebuilder.hpp``\ 头注。单测 ``local_variable_table_rebuilder_test``\ 。标签 ``scope:class``\ /\ ``stability:opt-in``\ （改写所有产物的调试表形态，默认链不收，经管线配置显式启用）。
+
 .. _pass-catalog-class-const-skeleton:
 
 5. 类级常量与骨架面
