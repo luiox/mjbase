@@ -57,7 +57,7 @@ import java.util.function.IntUnaryOperator;
 public class Sample {
     public static int secret(int x) { return x * 3; }
     public static int secret2(int x) { return x + 100; }
-    public static String vHello() { return "v-ok"; }
+    public String vHello() { return "v-ok"; }
     public static Sample make() { return new Sample(); }
     public static IntUnaryOperator triple() { return x -> x * 7; }
     public static String concat(int x) { return "c" + x + "d"; }

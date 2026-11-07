@@ -215,7 +215,8 @@ std::string virtualFixture()
            + std::string(kStubBsm)
            + "    .method public mul (I)I {\n"
              "      code: {\n"
-             "        bipush 2\n"
+             "        iload_1\n"
+             "        iload_1\n"
              "        imul\n"
              "        ireturn\n"
              "      }\n"
@@ -269,6 +270,7 @@ std::string shuffleFixture()
            + std::string(kStubBsm)
            + "    .method public static real2 (I)I {\n"
              "      code: {\n"
+             "        iload_0\n"
              "        bipush 3\n"
              "        imul\n"
              "        ireturn\n"
