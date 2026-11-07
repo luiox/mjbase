@@ -33,6 +33,20 @@ Result<ca::core::Bytes, JarError> readFileBytes(const Utf8StringRef& path)
     return Ok(std::move(bytes).unwrap());
 }
 
+// 条目内容解析的读侧统一收口：零长条目（CEN 权威未压缩大小为 0）按规范内容
+// 恒为空，直接回空、不进 jzip 的解压通路。背景：jzip 的 JvmZipReader 对 0 字节
+// STORED 条目按"扫到下一签名"推断数据区（ceiling 取 upper_bound，恰好跳过落在
+// 数据起点上的下一头），把相邻原始头字节（LFH/CEN/EOCD）当条目内容回吐；CEN
+// 收养侧对显式大小 0 不做重对齐，垃圾直达 decompressLocalFile 的 STORED 直通。
+// 该缺陷与条目名无关——目录占位条目（现实中全为 0 字节 STORED）与普通 0 字节
+// 文件条目同踩此路径。对 CEN 权威大小为 0 的 DEFLATED 条目同样回空（空 deflate
+// 流解压结果亦为空，行为一致少一次解压）；大小非 0 的条目零改动。
+std::vector<ca::u8> entryContent(const jzip::LocalFileHeader& local)
+{
+    if (local.getUncompressedSize() == 0) return {};
+    return jzip::ZipIO::decompressLocalFile(local);
+}
+
 }   // namespace
 
 // ── IJarReader 基类默认实现：转调无进度 read，index/total 传 0（未知）──
@@ -57,7 +71,7 @@ Result<void, JarError> JarReader::read(
 
     auto archive = jzip::ZipIO::readStandard(jzip::MemorySegment(bytes.as_ptr(), bytes.len()));
     for (const auto* local : archive.getLocalFiles())
-        consumer(decodeEntryName(local->getFileName()), jzip::ZipIO::decompressLocalFile(*local));
+        consumer(decodeEntryName(local->getFileName()), entryContent(*local));
     return Ok();
 }
 
@@ -74,8 +88,7 @@ Result<void, JarError> JarReader::readWithProgress(const ProgressConsumer& consu
     int         index  = 0;
     for (const auto* local : locals) {
         ++index;   // 1-based
-        consumer(index, total, decodeEntryName(local->getFileName()),
-                 jzip::ZipIO::decompressLocalFile(*local));
+        consumer(index, total, decodeEntryName(local->getFileName()), entryContent(*local));
     }
     return Ok();
 }
@@ -95,7 +108,7 @@ Result<void, JarError> JvmJarReader::read(
     auto archive = jzip::ZipIO::readJvm(jzip::MemorySegment(bytes.as_ptr(), bytes.len()));
     lastReadReport_ = archive.getReadReport();
     for (const auto* local : archive.getLocalFiles())
-        consumer(decodeEntryName(local->getFileName()), jzip::ZipIO::decompressLocalFile(*local));
+        consumer(decodeEntryName(local->getFileName()), entryContent(*local));
     return Ok();
 }
 
@@ -112,8 +125,7 @@ Result<void, JarError> JvmJarReader::readWithProgress(const ProgressConsumer& co
     int         index   = 0;
     for (const auto* local : locals) {
         ++index;
-        consumer(index, total, decodeEntryName(local->getFileName()),
-                 jzip::ZipIO::decompressLocalFile(*local));
+        consumer(index, total, decodeEntryName(local->getFileName()), entryContent(*local));
     }
     return Ok();
 }

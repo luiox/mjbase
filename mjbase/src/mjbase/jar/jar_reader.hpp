@@ -53,6 +53,8 @@ public:
     virtual ~IJarReader() = default;
 
     /// 读取 jar，每个条目调用一次 consumer。
+    /// 零长条目（含目录占位条目）按规范回空内容——不透出 jzip readJvm 对
+    /// 0 字节 STORED 条目的"扫到下一签名"推断结果（邻接头字节）。
     /// @param consumer 回调<条目路径, 条目内容>
     virtual Result<void, JarError> read(
         const std::function<void(const Utf8String&, const std::vector<ca::u8>&)>& consumer) = 0;
