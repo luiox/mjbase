@@ -2,7 +2,9 @@
 // 走廊算术折叠 / ConstantValue 属性面）+ 拒绝面逐桶（volatile / 多次写 /
 // 非 clinit 写 / 他类写 / 走廊不纯 / 父链不纯 / 父链容器外 / 预算 /
 // 不可解析类）+ 只读面（容器字节恒等）+ 幂等二跑 + 注册面 scope。
-// 夹具经 shared/structural_pass_util.hpp 手拼 classfile；视图经同一
+// 夹具一律 jasm 文本装配（JvmJasmService，一下一个类）；jasm 文本面不载
+// 字段属性，ConstantValue 桶经 SFDI 同款写面（AttrSlot::makeNew + RawAttr
+// 二字节载荷）挂载——「SFDI 前道工序产出」的构成实样。视图经同一
 // GlobalAnalysisManager 的 pinned 面读取。
 #include <gtest/gtest.h>
 
@@ -10,9 +12,14 @@
 #include <string>
 #include <vector>
 
-#include "jbc/core/opcode.hpp"
+#include "jbc/core/attribute.hpp"
+#include "jbc/core/class_file.hpp"
+#include "jbc/core/writer.hpp"
+#include "jbc/ir/units.hpp"
+#include "libca/str/utf16_string.hpp"
 #include "libca/str/utf8_string_arena.hpp"
 
+#include "mjbase/jasm/jvm_jasm_service.hpp"
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/pass/static_value_collection.hpp"
 #include "mjbase/spi/analysis_manager.hpp"
@@ -24,67 +31,114 @@ using namespace mjbase::test;
 
 namespace {
 
-constexpr ca::u16 kAccPublicStatic       = 0x0009;
-constexpr ca::u16 kAccPublicStaticFinal  = 0x0019;
-constexpr ca::u16 kAccPublicStaticVol    = 0x0049;
-constexpr ca::u16 kAccStaticMethod       = 0x0008;
-
-Bytes u16b(ca::u16 v) { return {static_cast<ca::u8>(v >> 8), static_cast<ca::u8>(v)}; }
-
-Bytes cat(Bytes a, const Bytes& b)
+/// UTF-8 → UTF-16（jasm 服务入参口径）。
+ca::str::Utf16String utf16Of(const std::string& s)
 {
-    a.insert(a.end(), b.begin(), b.end());
-    return a;
+    return ca::str::Utf16String::from_utf8_string(ca::str::Utf8StringRef::from_data(
+        reinterpret_cast<const ca::u8*>(s.data()), s.size()));
 }
 
-Bytes bipush(ca::i8 v) { return {0x10, static_cast<ca::u8>(v)}; }
-Bytes sipush(ca::u16 v) { return cat({0x11}, u16b(v)); }
-Bytes putStatic(ca::u16 cp) { return cat({0xb3}, u16b(cp)); }
-Bytes getStatic(ca::u16 cp) { return cat({0xb2}, u16b(cp)); }
-// invokeStatic 用 shared/structural_pass_util.hpp 的同名件（避免重载歧义）。
-Bytes ldc2wLong(ca::u16 cp) { return cat({0x14}, u16b(cp)); }
-Bytes ldc1(ca::u16 cp) { return {0x12, static_cast<ca::u8>(cp)}; }
-
-const Bytes kReturn = {0xb1};
-const Bytes kIReturn = {0xac};
-
-/// 读点类：m()I 里 GETSTATIC T.a; IRETURN。
-FixtureBuilder readerFixture(const char* cls)
+/// jasm 文本汇编为 class 字节（一下一个类；汇编失败即测试失败）。
+/// superName 用 internal name；body 为类体文本（.field / .method 声明序列）。
+Bytes assembleClass(const std::string& internalName, const std::string& superName,
+                    const std::string& body)
 {
-    FixtureBuilder b(cls);
-    const ca::u16 fld = b.fieldRef("T", "a", "I");
-    b.addMethod({"m", "()I", cat(getStatic(fld), kIReturn), kAccPublicStatic});
-    return b;
+    mjbase::jasm::JvmJasmService service;
+    const std::string source = ".super " + superName +
+                               "\n.class public super " + internalName + " {\n" +
+                               body + "}\n";
+    const auto sourceName = utf16Of(internalName + ".jasm");
+    const auto sourceText = utf16Of(source);
+    const auto result     = service.assemble(sourceName.ref(), sourceText.ref());
+    if (!result.isOk() || !result.value.has_value()) {
+        for (const auto& d : result.diagnostics) {
+            ADD_FAILURE() << "jasm: " << d.message.to_utf8_string().to_std_string();
+        }
+        ADD_FAILURE() << "jasm 汇编失败: " << internalName;
+        return {};
+    }
+    return result.value->bytes;
 }
 
-/// 伴生常量类 T：I/J/D/F/String 五字段 + clinit 各写一条常量。
-FixtureBuilder constClassFixture()
+/// 伴生常量类 T：五族字段 + clinit 各写一条常量。
+Bytes constClassFixture()
 {
-    FixtureBuilder b("T");
-    b.addField({"a", "I", kAccPublicStatic});
-    b.addField({"e", "J", kAccPublicStatic});
-    b.addField({"f", "D", kAccPublicStatic});
-    b.addField({"g", "F", kAccPublicStatic});
-    b.addField({"s", "Ljava/lang/String;", kAccPublicStatic});
-    const ca::u16 ai  = b.fieldRef("T", "a", "I");
-    const ca::u16 ei  = b.fieldRef("T", "e", "J");
-    const ca::u16 fi  = b.fieldRef("T", "f", "D");
-    const ca::u16 gi  = b.fieldRef("T", "g", "F");
-    const ca::u16 si  = b.fieldRef("T", "s", "Ljava/lang/String;");
-    const ca::u16 lc  = b.longConst(72057594037927936L);
-    const ca::u16 str = b.strConst("hello-const");
-    Bytes code;
-    appendBytes(code, cat(bipush(42), putStatic(ai)));
-    appendBytes(code, ldc2wLong(lc));
-    appendBytes(code, putStatic(ei));
-    appendBytes(code, {0x0e});                    // dconst_0
-    appendBytes(code, putStatic(fi));
-    appendBytes(code, {0x0b});                    // fconst_0
-    appendBytes(code, putStatic(gi));
-    appendBytes(code, cat(ldc1(str), putStatic(si)));
-    appendBytes(code, kReturn);
-    b.addMethod({"<clinit>", "()V", std::move(code), kAccStaticMethod});
-    return b;
+    return assembleClass("T", "java/lang/Object",
+                         "  .field public static a I\n"
+                         "  .field public static e J\n"
+                         "  .field public static f D\n"
+                         "  .field public static g F\n"
+                         "  .field public static s Ljava/lang/String;\n"
+                         "\n"
+                         "  .method static <clinit> ()V {\n"
+                         "    code: {\n"
+                         "      bipush 42\n"
+                         "      putstatic T.a I\n"
+                         "      ldc 72057594037927936L\n"
+                         "      putstatic T.e J\n"
+                         "      dconst_0\n"
+                         "      putstatic T.f D\n"
+                         "      fconst_0\n"
+                         "      putstatic T.g F\n"
+                         "      ldc \"hello-const\"\n"
+                         "      putstatic T.s Ljava/lang/String;\n"
+                         "      return\n"
+                         "    }\n"
+                         "  }\n");
+}
+
+/// 读点类 R：m()I 读 T.a；n 读 T.s；l()J 读 T.e（cls 仅定类名）。
+Bytes readerFixture(const char* cls)
+{
+    return assembleClass(std::string(cls), "java/lang/Object",
+                         "  .method public static m ()I {\n"
+                         "    code: {\n"
+                         "      getstatic T.a I\n"
+                         "      ireturn\n"
+                         "    }\n"
+                         "  }\n"
+                         "  .method public static n ()Ljava/lang/String; {\n"
+                         "    code: {\n"
+                         "      getstatic T.s Ljava/lang/String;\n"
+                         "      areturn\n"
+                         "    }\n"
+                         "  }\n"
+                         "  .method public static l ()J {\n"
+                         "    code: {\n"
+                         "      getstatic T.e J\n"
+                         "      lreturn\n"
+                         "    }\n"
+                         "  }\n");
+}
+
+/// 经 SFDI 同款写面（AttrSlot::makeNew + RawAttr）给字段挂
+/// ConstantValue(int 42)（JVMS 4.7.2 体恰为 u2 CP 索引）：构成「SFDI 前道
+/// 工序产出」的实样，收集件属性面照收。
+Bytes withConstantValueInt42(const Bytes& assembled, const std::string& fieldName)
+{
+    auto made = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(assembled));
+    EXPECT_TRUE(made.is_ok());
+    if (made.is_err()) return {};
+    auto                  session = std::move(made).unwrap();
+    jbc::core::ClassFile& cf      = session->backing();
+    const ca::u32         nameCp  = session->internString("ConstantValue");
+    const ca::u32         valCp   = session->internInteger(42);
+    Bytes                 payload;
+    putU16(payload, static_cast<ca::u16>(valCp));
+    bool hit = false;
+    for (jbc::core::MemberInfo& f : cf.fields) {
+        if (cf.nameOf(f) != fieldName) continue;
+        f.attrs.push_back(jbc::core::AttrSlot::makeNew(
+            nameCp, std::make_unique<jbc::core::RawAttr>(payload)));
+        hit = true;
+        break;
+    }
+    EXPECT_TRUE(hit) << "field not found: " << fieldName;
+    if (!hit) return {};
+    auto written = jbc::core::writeClass(cf);
+    EXPECT_TRUE(written.is_ok());
+    if (written.is_err()) return {};
+    return std::move(written).unwrap();
 }
 
 /// 收集件 + 同一 GAM；返回发布视图（无内容为 nullptr）。
@@ -112,9 +166,9 @@ Bytes resourceBytes(mjbase::model::ResourceContainer& container, const std::stri
 TEST(MjPassStaticValueCollectionTest, CollectsClinitConstantsIntoView)
 {
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", constClassFixture().assemble());
+    addClassResource(container, "T.class", constClassFixture());
     // 读点类同场：收集件只读，不要求读点存在/不被读点形态牵连。
-    addClassResource(container, "R.class", readerFixture("R").assemble());
+    addClassResource(container, "R.class", readerFixture("R"));
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
 
@@ -144,21 +198,27 @@ TEST(MjPassStaticValueCollectionTest, CollectsClinitConstantsIntoView)
 
 TEST(MjPassStaticValueCollectionTest, FoldsCorridorArithmetic)
 {
-    FixtureBuilder b("T");
-    b.addField({"x", "I", kAccPublicStatic});
-    b.addField({"y", "I", kAccPublicStatic});
-    const ca::u16 xi = b.fieldRef("T", "x", "I");
-    const ca::u16 yi = b.fieldRef("T", "y", "I");
-    Bytes code;
-    appendBytes(code, cat(cat(bipush(20), bipush(22)), {0x60}));    // 20+22
-    appendBytes(code, putStatic(xi));
-    appendBytes(code, cat(cat(sipush(1000), bipush(2)), {0x68}));   // 1000*2
-    appendBytes(code, putStatic(yi));
-    appendBytes(code, kReturn);
-    b.addMethod({"<clinit>", "()V", std::move(code), kAccStaticMethod});
+    const Bytes t = assembleClass(
+        "T", "java/lang/Object",
+        "  .field public static x I\n"
+        "  .field public static y I\n"
+        "\n"
+        "  .method static <clinit> ()V {\n"
+        "    code: {\n"
+        "      bipush 20\n"
+        "      bipush 22\n"
+        "      iadd\n"
+        "      putstatic T.x I\n"
+        "      sipush 1000\n"
+        "      bipush 2\n"
+        "      imul\n"
+        "      putstatic T.y I\n"
+        "      return\n"
+        "    }\n"
+        "  }\n");
 
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", b.assemble());
+    addClassResource(container, "T.class", t);
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
 
@@ -174,16 +234,18 @@ TEST(MjPassStaticValueCollectionTest, FoldsCorridorArithmetic)
 
 TEST(MjPassStaticValueCollectionTest, HarvestsConstantValueAttribute)
 {
-    FixtureBuilder b("T");
-    b.addField({"k", "I", kAccPublicStaticFinal, {{"ConstantValue", [&b] {
-        Bytes p;
-        putU16(p, b.intConst(42));
-        return p;
-    }()}}});
-    b.addMethod({"m", "()V", kReturn, kAccPublicStatic});
+    const Bytes t = withConstantValueInt42(
+        assembleClass("T", "java/lang/Object",
+                      "  .field public static final k I\n"
+                      "  .method public static m ()V {\n"
+                      "    code: {\n"
+                      "      return\n"
+                      "    }\n"
+                      "  }\n"),
+        "k");
 
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", b.assemble());
+    addClassResource(container, "T.class", t);
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
 
@@ -198,16 +260,18 @@ TEST(MjPassStaticValueCollectionTest, HarvestsConstantValueAttribute)
 TEST(MjPassStaticValueCollectionTest, NonFinalConstantValueNotHarvested)
 {
     // JVM 只对 static final 生效 ConstantValue；非 final 挂属性值不可信。
-    FixtureBuilder b("T");
-    b.addField({"k", "I", kAccPublicStatic, {{"ConstantValue", [&b] {
-        Bytes p;
-        putU16(p, b.intConst(42));
-        return p;
-    }()}}});
-    b.addMethod({"m", "()V", kReturn, kAccPublicStatic});
+    const Bytes t = withConstantValueInt42(
+        assembleClass("T", "java/lang/Object",
+                      "  .field public static k I\n"
+                      "  .method public static m ()V {\n"
+                      "    code: {\n"
+                      "      return\n"
+                      "    }\n"
+                      "  }\n"),
+        "k");
 
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", b.assemble());
+    addClassResource(container, "T.class", t);
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
     EXPECT_EQ(runCollect(container, gam), nullptr);
@@ -217,19 +281,23 @@ TEST(MjPassStaticValueCollectionTest, NonFinalConstantValueNotHarvested)
 
 TEST(MjPassStaticValueCollectionTest, RejectsVolatileField)
 {
-    FixtureBuilder b("T");
-    b.addField({"a", "I", kAccPublicStatic});
-    b.addField({"va", "I", kAccPublicStaticVol});
-    const ca::u16 ai = b.fieldRef("T", "a", "I");
-    const ca::u16 vi = b.fieldRef("T", "va", "I");
-    Bytes code;
-    appendBytes(code, cat(bipush(42), putStatic(ai)));
-    appendBytes(code, cat(bipush(7), putStatic(vi)));
-    appendBytes(code, kReturn);
-    b.addMethod({"<clinit>", "()V", std::move(code), kAccStaticMethod});
+    const Bytes t = assembleClass(
+        "T", "java/lang/Object",
+        "  .field public static a I\n"
+        "  .field public static volatile va I\n"
+        "\n"
+        "  .method static <clinit> ()V {\n"
+        "    code: {\n"
+        "      bipush 42\n"
+        "      putstatic T.a I\n"
+        "      bipush 7\n"
+        "      putstatic T.va I\n"
+        "      return\n"
+        "    }\n"
+        "  }\n");
 
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", b.assemble());
+    addClassResource(container, "T.class", t);
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
 
@@ -241,17 +309,22 @@ TEST(MjPassStaticValueCollectionTest, RejectsVolatileField)
 
 TEST(MjPassStaticValueCollectionTest, RejectsMultipleWrites)
 {
-    FixtureBuilder b("T");
-    b.addField({"a", "I", kAccPublicStatic});
-    const ca::u16 ai = b.fieldRef("T", "a", "I");
-    Bytes code;
-    appendBytes(code, cat(bipush(1), putStatic(ai)));
-    appendBytes(code, cat(bipush(2), putStatic(ai)));
-    appendBytes(code, kReturn);
-    b.addMethod({"<clinit>", "()V", std::move(code), kAccStaticMethod});
+    const Bytes t = assembleClass(
+        "T", "java/lang/Object",
+        "  .field public static a I\n"
+        "\n"
+        "  .method static <clinit> ()V {\n"
+        "    code: {\n"
+        "      bipush 1\n"
+        "      putstatic T.a I\n"
+        "      bipush 2\n"
+        "      putstatic T.a I\n"
+        "      return\n"
+        "    }\n"
+        "  }\n");
 
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", b.assemble());
+    addClassResource(container, "T.class", t);
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
     EXPECT_EQ(runCollect(container, gam), nullptr);
@@ -259,20 +332,27 @@ TEST(MjPassStaticValueCollectionTest, RejectsMultipleWrites)
 
 TEST(MjPassStaticValueCollectionTest, RejectsNonClinitWrite)
 {
-    FixtureBuilder b("T");
-    b.addField({"a", "I", kAccPublicStatic});
-    const ca::u16 ai = b.fieldRef("T", "a", "I");
-    Bytes clinit;
-    appendBytes(clinit, cat(bipush(42), putStatic(ai)));
-    appendBytes(clinit, kReturn);
-    b.addMethod({"<clinit>", "()V", std::move(clinit), kAccStaticMethod});
-    Bytes inM;
-    appendBytes(inM, cat(bipush(1), putStatic(ai)));
-    appendBytes(inM, kReturn);
-    b.addMethod({"m", "()V", std::move(inM), kAccPublicStatic});
+    const Bytes t = assembleClass(
+        "T", "java/lang/Object",
+        "  .field public static a I\n"
+        "\n"
+        "  .method static <clinit> ()V {\n"
+        "    code: {\n"
+        "      bipush 42\n"
+        "      putstatic T.a I\n"
+        "      return\n"
+        "    }\n"
+        "  }\n"
+        "  .method public static m ()V {\n"
+        "    code: {\n"
+        "      bipush 1\n"
+        "      putstatic T.a I\n"
+        "      return\n"
+        "    }\n"
+        "  }\n");
 
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", b.assemble());
+    addClassResource(container, "T.class", t);
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
     EXPECT_EQ(runCollect(container, gam), nullptr);
@@ -281,47 +361,53 @@ TEST(MjPassStaticValueCollectionTest, RejectsNonClinitWrite)
 TEST(MjPassStaticValueCollectionTest, RejectsForeignClassWrite)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder b("T");
-        b.addField({"a", "I", kAccPublicStatic});
-        const ca::u16 ai = b.fieldRef("T", "a", "I");
-        Bytes code;
-        appendBytes(code, cat(bipush(42), putStatic(ai)));
-        appendBytes(code, kReturn);
-        b.addMethod({"<clinit>", "()V", std::move(code), kAccStaticMethod});
-        addClassResource(container, "T.class", b.assemble());
-    }
+    addClassResource(container, "T.class", constClassFixture());
     {
         // 他类方法对 T.a 的 PUTSTATIC：全域写点数 > 1 → 拒。
-        FixtureBuilder b("U");
-        const ca::u16 ai = b.fieldRef("T", "a", "I");
-        Bytes code;
-        appendBytes(code, cat(bipush(1), putStatic(ai)));
-        appendBytes(code, kReturn);
-        b.addMethod({"m", "()V", std::move(code), kAccPublicStatic});
-        addClassResource(container, "U.class", b.assemble());
+        const Bytes u = assembleClass(
+            "U", "java/lang/Object",
+            "  .method public static m ()V {\n"
+            "    code: {\n"
+            "      bipush 1\n"
+            "      putstatic T.a I\n"
+            "      return\n"
+            "    }\n"
+            "  }\n");
+        addClassResource(container, "U.class", u);
     }
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
-    EXPECT_EQ(runCollect(container, gam), nullptr);
+
+    // 单写者普查按字段拒：T.a 写点数 > 1 → a 拒；同类其余字段不牵连。
+    const auto* view = runCollect(container, gam);
+    ASSERT_NE(view, nullptr);
+    EXPECT_EQ(view->find("T", "a", "I"), nullptr);
+    EXPECT_NE(view->find("T", "e", "J"), nullptr);
 }
 
 TEST(MjPassStaticValueCollectionTest, RejectsImpureCorridor)
 {
     // clinit 内出现 invokestatic（可观察初始化效应）→ 整类不发布。
-    FixtureBuilder b("T");
-    b.addField({"a", "I", kAccPublicStatic});
-    const ca::u16 mi = b.methodRef("T", "m", "()V");
-    const ca::u16 ai = b.fieldRef("T", "a", "I");
-    Bytes code;
-    appendBytes(code, invokeStatic(mi));
-    appendBytes(code, cat(bipush(42), putStatic(ai)));
-    appendBytes(code, kReturn);
-    b.addMethod({"<clinit>", "()V", std::move(code), kAccStaticMethod});
-    b.addMethod({"m", "()V", kReturn, kAccPublicStatic});
+    const Bytes t = assembleClass(
+        "T", "java/lang/Object",
+        "  .field public static a I\n"
+        "\n"
+        "  .method static <clinit> ()V {\n"
+        "    code: {\n"
+        "      invokestatic T.m ()V\n"
+        "      bipush 42\n"
+        "      putstatic T.a I\n"
+        "      return\n"
+        "    }\n"
+        "  }\n"
+        "  .method public static m ()V {\n"
+        "    code: {\n"
+        "      return\n"
+        "    }\n"
+        "  }\n");
 
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", b.assemble());
+    addClassResource(container, "T.class", t);
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
     EXPECT_EQ(runCollect(container, gam), nullptr);
@@ -332,20 +418,34 @@ TEST(MjPassStaticValueCollectionTest, RejectsWhenSuperClinitImpure)
     mjbase::model::ResourceContainer container;
     {
         // 父类 S：clinit 含 invokestatic（可观察效应）。
-        FixtureBuilder s("S");
-        const ca::u16 mi = s.methodRef("S", "m", "()V");
-        s.addMethod({"<clinit>", "()V", cat(invokeStatic(mi), kReturn), kAccStaticMethod});
-        s.addMethod({"m", "()V", kReturn, kAccPublicStatic});
-        addClassResource(container, "S.class", s.assemble());
+        const Bytes s = assembleClass(
+            "S", "java/lang/Object",
+            "  .method static <clinit> ()V {\n"
+            "    code: {\n"
+            "      invokestatic S.m ()V\n"
+            "      return\n"
+            "    }\n"
+            "  }\n"
+            "  .method public static m ()V {\n"
+            "    code: {\n"
+            "      return\n"
+            "    }\n"
+            "  }\n");
+        addClassResource(container, "S.class", s);
     }
     {
-        FixtureBuilder t("T");
-        t.setSuper("S");
-        t.addField({"a", "I", kAccPublicStatic});
-        const ca::u16 ai = t.fieldRef("T", "a", "I");
-        t.addMethod({"<clinit>", "()V", cat(bipush(42), cat(putStatic(ai), kReturn)),
-                     kAccStaticMethod});
-        addClassResource(container, "T.class", t.assemble());
+        const Bytes t = assembleClass(
+            "T", "S",
+            "  .field public static a I\n"
+            "\n"
+            "  .method static <clinit> ()V {\n"
+            "    code: {\n"
+            "      bipush 42\n"
+            "      putstatic T.a I\n"
+            "      return\n"
+            "    }\n"
+            "  }\n");
+        addClassResource(container, "T.class", t);
     }
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
@@ -355,15 +455,20 @@ TEST(MjPassStaticValueCollectionTest, RejectsWhenSuperClinitImpure)
 TEST(MjPassStaticValueCollectionTest, RejectsWhenSuperOutsideContainer)
 {
     // 父类 lib/Base 不在容器且非 java/ 前缀：父链初始化效应不可证 → 拒。
-    mjbase::model::ResourceContainer container;
-    FixtureBuilder t("T");
-    t.setSuper("lib/Base");
-    t.addField({"a", "I", kAccPublicStatic});
-    const ca::u16 ai = t.fieldRef("T", "a", "I");
-    t.addMethod({"<clinit>", "()V", cat(bipush(42), cat(putStatic(ai), kReturn)),
-                 kAccStaticMethod});
-    addClassResource(container, "T.class", t.assemble());
+    const Bytes t = assembleClass(
+        "T", "lib/Base",
+        "  .field public static a I\n"
+        "\n"
+        "  .method static <clinit> ()V {\n"
+        "    code: {\n"
+        "      bipush 42\n"
+        "      putstatic T.a I\n"
+        "      return\n"
+        "    }\n"
+        "  }\n");
 
+    mjbase::model::ResourceContainer container;
+    addClassResource(container, "T.class", t);
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
     EXPECT_EQ(runCollect(container, gam), nullptr);
@@ -373,15 +478,17 @@ TEST(MjPassStaticValueCollectionTest, RejectsOnCorridorBudget)
 {
     // 求值不收敛桶：clinit 指令数超 2 万预算 → 整类拒；恰好预算 → 发布。
     auto build = [](ca::usize nops) {
-        FixtureBuilder b("T");
-        b.addField({"a", "I", kAccPublicStatic});
-        const ca::u16 ai = b.fieldRef("T", "a", "I");
-        Bytes code(static_cast<ca::usize>(nops), 0x00);   // NOP × nops
-        appendBytes(code, bipush(42));
-        appendBytes(code, putStatic(ai));
-        appendBytes(code, kReturn);
-        b.addMethod({"<clinit>", "()V", std::move(code), kAccStaticMethod});
-        return b.assemble();
+        std::string body = "  .field public static a I\n"
+                           "\n"
+                           "  .method static <clinit> ()V {\n"
+                           "    code: {\n";
+        for (ca::usize i = 0; i < nops; ++i) body += "      nop\n";
+        body += "      bipush 42\n"
+                "      putstatic T.a I\n"
+                "      return\n"
+                "    }\n"
+                "  }\n";
+        return assembleClass("T", "java/lang/Object", body);
     };
 
     {
@@ -408,21 +515,25 @@ TEST(MjPassStaticValueCollectionTest, RejectsOnCorridorBudget)
 
 TEST(MjPassStaticValueCollectionTest, RejectsFamilyMismatchPair)
 {
-    // 值面桶：double 字段的写点前驱是 float 常量 → 族不匹配 → 该字段拒
-    //（同类其余字段不受牵连）。
-    FixtureBuilder b("T");
-    b.addField({"a", "I", kAccPublicStatic});
-    b.addField({"d", "D", kAccPublicStatic});
-    const ca::u16 ai = b.fieldRef("T", "a", "I");
-    const ca::u16 di = b.fieldRef("T", "d", "D");
-    Bytes code;
-    appendBytes(code, cat(bipush(42), putStatic(ai)));
-    appendBytes(code, cat({0x0b}, putStatic(di)));   // fconst_0 写 D 字段
-    appendBytes(code, kReturn);
-    b.addMethod({"<clinit>", "()V", std::move(code), kAccStaticMethod});
+    // 值面桶：double 字段的写点前驱是 float 常量（fconst_0）→ 族不匹配 →
+    // 该字段拒（同类其余字段不受牵连）。
+    const Bytes t = assembleClass(
+        "T", "java/lang/Object",
+        "  .field public static a I\n"
+        "  .field public static d D\n"
+        "\n"
+        "  .method static <clinit> ()V {\n"
+        "    code: {\n"
+        "      bipush 42\n"
+        "      putstatic T.a I\n"
+        "      fconst_0\n"
+        "      putstatic T.d D\n"
+        "      return\n"
+        "    }\n"
+        "  }\n");
 
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", b.assemble());
+    addClassResource(container, "T.class", t);
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
 
@@ -435,8 +546,10 @@ TEST(MjPassStaticValueCollectionTest, RejectsFamilyMismatchPair)
 TEST(MjPassStaticValueCollectionTest, UnparseableClassAbortsWholePass)
 {
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", constClassFixture().assemble());
-    addClassResource(container, "Bad.class", {0xca, 0xfe});   // 非 classfile
+    const Bytes good = constClassFixture();
+    addClassResource(container, "T.class", good);
+    const Bytes truncated(good.begin(), good.begin() + 8);   // 截断真类 = 不可解析
+    addClassResource(container, "Bad.class", truncated);
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
     EXPECT_EQ(runCollect(container, gam), nullptr);
@@ -447,7 +560,7 @@ TEST(MjPassStaticValueCollectionTest, UnparseableClassAbortsWholePass)
 TEST(MjPassStaticValueCollectionTest, ContainerBytesUntouched)
 {
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", constClassFixture().assemble());
+    addClassResource(container, "T.class", constClassFixture());
     const Bytes before = resourceBytes(container, "T.class");
 
     ca::str::Utf8StringArena           arena;
@@ -460,7 +573,7 @@ TEST(MjPassStaticValueCollectionTest, ContainerBytesUntouched)
 TEST(MjPassStaticValueCollectionTest, IdempotentRepublish)
 {
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", constClassFixture().assemble());
+    addClassResource(container, "T.class", constClassFixture());
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
 
@@ -482,7 +595,7 @@ TEST(MjPassStaticValueCollectionTest, EmptyResultUnpins)
 {
     // 无候选类：不发布（此前批次若发布过也撤钉）——物化件必须严格 no-op。
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", constClassFixture().assemble());
+    addClassResource(container, "T.class", constClassFixture());
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
     ASSERT_NE(runCollect(container, gam), nullptr);

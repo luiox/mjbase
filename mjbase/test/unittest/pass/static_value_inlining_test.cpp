@@ -1,8 +1,8 @@
 // StaticValueInlining（容器级物化件）单测：链式正例（收集件 pinned 视图 →
 // 跨类读点原位物化，cat1/cat2 与 String 三族）+ 独立启停（无收集件严格
 // no-op）+ 拒绝面逐桶（clinit/<init> 读点、volatile 复核、类别失配，
-// 手工视图注入逐桶反证）+ 幂等二跑 + 常量类字节不动。夹具经
-// shared/structural_pass_util.hpp 手拼；改写结果经会话 promote 后指令序断言。
+// 手工视图注入逐桶反证）+ 幂等二跑 + 常量类字节不动。夹具一律 jasm 文本
+// 装配（JvmJasmService，一下一个类）；改写结果经会话 promote 后指令序断言。
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -10,8 +10,10 @@
 #include <vector>
 
 #include "jbc/core/opcode.hpp"
+#include "libca/str/utf16_string.hpp"
 #include "libca/str/utf8_string_arena.hpp"
 
+#include "mjbase/jasm/jvm_jasm_service.hpp"
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/pass/static_value_collection.hpp"
 #include "mjbase/pass/static_value_inlining.hpp"
@@ -23,69 +25,77 @@ using namespace mjbase::test;
 
 namespace {
 
-constexpr ca::u16 kAccPublicStatic  = 0x0009;
-constexpr ca::u16 kAccPublic        = 0x0001;
-constexpr ca::u16 kAccPublicStaticVol = 0x0049;
-constexpr ca::u16 kAccStaticMethod  = 0x0008;
-
-Bytes u16b(ca::u16 v) { return {static_cast<ca::u8>(v >> 8), static_cast<ca::u8>(v)}; }
-
-Bytes cat(Bytes a, const Bytes& b)
+/// UTF-8 → UTF-16（jasm 服务入参口径）。
+ca::str::Utf16String utf16Of(const std::string& s)
 {
-    a.insert(a.end(), b.begin(), b.end());
-    return a;
+    return ca::str::Utf16String::from_utf8_string(ca::str::Utf8StringRef::from_data(
+        reinterpret_cast<const ca::u8*>(s.data()), s.size()));
 }
 
-Bytes bipush(ca::i8 v) { return {0x10, static_cast<ca::u8>(v)}; }
-Bytes putStatic(ca::u16 cp) { return cat({0xb3}, u16b(cp)); }
-Bytes getStatic(ca::u16 cp) { return cat({0xb2}, u16b(cp)); }
-Bytes ldc1(ca::u16 cp) { return {0x12, static_cast<ca::u8>(cp)}; }
-
-const Bytes kReturn   = {0xb1};
-const Bytes kIReturn  = {0xac};
-const Bytes kLReturn  = {0xad};
-const Bytes kAReturn  = {0xb0};
-const Bytes kPop      = {0x57};
+/// jasm 文本汇编为 class 字节（一下一个类；汇编失败即测试失败）。
+Bytes assembleClass(const std::string& internalName, const std::string& superName,
+                    const std::string& body)
+{
+    mjbase::jasm::JvmJasmService service;
+    const std::string source = ".super " + superName +
+                               "\n.class public super " + internalName + " {\n" +
+                               body + "}\n";
+    const auto sourceName = utf16Of(internalName + ".jasm");
+    const auto sourceText = utf16Of(source);
+    const auto result     = service.assemble(sourceName.ref(), sourceText.ref());
+    if (!result.isOk() || !result.value.has_value()) {
+        for (const auto& d : result.diagnostics) {
+            ADD_FAILURE() << "jasm: " << d.message.to_utf8_string().to_std_string();
+        }
+        ADD_FAILURE() << "jasm 汇编失败: " << internalName;
+        return {};
+    }
+    return result.value->bytes;
+}
 
 /// 伴生常量类 T：clinit 写 int a=42、long e、String s。
-FixtureBuilder constClassFixture()
+Bytes constClassFixture()
 {
-    FixtureBuilder b("T");
-    b.addField({"a", "I", kAccPublicStatic});
-    b.addField({"e", "J", kAccPublicStatic});
-    b.addField({"s", "Ljava/lang/String;", kAccPublicStatic});
-    const ca::u16 ai  = b.fieldRef("T", "a", "I");
-    const ca::u16 ei  = b.fieldRef("T", "e", "J");
-    const ca::u16 si  = b.fieldRef("T", "s", "Ljava/lang/String;");
-    const ca::u16 lc  = b.longConst(72057594037927936L);
-    const ca::u16 str = b.strConst("hello-const");
-    Bytes code;
-    appendBytes(code, cat(bipush(42), putStatic(ai)));
-    appendBytes(code, cat({0x14}, cat(u16b(lc), putStatic(ei))));   // ldc2_w
-    appendBytes(code, cat(ldc1(str), putStatic(si)));
-    appendBytes(code, kReturn);
-    b.addMethod({"<clinit>", "()V", std::move(code), kAccStaticMethod});
-    return b;
+    return assembleClass("T", "java/lang/Object",
+                         "  .field public static a I\n"
+                         "  .field public static e J\n"
+                         "  .field public static s Ljava/lang/String;\n"
+                         "\n"
+                         "  .method static <clinit> ()V {\n"
+                         "    code: {\n"
+                         "      bipush 42\n"
+                         "      putstatic T.a I\n"
+                         "      ldc 72057594037927936L\n"
+                         "      putstatic T.e J\n"
+                         "      ldc \"hello-const\"\n"
+                         "      putstatic T.s Ljava/lang/String;\n"
+                         "      return\n"
+                         "    }\n"
+                         "  }\n");
 }
 
-/// 读点类：m()I 读 T.a；n()Ljava/lang/String; 读 T.s；l()J 读 T.e。
-FixtureBuilder readerFixture()
+/// 读点类 R：m()I 读 T.a；n()Ljava/lang/String; 读 T.s；l()J 读 T.e。
+Bytes readerFixture()
 {
-    FixtureBuilder b("R");
-    {
-        const ca::u16 fld = b.fieldRef("T", "a", "I");
-        b.addMethod({"m", "()I", cat(getStatic(fld), kIReturn), kAccPublicStatic});
-    }
-    {
-        const ca::u16 fld = b.fieldRef("T", "s", "Ljava/lang/String;");
-        b.addMethod({"n", "()Ljava/lang/String;", cat(getStatic(fld), kAReturn),
-                     kAccPublicStatic});
-    }
-    {
-        const ca::u16 fld = b.fieldRef("T", "e", "J");
-        b.addMethod({"l", "()J", cat(getStatic(fld), kLReturn), kAccPublicStatic});
-    }
-    return b;
+    return assembleClass("R", "java/lang/Object",
+                         "  .method public static m ()I {\n"
+                         "    code: {\n"
+                         "      getstatic T.a I\n"
+                         "      ireturn\n"
+                         "    }\n"
+                         "  }\n"
+                         "  .method public static n ()Ljava/lang/String; {\n"
+                         "    code: {\n"
+                         "      getstatic T.s Ljava/lang/String;\n"
+                         "      areturn\n"
+                         "    }\n"
+                         "  }\n"
+                         "  .method public static l ()J {\n"
+                         "    code: {\n"
+                         "      getstatic T.e J\n"
+                         "      lreturn\n"
+                         "    }\n"
+                         "  }\n");
 }
 
 /// 链式跑：收集件 + 物化件共用同一 GAM。
@@ -142,8 +152,8 @@ Bytes resourceBytes(mjbase::model::ResourceContainer& container, const std::stri
 TEST(MjPassStaticValueInliningTest, MaterializesCollectedCrossClassReads)
 {
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", constClassFixture().assemble());
-    addClassResource(container, "R.class", readerFixture().assemble());
+    addClassResource(container, "T.class", constClassFixture());
+    addClassResource(container, "R.class", readerFixture());
     const Bytes readerBefore = resourceBytes(container, "R.class");
     const Bytes constBefore  = resourceBytes(container, "T.class");
 
@@ -180,8 +190,8 @@ TEST(MjPassStaticValueInliningTest, InlinerAloneIsStrictNoop)
 {
     // 独立启停桶：链上没有收集件 → 严格 no-op（不得自行重算视图）。
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", constClassFixture().assemble());
-    addClassResource(container, "R.class", readerFixture().assemble());
+    addClassResource(container, "T.class", constClassFixture());
+    addClassResource(container, "R.class", readerFixture());
     const Bytes readerBefore = resourceBytes(container, "R.class");
 
     ca::str::Utf8StringArena           arena;
@@ -196,14 +206,19 @@ TEST(MjPassStaticValueInliningTest, InlinerAloneIsStrictNoop)
 TEST(MjPassStaticValueInliningTest, SkipsReadsInsideClinit)
 {
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", constClassFixture().assemble());
+    addClassResource(container, "T.class", constClassFixture());
     {
         // U 的 clinit 内读 T.a（前向引用形态）——读点保留。
-        FixtureBuilder b("U");
-        const ca::u16 fld = b.fieldRef("T", "a", "I");
-        b.addMethod({"<clinit>", "()V", cat(getStatic(fld), cat(kPop, kReturn)),
-                     kAccStaticMethod});
-        addClassResource(container, "U.class", b.assemble());
+        const Bytes u = assembleClass(
+            "U", "java/lang/Object",
+            "  .method static <clinit> ()V {\n"
+            "    code: {\n"
+            "      getstatic T.a I\n"
+            "      pop\n"
+            "      return\n"
+            "    }\n"
+            "  }\n");
+        addClassResource(container, "U.class", u);
     }
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
@@ -220,13 +235,22 @@ TEST(MjPassStaticValueInliningTest, SkipsReadsInsideClinit)
 TEST(MjPassStaticValueInliningTest, SkipsReadsInsideInit)
 {
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", constClassFixture().assemble());
+    addClassResource(container, "T.class", constClassFixture());
     {
         // U 的构造器内读 T.a（初始化环形态）——读点保留。
-        FixtureBuilder b("U");
-        const ca::u16 fld = b.fieldRef("T", "a", "I");
-        b.addMethod({"<init>", "()V", cat(getStatic(fld), cat(kPop, kReturn)), kAccPublic});
-        addClassResource(container, "U.class", b.assemble());
+        const Bytes u = assembleClass(
+            "U", "java/lang/Object",
+            "  .method public <init> ()V {\n"
+            "    parameters: { this },\n"
+            "    code: {\n"
+            "      aload this\n"
+            "      invokespecial java/lang/Object.<init> ()V\n"
+            "      getstatic T.a I\n"
+            "      pop\n"
+            "      return\n"
+            "    }\n"
+            "  }\n");
+        addClassResource(container, "U.class", u);
     }
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
@@ -234,10 +258,12 @@ TEST(MjPassStaticValueInliningTest, SkipsReadsInsideInit)
 
     const std::vector<jbc::core::Op> ops =
         methodOps(resourceBytes(container, "U.class"), "<init>");
-    ASSERT_EQ(ops.size(), 3u);
-    EXPECT_EQ(ops[0], jbc::core::Op::GETSTATIC);
-    EXPECT_EQ(ops[1], jbc::core::Op::POP);
-    EXPECT_EQ(ops[2], jbc::core::Op::RETURN);
+    ASSERT_EQ(ops.size(), 5u);
+    EXPECT_EQ(ops[0], jbc::core::Op::ALOAD);
+    EXPECT_EQ(ops[1], jbc::core::Op::INVOKESPECIAL);
+    EXPECT_EQ(ops[2], jbc::core::Op::GETSTATIC);
+    EXPECT_EQ(ops[3], jbc::core::Op::POP);
+    EXPECT_EQ(ops[4], jbc::core::Op::RETURN);
 }
 
 // ── 物化件自持拒绝桶（手工视图注入反证：收集面不产此类条目，注入即证
@@ -249,16 +275,26 @@ TEST(MjPassStaticValueInliningTest, VolatileFieldReadKeptByInlinerRecheck)
     // 保留读点。
     mjbase::model::ResourceContainer container;
     {
-        FixtureBuilder b("T");
-        b.addField({"va", "I", kAccPublicStaticVol});
-        b.addMethod({"m", "()V", kReturn, kAccPublicStatic});
-        addClassResource(container, "T.class", b.assemble());
+        const Bytes t = assembleClass(
+            "T", "java/lang/Object",
+            "  .field public static volatile va I\n"
+            "  .method public static m ()V {\n"
+            "    code: {\n"
+            "      return\n"
+            "    }\n"
+            "  }\n");
+        addClassResource(container, "T.class", t);
     }
     {
-        FixtureBuilder b("R");
-        const ca::u16 fld = b.fieldRef("T", "va", "I");
-        b.addMethod({"m", "()I", cat(getStatic(fld), kIReturn), kAccPublicStatic});
-        addClassResource(container, "R.class", b.assemble());
+        const Bytes r = assembleClass(
+            "R", "java/lang/Object",
+            "  .method public static m ()I {\n"
+            "    code: {\n"
+            "      getstatic T.va I\n"
+            "      ireturn\n"
+            "    }\n"
+            "  }\n");
+        addClassResource(container, "R.class", r);
     }
 
     ca::str::Utf8StringArena           arena;
@@ -284,16 +320,26 @@ TEST(MjPassStaticValueInliningTest, CategoryMismatchReadKept)
     // 手工视图注入类别失配条目（Int 值配 J 字段 = cat1/cat2 桶）：读点保留。
     mjbase::model::ResourceContainer container;
     {
-        FixtureBuilder b("T");
-        b.addField({"e", "J", kAccPublicStatic});
-        b.addMethod({"m", "()V", kReturn, kAccPublicStatic});
-        addClassResource(container, "T.class", b.assemble());
+        const Bytes t = assembleClass(
+            "T", "java/lang/Object",
+            "  .field public static e J\n"
+            "  .method public static m ()V {\n"
+            "    code: {\n"
+            "      return\n"
+            "    }\n"
+            "  }\n");
+        addClassResource(container, "T.class", t);
     }
     {
-        FixtureBuilder b("R");
-        const ca::u16 fld = b.fieldRef("T", "e", "J");
-        b.addMethod({"l", "()J", cat(getStatic(fld), kLReturn), kAccPublicStatic});
-        addClassResource(container, "R.class", b.assemble());
+        const Bytes r = assembleClass(
+            "R", "java/lang/Object",
+            "  .method public static l ()J {\n"
+            "    code: {\n"
+            "      getstatic T.e J\n"
+            "      lreturn\n"
+            "    }\n"
+            "  }\n");
+        addClassResource(container, "R.class", r);
     }
 
     ca::str::Utf8StringArena           arena;
@@ -319,8 +365,8 @@ TEST(MjPassStaticValueInliningTest, CategoryMismatchReadKept)
 TEST(MjPassStaticValueInliningTest, SecondChainRunIsNoop)
 {
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", constClassFixture().assemble());
-    addClassResource(container, "R.class", readerFixture().assemble());
+    addClassResource(container, "T.class", constClassFixture());
+    addClassResource(container, "R.class", readerFixture());
 
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
