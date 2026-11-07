@@ -12,7 +12,7 @@ mjbase pass 族目录（pass-catalog）
 覆盖面与分族
 ------------
 
-覆盖面是 ``mjbase/src/mjbase/pass/default_pass_registry.cpp``\ 注册的全部 72 个 pass：17 个容器级（``GlobalPass``\ ）、17 个类级（``ClassPass``\ ）、38 个方法级（``MethodPass``\ ）。分族依据是注册表标签（``scope``\ /\ ``action``\ /\ ``stability``\ ）与各头注自报的家族名，按职责分十族；成员清单与族内分工全部以现状为准。
+覆盖面是 ``mjbase/src/mjbase/pass/default_pass_registry.cpp``\ 注册的全部 73 个 pass：17 个容器级（``GlobalPass``\ ）、17 个类级（``ClassPass``\ ）、39 个方法级（``MethodPass``\ ）。分族依据是注册表标签（``scope``\ /\ ``action``\ /\ ``stability``\ ）与各头注自报的家族名，按职责分十族；成员清单与族内分工全部以现状为准。
 
 两个全族惯例：
 
@@ -447,6 +447,14 @@ StackOperationSimplifier
 - 验收门：``stack_operation_test``\ 。
 - 链序：内置管线 ``phase.stack-op-simplify``\ ；标签 ``stability:default``\ 。
 
+.. _pass-catalog-stack-operation-expander:
+
+StackOperationExpander
+^^^^^^^^^^^^^^^^^^^^^^
+
+- 一行条目：常量 producer 上 DUP 族按帧溯源展开，复制槽位改由原常量装载克隆独立供给（StackOperationSimplifier 对偶面）；适用形态、槽宽形判别、窗口纪律与前后对照见 :doc:`stack-op-expander`\ （规格篇）。单测 ``stack_operation_expander_test``\ 。
+- 链序：内置管线 ``phase.stack-op-expand``\ ；组合顺序建议 expand → simplify；标签 ``stability:opt-in``\ 。
+
 .. _pass-catalog-const-char-array-string-folder:
 
 ConstCharArrayStringFolder
@@ -842,4 +850,4 @@ CommutativeOperatorReorder
 非 pass 支撑件
 --------------
 
-``pass/``\ 目录内不注册为 pass 的支撑件，不设规格节：``window_rule.hpp``\ （窗口匹配 + 原子替换共享引擎）、``local_op.hpp``\ （局部变量指令解码）、``method_rewrite_util.hpp``\ （常量装载判定与物化共享面）、``default_pass_registry.cpp``\ （默认注册表组合根）、``builtin_pipelines.cpp``\ （内置命名管线装配——\ ``default-optimize``\ 与八个 ``phase.*``\ 管线）。注册面接口在 spi（\ :ref:`pass-contract`\ §1 的三级作用域基类），装配落在本目录、依赖方向 pass ⇒ spi 单向。
+``pass/``\ 目录内不注册为 pass 的支撑件，不设规格节：``window_rule.hpp``\ （窗口匹配 + 原子替换共享引擎）、``local_op.hpp``\ （局部变量指令解码）、``method_rewrite_util.hpp``\ （常量装载判定与物化共享面）、``default_pass_registry.cpp``\ （默认注册表组合根）、``builtin_pipelines.cpp``\ （内置命名管线装配——\ ``default-optimize``\ 与九个 ``phase.*``\ 管线）。注册面接口在 spi（\ :ref:`pass-contract`\ §1 的三级作用域基类），装配落在本目录、依赖方向 pass ⇒ spi 单向。

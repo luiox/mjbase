@@ -131,8 +131,13 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   → 已落地（2bb8d81）：32 规则 1:1 对齐，CodeDom 载体；wide ldc 与
   Err 保守停机两处声明见头注释；19 单测 + 全量 1228 绿。golden 对拍
   待批（extractor 段 + corpus + compare test）。
-- [ ] StackOperationExpander：OriginalSource 帧分析展开常量 producer 上的
-  DUP 族，依赖帧面，随帧链接线批次。
+- [x] **StackOperationExpander**（stack_operation_expander.cpp，方法级窗口展开）：
+  常量 producer 上 DUP 族按帧溯源展开——复制槽位改由原常量装载克隆独立
+  供给，dup/dup2 原位消解（可隔 iinc/穿 store→load）、X 族整窗重排。
+  → 已落地（fixes #104）：traceOrigins 来源域 + 槽宽形判别载体；纪律与
+  simplifier 同构（最长不重叠/首条豁免/内点锚拒收）；SWAP 与共享来源
+  X 族挂账见 doc:stack-op-expander-spec；19 单测（正例六形 + 拒绝面 +
+  展开后 simplifier 再折叠组合面 + 幂等 + 注册面）。
 - [x] **FixPatternSimplifier**（236 行）：位运算固定模式 / 六种 `IF_ICMP*`
   安全折叠（非零偏移保留）/ 同 slot store/load 重写（clone producer）；
   matcher 底座已迁。样板批次选。
