@@ -27,6 +27,7 @@
 #include "mjbase/pass/goto_rearranger.hpp"
 #include "mjbase/pass/identity_wrapper_inliner.hpp"
 #include "mjbase/pass/illegal_class_file_cleaner.hpp"
+#include "mjbase/pass/indy_site_inliner.hpp"
 #include "mjbase/pass/intrinsic_folding.hpp"
 #include "mjbase/pass/line_number_remover.hpp"
 #include "mjbase/pass/local_constant_propagation.hpp"
@@ -495,6 +496,13 @@ PassNameRegistry makeDefaultRegistry()
         "DevirtualizeSingleTarget",
         [] { return std::make_unique<mjbase::pass::DevirtualizeSingleTarget>(); },
         "Rewrite virtual/interface call sites with one provable target into invokespecial."));
+    // opt pass 波次（indy 还原机制面）：IndySiteInliner 消费注入的 IndyResolver
+    // 产出把混淆器家族 invokedynamic 改写为直接成员调用；注册工厂无 resolver
+    // （严格 no-op），插件/宿主层经构造注入 resolver 后生效。标签：scope:global
+    // / action:rewrite / stability:opt-in（默认链不收，判据矩阵见 pass 头注）。
+    seed(reg.registerGlobalPass(
+        "IndySiteInliner", [] { return std::make_unique<mjbase::pass::IndySiteInliner>(); },
+        "Inline obfuscator invokedynamic sites into direct member calls via IndyResolver targets."));
     // opt pass 波次（恒等包装不动点内联）：invokestatic 壳调用点
     // 直达最终目标（路径压缩），壳体保留、删除延后 GlobalUnusedMethodRemover。
     // 标签：scope:global / action:rewrite / stability:opt-in（默认链不收）。
