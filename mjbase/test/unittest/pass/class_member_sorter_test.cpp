@@ -2,6 +2,9 @@
 /// 段（206 行起），并补齐独立直接用例：排序键矩阵、条件 PA、
 /// 重排后 lower/backingIndex 一致性。载体按新契约重定型：ClassNode 骨架 →
 /// ClassSession（backing + unit 同步重排）。
+///
+/// 夹具纪律：类骨架一律 jasm 文本装配（JvmJasmService），成员声明序列
+/// R"JASM 定界。
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -18,6 +21,7 @@
 #include "mjbase/pass/class_member_sorter.hpp"
 #include "mjbase/spi/analysis_manager.hpp"
 #include "mjbase/spi/preserved_analyses.hpp"
+#include "shared/jasm_fixture.hpp"
 #include "shared/structural_pass_util.hpp"
 
 using namespace mjbase::test;
@@ -37,16 +41,25 @@ std::string_view fieldName(const jbc::ir::ClassSession& session, ca::usize idx)
     return unit.symbols().str(unit.fields[idx].name);
 }
 
+/// 类骨架便捷形：members 为 .field/.method 声明序列文本（R"JASM 片段）。
+Bytes sorterClass(const std::string& members)
+{
+    return assembleClass("T", "java/lang/Object", members);
+}
+
 }   // namespace
 
 // 用例：字段按 desc→name 排序（b:I, a:I → a, b），产物可写出重读。
 TEST(MjPassClassMemberSorterTest, SortsFieldsByDescThenNameRoundtrip)
 {
-    FixtureBuilder builder("T");
-    builder.addField({"b", "I", 0x0000});
-    builder.addField({"a", "I", 0x0000});
-    builder.addMethod({"t", "()V", bareReturn()});
-    auto bytes = builder.assemble();
+    const Bytes bytes = sorterClass(R"JASM(  .field b I
+  .field a I
+  .method public static t ()V {
+    code: {
+      return
+    }
+  }
+)JASM");
 
     auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
     ASSERT_TRUE(sessionResult.is_ok());
@@ -77,14 +90,37 @@ TEST(MjPassClassMemberSorterTest, SortsFieldsByDescThenNameRoundtrip)
 // 补齐直接用例：方法分组序 —— <clinit> 最前、其余按名、<init> 垫底。
 TEST(MjPassClassMemberSorterTest, SortsMethodsClinitPlainThenInits)
 {
-    FixtureBuilder builder("T");
-    builder.addMethod({"t2", "()V", bareReturn()});
-    builder.addMethod({"zz", "()V", bareReturn()});
-    builder.addMethod({"<init>", "()V", bareReturn()});
-    builder.addMethod({"t1", "()V", bareReturn()});
-    builder.addMethod({"<clinit>", "()V", bareReturn()});
-    builder.addMethod({"aa", "()V", bareReturn()});
-    auto bytes = builder.assemble();
+    const Bytes bytes = sorterClass(R"JASM(  .method public static t2 ()V {
+    code: {
+      return
+    }
+  }
+  .method public static zz ()V {
+    code: {
+      return
+    }
+  }
+  .method public static <init> ()V {
+    code: {
+      return
+    }
+  }
+  .method public static t1 ()V {
+    code: {
+      return
+    }
+  }
+  .method public static <clinit> ()V {
+    code: {
+      return
+    }
+  }
+  .method public static aa ()V {
+    code: {
+      return
+    }
+  }
+)JASM");
 
     auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
     ASSERT_TRUE(sessionResult.is_ok());
@@ -108,12 +144,15 @@ TEST(MjPassClassMemberSorterTest, SortsMethodsClinitPlainThenInits)
 // 补齐直接用例：字段主键是 desc（"I" < "J"），同 desc 内才按 name。
 TEST(MjPassClassMemberSorterTest, FieldDescIsPrimarySortKey)
 {
-    FixtureBuilder builder("T");
-    builder.addField({"c", "J", 0x0000});
-    builder.addField({"a", "I", 0x0000});
-    builder.addField({"b", "I", 0x0000});
-    builder.addMethod({"t", "()V", bareReturn()});
-    auto bytes = builder.assemble();
+    const Bytes bytes = sorterClass(R"JASM(  .field c J
+  .field a I
+  .field b I
+  .method public static t ()V {
+    code: {
+      return
+    }
+  }
+)JASM");
 
     auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
     ASSERT_TRUE(sessionResult.is_ok());
@@ -135,13 +174,24 @@ TEST(MjPassClassMemberSorterTest, FieldDescIsPrimarySortKey)
 // 无条件 none() 偏离已在头注声明）。
 TEST(MjPassClassMemberSorterTest, ReturnsAllWhenAlreadySorted)
 {
-    FixtureBuilder builder("T");
-    builder.addField({"a", "I", 0x0000});
-    builder.addField({"b", "I", 0x0000});
-    builder.addMethod({"<clinit>", "()V", bareReturn()});
-    builder.addMethod({"t", "()V", bareReturn()});
-    builder.addMethod({"<init>", "()V", bareReturn()});
-    auto bytes = builder.assemble();
+    const Bytes bytes = sorterClass(R"JASM(  .field a I
+  .field b I
+  .method public static <clinit> ()V {
+    code: {
+      return
+    }
+  }
+  .method public static t ()V {
+    code: {
+      return
+    }
+  }
+  .method public static <init> ()V {
+    code: {
+      return
+    }
+  }
+)JASM");
 
     auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
     ASSERT_TRUE(sessionResult.is_ok());
@@ -161,11 +211,19 @@ TEST(MjPassClassMemberSorterTest, ReturnsAllWhenAlreadySorted)
 // 的物理成员，未动方法的 Code 原样保真。
 TEST(MjPassClassMemberSorterTest, LowerAfterReorderWritesOwnBackingSlot)
 {
-    FixtureBuilder builder("T");
     // zz 在物理位 0（排完序后必被挪走），aa 在物理位 1。
-    builder.addMethod({"zz", "()V", bareReturn()});
-    builder.addMethod({"aa", "()V", nopReturn()});
-    auto bytes = builder.assemble();
+    const Bytes bytes = sorterClass(R"JASM(  .method public static zz ()V {
+    code: {
+      return
+    }
+  }
+  .method public static aa ()V {
+    code: {
+      nop
+      return
+    }
+  }
+)JASM");
 
     auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
     ASSERT_TRUE(sessionResult.is_ok());

@@ -1,6 +1,9 @@
 /// AccessModifierTightenerTest 段（451 行起），并补齐
 /// 独立直接用例。收紧规则矩阵：仅「普查命中 + 无异类引用 + static + public」
 /// 降 private；未引用/异类引用/非 static/非 public 均不动。
+///
+/// 夹具纪律：类骨架一律 jasm 文本装配（JvmJasmService），指令体片段
+/// R"JASM 定界。
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -14,6 +17,7 @@
 #include "mjbase/pass/access_modifier_tightener.hpp"
 #include "mjbase/spi/analysis_manager.hpp"
 #include "mjbase/spi/preserved_analyses.hpp"
+#include "shared/jasm_fixture.hpp"
 #include "shared/structural_pass_util.hpp"
 
 using namespace mjbase::test;
@@ -26,45 +30,52 @@ constexpr ca::u16 kAccStatic  = 0x0008;
 
 /// buildTightenerOwner：internal/external/unused 三字段 +
 /// internal/external 两方法 + 引用 internal 成员的 self() 方法。
+/// jasm 文本装配（JvmJasmService；装配器自带 frame 分析），指令体片段
+/// R"JASM 定界。
 Bytes buildTightenerOwner()
 {
-    FixtureBuilder builder("Owner");
-    builder.addField({"internalField", "I", static_cast<ca::u16>(kAccPublic | kAccStatic)});
-    builder.addField({"externalField", "I", static_cast<ca::u16>(kAccPublic | kAccStatic)});
-    builder.addField({"unusedField", "I", static_cast<ca::u16>(kAccPublic | kAccStatic)});
-
-    builder.addMethod({"internalMethod", "()V", bareReturn()});
-    builder.addMethod({"externalMethod", "()V", bareReturn()});
-
-    FixtureMethod self;
-    self.name      = "self";
-    self.desc      = "()V";
-    self.maxStack  = 1;
-    self.maxLocals = 0;
-    // GETSTATIC Owner.internalField:I; POP; INVOKESTATIC Owner.internalMethod:()V; RETURN
-    Bytes code = getStaticPop(builder.fieldRef("Owner", "internalField", "I"));
-    appendBytes(code, invokeStatic(builder.methodRef("Owner", "internalMethod", "()V")));
-    code.push_back(0xb1);   // RETURN
-    self.code = std::move(code);
-    builder.addMethod(self);
-    return builder.assemble();
+    return assembleJasm(R"JASM(.super java/lang/Object
+.class public super Owner {
+  .field public static internalField I
+  .field public static externalField I
+  .field public static unusedField I
+  .method public static internalMethod ()V {
+    code: {
+      return
+    }
+  }
+  .method public static externalMethod ()V {
+    code: {
+      return
+    }
+  }
+  .method public static self ()V {
+    code: {
+      getstatic Owner.internalField I
+      pop
+      invokestatic Owner.internalMethod ()V
+      return
+    }
+  }
+}
+)JASM");
 }
 
 /// buildTightenerCaller：异类引用 Owner 的 external 成员。
 Bytes buildTightenerCaller()
 {
-    FixtureBuilder builder("Caller");
-    FixtureMethod  call;
-    call.name      = "call";
-    call.desc      = "()V";
-    call.maxStack  = 1;
-    call.maxLocals = 0;
-    Bytes code = getStaticPop(builder.fieldRef("Owner", "externalField", "I"));
-    appendBytes(code, invokeStatic(builder.methodRef("Owner", "externalMethod", "()V")));
-    code.push_back(0xb1);   // RETURN
-    call.code = std::move(code);
-    builder.addMethod(call);
-    return builder.assemble();
+    return assembleJasm(R"JASM(.super java/lang/Object
+.class public super Caller {
+  .method public static call ()V {
+    code: {
+      getstatic Owner.externalField I
+      pop
+      invokestatic Owner.externalMethod ()V
+      return
+    }
+  }
+}
+)JASM");
 }
 
 /// 重读容器内 class 资源（不可解析即断言失败）。模型由静态 keeper 持有，
@@ -143,23 +154,27 @@ TEST(MjPassAccessModifierTightenerTest, TightensOnlyInnerUsedPublicStaticMembers
 // 补齐直接用例：非 public / 非 static 的仅本类引用成员不收紧。
 TEST(MjPassAccessModifierTightenerTest, KeepsNonPublicAndNonStaticMembersUntouched)
 {
-    FixtureBuilder builder("Owner");
     // public 实例字段（GETSTATIC 语义不含它；用 public static 的引用源验证
-    // 普查不覆盖实例引用——这里直接考察规则矩阵本身）。
-    builder.addField({"instanceField", "I", kAccPublic});
-    // private static 字段：普查命中也不会动（非 public）。
-    builder.addField({"privateField", "I", static_cast<ca::u16>(kAccPrivate | kAccStatic)});
-    // public static 方法，但收紧条件之外：无引用（对照组）。
-    builder.addMethod({"untouched", "()V", bareReturn()});
-    FixtureMethod user;
-    user.name     = "user";
-    user.desc     = "()V";
-    user.maxLocals = 0;
-    // GETSTATIC Owner.privateField:I（本类引用 private 字段，命中普查）。
-    user.code = getStaticPop(builder.fieldRef("Owner", "privateField", "I"));
-    user.code.push_back(0xb1);
-    builder.addMethod(user);
-    auto bytes = builder.assemble();
+    // 普查不覆盖实例引用——这里直接考察规则矩阵本身）+ private static 字段
+    // （普查命中也不会动，非 public）+ public static 方法无引用（对照组）。
+    const Bytes bytes = assembleJasm(R"JASM(.super java/lang/Object
+.class public super Owner {
+  .field public instanceField I
+  .field private static privateField I
+  .method public static untouched ()V {
+    code: {
+      return
+    }
+  }
+  .method public static user ()V {
+    code: {
+      getstatic Owner.privateField I
+      pop
+      return
+    }
+  }
+}
+)JASM");
 
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Owner.class", bytes);

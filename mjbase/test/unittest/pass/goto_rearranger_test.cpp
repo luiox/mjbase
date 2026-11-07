@@ -6,8 +6,14 @@
 // 全部夹具按栈面一致构造（GOTO 源点空栈或载荷可被目标段消费），经生产
 // 管线 lower + Strict 帧重算全链验证；M 段（被跳过的中间段）均为不可达
 // 死代码，帧引擎按 reachable=false 建模。
+//
+// 夹具纪律：类骨架与方法体一律 jasm 文本装配（JvmJasmService；装配器自带
+// frame 分析与验证），固定片段与逐用例指令体 / 异常表文本全部 R"JASM
+// 定界，变量插入处保留 + 拼接。
 #include <gtest/gtest.h>
 
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "jbc/core/opcode.hpp"
@@ -16,25 +22,42 @@
 #include "mjbase/spi/pass_name_registry.hpp"
 
 #include "method_pass_test_util.hpp"
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 using jbc::core::Op;
 
 namespace {
 
-/// 单方法容器（透传异常表规格）。
-Bytes oneMethodEx(std::string_view name, std::string_view desc, Bytes code,
-                  std::vector<ExcSpec> exc = {})
+/// 单方法夹具：desc 定返回/参数面，codeBody 为指令体片段，excEntries 为
+/// 异常表条目片段（可空 = 无异常表）。
+Bytes oneMethodEx(std::string_view desc, std::string_view codeBody,
+                  std::string_view excEntries = "")
 {
-    FixtureBuilder b("t/G");
-    FixtureMethod m;
-    m.name  = name;
-    m.desc  = desc;
-    m.code  = std::move(code);
-    m.exc   = std::move(exc);
-    b.addMethod(m);
-    return b.assemble();
+    std::string source;
+    if (excEntries.empty()) {
+        source = std::string{R"JASM(.super java/lang/Object
+.class public super t/G {
+  .method public static m )JASM"} + std::string(desc) + R"JASM( {
+    code: {
+)JASM" + std::string(codeBody) + R"JASM(    }
+  }
+}
+)JASM";
+    }
+    else {
+        source = std::string{R"JASM(.super java/lang/Object
+.class public super t/G {
+  .method public static m )JASM"} + std::string(desc) + R"JASM( {
+    exceptions: {
+)JASM" + std::string(excEntries) + R"JASM(    },
+    code: {
+)JASM" + std::string(codeBody) + R"JASM(    }
+  }
+}
+)JASM";
+    }
+    return assembleJasm(source);
 }
 
 }   // namespace
@@ -42,10 +65,17 @@ Bytes oneMethodEx(std::string_view name, std::string_view desc, Bytes code,
 // ── 基础消除：GOTO 前向跳过 M 段到尾段 → 尾段提前、GOTO 删除 ──
 TEST(GotoRearrangerTest, gotoTailSegmentMovedAndDeleted)
 {
-    // GOTO→pc5(0) | M: ICONST_0(3) IRETURN(4) | L: ICONST_2(5) IRETURN(6)。
-    const MethodPassRun r = runMethodPass(
-        oneMethodEx("m", "()I", {0xa7, 0x00, 0x05, 0x03, 0xac, 0x05, 0xac}),
-        mjbase::pass::GotoRearranger{});
+    // GOTO→L(0) | M: ICONST_0 IRETURN | L: ICONST_2 IRETURN。
+    const MethodPassRun r =
+        runMethodPass(oneMethodEx("()I",
+                                  R"JASM(      goto L
+      iconst_0
+      ireturn
+      L:
+      iconst_2
+      ireturn
+)JASM"),
+                      mjbase::pass::GotoRearranger{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     EXPECT_EQ(ops, (std::vector<Op>{Op::ICONST_2, Op::IRETURN, Op::ICONST_0, Op::IRETURN}));
@@ -55,12 +85,22 @@ TEST(GotoRearrangerTest, gotoTailSegmentMovedAndDeleted)
 //    非邻接形态，第二轮继续消除）──
 TEST(GotoRearrangerTest, twoGotoFixpointChain)
 {
-    // G1→pc5(0) | M1: ICONST_0(3) IRETURN(4) | L1: ICONST_2(5) IRETURN(6)
-    // G2→pc11(7) | ATHROW(10) | L2: ICONST_3(11) IRETURN(12)。
+    // G1→L1(0) | M1: ICONST_0 IRETURN | L1: ICONST_2 IRETURN
+    // G2→L2(7) | ATHROW | L2: ICONST_3 IRETURN。
     const MethodPassRun r =
-        runMethodPass(oneMethodEx("m", "()I",
-                                  {0xa7, 0x00, 0x05, 0x03, 0xac, 0x05, 0xac, 0xa7, 0x00,
-                                   0x04, 0xbf, 0x06, 0xac}),
+        runMethodPass(oneMethodEx("()I",
+                                  R"JASM(      goto L1
+      iconst_0
+      ireturn
+      L1:
+      iconst_2
+      ireturn
+      goto L2
+      athrow
+      L2:
+      iconst_3
+      ireturn
+)JASM"),
                       mjbase::pass::GotoRearranger{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
@@ -71,12 +111,18 @@ TEST(GotoRearrangerTest, twoGotoFixpointChain)
 // ── GOTO_W 与三指令中间段：尾段哨兵形态 ──
 TEST(GotoRearrangerTest, gotoWTailSegmentMoved)
 {
-    // GOTO_W→pc8(0) | M: ICONST_0(5) NOP(6) IRETURN(7) | L: ICONST_2(8)
-    // IRETURN(9)。
-    const MethodPassRun r = runMethodPass(
-        oneMethodEx("m", "()I",
-                    {0xc8, 0x00, 0x00, 0x00, 0x08, 0x03, 0x00, 0xac, 0x05, 0xac}),
-        mjbase::pass::GotoRearranger{});
+    // GOTO_W→L(0) | M: ICONST_0 NOP IRETURN | L: ICONST_2 IRETURN。
+    const MethodPassRun r =
+        runMethodPass(oneMethodEx("()I",
+                                  R"JASM(      goto_w L
+      iconst_0
+      nop
+      ireturn
+      L:
+      iconst_2
+      ireturn
+)JASM"),
+                      mjbase::pass::GotoRearranger{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     EXPECT_EQ(ops, (std::vector<Op>{Op::ICONST_2, Op::IRETURN, Op::ICONST_0, Op::NOP,
@@ -86,12 +132,20 @@ TEST(GotoRearrangerTest, gotoWTailSegmentMoved)
 // ── 非零候选位：前缀块 + GOTO_W ──
 TEST(GotoRearrangerTest, gotoWAfterPrefixBlock)
 {
-    // ACONST_NULL(0) POP(1) GOTO_W→pc9(2) | M: ICONST_0(7) IRETURN(8)
-    // | L: ICONST_2(9) IRETURN(10)。
-    const MethodPassRun r = runMethodPass(
-        oneMethodEx("m", "()I",
-                    {0x01, 0x57, 0xc8, 0x00, 0x00, 0x00, 0x07, 0x03, 0xac, 0x05, 0xac}),
-        mjbase::pass::GotoRearranger{});
+    // ACONST_NULL(0) POP(1) GOTO_W→L(2) | M: ICONST_0 IRETURN
+    // | L: ICONST_2 IRETURN。
+    const MethodPassRun r =
+        runMethodPass(oneMethodEx("()I",
+                                  R"JASM(      aconst_null
+      pop
+      goto_w L
+      iconst_0
+      ireturn
+      L:
+      iconst_2
+      ireturn
+)JASM"),
+                      mjbase::pass::GotoRearranger{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     EXPECT_EQ(ops, (std::vector<Op>{Op::ACONST_NULL, Op::POP, Op::ICONST_2, Op::IRETURN,
@@ -101,10 +155,17 @@ TEST(GotoRearrangerTest, gotoWAfterPrefixBlock)
 // ── 单指令尾段（段 = 最后一条指令）──
 TEST(GotoRearrangerTest, singleInsnSegmentMoved)
 {
-    // ICONST_1(0) GOTO→pc6(1) | M: ICONST_0(4) IRETURN(5) | L: IRETURN(6)。
-    const MethodPassRun r = runMethodPass(
-        oneMethodEx("m", "()I", {0x04, 0xa7, 0x00, 0x05, 0x03, 0xac, 0xac}),
-        mjbase::pass::GotoRearranger{});
+    // ICONST_1(0) GOTO→L(1) | M: ICONST_0 IRETURN | L: IRETURN。
+    const MethodPassRun r =
+        runMethodPass(oneMethodEx("()I",
+                                  R"JASM(      iconst_1
+      goto L
+      iconst_0
+      ireturn
+      L:
+      ireturn
+)JASM"),
+                      mjbase::pass::GotoRearranger{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     EXPECT_EQ(ops, (std::vector<Op>{Op::ICONST_1, Op::IRETURN, Op::ICONST_0, Op::IRETURN}));
@@ -114,14 +175,23 @@ TEST(GotoRearrangerTest, singleInsnSegmentMoved)
 //    引用承接到来来的顺序后继（RedundantJumpRemover 同款不阻断）──
 TEST(GotoRearrangerTest, externalBranchIntoGotoBoundaryRetargeted)
 {
-    // ICONST_2(0) IFNE→pc6(1) | ICONST_1(3) IRETURN(4) | GOTO→pc9(5)
-    // | M: ATHROW(8) | L: ICONST_3(9) IRETURN(10)。IFNE 的目标锚 GOTO
+    // ICONST_2(0) IFNE→G(1) | ICONST_1(4) IRETURN(5) | G: GOTO→L(6)
+    // | M: ATHROW(9) | L: ICONST_3(10) IRETURN(11)。IFNE 的目标锚 GOTO
     // 前置边界，GOTO 删除后承接为搬入的 ICONST_3。
-    const MethodPassRun r = runMethodPass(
-        oneMethodEx("m", "()I",
-                    {0x05, 0x9a, 0x00, 0x05, 0x04, 0xac, 0xa7, 0x00, 0x04, 0xbf, 0x06,
-                     0xac}),
-        mjbase::pass::GotoRearranger{});
+    const MethodPassRun r =
+        runMethodPass(oneMethodEx("()I",
+                                  R"JASM(      iconst_2
+      ifne G
+      iconst_1
+      ireturn
+      G:
+      goto L
+      athrow
+      L:
+      iconst_3
+      ireturn
+)JASM"),
+                      mjbase::pass::GotoRearranger{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     EXPECT_EQ(ops, (std::vector<Op>{Op::ICONST_2, Op::IFNE, Op::ICONST_1, Op::IRETURN,
@@ -131,11 +201,18 @@ TEST(GotoRearrangerTest, externalBranchIntoGotoBoundaryRetargeted)
 // ── 保守门：目标多前驱（显式分支 + GOTO 同指）→ 拒动 ──
 TEST(GotoRearrangerTest, multiplePredecessorsRejected)
 {
-    // GOTO→pc8(0) IFNE→pc8(3，不可达) | M: ICONST_0(6) IRETURN(7)
-    // | L: ICONST_2(8) IRETURN(9)。L 前驱 = GOTO + IFNE 双入边。
-    const Bytes in = oneMethodEx("m", "()I",
-                                 {0xa7, 0x00, 0x08, 0x9a, 0x00, 0x05, 0x03, 0xac, 0x05,
-                                  0xac});
+    // GOTO→L(0) IFNE→L(3，不可达) | M: ICONST_0 IRETURN
+    // | L: ICONST_2 IRETURN。L 前驱 = GOTO + IFNE 双入边。
+    const Bytes in = oneMethodEx(
+        "()I",
+        R"JASM(      goto L
+      ifne L
+      iconst_0
+      ireturn
+      L:
+      iconst_2
+      ireturn
+)JASM");
     const MethodPassRun r = runMethodPass(in, mjbase::pass::GotoRearranger{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
@@ -144,10 +221,21 @@ TEST(GotoRearrangerTest, multiplePredecessorsRejected)
 // ── 保守门：段内回边跳出段外（环形结构）→ 拒动 ──
 TEST(GotoRearrangerTest, cycleBackEdgeRejected)
 {
-    // GOTO→pc4(0) | M: IRETURN(3) | L: ICONST_2(4) GOTO→pc3(5) IRETURN(8)。
-    // 段内 GOTO 回跳 M 头（段外），跨段循环首件不证。
-    const Bytes in       = oneMethodEx("m", "()I",
-                                 {0xa7, 0x00, 0x04, 0xac, 0x05, 0xa7, 0xff, 0xfe, 0xac});
+    // GOTO→L(0) | M: IRETURN(3)（回边落点，段外） | L: ICONST_2(4)
+    // GOTO→M(5) IRETURN(8)。段内 GOTO 回跳 M 头（段外），跨段循环首件不证。
+    // M 仅由 L 侧回边携 [int] 进入，IRETURN 弹之，帧面收敛（M 前是无条件
+    // GOTO，无 fallthrough 空栈入口）；段尾 IRETURN 为回边后的不可达残留，
+    // 装配器按不可达段放行。
+    const Bytes in = oneMethodEx(
+        "()I",
+        R"JASM(      goto L
+      M:
+      ireturn
+      L:
+      iconst_2
+      goto M
+      ireturn
+)JASM");
     const MethodPassRun r = runMethodPass(in, mjbase::pass::GotoRearranger{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
@@ -156,12 +244,27 @@ TEST(GotoRearrangerTest, cycleBackEdgeRejected)
 // ── 保守门：异常表保护区跨界（end 锚定段内 L 头）→ 拒动 ──
 TEST(GotoRearrangerTest, excEndInsideSegmentRejected)
 {
-    // NOP(0) GOTO→pc6(1) | M: ICONST_0(4) IRETURN(5) | L: ICONST_2(6)
-    // IRETURN(7) | H: POP(8) ATHROW(9)。try [pc4, pc6) 的 end 恰锚段头。
-    const Bytes in = oneMethodEx("m", "()I",
-                                 {0x00, 0xa7, 0x00, 0x05, 0x03, 0xac, 0x05, 0xac, 0x57,
-                                  0xbf},
-                                 {{4, 6, 8, 0}});
+    // NOP(0) GOTO→L(1) | M: ICONST_0 IRETURN | L: ICONST_2 IRETURN
+    // | H: POP ATHROW。try [M, L) 的 end 恰锚段头。M 段是死码（goto L
+    // 越过，无跳入）：异常出口边发射域是「范围内可达指令」（JVM 校验器
+    // §4.10.1.4 保守口径），死范围无边可发 → handler 不可达不分析，
+    // POP+ATHROW 尾不构成入口下溢，装配器放行。
+    const Bytes in = oneMethodEx(
+        "()I",
+        R"JASM(      nop
+      goto L
+      Ms:
+      iconst_0
+      ireturn
+      L:
+      iconst_2
+      ireturn
+      H:
+      pop
+      athrow
+)JASM",
+        R"JASM(      { Ms, L, H, * }
+)JASM");
     const MethodPassRun r = runMethodPass(in, mjbase::pass::GotoRearranger{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
@@ -171,11 +274,28 @@ TEST(GotoRearrangerTest, excEndInsideSegmentRejected)
 //    先验证后动手）→ 拒动 ──
 TEST(GotoRearrangerTest, excBoundaryOnGotoRejected)
 {
-    // 同上布局，try [pc0, pc1) 的 end 锚 GOTO 前置边界。
-    const Bytes in = oneMethodEx("m", "()I",
-                                 {0x00, 0xa7, 0x00, 0x05, 0x03, 0xac, 0x05, 0xac, 0x57,
-                                  0xbf},
-                                 {{0, 1, 8, 0}});
+    // 同上布局，try [NOP, GOTO) 的 end 锚 GOTO 前置边界（end 标签 G 绑
+    // GOTO 指令自身，end_pc = pc(GOTO)，区间覆盖 NOP 单指令）。H 体为
+    // ATHROW 单指令（入口栈异常值直接重抛）：try 覆盖面含可达指令，
+    // handler 入口被帧分析实达——原夹具 POP+ATHROW 尾对入口 [exc] 弹后
+    // 空栈 athrow 下溢，装配器拒收；门判定只看 end 锚位，H 体内容不参与。
+    const Bytes in = oneMethodEx(
+        "()I",
+        R"JASM(      S:
+      nop
+      G:
+      goto L
+      Ms:
+      iconst_0
+      ireturn
+      L:
+      iconst_2
+      ireturn
+      H:
+      athrow
+)JASM",
+        R"JASM(      { S, G, H, * }
+)JASM");
     const MethodPassRun r = runMethodPass(in, mjbase::pass::GotoRearranger{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
@@ -184,9 +304,17 @@ TEST(GotoRearrangerTest, excBoundaryOnGotoRejected)
 // ── 邻接目标不重收（RedundantJumpRemover 的既有窗口）──
 TEST(GotoRearrangerTest, adjacentTargetNotClaimed)
 {
-    // ICONST_1(0) IRETURN(1) GOTO→pc5(2) ICONST_0(5) IRETURN(6)：目标在
+    // ICONST_1(0) IRETURN(1) GOTO→L(2) L: ICONST_0 IRETURN：目标在
     // order 意义下紧邻（p == i + 1），留给家族姊妹件。
-    const Bytes in = oneMethodEx("m", "()I", {0x04, 0xac, 0xa7, 0x00, 0x03, 0x03, 0xac});
+    const Bytes in = oneMethodEx(
+        "()I",
+        R"JASM(      iconst_1
+      ireturn
+      goto L
+      L:
+      iconst_0
+      ireturn
+)JASM");
     const MethodPassRun r = runMethodPass(in, mjbase::pass::GotoRearranger{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
@@ -195,8 +323,16 @@ TEST(GotoRearrangerTest, adjacentTargetNotClaimed)
 // ── 后向目标（回边）不动 ──
 TEST(GotoRearrangerTest, backwardTargetUntouched)
 {
-    // GOTO→pc0 回跳常量装载，目标在候选之前。
-    const Bytes in = oneMethodEx("m", "()I", {0x04, 0xac, 0xa7, 0xff, 0xfe, 0x03, 0xac});
+    // GOTO→Ltop 回跳常量装载，目标在候选之前。
+    const Bytes in = oneMethodEx(
+        "()I",
+        R"JASM(      Ltop:
+      iconst_1
+      ireturn
+      goto Ltop
+      iconst_0
+      ireturn
+)JASM");
     const MethodPassRun r = runMethodPass(in, mjbase::pass::GotoRearranger{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
