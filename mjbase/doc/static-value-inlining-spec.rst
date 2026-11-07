@@ -19,7 +19,7 @@
 StaticValueInliningTransformer）按「每件只做一件事，多组合」的形态收编为两件独立的
 opt-in pass：收集件是容器级只读件，产出「字段身份 → 常量值」视图；物化件消费该
 视图，把容器内 GETSTATIC 读点原位物化为等值常量装载。两件都默认链不收，CLI ``-p``
-显式挂点；注册名 ``StaticValueCollection`` / ``StaticValueInlining``（scope 均为
+显式挂点；注册名 ``StaticValueCollection`` / ``StaticValueInlining`` （scope 均为
 global）。
 
 与既有写侧件 StaticFieldDefaultInliner（clinit 单写折叠进字段 ConstantValue 属性，
@@ -148,7 +148,7 @@ ConstantFolder，本批零重复实现。折叠未发生的对（红线保守停
 5.5 走廊预算
 ^^^^^^^^^^^^
 
-clinit 指令数超过 ``kMaxCorridorInsns``（20000，Recaf max-steps 同量级）整类拒
+clinit 指令数超过 ``kMaxCorridorInsns`` （20000，Recaf max-steps 同量级）整类拒
 （求值不收敛桶）。
 
 .. _static-value-inlining-cv:
@@ -187,7 +187,7 @@ lower / write 失败抛错交管线容错档位处置（容器尚未提交，无
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
 测试 ``MaterializesCollectedCrossClassReads``。伴生类 ``T`` 的 clinit 写
-``a = 42``（收集件发布 Int(42)），读方 ``R.m`` 跨类读：
+``a = 42`` （收集件发布 Int(42)），读方 ``R.m`` 跨类读：
 
 .. code:: text
 
@@ -209,8 +209,8 @@ lower / write 失败抛错交管线容错档位处置（容器尚未提交，无
 7.2 cat2 与 String 读点物化
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-同测试。long 读点物化为 ``ldc2_w``（弹宽与 getstatic 同为 cat2，栈形状恒等）；
-String 读点物化为 ``ldc``（字符串常量 intern 进读方常量池，命中既有池不膨胀）：
+同测试。long 读点物化为 ``ldc2_w`` （弹宽与 getstatic 同为 cat2，栈形状恒等）；
+String 读点物化为 ``ldc`` （字符串常量 intern 进读方常量池，命中既有池不膨胀）：
 
 .. code:: text
 
