@@ -12,7 +12,7 @@ mjbase pass 族目录（pass-catalog）
 覆盖面与分族
 ------------
 
-覆盖面是 ``mjbase/src/mjbase/pass/default_pass_registry.cpp``\ 注册的全部 77 个 pass：21 个容器级（``GlobalPass``\ ）、17 个类级（``ClassPass``\ ）、39 个方法级（``MethodPass``\ ）。分族依据是注册表标签（``scope``\ /\ ``action``\ /\ ``stability``\ ）与各头注自报的家族名，按职责分十族；成员清单与族内分工全部以现状为准。
+覆盖面是 ``mjbase/src/mjbase/pass/default_pass_registry.cpp``\ 注册的全部 81 个 pass：21 个容器级（``GlobalPass``\ ）、21 个类级（``ClassPass``\ ）、39 个方法级（``MethodPass``\ ）。分族依据是注册表标签（``scope``\ /\ ``action``\ /\ ``stability``\ ）与各头注自报的家族名，按职责分十族；成员清单与族内分工全部以现状为准。
 
 两个全族惯例：
 
@@ -405,6 +405,27 @@ LocalVariableTableRebuilder
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 - 一行条目（调试表收口独立件，非本节清理家族 14 件成员）：变换后 LVT 按存活区间重算（保真口径：可信名/描述符沿用原表可验证项，落 ``var<槽位>``\ 兜底）或显式丢弃口径摘除 LVT/LVTT；与 LocalVariableAnnotator（规范化件）的边界、两口径与幂等声明见 ``local_variable_table_rebuilder.hpp``\ 头注。单测 ``local_variable_table_rebuilder_test``\ 。标签 ``scope:class``\ /\ ``stability:opt-in``\ （改写所有产物的调试表形态，默认链不收，经管线配置显式启用）。
+
+.. _pass-catalog-long-annotation-remover:
+
+LongAnnotationRemover
+^^^^^^^^^^^^^^^^^^^^^
+
+- 一行条目（体积判据独立件，非本节清理家族 14 件成员）：清理三层注解/type 注解/参数注解槽中描述符长度 ≥ 阈值（默认 150）的巨型垃圾注解——黑名单（SpecificAnnotationRemover）与形状判据（IllegalAnnotationRemover 族）之外的体积正交判据面；嵌套值面 tag='@' 条目整项删除、幸存条目值内递归修剪；Code 嵌套槽触碰沿家族破例口径（父 Code 槽连带置脏）；长度按码点数计（家族口径，与 Recaf 的 UTF-16 码元口径在 ASCII 描述符上逐字节一致）；不触碰 record 组件与 AnnotationDefault（Recaf 同口径，不扩面）。判据细节与阈值依据见 ``long_annotation_remover.hpp``\ 头注。单测 ``long_annotation_remover_test``\ 。标签 ``scope:class``\ /\ ``action:eliminate``\ /\ ``stability:opt-in``\ 。
+
+.. _pass-catalog-duplicate-annotation-remover:
+
+DuplicateAnnotationRemover
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- 一行条目（重复判据独立件，非本节清理家族 14 件成员）：同目标同描述符的多实例注解去重、首个实例保留——普通注解键为描述符内容、type annotation 键为目标位全集（不同目标位的同描述符条目各保留）、参数注解键为 (行下标, 描述符) 且行数行序保持；visible 与 invisible 两族共享一份集；分集粒度为类/成员/Code 嵌套槽/record 组件；不递归注解值面（Recaf 同口径）；Code 嵌套与 record 组件触碰沿家族破例口径（父槽连带置脏）。判据细节见 ``duplicate_annotation_remover.hpp``\ 头注。单测 ``duplicate_annotation_remover_test``\ 。标签 ``scope:class``\ /\ ``action:sanitize``\ /\ ``stability:opt-in``\ 。
+
+.. _pass-catalog-illegal-varargs-remover:
+
+IllegalVarargsRemover
+^^^^^^^^^^^^^^^^^^^^^
+
+- 一行条目（access 位修复独立件，非本节清理家族 14 件成员）：ACC_VARARGS 位与方法描述符的失配四象限裁决——位有 + 无阵列尾参（含无参方法）摘位（Recaf 对齐方向）、位无 + 阵列尾参置位（修复扩展方向：恢复反射 isVarArgs 与 javac 变参调用点解析，但会翻转合法非 varargs 数组尾参方法的语义面，故严格 opt-in、默认链永不收）；描述符逐 FieldType 解析判形，畸形描述符 fail-closed 双向不动；标志位两面落盘（unit + backing）。判据细节与置位方向语义影响见 ``illegal_varargs_remover.hpp``\ 头注。单测 ``illegal_varargs_remover_test``\ 。标签 ``scope:class``\ /\ ``action:sanitize``\ /\ ``stability:opt-in``\ 。
 
 .. _pass-catalog-class-const-skeleton:
 

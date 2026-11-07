@@ -26,13 +26,16 @@
 #include "mjbase/pass/fix_pattern_simplifier.hpp"
 #include "mjbase/pass/flattening_reverser.hpp"
 #include "mjbase/pass/goto_rearranger.hpp"
+#include "mjbase/pass/duplicate_annotation_remover.hpp"
 #include "mjbase/pass/identity_wrapper_inliner.hpp"
 #include "mjbase/pass/illegal_class_file_cleaner.hpp"
+#include "mjbase/pass/illegal_varargs_remover.hpp"
 #include "mjbase/pass/indy_site_inliner.hpp"
 #include "mjbase/pass/intrinsic_folding.hpp"
 #include "mjbase/pass/line_number_remover.hpp"
 #include "mjbase/pass/local_constant_propagation.hpp"
 #include "mjbase/pass/local_variable_annotator.hpp"
+#include "mjbase/pass/long_annotation_remover.hpp"
 #include "mjbase/pass/local_variable_table_rebuilder.hpp"
 #include "mjbase/pass/junk_code_inserter.hpp"
 #include "mjbase/pass/meta_info_remover.hpp"
@@ -489,6 +492,37 @@ PassNameRegistry makeDefaultRegistry()
         "SpecificAnnotationRemover",
         [] { return std::make_unique<mjbase::pass::SpecificAnnotationRemover>(); },
         "Remove annotations matching the configured blacklist."));
+    // Recaf 差距吸收 R4 批（判据小件三件，注解面体积/重复判据 + varargs 位
+    // 修复）：巨型注解删除（体积启发——描述符长度阈值，与黑名单/形状判据
+    // 正交，阈值默认 150 可经管线配置 maxLength 调）。判据面与 Recaf 差异
+    // 声明见头注。标签：scope:class / action:eliminate / stability:opt-in
+    // （默认链不收，管线配置显式挂点）。
+    seed(reg.registerClassPass(
+        "LongAnnotationRemover",
+        [] { return std::make_unique<mjbase::pass::LongAnnotationRemover>(); },
+        "Remove annotations whose type descriptor length reaches the threshold "
+        "(default 150; configurable via pipeline params)."));
+    // 重复注解去重件（Recaf DuplicateAnnotationRemovingTransformer 判据吸收）：
+    // 同目标同描述符多实例去重，首个保留；普通注解按描述符内容、type
+    // annotation 按目标位全集、参数注解按 (行, 描述符) 组键；visible 与
+    // invisible 共享一份集。判据面与 Recaf 差异声明见头注。标签：scope:class
+    // / action:sanitize / stability:opt-in（默认链不收，管线配置显式挂点）。
+    seed(reg.registerClassPass(
+        "DuplicateAnnotationRemover",
+        [] { return std::make_unique<mjbase::pass::DuplicateAnnotationRemover>(); },
+        "Deduplicate annotations with the same target and descriptor, keeping "
+        "the first instance."));
+    // varargs 位与描述符失配修复件（Recaf IllegalVarargsRemovingTransformer
+    // 判据吸收 + 任务口径双向扩展）：位有 + desc 无阵列尾参（含无参）→ 摘位
+    // （Recaf 对齐方向）；位无 + desc 有阵列尾参 → 置位（修复方向，语义影响
+    // 见头注）。两面落盘（unit + backing）；畸形描述符 fail-closed。标签：
+    // scope:class / action:sanitize / stability:opt-in（默认链不收，管线
+    // 配置显式挂点）。
+    seed(reg.registerClassPass(
+        "IllegalVarargsRemover",
+        [] { return std::make_unique<mjbase::pass::IllegalVarargsRemover>(); },
+        "Fix ACC_VARARGS/descriptor mismatches: clear bits without an array "
+        "tail parameter, restore bits on array-tail descriptors."));
     // opt pass 扩段（类级首件，mbase 治理版移植）：<clinit> 单次写入的常量
     // 内联进字段 ConstantValue + 删除等价初始化指令对；多次 PUTSTATIC 预扫描
     // 计数保守跳过。标签：scope:class / action:propagate / stability:opt-in
