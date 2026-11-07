@@ -384,7 +384,8 @@ inline std::vector<std::string> clangPathPrelude(const ClangProbe& probe,
 }
 
 /// 编译一个 Java 源文件到指定输出目录。成功返回 true；失败把合并输出写入 *err。
-/// 统一带 -encoding UTF-8（避免 GBK 系统下含中文源码失败）。
+/// 统一带 -encoding UTF-8（避免 GBK 系统下含中文源码失败）与 -Xmx512m（测试
+/// 样本体量小，堆上限只为防病态样本吃满机器 commit——全机内存纪律）。
 inline bool compileJava(const JdkToolchain& tc, const fs::path& javaFile,
                         const fs::path& outDir, std::string* err = nullptr)
 {
@@ -398,7 +399,8 @@ inline bool compileJava(const JdkToolchain& tc, const fs::path& javaFile,
         if (err) *err = "无法创建 javac 输出目录: " + outDir.string() + ": " + ec.message();
         return false;
     }
-    auto r = runBat({q(tc.javac) + " -encoding UTF-8 -d " + q(outDir) + " " + q(javaFile)});
+    auto r = runBat({q(tc.javac) + " -J-Xmx512m -encoding UTF-8 -d " + q(outDir) + " " +
+                     q(javaFile)});
     if (r.exitCode != 0) {
         if (err) *err = r.out;
         return false;
@@ -406,17 +408,23 @@ inline bool compileJava(const JdkToolchain& tc, const fs::path& javaFile,
     return true;
 }
 
-/// 运行 Java main 类，返回合并输出。args 为命令行参数（已按 cmd 规则组装好的字符串）。
+/// 运行 Java main 类，返回合并输出。args 为命令行参数（已按 cmd 规则组装好的
+/// 字符串）；jvmArgs 为 JVM 参数（插在 -cp 之前，如 -Xverify:all）。java 进程
+/// 一律带 -Xmx512m：测试样本体量小，堆上限防病态样本吃满机器 commit（全机
+/// 内存纪律，16GB 机器上 JVM 默认 max heap 可达物理 1/4）。
 inline ExecResult runJavaMain(const JdkToolchain& tc, const fs::path& classpath,
                               const std::string& mainClass,
-                              const std::vector<std::string>& args = {})
+                              const std::vector<std::string>& args = {},
+                              const std::vector<std::string>& jvmArgs = {})
 {
     ExecResult r;
     if (!tc.available) {
         r.out = "JDK 不可用";
         return r;
     }
-    std::string cmd = q(tc.java) + " -cp " + q(classpath) + " " + mainClass;
+    std::string cmd = q(tc.java) + " -Xmx512m";
+    for (const auto& jvmArg : jvmArgs) cmd += " " + jvmArg;
+    cmd += " -cp " + q(classpath) + " " + mainClass;
     for (auto& a : args) cmd += " " + a;
     return runBat({cmd});
 }
@@ -506,7 +514,8 @@ inline JvmRunOutcome runWithRunnerOutcome(const JdkToolchain& tc, const RunnerSp
 
     // 额外源与主源合并成单条 javac 命令一次编译：逐文件单独 javac 时
     // 无法解析彼此依赖（如 KeyChainKeyFactory 依赖 KeyChainKey 接口）。
-    std::string extraCmd = q(tc.javac) + " -encoding UTF-8 -d " + q(dir);
+    // javac/java 一律 -Xmx512m（全机内存纪律）。
+    std::string extraCmd = q(tc.javac) + " -J-Xmx512m -encoding UTF-8 -d " + q(dir);
     for (const auto& extra : spec.extraJavaSources) extraCmd += " " + q(fs::absolute(extra));
     if (!spec.extraJavaSources.empty()) {
         auto er = runBat({extraCmd});
@@ -518,8 +527,8 @@ inline JvmRunOutcome runWithRunnerOutcome(const JdkToolchain& tc, const RunnerSp
             return r;
         }
     }
-    auto compileResult = runBat({q(tc.javac) + " -encoding UTF-8 -cp " + q(dir) + " -d " +
-                                 q(dir) + " " + q(src)});
+    auto compileResult = runBat({q(tc.javac) + " -J-Xmx512m -encoding UTF-8 -cp " + q(dir) +
+                                 " -d " + q(dir) + " " + q(src)});
     if (compileResult.exitCode != 0) {
         r.status   = JvmRunStatus::CompileFailed;
         r.exitCode = compileResult.exitCode;
@@ -529,7 +538,8 @@ inline JvmRunOutcome runWithRunnerOutcome(const JdkToolchain& tc, const RunnerSp
     }
     // JVM 参数必须在主类之前（java <jvmArgs> -cp ... Runner <arguments>），
     // 放在主类后会被当作 Runner 的程序参数，-D 系统属性不生效。
-    std::string run = q(tc.java);
+    // -Xmx512m 固定前置（全机内存纪律）。
+    std::string run = q(tc.java) + " -Xmx512m";
     for (const auto& arg : spec.jvmArgs) run += " " + arg;
     run += std::string(spec.verify ? " -Xverify:all -cp " : " -noverify -cp ") + q(dir) +
            " Runner";
