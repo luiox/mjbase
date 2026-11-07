@@ -21,6 +21,7 @@ mjbase 设计规格
    analysis-cache-and-container-stack
    reachability-closure-design
    pass-contract
+   pass-catalog
    plugin-api
    upstream-libjbc-annotation-recursion
    module-map

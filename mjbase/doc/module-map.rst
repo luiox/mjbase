@@ -3,7 +3,7 @@
 mjbase 模块地图
 ===============
 
-以 mbase（\ ``../mbase/src/mbase/``\ ，约 368 文件 / 8.8 万行）为语义来源，在 libjbc 底座上逐模块重写。状态：✅ 已迁 ｜ 🔨 迁移中 ｜ ⬜ 未开始 ｜➖ 有意不迁（理由注明）。
+以旧栈 mbase（约 368 文件 / 8.8 万行）为语义来源，在 libjbc 底座上逐模块重写；迁移主体完成后，本表同时记录退役与出仓定案面。当前基座模块面：16 个模块目录（analysis / asm / expr / hierarchy / jar / jasm / log / mapping / model / pass / plugin / project / reference / renamer / spi / util）+ keys 顶层键面。状态：✅ 在册 ｜ 🔨 迁移中 ｜ ⬜ 未开始 ｜ ➖ 有意不迁或已退役（理由注明）。
 
 地基（主线持有，模块 agent 禁改）
 ---------------------------------
@@ -50,7 +50,7 @@ mjbase 模块地图
    * - asm/analyzer
      - ✅
      - asm/analyzer
-     - 常量域、来源域、可空性事实域、跳转走向事实（branch_facts）、跨路径整数约束事实（path_conditions：分支谓词贴边、must 交集、死分支修剪，见 path_conditions 头注）、字符串/常量流事实（string_flow：来源、逃逸、Base64/XOR/char 偏移管线）+ 入参常量种子 + slot 级 def-use（有界到达定义集、异常边、字段访问事实，见 slot_def_use 头注）
+     - 常量域、来源域、可空性事实域、跳转走向事实（branch_facts）、跨路径整数约束事实（path_conditions：分支谓词贴边、must 交集、死分支修剪，见 path_conditions 头注）、字符串/常量流事实（string_flow：来源、逃逸、Base64/XOR/char 偏移管线）+ 入参常量种子 + slot 级 def-use（有界到达定义集、异常边、字段访问事实，见 slot_def_use 头注）；别名分析（alias 域插件，自 analysis 归位）与 reflection_interpreter（体级反射改写事实，自 reference 归位）现驻本模块
      - jbc::analysis::DomainEngine + IValueDomain；引擎缺口挂账：分支条件钩子、CHECKCAST 族 operand-aware 钩子；string_flow 设计见 string_flow 头注
    * - asm/tmatcher
      - ✅
@@ -58,15 +58,15 @@ mjbase 模块地图
      - 新代匹配 DSL：combinator、capture、替换规则骨架
      - CodeDom::order 窗口匹配
    * - asm/matcher
-     - ✅
+     - ➖
      - asm/matcher
-     - 旧代 pattern_matcher 语义
-     - 同上
+     - 旧代 pattern_matcher 语义——已退役：pattern_matcher / match_step / mini_dsl 全族删除，唯一产品消费方 StackOperationSimplifier 迁 tmatcher 载体（ReplaceRule 组合子 + InsnPlanner 计划面），tmatcher 单代在册
+     - ——
    * - asm/evaluator
-     - ✅
+     - ➖
      - asm/evaluator
-     - 具体求值栈机（数值子集 + 分支 + 步数熔断）
-     - CodeDom 只读遍历
+     - 具体求值栈机（数值子集 + 分支 + 步数熔断）——已退役：产品面零消费（唯一消费面是自测与 strength_reducer 差分求值，差分矩阵改发射形状读回 + 位精确模拟），求值能力归 libjsim 独立仓
+     - ——
    * - asm/classpath
      - ✅
      - asm/classpath
@@ -144,20 +144,20 @@ mjbase 模块地图
      - log_init 门面
      - CA_LOG 门面接 libca_log
    * - i18n
-     - ✅
+     - ➖
      - i18n.hpp
-     - 兜底入口
-     - key 空间保持 mbase.\* 字面前缀（.lang 逐字节照搬纪律）
+     - 兜底入口——已退役：随 cli 退役一并移除（\ ``i18n.hpp``\ 与内嵌翻译表面不再留在基座），i18n 供给面归下游消费方自理
+     - ——
    * - util 叶子
      - ✅
      - util/pair,span,triple,time_util
      - util/ 子目录
      - class_name_util、dos_time_util 前批复迁
    * - cli
-     - ✅
+     - ➖
      - cli
-     - ArgParser 框架 + i18n embed
-     - 2 个 globalPipeline 用例待 spi/pass 批接线后恢复
+     - ArgParser 框架 + i18n embed——已退役：解析轮归 libca ``ca::opt``\ ，模块整体移除
+     - ——
    * - jasm
      - ✅
      - jasm
@@ -179,7 +179,7 @@ mjbase 模块地图
    * - analysis
      - ✅
      - analysis
-     - alias（域插件+两跑）/andersen/exception_flow/method_effect/method_frame
+     - andersen（指针分析）/exception_flow/method_effect/class_scan + cp_refs（引用事实）/lvt_display_policy（LVT 显示名策略）/semantic_fp（方法语义指纹引擎，规格见 :ref:`semantic-fp-spec`\ ）；alias 域插件已归 asm/analyzer（解环归位）
      - 反射身份契约逐字保留；摘要键改 MemberKey（aliasMemberKey 建键）；method_frame 驱动器归 DomainEngine
    * - spi
      - ✅（重定型）
@@ -202,13 +202,13 @@ mjbase 模块地图
    * - reference
      - ✅（重设计）
      - reference
-     - reference_index（.ridx 缓存读写）/reflection_interpreter/reflection_binding_analyzer/global_reachability + asm/classpath/resolved_call_graph + field_access_graph（调用边传播的字段读写摘要，见 field_access_graph 头注）；根来源 provider 化（keep 规则/档位 + main 发现，共享 entry_points 谓词）
+     - reference_index（.ridx 缓存读写）/reflection_binding_analyzer/global_reachability/resolved_call_graph（含 RTA 包装，自 asm/classpath 归位）/field_access_graph（调用边传播的字段读写摘要，见 field_access_graph 头注）；根来源 provider 化（entry_points/keep_rule/keep_roots：keep 规则/档位 + main 发现，共享谓词）；reflection_interpreter 已归 asm/analyzer（解环归位）
      - alias 经 aliasMemberKey 建键消费；.ridx 字节级保留；binding_analyzer fail-closed；类级引用扫描（NestHost/NestMembers/PermittedSubclasses/Record 组件描述符与嵌套 Signature/注解/ModuleMainClass+Module 的 mainClass·uses·provides）走 libjbc typed 解码面；provider 只读索引产值，无注册表/回调
    * - workspace
-     - ✅
+     - ➖
      - workspace
-     - workspace/i_workspace/workspace_types/class_mutation_service/classfile_support/reference_scan/summary_scan
-     - 符号标签指令家族（含 tableswitch/lookupswitch）经 libjbc CodeDom 往返
+     - workspace/i_workspace/workspace_types/class_mutation_service/classfile_support/reference_scan/summary_scan——已退役：workspace 概念不留在基座（单 class 虚方法面把容器形态绑死在 class/JAR 视图），引擎整体移交下游 mjt 自理（\ ``mjt::workspace``\ ），基座内零消费方
+     - ——
 
 第六批（remapper + renamer）
 ----------------------------
@@ -233,8 +233,8 @@ mjbase 模块地图
      - rename_engine/shadow_alias/shadow_token/name_suggestion_file/name_proposal/name_provider + rename_context
      - 106 用例；shadow 建键走 aliasMemberKey；shadow_token 悬垂指针 UB 修复随迁（mjt 9e72e9f 同源）；apply 面接线收口：引擎计划按登记序搬运成 MemberRemapPlan 经 applyResourceRemapPlan+RemapPolicy 就地应用（旧栈 step 8 同一条路径，不另起手术代码），非空计划应用零变化 ApplyFailed（旧栈同口径，容器不动）、空计划 zero-applied 成功；默认 RemapPolicy{} 只改字节码面、类资源 URI 随类改名移动（类 URI 门 = bytecode 口径，与旧栈及 morpher 9507ecf39 先例一致；resources 门只管 services/manifest/文本资源面）；javac 多类样本 apply 重读断言（声明类 CP 条目/成员槽/跨类调用点/InnerClasses·NestHost·NestMembers 走 typed 面/未触及类字节不动）+ JVM 真跑门（行为与原名一致 + 反射读新名）+ 旧栈四件 apply 用例断言移植收口
 
-第七批（树 IR 本体：air + sir）
--------------------------------
+第七批（air + sir——出仓定案，不在 mjbase）
+--------------------------------------------
 
 .. list-table::
    :header-rows: 1
@@ -246,15 +246,17 @@ mjbase 模块地图
      - 迁移范围
      - 说明
    * - air
-     - ✅
+     - ➖
      - air
      - 17 件（opcode/node/pool/annotation/class/builder/writer/pass/stack/printer/expr_bridge）
      - 112 用例；builder 输入基座按总设计 §3.4(3) 从 jbytecode tree 换 ClassSession/CodeUnit；builder 裸池读清零（multianewarray 经 classOf 语义读、catch 类型经 backing().className 公共读面、ldc 复杂常量经 constOf 分派与旧栈同权 Nop，craft 用例钉死）；writer 写回保真收口（整体重建 + 同位类型族恢复 + 逐方法折叠等价门 + adaptor 驱动 lower + Strict 帧链；ldc 复杂常量/JSR/RET/invokedynamic fail-closed 拒写；恒等往返/变更写回/语料门三道验收）；元数据面（LNT/LVT/LVTT/SourceFile）读侧提升进 AIR——坐标一律指令下标（方法末尾边界记指令总数）、畸形行显式裁剪、LVTT 签名列独立入表；写回源 pc 影线按节点 originalOffset 精确锚定（插入/删除/重排不失位），悬垂行走 prepare 容差收敛（吸附/合并/尾部裁行）+ lower pcmap 精确重定向（miss 即 Err），SourceFile 类级保留；注解与 ConstantValue 仍不转换（旧 TODO 口径）；异常表 End 边界解析与单方法路径 maxes 已修（2026-10-13，回归钉在 air_builder_test）
    * - sir
-     - ✅
+     - ➖
      - sir
      - 23 件（ir/def_use/liveness/point_liveness/verifier/printer/dot_dumper/pass/opt/destructor/builder/writer）
      - 46 用例；builder/writer 真实现直迁；Switch 表读取修正旧栈潜伏 bug（旧读 op1/op2 实际越界，按 AIR 实际编码读表）；真实 SSA→栈机 lower 挂账 libjbc A1
+
+出仓定案：deobf 工具面 IR 驻 mjt-deobf（\ ``mjt::deobf::air``\ /\ ``sir``\ 命名空间，单测随 mjt_deobf_unittest），sir 真实 SSA→栈机 lower 随之改隶、不排 mjbase 波次；上表两行记录的是出仓前在仓内副本完成的工作面，mjbase 主线从未包含 air/sir 模块目录。
 
 第八批（消费者对接协议：E 系，新设计）
 --------------------------------------
@@ -269,10 +271,10 @@ mjbase 模块地图
      - 迁移范围
      - 说明
    * - consumer
-     - ✅（E3）
+     - ➖（E3 已退役）
      - libjbc design.md §9 IClassSource 草案重定型 + mbase workspace/summary_scan 口径
      - class_source（IClassSource 协议 + Memory/Container 双实现）+ summary_scanner（SummaryScanner → ClassSummary）
-     - 产品线消费的类字节供给面与骨架扫描面：错误走 ConsumerError 值语义，fail-closed（缺名 Err(NotFound)、容器带病资源 Err(BadClassFile)、扫描损坏字节不产半截摘要）；Recovered（尾部降级）照常出骨架；ClassSummary 口径与 mbase listClassSummaries 逐字段对拍（version 编码 ``(minor << 16) | major``\ ），计数之外再交付成员签名与方法 hasCode 分流位；ContainerClassSource 内部名 first-wins 并记 duplicateNames（与容器 URI 级重复表互补）；14 用例（class_source_test 8 + summary_parity_test 6，截断逐字节全 sweep）。E1（ReferenceSite/reference_index）已随第五批落地
+     - 产品线消费的类字节供给面与骨架扫描面：错误走 ConsumerError 值语义，fail-closed（缺名 Err(NotFound)、容器带病资源 Err(BadClassFile)、扫描损坏字节不产半截摘要）；Recovered（尾部降级）照常出骨架；ClassSummary 口径与 mbase listClassSummaries 逐字段对拍（version 编码 ``(minor << 16) | major``\ ），计数之外再交付成员签名与方法 hasCode 分流位；ContainerClassSource 内部名 first-wins 并记 duplicateNames（与容器 URI 级重复表互补）；14 用例（class_source_test 8 + summary_parity_test 6，截断逐字节全 sweep）。E1（ReferenceSite/reference_index）已随第五批落地。退役定案：全仓零消费方（mjt 从未 include，唯一消费面是自测）——按仓规「没有消费方的模块不进仓」整体移除，IClassSource 协议待真实消费方出现时按需求重建
 
 第九批（分析数据库与出口遮蔽，新设计）
 --------------------------------------
@@ -302,18 +304,38 @@ mjbase 模块地图
      - mask_types + mask_regex_engine + mask_suspect + mask_evaluator（出口遮蔽判定族：规则数据面 schema v4、suspect 四类旗标扫描、求值器判定序）
      - 纯函数判定面无 IO；出口接线归上层消费方
 
+增补面：plugin（pass-pack 插件接口）
+------------------------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: auto
+
+   * - 模块
+     - 状态
+     - 来源
+     - 迁移范围
+     - 说明
+   * - plugin
+     - ✅
+     - libjbc design.md §9 pack 草案定型（新设计）
+     - pass-pack 装配接口：buildCommit 同源门 + ``<pack>.``\ 强制命名空间 + pack 配置闭包注册（\ ``PackErrorKind``\ 失败码面 fail-closed）
+     - 契约见 :ref:`plugin-api`\ ；内置 pass 经 registerBuiltinPasses 组合根装配，pack 是外部扩充面
+
+pass 域现状（全量收口）
+------------------------
+
+pass 与 spi 已收口：spi 三级契约 + 编排 + sanitizer + 帧链接线在册，pass 域 72 件注册 pass（17 容器级 / 17 类级 / 38 方法级）按职责分族的规格见 :ref:`pass-catalog`\ 。旧栈余量归属：LVT 重建由 LocalVariableAnnotator 承载，StackMapTable 再生归管线帧链（:ref:`pass-contract-pipeline`\ ），控制流变换的帧再算走同一接线点。
+
 后续批次（未开始）
 ------------------
 
-- pass：试点三件（illegal_class_file_cleaner / access_modifier_tightener / class_member_sorter）、方法体小批四件（nop_remover / redundant_load_val_eliminator / char_arr_to_str_simplifier / unused_check_cleaner，局部栈操作波次，golden 对拍收口）与控制流首件（junk_code_inserter，经 PassPipelineOptions::typeResolver 帧链接线，libjbc A1 首个真实消费方，自基线 + JVM 真跑验收）已按 spi 契约落成。illegal cleaner 全量规则已于 F 线清洗批经 libjclassfile 前置级接通（§3.0 敌意输入前置清洗级，两级流水，mjbase → libjclassfile 合法依赖边），旧栈清洗规则挂账清空。剩余按实测体量分四批：A 容器级直写组（\ **已收口**\ ：class_renamer 经会话 remapper 面迁成；未使用成员清理家族四件empty_class_remover / unused_class_remover / unused_field_remover / global_unused_method_remover 经 reference 面 + libjbc DOM 成员手术迁成，um 道 golden 对拍 + JVM 真跑门收口。普查砍单：meta_info_remover 家族实为scope:class（AsmClassPass），归 B 类级骨架组；tool_class_combiner 随libjbc §34 成员级增删/从零建类契约落地迁成（static 工具类并入宿主 +供体删除 + 全容器 owner 重映射 + 分支体宿主帧再生 + 常量字段ConstantValue 重建，cc 道 golden 对拍 + JVM 真跑门收口；ldc 宽常量候选按 NotModeled 口径保守保留原资源——旧栈照常合并，为迁移声明的语义面差异，见 golden manifest 声明类目与 pass 头注挂账）→B 类级骨架组（\ **已收口**\ ：meta_info_remover 家族类级 13 件（MetaInfoRemover / FinalRemover / SyntheticBridgeRemover / KotlinMetadataRemover / SourceInfoRemover / SignatureRemover / IllegalAnnotationRemover / IllegalSignatureRemover / IllegalTypeAnnotationRemover / IllegalSourceInfoRemover / UnknownAttributeCleaner / IllegalAccessRemover / SpecificAnnotationRemover）迁成——属性面落 backing 三层属性表（槽摘除 / 槽内过滤 / MethodParameters Raw 原位改写），access 位双面落盘，Code 嵌套属性表有界破例两处（MetaInfoRemover 整槽摘除 debug 表与嵌套注解槽、IllegalTypeAnnotationRemover嵌套槽内过滤，父 Code 槽连带置脏）；tree 道 8 语料 golden 对拍（meta 语义矩阵口径，纯标志位触发类目允许与旧栈 golden 逐字节一致）+ JVM 真跑门（行为一致 + 反射按剥离后口径钉死）收口。能力差距挂账（见家族头注）已收口：record 组件注解清空（typed RecordAttr 组件槽内过滤 + 父 Record槽连带置脏）、SpecificAnnotationRemover 的参数注解槽内过滤（Raw 面JVMS 4.7.20 布局条目摘除）。普查砍单：家族 method 级八件（LineNumberRemover / LocalVariableInfoRemover / ParametersInfoRemover / ExceptionInfoRemover / FrameInfoRemover / IllegalVarargsRemover / IllegalLocalVariableInfoRemover / LongIndyNameOptimizer）为 scope:method，归 C 方法级组；unused_member_remover 已由批 A 收口，不重迁）→C 方法级指令变换组（constant_propagator/dead_code_remover/method_inliner 等主力 12-15 个，CodeDom+CodeEditor 载体，按局部栈操作→数据流→控制流三小波，每 pass 先抽golden vector）→ D 依赖指令重编码/属性级的硬骨头（LVT 重建、stack map等 4-6 个，向 libjbc 单独立项，不硬写）。控制流余量挂账 libjbc A1（管线接线点已就绪，消费形态见 junk_code_inserter）。
 - crash_class_visitor / crash_method_visitor / frame_skipping_visitor：零消费方且为 jbytecode visitor 形态（libjbc 禁 visitor），\ **有意不迁**\ 。
-- pass / spi：最后一批，依赖前面全部（spi 已迁，pass 余量见上）。
 
 有意不迁
 --------
 
 - asm/cache（死代码候选）、info/ClassUnionFind（同）。
-- crash_class_visitor / crash_method_visitor / frame_skipping_visitor（零消费方，jbytecode visitor 形态，libjbc 禁 visitor）。
 - analyzer 死岛四件（code_analyzer/code_rewriter/code_reference_value/ value_utils，零消费方互锁）+ destination_interpreter（零消费方；多来源producer 集若未来有消费方按域插件重设计）+ dataflow_analyzer/ simple_interpreter/super_interpreter/subroutine 等 8 件旧栈驱动胶水（职责由 DomainEngine/FrameQuery/branch_facts 承担，见 B4 收口提交）。
 - info（InfoUtil）：能力被 hierarchy 会话扫描 + libjbc classfile DOM 覆盖，唯一 jbytecode 依赖点（ClassReader）；出现真实消费方时按 jbc 重写~50 行提取器即可，不单开模块。
-- 旧 matcher 与 tmatcher 在 mjbase 是否合并：第一批先各自迁移，集成期裁决（合并进 tmatcher 一代）。
+- 旧 matcher：已退役（pattern_matcher 全族删除），集成期裁决为 tmatcher 单代（唯一产品消费方 StackOperationSimplifier 经 ReplaceRule 组合子消费）。
