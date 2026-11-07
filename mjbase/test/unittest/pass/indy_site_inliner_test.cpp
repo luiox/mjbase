@@ -243,7 +243,8 @@ std::string interfaceFixture()
            + std::string(kStubBsm)
            + "    .method public add (I)I {\n"
              "      code: {\n"
-             "        bipush 1\n"
+             "        iload_1\n"
+             "        iload_1\n"
              "        iadd\n"
              "        ireturn\n"
              "      }\n"
