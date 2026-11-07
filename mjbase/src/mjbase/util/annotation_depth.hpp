@@ -1,7 +1,7 @@
 /// @file        annotation_depth.hpp
 /// @brief       注解族属性解码前的嵌套深度保守预检（迭代走查、显式栈）。
 ///
-/// 背景（doc_ai/upstream-libjbc-annotation-recursion.md）：libjbc 0.4.22 的
+/// 背景（doc:upstream-annotation-recursion）：libjbc 0.4.22 的
 /// readAnnotation/readElemValue 互递归无深度上限，敌意类可携约 3000 层 '@'
 /// 嵌套注解使 decodeAttr 栈溢出（AAC 壳 oo.class 实证，MSVC ASAN 抓到第一
 /// 现场）。同族解码面均已有界：jbc/type/signature.cpp kMaxNesting=255、

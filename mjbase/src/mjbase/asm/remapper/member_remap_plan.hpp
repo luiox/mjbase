@@ -2,7 +2,7 @@
 /// @brief       成员重映射规则计划：类/字段/方法的精确旧值到新值规则。
 ///
 /// 驻留存储换成 mjbase::KeyPool
-/// （内容寻址 u32 id），规则键统一为 @ref mjbase::MemberKey——remap 计划的
+/// （内容寻址 u32 id），规则键统一为 `mjbase::MemberKey`——remap 计划的
 /// 键类型与 alias/reference 消费契约对齐；文本入参 intern 进计划自有池，
 /// 返回的 string_view 均指向池驻留文本，计划存活期内有效。
 ///

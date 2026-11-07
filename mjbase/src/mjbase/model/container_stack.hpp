@@ -127,7 +127,7 @@ public:
     ///        （地址钉死容器，不做跨栈 first-wins；条目未命中 = NotFound）。
     ///
     /// 本期只支持单容器形态；entryUri 内残留 `!/`（嵌套 WAR/JAR 钻井）按
-    /// BadArgument 拒绝并指路扩展位（TODO 注记，doc_ai 设计文档同题）。
+    /// BadArgument 拒绝并指路扩展位（TODO 注记，doc:container-cache-merge 同题）。
     /// 未知容器 id = NotFound；无分隔符/空段 = BadArgument。
     ModelResult<ResolvedAddress> resolveAddress(std::string_view address) const;
 

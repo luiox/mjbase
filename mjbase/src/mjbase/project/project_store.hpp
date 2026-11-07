@@ -14,7 +14,7 @@ namespace mjbase::project {
 ///        section 命名校验、store.json 严格解析与确定性写出、section 内容
 ///        原子读写与 hash/size 校验原语。
 ///
-/// 设计源：`doc_ai/analysis-project-store-design.md`（R45 评审通过稿），
+/// 设计源：私仓规格 analysis-project-store-design（R45 评审通过稿，本仓无副本），
 /// 实现卡 **C1**（§12 卡表：bundle 常量/目录骨架、
 /// section 命名校验、store.json 严格解析与确定性写出；验收 §11-1 骨架、
 /// §11-7）+ **C2**（section 层可靠读写原语：单 section 原子写 staged tmp +
@@ -155,7 +155,7 @@ struct SectionDep
 };
 
 /// @brief 台账引擎配置（store.json 顶层可选字段 ledger_config；设计文档
-///        analysis-project-schema-v2.md §5.3）。
+///        doc:schema-v2-compaction）。
 ///
 /// 顶层只增不删纪律的加法演进：旧读者忽略该键，缺省 = 内置默认。结构内部
 /// 宽松（未知键忽略、写出丢弃）——引擎私有调参，不值得为旧键拒载整个清单。
@@ -378,7 +378,7 @@ ca::Result<ca::str::Utf8String, ProjectStoreError> readSectionBytes(
 ///   自产封闭记录，writer bug 在 flush 当场抓住，不落成明日 Damaged。
 /// - formatRetained 条目（清单载有不识别 format 的收容段）**不可 upsert
 ///   覆写**（§9.3"可整体删除但不可改写"）——先显式 remove，再另行登记新段。
-/// - removals：removeSection 墓碑（§6.3）——flush 时删 sections/<name>.<ext>
+/// - removals：removeSection 墓碑（§6.3）——flush 时删 `sections/<name>.<ext>`
 ///   文件 + 删清单条目；对当前清单不存在的名字报 Schema 错；与 upserts 同名
 ///   相交 = Schema（一笔事务内又删又写，语义矛盾）。
 /// - created_at/updated_at 语义归生产者：upsert 是整体替换，替换时时间戳由
@@ -411,7 +411,7 @@ struct StoreManifestMutation
 ///    清单提交之前（旧清单完好）。
 /// 4. **应用变更** → writeStoreManifestText 全量确定性写出（写出前校验
 ///    失败同样零触盘）。
-/// 5. **提交**：staged tmp/txn-<pid>-<mono>/store.json → 单次换名到 bundle
+/// 5. **提交**：staged `tmp/txn-<pid>-<mono>/store.json` → 单次换名到 bundle
 ///    根（唯一提交点；撞读者句柄重试 3×50ms 耗尽 = Io；重试 = 清扫本次
 ///    txn 后重跑全序列，同字节幂等，R45/P2——staged 残留不作为重试依据）
 ///    → 自清扫本次 txn（他人/开期残留归 open 期恢复扫描 §8.2-1 的动作面，

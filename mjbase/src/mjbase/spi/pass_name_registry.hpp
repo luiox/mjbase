@@ -57,7 +57,7 @@ struct PassNameEntry
 /// 职责边界：本注册面只管 name→factory 映射与 scope 标签，不管装配序——
 /// buildNestedPipeline 装配面按 pass-contract §9 留待第二个管线消费方出现时再
 /// 定型；CLI -p 按名选择属 cli 批，届时经本面查名构造再按 scope 标签投入对应
-/// 管线。三个 create 入口按 scope 分型（unique_ptr<对应基类>），与三级
+/// 管线。三个 create 入口按 scope 分型（`unique_ptr<对应基类>`），与三级
 /// PassManager / CfClassPassManager 的 addPass 直连。
 ///
 /// 形态：全局默认表（defaultPassRegistry）+ 显式注册两种；测试建独立

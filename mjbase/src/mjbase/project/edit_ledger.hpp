@@ -18,7 +18,7 @@ namespace mjbase::project {
 /// @brief 编辑台账的行级数据模型：三种行（事务/锚/书签）的严格解析与确定性
 ///        写出、条目 digest 与容器 canonical digest 口径、活动链校验。
 ///
-/// 设计定稿见 doc_ai/analysis-project-schema-v2.md §2/§3（上游 RFC 0001 §6.2/
+/// 设计定稿见 doc:schema-v2-ledger（上游 RFC 0001 §6.2/
 /// §6.4）。行模型是纯数据层：不知道容器对象，只认 uri + digest + overlay 引用；
 /// 重放与状态物料化由消费方（workspace）在其容器载体上执行。本模块与
 /// project_store 同为 libca 叶子，不依赖 model。
@@ -31,7 +31,7 @@ inline constexpr const char* kLedgerEngineName = "mjbase-edit-ledger/1";
 
 /// @brief 台账 section 名前缀与代际命名（设计文档 §3.1）。
 ///
-/// 活动代 = 清单中 edit-ledger-<n> 的最大 n；edit-baseline-<n> 与同号 ledger
+/// 活动代 = 清单中 `edit-ledger-<n>` 的最大 n；`edit-baseline-<n>` 与同号 ledger
 /// 配对（缺配对基线 = 基线取原始容器）。每次重写台账都换新代号，永不覆写
 /// 已登记 section 的字节。
 inline constexpr const char* kLedgerSectionPrefix   = "edit-ledger-";
@@ -53,7 +53,7 @@ struct LedgerEntry
     ca::str::Utf8String before;    ///< 前态 digest；Add 恒空串
     ca::str::Utf8String after;     ///< 后态 digest；Remove 恒空串
     LedgerEntryOp       op = LedgerEntryOp::Replace;
-    ca::str::Utf8String payloadRef;  ///< overlay section 名（overlay-<txn>-<seq>）；
+    ca::str::Utf8String payloadRef;  ///< overlay section 名（`overlay-<txn>-<seq>`）；
                                      ///< Remove 恒空串
 
     /// @brief 深拷贝（行模型含 move-only 串，值拷贝走 clone；move 语义照常）。
@@ -100,7 +100,7 @@ struct LedgerTransaction
 struct LedgerAnchor
 {
     ca::u64             txn = 0;             ///< 基线对应的事务号（state(txn) = 基线）
-    ca::str::Utf8String baselineSection;     ///< 基线 section 名（edit-baseline-<g>）
+    ca::str::Utf8String baselineSection;     ///< 基线 section 名（`edit-baseline-<g>`）
     ca::str::Utf8String container;           ///< 新基线容器 digest（= 基线 section
                                              ///< content_hash，一口径两处验证）
     ca::u64             previousTxn = 0;     ///< 上一锚事务号（0 = 首次压缩，无 previous）
@@ -181,7 +181,7 @@ ca::Result<void, ProjectStoreError> validateLedgerChain(const std::vector<Ledger
 ///        名字典序排其后。装载后的内存序与写出序由此统一。
 void sortLedgerRows(std::vector<LedgerRow>& rows);
 
-/// @brief overlay section 名（overlay-<txn>-<seq>；事务号 + 段内序号）。
+/// @brief overlay section 名（`overlay-<txn>-<seq>`；事务号 + 段内序号）。
 ca::str::Utf8String overlaySectionName(ca::u64 txn, ca::u32 seq);
 
 /// @brief UTF-8 文本 → 引擎自有串（std::string/string_view 入口；消费者换型用）。

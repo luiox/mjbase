@@ -61,7 +61,7 @@ struct PackManifest
 
 /// @brief pass-pack 接口：一个独立仓库的变换族向宿主注册的唯一缝。
 ///
-/// 契约要点（全文见 doc_ai/plugin-api.md）：
+/// 契约要点（全文见 doc:plugin-api-contract）：
 /// - pack 实例由宿主以引用持有，宿主不经本接口 delete（无虚析构）；
 /// - registerPasses 只在宿主装配阶段调用，非线程安全（对齐注册表纪律）；
 /// - config 为 UTF-8 JSON 文本（借用，仅调用期有效），pack 自行解析并闭包进

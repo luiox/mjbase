@@ -72,7 +72,7 @@
 ///
 /// ## 键契约（MemberKey / alias 文本互通）
 ///
-/// 方法/字段身份一律是 @ref mjbase::MemberKey（三段驻留 id），经本索引自有
+/// 方法/字段身份一律是 `mjbase::MemberKey`（三段驻留 id），经本索引自有
 /// KeyPool 建键（`pool()` 暴露，键随索引存活——与 asm/classpath CallGraph 同款
 /// 「图自有池」纪律）；查询面同时收 MemberKey 与 (owner,name,desc) 文本三段，
 /// 文本入参 intern 进同一池。与 mjbase::analysis::alias_analysis 的互通走**文本
@@ -339,7 +339,7 @@ public:
     /// @brief Remove all collected references and target lookup tables.
     void clear();
 
-    /// @brief E2 局部重建：按 ChangeSet 对单个类做成员级补丁（design.md §35.4）。
+    /// @brief E2 局部重建：按 ChangeSet 对单个类做成员级补丁（libjbc design.md §35.4）。
     ///
     /// 与全量 build 的等价性是 E2 硬验收：同一批变换后，本入口补丁出的六张
     /// 主表与「变换后容器全量重扫」逐项一致（相等性由单元与管线测试钉死）。

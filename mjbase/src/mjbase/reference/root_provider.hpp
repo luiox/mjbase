@@ -1,3 +1,19 @@
+/// @defgroup root_provider 可达性根提供者
+///
+/// 契约面在动机之外再补两条（动机、生命周期与只加不减的完整口径见
+/// root_provider.hpp 的文件级注释）：
+/// - 空 provider 列表是恒等：不追加任何根，也不改变既有依据。
+/// - 可重入：`collect` 只读索引、不改状态、不缓存、不依赖调用顺序。
+/// - 自定义 provider 不得让视图指向局部 `std::string`：悬垂视图让根静默变空，
+///   症状是「keep 的类被误删且无诊断」。
+///
+/// 取舍：不用注册表（初始化顺序、跨线程生命周期、谁清空三类问题都得自己扛）；
+/// 不借用 `KeepRootSpec`（配置常是短命解析产物，按值持有换明确生命周期）；
+/// keep 匹配复用 `applyKeepRoots`，不重写第二份匹配。
+///
+/// 非目标：不做资源 keep 的 provider（依赖容器与调用方上下文，不为此伪造统一
+/// 抽象）；不做缓存与增量失效；不接入 `GlobalAnalysisManager`。
+
 /// @file        root_provider.hpp
 /// @brief       可达性根提供者：把多种根来源收敛为值语义 RootSet。
 ///
@@ -25,7 +41,8 @@
 ///
 /// `appendRoots` 只追加，不清空既有根、不关闭任何既有保留依据；也不去重——
 /// 可达性 build 的 `markClass`/`markMethod`/`markField` 本是集合语义，重复根
-/// 只多一次哈希查找。provider 之间的重叠（例如 keep 档位与 main 发现命中同一
+/// 只多一次哈希查找；provider 层面二次去重只会引入「谁先谁后」的隐含契约。
+/// provider 之间的重叠（例如 keep 档位与 main 发现命中同一
 /// 方法）是合法且常见的。
 #pragma once
 

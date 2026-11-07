@@ -18,7 +18,7 @@ namespace mjbase::pass {
 ///   访问，本类扫描不闭包；有 nest 属性整 pass 放弃（fail-closed）。
 /// - 分配窗口恰一处：static 形 `iconst_LEN; newarray <atype>; putstatic f`
 ///   或 `iconst_LEN; anewarray <elem>; putstatic f`（元素面与描述符匹配）；
-///   实例形前置接收者 aload（`aload recv; …; putfield f`）且只在 <init>
+///   实例形前置接收者 aload（`aload recv; …; putfield f`）且只在 `<init>`
 ///   收录——运行一次语义（reset 类重执行分配的重置语义不闭包 → 放弃）。
 ///   实例分配窗四条整体删除（接收者 aload 的唯一消费者就是被删的
 ///   putfield，保留会悬出栈）。putstatic/putfield f 的其他出现（重赋

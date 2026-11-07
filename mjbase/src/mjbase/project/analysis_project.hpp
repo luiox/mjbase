@@ -33,7 +33,7 @@ inline constexpr ca::u32 kAnalysisProjectFileVersionBase = 1;
 
 /// @brief 分析工程文件 schema 当前版本（v2；载入接受 1..2，写出按内容懒升级）。
 ///
-/// v2 相对 v1 的增量（定稿依据 doc_ai/analysis-project-schema-v2.md）：
+/// v2 相对 v1 的增量（定稿依据 doc:schema-v2-project-json）：
 /// - inputs 条目 role 枚举扩展 library|runtime（支撑挂载树的角色化解析栈）；
 /// - inputs 条目新增可选 parent 字段（引用同文件内另一 input 的 path，构成
 ///   挂载树；空 = 顶层挂载）；

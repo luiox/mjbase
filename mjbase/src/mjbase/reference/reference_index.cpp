@@ -610,7 +610,7 @@ void ReferenceIndex::indexFieldUnit(jbc::ir::ClassSession& session,
 
     {
         const jbc::ir::FieldUnit&    field = unit.fields[fieldIdx];
-        // 成员增删后逻辑下标与物理位置不再恒等（design.md §34.1）：字段元数据
+        // 成员增删后逻辑下标与物理位置不再恒等（libjbc design.md §34.1）：字段元数据
         // 一律经 backingIndex 定位物理 method/field_info。
         const jbc::core::MemberInfo& backing = cf.fields[field.backingIndex];
         const std::string_view            fieldName = syms.str(field.name);
@@ -1323,7 +1323,7 @@ void ReferenceIndex::restore(std::vector<ClassDeclaration>  classDecls,
     }
 }
 
-// ── E2 局部重建（design.md §35.4）：ChangeSet 驱动的成员级补丁 ──
+// ── E2 局部重建（libjbc design.md §35.4）：ChangeSet 驱动的成员级补丁 ──
 
 void ReferenceIndex::dropMethodFacts(std::string_view className, std::string_view name,
                                      std::string_view desc)

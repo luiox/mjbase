@@ -1,6 +1,6 @@
 /// @file        alias_analysis.hpp
 /// @brief       全程序别名分析：栈/局部别名事实 + 方法摘要 + 反射接收者身份
-///              + Andersen 包含约束索引。
+///              与 Andersen 包含约束索引。
 ///
 /// - 值代数（AliasValue / mergeAliasValues / AliasFrame）：身份串
 ///   一律经 aliasInterned 进程级驻留（内容相同 ⇔ 视图相同），事实形态

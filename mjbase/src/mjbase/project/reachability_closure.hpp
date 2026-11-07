@@ -4,7 +4,7 @@
 /// 输入图是分析库持久事实（refs 整数对边 + classes/members/interfaces 层次
 /// 基底），不是容器字节码：闭包是派生事实，失效判定吃输入图指纹（v9
 /// closure_batches.graph_fingerprint），指纹必须锚定持久状态。CHA 口径见
-/// doc_ai/reachability-closure-design.md §3：
+/// doc:reach-closure-cha：
 ///
 /// - refs 无 opcode 位，方法边一律保守族展开（M5 实测与带 opcode 口径差集
 ///   +927 行 / +3.1%，方向恒为超集）；静态/私有/构造器目标族退化为自身，

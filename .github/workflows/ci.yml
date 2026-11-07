@@ -20,6 +20,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  docs:
+    name: docs (引用门禁 + Sphinx)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Sphinx
+        # 钉死本地实测通过的版本：-W 下警告集合随 Sphinx 小版本变，范围安装等于定时炸；升级随文档批次显式改这一行。
+        run: python -m pip install --upgrade "sphinx==9.1.1"
+
+      - name: Reference gate (check_refs)
+        run: python mjbase/doc/check_refs.py .
+
+      # -E：增量缓存会跳过「回到旧状态」的文件，警告随之消失，等于没门禁。
+      - name: "Build design docs (-W: 警告即失败)"
+        run: sphinx-build -b html -E -W --keep-going mjbase/doc mjbase/doc/_build
+
+      - name: Upload site
+        uses: actions/upload-artifact@v4
+        with:
+          name: mjbase-doc-html
+          path: mjbase/doc/_build
+          retention-days: 14
+
+      # 微观层：Doxygen 只吃头文件 /// 注释，与 RST 站互不干涉。
+      # 版本必须钉死（与本地实测同版）：Doxyfile 的 WARN_* 档随版本增减标签，
+      # apt 里的老版本会把「不认识的标签」报成告警，WARN_AS_ERROR 下直接变红。
+      - name: Install Doxygen (pinned 1.18.0)
+        run: |
+          curl -fsSL https://www.doxygen.nl/files/doxygen-1.18.0.linux.bin.tar.gz -o /tmp/dox.tar.gz
+          mkdir -p "$HOME/doxygen"
+          tar xzf /tmp/dox.tar.gz -C "$HOME/doxygen" --strip-components=1
+          # GITHUB_PATH 只对后续步骤生效，同一步内验证吃不到新 PATH。
+          echo "$HOME/doxygen/bin" >> "$GITHUB_PATH"
+
+      - name: Build API docs (WARN_AS_ERROR)
+        run: |
+          doxygen --version
+          doxygen mjbase/Doxyfile
+
+      - name: Upload API site
+        uses: actions/upload-artifact@v4
+        with:
+          name: mjbase-doc-apidoc
+          path: mjbase/doc/_apidoc/html
+          retention-days: 14
+
   build-and-test-linux:
     name: build & test (linux)
     runs-on: ubuntu-latest

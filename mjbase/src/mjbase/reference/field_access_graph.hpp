@@ -1,3 +1,25 @@
+/// @defgroup field_access_graph 全程序字段访问图
+///
+/// 背景：`ReferenceIndex` 只到「哪个方法体里有一条访问」，unused field 类
+/// 消费者要的是「哪些方法（含传递调用方）读写这个字段」。本模块按调用边把
+/// 两个现成事实面求并集不动点，不重新扫描字节码，输入只在自有 KeyPool 重新
+/// 驻留身份、不复制事实副本。
+///
+/// 引用种类到读写的映射：
+/// - getstatic / getfield：只读。
+/// - putstatic / putfield：只写。
+/// - MethodHandle 字段句柄：读写都记（句柄可执行 get/set）。
+/// - ReflectionAccess（`Field.get`/`Field.set` 执行点）：读写都记。
+/// - Reflection（仅成员查找）：两者都不记——查找只说明成员对象被找到，不说明执行。
+///
+/// 输入契约：`build` 收非 const `CallGraph&`——查询需要把图自有池的方法文本
+/// 驻留进调用图，驻留是只增操作，不改图的语义。索引与调用图必须来自同一批
+/// 类字节，否则同一成员的两份键会拆成两个节点。键与查询结果的寿命等于图自有
+/// KeyPool 的寿命。
+///
+/// 负向结论纪律见本文件「保守边界」，删除决策的三把门（`hasUnknownEffects()`、
+/// `hasUnresolvedFieldRefs()`、扫描范围假设）缺一不可。
+
 /// @file        field_access_graph.hpp
 /// @brief       成员级字段访问图：直接读写事实 + 沿调用边传播的方法摘要。
 ///

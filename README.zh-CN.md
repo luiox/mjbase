@@ -32,7 +32,7 @@ xmake run mjbase_unittest --gtest_brief=1
 mjbase/src/mjbase/     库源码，每个模块一个目录
 mjbase/test/           单元测试（gtest）
 mjbase/test_resource/  静态测试输入
-mjbase/doc_ai/         设计笔记
+mjbase/doc/          设计规格（RST）
 test_helper/           测试基建（gtest 集成、JDK 夹具）
 ```
 

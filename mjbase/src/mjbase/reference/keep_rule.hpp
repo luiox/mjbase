@@ -121,7 +121,7 @@ enum class KeepPreset : ca::u8
 {
     Serialization = 0,   ///< 序列化回调族 + serialVersionUID + 无参构造器
     Lambda,              ///< lambda$* / $deserializeLambda$* 合成方法
-    Rmi,                 ///< *_Stub / *_Skel / *_Tie + <init>(RemoteRef)
+    Rmi,                 ///< *_Stub / *_Skel / *_Tie + `<init>`(RemoteRef)
     Ejb,                 ///< EJB bean 生命周期回调族（按名）
     Jmx,                 ///< *MBean / *MXBean 类名
     Enum,                ///< values() / valueOf(String) / $VALUES

@@ -66,7 +66,7 @@ public:
     ///
     /// 写回（重新序列化字节码 / lower）与子级缓存清理据此触发，不再拿
     /// areAllPreserved() 当改动信号——那把「保留了全部分析」错当成「没改 IR」。
-    /// 既改了 IR 又能精确声明保留全部/部分分析的 pass，在 all()/preserve<T>()
+    /// 既改了 IR 又能精确声明保留全部/部分分析的 pass，在 `all()`/`preserve<T>()`
     /// 之外显式调用本方法。
     /// @return *this 便于链式（如 `return PreservedAnalyses::all().markChanged();`）。
     PreservedAnalyses& markChanged()

@@ -192,7 +192,7 @@ ModelResult<MountedContainerSet::ResolvedAddress> MountedContainerSet::resolveAd
     auto       entryUri    = address.substr(split + separator.size());
     // 复合寻址扩展位（RFC §5.3）：entryUri 残留 `!/` = 嵌套容器钻井（WAR 内
     // JAR / fat jar 嵌套 / JMOD），本期只落接口不实现解包；嵌套成员作为派生
-    // 容器缓存于 sections/ 的方案见 doc_ai/analysis-cache-and-container-stack.md。
+    // 容器缓存于 sections/ 的方案见 doc:container-cache-layout。
     // TODO(composite-addressing): 按 bang 链逐段下钻（每段解析为子容器，末端
     // 段为条目），multi-release 条目按 JVM 规则归并版本桶。
     if (entryUri.find(separator) != std::string_view::npos) {

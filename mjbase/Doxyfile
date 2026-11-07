@@ -1,0 +1,52 @@
+# Doxygen 配置：微观契约层（头文件 /// 注释）
+#
+# 分层口径见 AGENTS.md「文档规范」：/// 注释是单个符号与单个模块的背景/定位，
+# mjbase/doc/*.rst 是跨模块设计规格。两站各自构建，RST 站不归 Doxygen 管。
+#
+# 路径按「从仓根执行 doxygen mjbase/Doxyfile」写；Doxygen 的相对路径以当前
+# 工作目录为基准，不以本文件位置为基准。
+#
+# 告警面：WARN_AS_ERROR=YES，但「未写注释」不算告警（EXTRACT_ALL + 
+# WARN_IF_UNDOCUMENTED=NO）——门禁挡的是写错的文档（坏 @ref、坏命令、
+# 参数名对不上），不是没写的文档。
+
+PROJECT_NAME           = "mjbase"
+PROJECT_BRIEF          = "基于 libjbc 的跨类程序分析与变换库"
+OUTPUT_DIRECTORY       = mjbase/doc/_apidoc
+QUIET                  = YES   # 只留告警：门禁的日志就是告警清单
+
+INPUT                  = mjbase/src/mjbase
+FILE_PATTERNS          = *.hpp
+RECURSIVE              = YES
+EXCLUDE_PATTERNS       = */_build/* */_apidoc/*
+
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+WARN_AS_ERROR          = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+# 参数注释齐全度暂不进门禁：WARN_IF_INCOMPLETE_DOC（1.18 起默认 YES）挡的是
+# 「文档写了但漏了某个 @param」，存量 14 处集中在 insn_factory / origin_domain /
+# jar_reader / resource_helper / project_store / outline_plan / merge_plan 等
+# 与本批无关的模块。收紧就改这一行为 YES 并逐模块补齐，不许半档。
+WARN_IF_INCOMPLETE_DOC = NO
+WARN_FORMAT            = "$file:$line: $text"
+
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+HTML_EXTRA_STYLESHEET  =
+SEARCHENGINE           = NO
+
+MARKDOWN_SUPPORT       = YES
+AUTOLINK_SUPPORT       = YES
+JAVADOC_AUTOBRIEF      = NO
+QT_AUTOBRIEF           = NO
+MULTILINE_CPP_IS_BRIEF = NO
+
+DOT_IMAGE_FORMAT       = svg
+HAVE_DOT               = NO
+
+ALPHABETICAL_INDEX     = NO
+DISABLE_INDEX          = YES
+GENERATE_TREEVIEW      = YES
+FULL_SIDEBAR           = YES

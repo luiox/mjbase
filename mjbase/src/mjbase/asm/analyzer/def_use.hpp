@@ -1,3 +1,20 @@
+/// @defgroup slot_def_use Slot 级 def-use 与字段访问事实
+///
+/// 分工：栈机迁移、cat2 槽布局、dup 形态与异常边全部由
+/// `jbc::analysis::DomainEngine` 负责，本模块只实现定义集合的合并与帧后处理，
+/// 不复制第二份 per-opcode 表。
+///
+/// 集合不变量：有序去重、上界 kMaxDefs；溢出置 `truncated` 并保留已确定的子集，
+/// 因此不同合并顺序得到同一集合（截断点唯一）。
+///
+/// 负向结论（「没有使用 ⇒ 可删」）的三把门缺一不可：`ok()` 为真、`truncated()`
+/// 为假、`hasUnresolvedFieldRefs()` 为假，再叠加调用方自己的扫描范围假设；
+/// 任一不满足时边集不完整，结论不可用。
+///
+/// 字段事实的分工：方法内 get/put 在本模块产 `FieldAccess`（方向、静态位、
+/// 接收者与存入值的到达定义）；全程序「谁读写这个字段」是
+/// @ref field_access_graph 的职责，两者不互相替代。
+
 /// @file        def_use.hpp
 /// @brief       方法内 slot 级 def-use：入参/指令定义标号、load/store 边、
 ///              栈使用边与字段访问事实。

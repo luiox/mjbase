@@ -6,7 +6,7 @@
 namespace mjbase::pass {
 
 /// @brief 保守合并简单的 static 工具类（搬移面按 libjbc 成员级增删契约
-///        重定型，design.md §34.3 的首要消费场景）。
+///        重定型，libjbc design.md §34.3 的首要消费场景）。
 ///
 /// 行为矩阵：
 ///   - 准入面：仅接受以 Object 为父类、名称不含 `$`、无接口、只含 static

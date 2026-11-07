@@ -3,7 +3,7 @@
 ///
 /// 语义来源（mbase method_hierarchy 的公开语义，按键重写）：
 /// - 虚方法 = 非 private、非 static、名字非 '<' 开头；只有虚方法参与
-///   override 族（private/static/'<init>' 族退化为自身单例）；
+///   override 族（private/static/`<init>` 族退化为自身单例）；
 /// - override 族 = 旧并查集连通分量的等价语义：同一 name+desc 在
 ///   super 链与接口闭包上声明的全部虚方法互相连通（含后代方向）；
 ///   本实现在 build 时做一次并查集合并，族成员按登记序返回；
