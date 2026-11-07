@@ -399,7 +399,7 @@ void collectClassFromAttributes(const LoadedClass&                              
         StaticValue::Kind kind = StaticValue::Kind::Int;
         if (!staticValueFamilyKind(desc, kind)) continue;
         const auto cit = census.find(keyOf(lc.name, name, desc));
-        if (cit == census.end() || cit->second.total != 0) continue;   // 有写点 → 走走廊面
+        if (cit != census.end() && cit->second.total != 0) continue;   // 有写点 → 走走廊面
         if (f.backingIndex >= cf.fields.size()) continue;
         StaticValue value;
         if (!constantValueOf(cf, cf.fields[f.backingIndex], value)) continue;
@@ -429,7 +429,10 @@ mjbase::spi::PreservedAnalyses StaticValueCollection::run(
 {
     std::vector<LoadedClass> loaded;
     if (!loadAllClasses(container, loaded)) return mjbase::spi::PreservedAnalyses::all();
-    if (loaded.empty()) return mjbase::spi::PreservedAnalyses::all();
+    if (loaded.empty()) {
+        am.clearPinned<StaticValueViewAnalysis>();   // 空容器同「无内容」口径：撤钉
+        return mjbase::spi::PreservedAnalyses::all();
+    }
 
     // ── 容器全域 PUTSTATIC 普查（单写者判据的全域证据）──
     std::unordered_map<std::string, WriteCensus> census;
@@ -488,7 +491,7 @@ mjbase::spi::PreservedAnalyses StaticValueCollection::run(
                 if (!staticValueFamilyKind(unit.symbols().str(f.desc), ignored)) continue;
                 const auto c = census.find(keyOf(name, unit.symbols().str(f.name),
                                                  unit.symbols().str(f.desc)));
-                if (c == census.end() || c->second.total != 0) continue;
+                if (c != census.end() && c->second.total != 0) continue;
                 if (hasConstantValueAttr(lc.session->backing(),
                                          lc.session->backing().fields[f.backingIndex])) {
                     hasAttrCandidates = true;
