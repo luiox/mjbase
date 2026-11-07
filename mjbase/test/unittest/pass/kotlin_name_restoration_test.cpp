@@ -54,8 +54,9 @@ using mjbase::pass::KotlinNameRestorer;
 using mjbase::pass::KtClass;
 using mjbase::pass::KotlinMetadataError;
 
-/// 最小构造器（jasm 实例类形状：aload_0 转发 super 构造）。
-constexpr const char* kCtor =
+/// 最小构造器（jasm 实例类形状：aload_0 转发 super 构造；std::string 以
+/// 供夹具 body 拼接）。
+const std::string kCtor =
     "  .method public <init> ()V {\n"
     "    code: {\n"
     "      aload_0\n"

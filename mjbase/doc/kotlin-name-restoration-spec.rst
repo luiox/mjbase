@@ -79,18 +79,18 @@ Kotlin 模型描述符先经两步纯函数换算（均来自收集件工具面�
   ``get``/``is``/``do`` 前缀时原样（``isActive`` → ``isActive``），否则
   ``get`` + 首字母大写（``value`` → ``getValue``）。当前名已等于属性名时
   跳过（已正名，Recaf 同口径保守面）。
-* setter：``(T)V`` 唯一命中，**仅当属性可变**（收集件
+* setter：``(T)V`` 唯一命中，**仅当属性可变**\（收集件
   ``KtVariable::hasSetter``，来自 ``Property.setter_parameter`` 字段 6
   在场性）——``val`` 属性上偶然同形的用户方法（如 ``render(String)V``）
   不得误恢复。新名 ``set`` + 首字母大写；``is`` 前缀属性按 kotlinc 约定
-  去 ``is``（``isActive`` → ``setActive``）。
-* 函数：``ktFunctionDescriptor``（扩展接收者已被收集件展开为 JVM 首参）
+  去 ``is``\（``isActive`` → ``setActive``）。
+* 函数：``ktFunctionDescriptor``\（扩展接收者已被收集件展开为 JVM 首参）
   双形态唯一命中，新名 = 函数名；无返回类型或任一参数缺类型不进匹配。
 
 2.5 合成名消解
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-名字含 ``$``（``access$`` 转发、``$default`` 桥、``$$delegate_0`` 委托面、
+名字含 ``$``\（``access$`` 转发、``$default`` 桥、``$$delegate_0`` 委托面、
 lambda 编号——Kotlin 用户标识符软保留 ``$``）或 ``<`` 开头（``<init>``/
 ``<clinit>``）的成员：不进候选集、不收映射。动机：编译器合成成员常与用户
 成员同描述符（如 ``access$getX`` 转发与 getter 同为 ``()T``），不剔除会抢
@@ -129,7 +129,7 @@ lambda 编号——Kotlin 用户标识符软保留 ``$``）或 ``<`` 开头（``
 8. **映射面最小化**：已正名条目（旧名 = 新名）零产出；Recaf 落映射前无
    此统一跳过（getter 有局部等名跳过，字段/函数无）。
 9. **注解名校验**：Recaf 以 ``\w{1,50}`` 正则校验 ``@JvmName``；本件用
-   ``IdentifierUtil::isValidJavaIdentifier``（完整 JVM 标识符文法，比
+   ``IdentifierUtil::isValidJavaIdentifier``\（完整 JVM 标识符文法，比
    ``\w`` 严——拒 ``-`` 等合法正则字符）。
 
 3.1 收集件配套扩展
@@ -144,9 +144,9 @@ lambda 编号——Kotlin 用户标识符软保留 ``$``）或 ``<`` 开头（``
 4. 消费方式
 ----------------------------------------------------------------
 
-注册面：``KotlinNameRestorer``（``scope:global`` / ``action:recover`` /
+注册面：``KotlinNameRestorer``\（``scope:global`` / ``action:recover`` /
 ``stability:opt-in``，默认链不收）。映射通道：全局分析
-``KotlinNameRestorationAnalysis``（``Result = IntermediateMapping``）挂在
+``KotlinNameRestorationAnalysis``\（``Result = IntermediateMapping``）挂在
 容器 ``GlobalAnalysisManager``，惰性计算并缓存（依赖收集件分析经同一 AM
 自举注册）。消费方经
 ``getResult<KotlinNameRestorationAnalysis>(container)`` 取映射后交改名执行
@@ -161,7 +161,7 @@ lambda 编号——Kotlin 用户标识符软保留 ``$``）或 ``<`` 开头（``
 2. 含 ``$`` 的混淆名不恢复（合成消解的既定代价，见 2.5）。
 3. 描述符多命中/零命中放弃该槽，不做启发式消歧（唯一匹配口径）。
 4. 非类资源与畸形类字节跳过，不报错（fail-open 同口径）；注解读面仅
-   ``RuntimeVisibleAnnotations``（与收集件同域，不查 invisible 与 type
+   ``RuntimeVisibleAnnotations``\（与收集件同域，不查 invisible 与 type
    annotation）。
 5. 类名槽要求模型有名（``hasName``）且目标名不同于当前名；d2 缺 fqName
    的门面类仅注解路可恢复。
