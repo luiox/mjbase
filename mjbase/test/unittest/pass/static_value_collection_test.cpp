@@ -41,7 +41,7 @@ Bytes bipush(ca::i8 v) { return {0x10, static_cast<ca::u8>(v)}; }
 Bytes sipush(ca::u16 v) { return cat({0x11}, u16b(v)); }
 Bytes putStatic(ca::u16 cp) { return cat({0xb3}, u16b(cp)); }
 Bytes getStatic(ca::u16 cp) { return cat({0xb2}, u16b(cp)); }
-Bytes invokeStatic(ca::u16 cp) { return cat({0xb8}, u16b(cp)); }
+// invokeStatic 用 shared/structural_pass_util.hpp 的同名件（避免重载歧义）。
 Bytes ldc2wLong(ca::u16 cp) { return cat({0x14}, u16b(cp)); }
 Bytes ldc1(ca::u16 cp) { return {0x12, static_cast<ca::u8>(cp)}; }
 
