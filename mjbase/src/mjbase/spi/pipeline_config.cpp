@@ -85,6 +85,12 @@ const std::vector<PassParamSchema>& paramSchemaTable()
         {"LocalVariableTableRebuilder",
          {{"prefix", PipelineConfigParamKind::String}},
         },
+        // LongAnnotationRemoverOptions 标量面：仅 maxLength（Int）——巨型
+        // 注解长度阈值（Recaf cleanup.longanno 同款默认 150；判据口径与阈值
+        // 依据见 pass 头注）。负值按 pass 内 fail-closed 向裁决（删无可删）。
+        {"LongAnnotationRemover",
+         {{"maxLength", PipelineConfigParamKind::Int}},
+        },
     };
     return table;
 }
