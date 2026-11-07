@@ -57,11 +57,13 @@ jobs:
           curl -fsSL https://www.doxygen.nl/files/doxygen-1.18.0.linux.bin.tar.gz -o /tmp/dox.tar.gz
           mkdir -p "$HOME/doxygen"
           tar xzf /tmp/dox.tar.gz -C "$HOME/doxygen" --strip-components=1
+          # GITHUB_PATH 只对后续步骤生效，同一步内验证吃不到新 PATH。
           echo "$HOME/doxygen/bin" >> "$GITHUB_PATH"
-          doxygen --version
 
       - name: Build API docs (WARN_AS_ERROR)
-        run: doxygen mjbase/Doxyfile
+        run: |
+          doxygen --version
+          doxygen mjbase/Doxyfile
 
       - name: Upload API site
         uses: actions/upload-artifact@v4
