@@ -25,5 +25,6 @@ mjbase 设计规格
    pass-contract
    pass-catalog
    plugin-api
+   pipeline-config-spec
    upstream-libjbc-annotation-recursion
    module-map
