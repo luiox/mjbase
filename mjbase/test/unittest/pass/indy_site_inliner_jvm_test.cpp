@@ -47,6 +47,7 @@ ca::str::Utf16String utf16(const std::string& value)
 /// javac 真样本：lambda + 字符串拼接（生成面两态）+ 三个 indy 站点的 BSM 与
 /// 直接目标（jasm 夹具经 invokedynamic 引到这里）。
 constexpr const char* kSampleSrc = R"JAVA(
+import java.lang.invoke.CallSite;
 import java.lang.invoke.ConstantCallSite;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
@@ -166,9 +167,16 @@ Bytes assemble(const std::string_view jasm)
     mjbase::jasm::JvmJasmService service;
     auto                         name   = utf16(std::string(jasm).substr(0, 12) + ".jasm");
     auto                         source = utf16(std::string(jasm));
-    auto                         built  = service.assemble(name.ref(), source.ref());
-    if (!built.isOk()) ADD_FAILURE() << "jasm assemble failed";
-    if (!built.isOk()) return {};
+    auto built = service.assemble(name.ref(), source.ref());
+    if (!built.isOk()) {
+        ADD_FAILURE() << "jasm assemble failed with " << built.diagnostics.size()
+                      << " diagnostics";
+        for (const auto& diagnostic : built.diagnostics) {
+            ADD_FAILURE() << "  diagnostic: "
+                          << diagnostic.message.to_utf8_string().to_std_string();
+        }
+        return {};
+    }
     return built.value->bytes;
 }
 

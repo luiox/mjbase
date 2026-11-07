@@ -54,6 +54,13 @@ std::optional<Bytes> assemble(const std::string& jasm)
     if (!built.isOk()) {
         ADD_FAILURE() << "jasm assemble failed with " << built.diagnostics.size()
                       << " diagnostics";
+        for (const auto& diagnostic : built.diagnostics) {
+            std::string where;
+            if (diagnostic.location.has_value() && diagnostic.location->line > 0)
+                where = " (line " + std::to_string(diagnostic.location->line) + ")";
+            ADD_FAILURE() << "  diagnostic: "
+                          << diagnostic.message.to_utf8_string().to_std_string() << where;
+        }
         return std::nullopt;
     }
     return built.value->bytes;
@@ -96,33 +103,42 @@ std::pair<PreservedAnalyses, const Bytes*>
     return {pa, res == nullptr ? nullptr : &res->get()};
 }
 
-/// 结构检查：方法体里指定 opcode 的调用站点三段（未命中返回 false）。
-bool callInsnOf(const Bytes& bytes, std::string_view methodName, jbc::core::Op op,
-                std::string_view& owner, std::string_view& name, std::string_view& desc)
+/// 调用站点三段（值语义：memberOf 视图指向会话，出函数即悬垂，落地拷贝）。
+struct CallSite3
+{
+    std::string owner;
+    std::string name;
+    std::string desc;
+};
+
+/// 结构检查：方法体里指定 opcode 的首个调用站点三段（未命中返回 nullopt）。
+std::optional<CallSite3> callInsnOf(const Bytes& bytes, std::string_view methodName,
+                                    jbc::core::Op op)
 {
     auto loaded = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
-    if (loaded.is_err()) return false;
+    if (loaded.is_err()) return std::nullopt;
     auto&               session = *loaded.unwrap();
     jbc::ir::ClassUnit& unit    = session.unit();
     for (ca::usize i = 0; i < unit.methods.size(); ++i) {
         if (unit.symbols().str(unit.methods[i].name) != methodName) continue;
-        if (!jbc::ir::hasCode(session, i)) return false;
+        if (!jbc::ir::hasCode(session, i)) continue;
         auto promoted = jbc::ir::promoteMethod(session, i);
-        if (promoted.is_err()) return false;
+        if (promoted.is_err()) continue;
         const jbc::ir::CodeUnit&            cu    = *promoted.unwrap().get();
         const std::vector<jbc::ir::InsnId>& order = cu.dom.order();
         for (const jbc::ir::InsnId id : order) {
             const jbc::ir::Insn* in = cu.dom.peek(id);
             if (in == nullptr || in->op != op) continue;
             jbc::ir::ClassSession::MemberSem sem;
-            if (!session.memberOf(*in, sem)) return false;
-            owner = sem.owner;
-            name  = sem.name;
-            desc  = sem.desc;
-            return true;
+            if (!session.memberOf(*in, sem)) continue;
+            CallSite3 site;
+            site.owner = std::string(sem.owner);
+            site.name  = std::string(sem.name);
+            site.desc  = std::string(sem.desc);
+            return site;
         }
     }
-    return false;
+    return std::nullopt;
 }
 
 /// Code 属性 maxLocals 读取（首个带 code 的指定方法；读取失败返回 0）。
@@ -333,13 +349,11 @@ TEST(IndySiteInlinerTest, InlinesStaticSiteAndRewritesJasm)
     ASSERT_TRUE(afterJasm.has_value());
     EXPECT_FALSE(afterJasm->contains(utf16("invokedynamic enc").ref()));
     EXPECT_TRUE(afterJasm->contains(utf16("invokestatic").ref()));
-    std::string_view owner;
-    std::string_view name;
-    std::string_view desc;
-    ASSERT_TRUE(callInsnOf(*out, "run", jbc::core::Op::INVOKESTATIC, owner, name, desc));
-    EXPECT_EQ(owner, "t/T1");
-    EXPECT_EQ(name, "real");
-    EXPECT_EQ(desc, "(I)I");
+    const auto site = callInsnOf(*out, "run", jbc::core::Op::INVOKESTATIC);
+    ASSERT_TRUE(site.has_value());
+    EXPECT_EQ(site->owner, "t/T1");
+    EXPECT_EQ(site->name, "real");
+    EXPECT_EQ(site->desc, "(I)I");
 
     // 同类 miss 站点（无 resolver 应答）保留原站。
     EXPECT_TRUE(afterJasm->contains(utf16("invokedynamic miss").ref()));
@@ -456,12 +470,10 @@ TEST(IndySiteInlinerTest, InlinesVirtualAndInterfaceForms)
                                       std::string_view("(I)I"), 0, false}});
         ASSERT_NE(out, nullptr);
         EXPECT_FALSE(pa.areAllPreserved());
-        std::string_view owner;
-        std::string_view name;
-        std::string_view desc;
-        ASSERT_TRUE(callInsnOf(*out, "run", jbc::core::Op::INVOKEVIRTUAL, owner, name, desc));
-        EXPECT_EQ(owner, "t/Vt");
-        EXPECT_EQ(name, "mul");
+        const auto site = callInsnOf(*out, "run", jbc::core::Op::INVOKEVIRTUAL);
+        ASSERT_TRUE(site.has_value());
+        EXPECT_EQ(site->owner, "t/Vt");
+        EXPECT_EQ(site->name, "mul");
     }
     // Interface：emit invokeinterface + InterfaceMethodref。
     {
@@ -474,12 +486,10 @@ TEST(IndySiteInlinerTest, InlinesVirtualAndInterfaceForms)
                                       std::string_view("(I)I"), 0, false}});
         ASSERT_NE(out, nullptr);
         EXPECT_FALSE(pa.areAllPreserved());
-        std::string_view owner;
-        std::string_view name;
-        std::string_view desc;
-        ASSERT_TRUE(callInsnOf(*out, "run", jbc::core::Op::INVOKEINTERFACE, owner, name, desc));
-        EXPECT_EQ(owner, "t/I3");
-        EXPECT_EQ(name, "add");
+        const auto site = callInsnOf(*out, "run", jbc::core::Op::INVOKEINTERFACE);
+        ASSERT_TRUE(site.has_value());
+        EXPECT_EQ(site->owner, "t/I3");
+        EXPECT_EQ(site->name, "add");
     }
     // 接收者形不符：Virtual 目标 owner 与站点首参不同类 → 拒。
     {
@@ -515,13 +525,11 @@ TEST(IndySiteInlinerTest, InlinesTrailingMetadataWithArgShuffle)
     EXPECT_TRUE(afterJasm->contains(utf16("istore").ref()));
     EXPECT_TRUE(afterJasm->contains(utf16("astore").ref()));
     EXPECT_TRUE(afterJasm->contains(utf16("iload").ref()));
-    std::string_view owner;
-    std::string_view name;
-    std::string_view desc;
-    ASSERT_TRUE(callInsnOf(*out, "run", jbc::core::Op::INVOKESTATIC, owner, name, desc));
-    EXPECT_EQ(owner, "t/T4");
-    EXPECT_EQ(name, "real2");
-    EXPECT_EQ(desc, "(I)I");
+    const auto site = callInsnOf(*out, "run", jbc::core::Op::INVOKESTATIC);
+    ASSERT_TRUE(site.has_value());
+    EXPECT_EQ(site->owner, "t/T4");
+    EXPECT_EQ(site->name, "real2");
+    EXPECT_EQ(site->desc, "(I)I");
     // maxLocals 抬升：洗牌前 run 只占参数槽（2），fresh 局部至少再开 2 槽。
     EXPECT_GE(maxLocalsOf(*out, "run"), 4);
     EXPECT_EQ(maxLocalsOf(*before, "run"), 2);
