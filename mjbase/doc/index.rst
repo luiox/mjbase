@@ -21,6 +21,7 @@ mjbase 设计规格
    analysis-cache-and-container-stack
    reachability-closure-design
    method-inliner
+   static-value-inlining-spec
    indy-inline-spec
    stack-op-expander
    enum-name-restore-spec
