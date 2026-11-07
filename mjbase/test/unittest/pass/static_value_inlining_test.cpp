@@ -259,7 +259,7 @@ TEST(MjPassStaticValueInliningTest, SkipsReadsInsideInit)
     const std::vector<jbc::core::Op> ops =
         methodOps(resourceBytes(container, "U.class"), "<init>");
     ASSERT_EQ(ops.size(), 5u);
-    EXPECT_EQ(ops[0], jbc::core::Op::ALOAD);
+    EXPECT_EQ(ops[0], jbc::core::Op::ALOAD_0);   // jasm 把 aload this 特化成 _0 形
     EXPECT_EQ(ops[1], jbc::core::Op::INVOKESPECIAL);
     EXPECT_EQ(ops[2], jbc::core::Op::GETSTATIC);
     EXPECT_EQ(ops[3], jbc::core::Op::POP);

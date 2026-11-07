@@ -121,9 +121,11 @@ Bytes withConstantValueInt42(const Bytes& assembled, const std::string& fieldNam
     if (made.is_err()) return {};
     auto                  session = std::move(made).unwrap();
     jbc::core::ClassFile& cf      = session->backing();
-    const ca::u32         nameCp  = session->internString("ConstantValue");
-    const ca::u32         valCp   = session->internInteger(42);
-    Bytes                 payload;
+    // CP 走 CF 级 addUtf8/addInteger（SFDI 同款直写面；session 级 intern 在
+    // change-set 暂存、未提交前写回不认）。
+    const ca::u32 nameCp = cf.cp.addUtf8("ConstantValue");
+    const ca::u32 valCp  = cf.cp.addInteger(42);
+    Bytes         payload;
     putU16(payload, static_cast<ca::u16>(valCp));
     bool hit = false;
     for (jbc::core::MemberInfo& f : cf.fields) {
@@ -136,7 +138,9 @@ Bytes withConstantValueInt42(const Bytes& assembled, const std::string& fieldNam
     EXPECT_TRUE(hit) << "field not found: " << fieldName;
     if (!hit) return {};
     auto written = jbc::core::writeClass(cf);
-    EXPECT_TRUE(written.is_ok());
+    EXPECT_TRUE(written.is_ok())
+        << "writeClass failed: "
+        << (written.is_err() ? jbc::core::to_string(written.unwrap_err()) : "ok");
     if (written.is_err()) return {};
     return std::move(written).unwrap();
 }
@@ -515,19 +519,21 @@ TEST(MjPassStaticValueCollectionTest, RejectsOnCorridorBudget)
 
 TEST(MjPassStaticValueCollectionTest, RejectsFamilyMismatchPair)
 {
-    // 值面桶：double 字段的写点前驱是 float 常量（fconst_0）→ 族不匹配 →
-    // 该字段拒（同类其余字段不受牵连）。
+    // 值面桶：String 常量写 Object 字段（栈面可验证：String → Object 赋值
+    // 兼容），但描述符不入五族族表 → 该字段拒（同类其余字段不受牵连）。
+    // 注：栈类型与描述符同族的错写（如 float 写 D）会被汇编器 frame 门打回，
+    // 不可验证字节码不入夹具——族失配的可验证形态就是「描述符出表」。
     const Bytes t = assembleClass(
         "T", "java/lang/Object",
         "  .field public static a I\n"
-        "  .field public static d D\n"
+        "  .field public static u Ljava/lang/Object;\n"
         "\n"
         "  .method static <clinit> ()V {\n"
         "    code: {\n"
         "      bipush 42\n"
         "      putstatic T.a I\n"
-        "      fconst_0\n"
-        "      putstatic T.d D\n"
+        "      ldc \"x\"\n"
+        "      putstatic T.u Ljava/lang/Object;\n"
         "      return\n"
         "    }\n"
         "  }\n");
@@ -540,7 +546,7 @@ TEST(MjPassStaticValueCollectionTest, RejectsFamilyMismatchPair)
     const auto* view = runCollect(container, gam);
     ASSERT_NE(view, nullptr);
     EXPECT_NE(view->find("T", "a", "I"), nullptr);
-    EXPECT_EQ(view->find("T", "d", "D"), nullptr);
+    EXPECT_EQ(view->find("T", "u", "Ljava/lang/Object;"), nullptr);
 }
 
 TEST(MjPassStaticValueCollectionTest, UnparseableClassAbortsWholePass)
