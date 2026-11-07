@@ -104,7 +104,7 @@ add_requires("libca " .. LUIOX_LIBCA_VERSION, {configs = {modules = LUIOX_LIBCA_
 -- 版本后再同步上移。
 add_requires("libjbc 0.4.22")
 add_requires("libjstr 0.0.3")
-add_requires("libjzip 0.0.3")
+add_requires("libjzip 0.0.5")
 add_requires("libgarena 0.0.5")
 add_requires("libjclassfile 0.0.2")
 add_requires("libjstd 0.0.1")
