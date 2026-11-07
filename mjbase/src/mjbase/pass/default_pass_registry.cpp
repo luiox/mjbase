@@ -26,6 +26,7 @@
 #include "mjbase/pass/fix_pattern_simplifier.hpp"
 #include "mjbase/pass/flattening_reverser.hpp"
 #include "mjbase/pass/goto_rearranger.hpp"
+#include "mjbase/pass/duplicate_annotation_remover.hpp"
 #include "mjbase/pass/identity_wrapper_inliner.hpp"
 #include "mjbase/pass/illegal_class_file_cleaner.hpp"
 #include "mjbase/pass/indy_site_inliner.hpp"
@@ -500,6 +501,16 @@ PassNameRegistry makeDefaultRegistry()
         [] { return std::make_unique<mjbase::pass::LongAnnotationRemover>(); },
         "Remove annotations whose type descriptor length reaches the threshold "
         "(default 150; configurable via pipeline params)."));
+    // 重复注解去重件（Recaf DuplicateAnnotationRemovingTransformer 判据吸收）：
+    // 同目标同描述符多实例去重，首个保留；普通注解按描述符内容、type
+    // annotation 按目标位全集、参数注解按 (行, 描述符) 组键；visible 与
+    // invisible 共享一份集。判据面与 Recaf 差异声明见头注。标签：scope:class
+    // / action:sanitize / stability:opt-in（默认链不收，管线配置显式挂点）。
+    seed(reg.registerClassPass(
+        "DuplicateAnnotationRemover",
+        [] { return std::make_unique<mjbase::pass::DuplicateAnnotationRemover>(); },
+        "Deduplicate annotations with the same target and descriptor, keeping "
+        "the first instance."));
     // opt pass 扩段（类级首件，mbase 治理版移植）：<clinit> 单次写入的常量
     // 内联进字段 ConstantValue + 删除等价初始化指令对；多次 PUTSTATIC 预扫描
     // 计数保守跳过。标签：scope:class / action:propagate / stability:opt-in
