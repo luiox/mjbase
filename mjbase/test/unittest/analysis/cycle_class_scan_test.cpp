@@ -35,9 +35,10 @@ Bytes assembleClass(const std::string& internalName, const std::string& superNam
                     const std::string& body)
 {
     mjbase::jasm::JvmJasmService service;
-    const std::string source = ".super " + superName +
-                               "\n.class public super " + internalName + " {\n" +
-                               body + "}\n";
+    const std::string source = ".super " + superName + R"JASM(
+.class public super )JASM" + internalName + R"JASM( {
+)JASM" + body + R"JASM(}
+)JASM";
     const auto sourceName = utf16Of(internalName + ".jasm");
     const auto sourceText = utf16Of(source);
     const auto result     = service.assemble(sourceName.ref(), sourceText.ref());
@@ -118,19 +119,21 @@ TEST(MjAnalysisCycleClassScanTest, ReportsReachableCycleMembersWithoutFalsePosit
 {
     mjbase::model::ResourceContainer container;
     addJasmClass(container, "A", "B",
-                 "  .method public static m ()V {\n"
-                 "    code: {\n"
-                 "      return\n"
-                 "    }\n"
-                 "  }\n");
+                 R"JASM(  .method public static m ()V {
+    code: {
+      return
+    }
+  }
+)JASM");
     addJasmClass(container, "B", "A");
     addJasmClass(container, "App", "java/lang/Object",
-                 "  .method public static main ([Ljava/lang/String;)V {\n"
-                 "    code: {\n"
-                 "      invokestatic A.m ()V\n"
-                 "      return\n"
-                 "    }\n"
-                 "  }\n");
+                 R"JASM(  .method public static main ([Ljava/lang/String;)V {
+    code: {
+      invokestatic A.m ()V
+      return
+    }
+  }
+)JASM");
     expectCycles(scanCycleNamesSorted(container), {"A", "B"});
 }
 

@@ -46,9 +46,10 @@ Bytes assembleClass(const std::string& internalName, const std::string& superNam
                     const std::string& body)
 {
     mjbase::jasm::JvmJasmService service;
-    const std::string source = ".super " + superName +
-                               "\n.class public super " + internalName + " {\n" +
-                               body + "}\n";
+    const std::string source = ".super " + superName + R"JASM(
+.class public super )JASM" + internalName + R"JASM( {
+)JASM" + body + R"JASM(}
+)JASM";
     const auto sourceName = utf16Of(internalName + ".jasm");
     const auto sourceText = utf16Of(source);
     const auto result     = service.assemble(sourceName.ref(), sourceText.ref());
@@ -66,23 +67,25 @@ Bytes assembleClass(const std::string& internalName, const std::string& superNam
 Bytes entryFixture(const std::string& target)
 {
     return assembleClass("App", "java/lang/Object",
-                         "  .method public static main ([Ljava/lang/String;)V {\n"
-                         "    code: {\n"
-                         "      invokestatic " + target + ".m ()V\n"
-                         "      return\n"
-                         "    }\n"
-                         "  }\n");
+                         R"JASM(  .method public static main ([Ljava/lang/String;)V {
+    code: {
+      invokestatic )JASM" + target + R"JASM(.m ()V
+      return
+    }
+  }
+)JASM");
 }
 
 /// 环类成员：.super peer + public static m()V。
 Bytes cycleMemberFixture(const std::string& name, const std::string& peer)
 {
     return assembleClass(name, peer,
-                         "  .method public static m ()V {\n"
-                         "    code: {\n"
-                         "      return\n"
-                         "    }\n"
-                         "  }\n");
+                         R"JASM(  .method public static m ()V {
+    code: {
+      return
+    }
+  }
+)JASM");
 }
 
 /// 标准夹具：App(main→X.m) + X↔Y 环。全部类经 main→X 与 super 声明面可达。
