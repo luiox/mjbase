@@ -2,10 +2,16 @@
 // S1 直通形/S2 暂存形窗匹配、纯常量元素/下标、守卫面（读取逃逸/非常量
 // 生产者/异常域相交/窗内锚标/size 生产者非纯）、注册面、与
 // ArgumentArrayScalarizer 的管线串联裁决（调用窗无残段 + 哑数组串联清理）。
-// 夹具经 shared/structural_pass_util.hpp 手拼 classfile。
+//
+// 夹具纪律：方法体一律 jasm 文本装配（JvmJasmService），原 FixtureBuilder
+// 手拼载体退役；窄整数（bipush）装配器规范化为 ldc——size 生产者常量面
+// 同实。「窗内锚标」守卫的原字节形（goto 直指窗尾 pop，栈形断裂不可装配）
+// 以死段 goto 锚同一位合法重表达（死段不进帧分析、标签锚照计）——例外①
+// 申报：被测决策面（锚点落窗内 → 整窗放弃）与原形同实。
 #include <gtest/gtest.h>
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "jbc/core/opcode.hpp"
@@ -18,35 +24,28 @@
 #include "mjbase/spi/pass_name_registry.hpp"
 
 #include "method_pass_test_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 using jbc::core::Op;
 
 namespace {
 
-constexpr ca::u16 kAccPublicStatic = 0x0009;
-
-FixtureMethod method(const char* name, const char* desc, Bytes code)
+/// 类夹具便捷形：cls 单 public static name/desc 方法（excText 为 exceptions
+/// 段条目文本，可空）。
+Bytes asmM(const std::string& cls, std::string_view name, std::string_view desc,
+           std::string_view codeBody, std::string_view excText = "")
 {
-    FixtureMethod m;
-    m.name      = name;
-    m.desc      = desc;
-    m.access    = kAccPublicStatic;
-    m.maxStack  = 8;
-    m.maxLocals = 6;
-    m.code      = std::move(code);
-    return m;
+    const std::string excSeg = excText.empty()
+        ? std::string()
+        : "    exceptions: {\n" + std::string(excText) + "    },\n";
+    const std::string src = R"JASM(.super java/lang/Object
+.class public super )JASM" + cls + R"JASM( {
+  .method public static )JASM" + std::string(name) + " " + std::string(desc)
+        + R"JASM( {
+)JASM" + excSeg + "    code: {\n" + std::string(codeBody) + "    }\n  }\n}\n";
+    return assembleJasm(src);
 }
-
-Bytes u16b(ca::u16 v) { return {static_cast<ca::u8>(v >> 8), static_cast<ca::u8>(v)}; }
-
-Bytes cat(Bytes a, Bytes b)
-{
-    a.insert(a.end(), b.begin(), b.end());
-    return a;
-}
-
-Bytes anewObject(FixtureBuilder& b) { return cat({0xbd}, u16b(b.cls("java/lang/Object"))); }
 
 const mjbase::model::ClassResource* classResource(
     mjbase::model::ResourceContainer& container, const std::string& uri)
@@ -89,38 +88,22 @@ std::vector<Op> runAndOps(Bytes in)
     return opsOf(inspect(r.out));
 }
 
-/// S1 直通形 k=2：bipush3; anew; (dup; iconst; aconst_null; aastore)*2; pop;
-/// return。
-Bytes buildDirectWindow(FixtureBuilder& b)
+/// S1 直通形 k=2：size; anew; (dup; idx; null; aastore)*2; pop; return。
+std::string_view directWindowBody()
 {
-    Bytes code = cat({0x10, 0x03}, anewObject(b));
-    code = cat(code, {0x59, 0x03, 0x01, 0x53});
-    code = cat(code, {0x59, 0x04, 0x01, 0x53});
-    code = cat(code, {0x57, 0xb1});
-    return code;
+    return "      ldc 3\n      anewarray java/lang/Object\n      dup\n"
+           "      iconst_0\n      aconst_null\n      aastore\n      dup\n"
+           "      iconst_1\n      aconst_null\n      aastore\n      pop\n"
+           "      return\n";
 }
 
-/// S2 暂存形 k=1：bipush2; anew; astore 1; aload 1; iconst_0; aconst_null;
+/// S2 暂存形 k=1：size; anew; astore 1; aload 1; iconst_0; aconst_null;
 /// aastore; return。
-Bytes buildLocalWindow(FixtureBuilder& b)
+std::string_view localWindowBody()
 {
-    Bytes code = cat({0x10, 0x02}, anewObject(b));
-    code = cat(code, {0x3a, 0x01});
-    code = cat(code, {0x19, 0x01, 0x03, 0x01, 0x53, 0xb1});
-    return code;
-}
-
-/// 单实参装箱窗调用方（对齐 scalarizer 全链夹具形态）：[iconst_1; anewarray
-/// Object; dup; ldc_w "x"; iconst_0; aastore; invokestatic go; RETURN]。
-Bytes buildCallerBoxed(FixtureBuilder& b)
-{
-    const ca::u16 objCls = b.cls("java/lang/Object");
-    const ca::u16 mref   = b.methodRef("Svc", "go", "([Ljava/lang/Object;)V");
-    const ca::u16 xStr   = b.strConst("x");
-    Bytes         code   = cat({0x04, 0xbd}, u16b(objCls));
-    code = cat(code, cat({0x59, 0x13}, cat(u16b(xStr), {0x03, 0x53})));
-    code = cat(code, cat({0xb8}, cat(u16b(mref), {0xb1})));
-    return code;
+    return "      ldc 2\n      anewarray java/lang/Object\n      astore 1\n"
+           "      aload 1\n      iconst_0\n      aconst_null\n      aastore\n"
+           "      return\n";
 }
 
 }   // namespace
@@ -128,9 +111,7 @@ Bytes buildCallerBoxed(FixtureBuilder& b)
 // ── S1 直通形：分配 + 两组元素存储 + pop 整体消失 ──
 TEST(WriteOnlyArrayCleanerTest, directWindowRemoved)
 {
-    FixtureBuilder b("t/U");
-    b.addMethod(method("m", "()V", buildDirectWindow(b)));
-    const std::vector<Op> ops = runAndOps(b.assemble());
+    const std::vector<Op> ops = runAndOps(asmM("t/U", "m", "()V", directWindowBody()));
     ASSERT_EQ(ops.size(), 1u);
     EXPECT_EQ(ops[0], Op::RETURN);
 }
@@ -138,9 +119,7 @@ TEST(WriteOnlyArrayCleanerTest, directWindowRemoved)
 // ── S2 暂存形：astore/aload 暂存链连分配整体消失 ──
 TEST(WriteOnlyArrayCleanerTest, localWindowRemoved)
 {
-    FixtureBuilder b("t/U");
-    b.addMethod(method("m", "()V", buildLocalWindow(b)));
-    const std::vector<Op> ops = runAndOps(b.assemble());
+    const std::vector<Op> ops = runAndOps(asmM("t/U", "m", "()V", localWindowBody()));
     ASSERT_EQ(ops.size(), 1u);
     EXPECT_EQ(ops[0], Op::RETURN);
 }
@@ -148,10 +127,10 @@ TEST(WriteOnlyArrayCleanerTest, localWindowRemoved)
 // ── NEWARRAY 原始数组同面（S1 k=1，元素 int 常量） ──
 TEST(WriteOnlyArrayCleanerTest, primitiveArrayWindowRemoved)
 {
-    FixtureBuilder b("t/U");
-    b.addMethod(method(
-        "m", "()V", Bytes{0x10, 0x01, 0xbc, 0x0a, 0x59, 0x03, 0x05, 0x4f, 0x57, 0xb1}));
-    const std::vector<Op> ops = runAndOps(b.assemble());
+    const std::vector<Op> ops =
+        runAndOps(asmM("t/U", "m", "()V",
+                       "      ldc 1\n      newarray int\n      dup\n      iconst_0\n"
+                       "      iconst_5\n      iastore\n      pop\n      return\n"));
     ASSERT_EQ(ops.size(), 1u);
     EXPECT_EQ(ops[0], Op::RETURN);
 }
@@ -159,22 +138,18 @@ TEST(WriteOnlyArrayCleanerTest, primitiveArrayWindowRemoved)
 // ── S1 k=0 特形：分配; pop 死分配 ──
 TEST(WriteOnlyArrayCleanerTest, zeroStoreAllocationPopRemoved)
 {
-    FixtureBuilder b("t/U");
-    b.addMethod(method("m", "()V", cat(cat({0x10, 0x01}, anewObject(b)), {0x57, 0xb1})));
-    const std::vector<Op> ops = runAndOps(b.assemble());
+    const std::vector<Op> ops =
+        runAndOps(asmM("t/U", "m", "()V",
+                       "      ldc 1\n      anewarray java/lang/Object\n      pop\n"
+                       "      return\n"));
     ASSERT_EQ(ops.size(), 1u);
     EXPECT_EQ(ops[0], Op::RETURN);
 }
 
-// ── 局部快捷形（astore_1/aload_1）同面 ──
+// ── 局部快捷形（astore_1/aload_1）同面（1 槽装配器自动发快捷形） ──
 TEST(WriteOnlyArrayCleanerTest, shorthandLocalWindowRemoved)
 {
-    FixtureBuilder b("t/U");
-    Bytes code = cat({0x10, 0x02}, anewObject(b));
-    code = cat(code, {0x4c});   // astore_1
-    code = cat(code, {0x2b, 0x03, 0x01, 0x53, 0xb1});   // aload_1; iconst_0; null; aastore
-    b.addMethod(method("m", "()V", std::move(code)));
-    const std::vector<Op> ops = runAndOps(b.assemble());
+    const std::vector<Op> ops = runAndOps(asmM("t/U", "m", "()V", localWindowBody()));
     ASSERT_EQ(ops.size(), 1u);
     EXPECT_EQ(ops[0], Op::RETURN);
 }
@@ -182,12 +157,11 @@ TEST(WriteOnlyArrayCleanerTest, shorthandLocalWindowRemoved)
 // ── 读取在窗尾（arraylength）：窗保持 ──
 TEST(WriteOnlyArrayCleanerTest, readonlyUseKeepsArray)
 {
-    FixtureBuilder b("t/U");
-    Bytes code = cat({0x10, 0x01}, anewObject(b));
-    code = cat(code, {0x59, 0x03, 0x01, 0x53, 0xbe, 0x57, 0xb1});
-    b.addMethod(method("m", "()V", std::move(code)));
-    const Bytes          in = b.assemble();
-    const MethodPassRun  r  = runMethodPass(in, mjbase::pass::WriteOnlyArrayCleaner{});
+    const Bytes in = asmM("t/U", "m", "()V",
+                          "      ldc 1\n      anewarray java/lang/Object\n      dup\n"
+                          "      iconst_0\n      aconst_null\n      aastore\n"
+                          "      arraylength\n      pop\n      return\n");
+    const MethodPassRun  r = runMethodPass(in, mjbase::pass::WriteOnlyArrayCleaner{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
 }
@@ -195,14 +169,12 @@ TEST(WriteOnlyArrayCleanerTest, readonlyUseKeepsArray)
 // ── S2 逃逸面：窗后局部另有读点（arraylength 喂弹）→ 保守保留 ──
 TEST(WriteOnlyArrayCleanerTest, escapedLocalKeepsArray)
 {
-    FixtureBuilder b("t/U");
-    Bytes code = cat({0x10, 0x02}, anewObject(b));
-    code = cat(code, {0x3a, 0x01});
-    code = cat(code, {0x19, 0x01, 0x03, 0x01, 0x53});
-    code = cat(code, {0x19, 0x01, 0xbe, 0x57, 0xb1});
-    b.addMethod(method("m", "()V", std::move(code)));
-    const Bytes         in = b.assemble();
-    const MethodPassRun r  = runMethodPass(in, mjbase::pass::WriteOnlyArrayCleaner{});
+    const Bytes in = asmM("t/U", "m", "()V",
+                          "      ldc 2\n      anewarray java/lang/Object\n"
+                          "      astore 1\n      aload 1\n      iconst_0\n"
+                          "      aconst_null\n      aastore\n      aload 1\n"
+                          "      arraylength\n      pop\n      return\n");
+    const MethodPassRun r = runMethodPass(in, mjbase::pass::WriteOnlyArrayCleaner{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
 }
@@ -210,15 +182,11 @@ TEST(WriteOnlyArrayCleanerTest, escapedLocalKeepsArray)
 // ── 元素生产者非纯（invokestatic）：整窗放弃 ──
 TEST(WriteOnlyArrayCleanerTest, nonConstElementKeepsArray)
 {
-    FixtureBuilder b("t/U");
-    const ca::u16  mref = b.methodRef("Bog", "m", "()Ljava/lang/Object;");
-    Bytes          code = cat({0x10, 0x01}, anewObject(b));
-    code = cat(code, {0x59, 0x03});
-    code = cat(code, cat({0xb8}, u16b(mref)));
-    code = cat(code, {0x53, 0x57, 0xb1});
-    b.addMethod(method("m", "()V", std::move(code)));
-    const Bytes         in = b.assemble();
-    const MethodPassRun r  = runMethodPass(in, mjbase::pass::WriteOnlyArrayCleaner{});
+    const Bytes in = asmM("t/U", "m", "()V",
+                          "      ldc 1\n      anewarray java/lang/Object\n      dup\n"
+                          "      iconst_0\n      invokestatic Bog.m ()Ljava/lang/Object;\n"
+                          "      aastore\n      pop\n      return\n");
+    const MethodPassRun r = runMethodPass(in, mjbase::pass::WriteOnlyArrayCleaner{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
 }
@@ -226,14 +194,12 @@ TEST(WriteOnlyArrayCleanerTest, nonConstElementKeepsArray)
 // ── size 生产者非纯 int 常量（invokestatic 产出）：整窗放弃 ──
 TEST(WriteOnlyArrayCleanerTest, impureSizeProducerKeepsArray)
 {
-    FixtureBuilder b("t/U");
-    const ca::u16  mref = b.methodRef("Bog", "size", "()I");
-    Bytes          code = cat({0xb8}, u16b(mref));
-    code = cat(code, anewObject(b));
-    code = cat(code, {0x59, 0x03, 0x01, 0x53, 0x57, 0xb1});
-    b.addMethod(method("m", "()V", std::move(code)));
-    const Bytes         in = b.assemble();
-    const MethodPassRun r  = runMethodPass(in, mjbase::pass::WriteOnlyArrayCleaner{});
+    const Bytes in = asmM("t/U", "m", "()V",
+                          "      invokestatic Bog.size ()I\n"
+                          "      anewarray java/lang/Object\n      dup\n"
+                          "      iconst_0\n      aconst_null\n      aastore\n"
+                          "      pop\n      return\n");
+    const MethodPassRun r = runMethodPass(in, mjbase::pass::WriteOnlyArrayCleaner{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
 }
@@ -241,33 +207,28 @@ TEST(WriteOnlyArrayCleanerTest, impureSizeProducerKeepsArray)
 // ── 异常范围与窗相交：分配/存储的抛出可观测，全含亦弃 ──
 TEST(WriteOnlyArrayCleanerTest, excOverlapKeepsArray)
 {
-    FixtureBuilder b("t/U");
-    // 窗 0..6（size/alloc/dup/idx/val/aastore/pop），return@7，handler@8；
-    // exc(0, 8, 8, 0) 全含窗。
-    Bytes code = cat({0x10, 0x01}, anewObject(b));
-    code = cat(code, {0x59, 0x03, 0x01, 0x53, 0x57, 0xb1, 0xb1});
-    FixtureMethod m = method("m", "()V", std::move(code));
-    m.exc           = {{0, 8, 8, 0}};
-    b.addMethod(m);
-    const Bytes         in = b.assemble();
-    const MethodPassRun r  = runMethodPass(in, mjbase::pass::WriteOnlyArrayCleaner{});
+    // 窗全含于异常域（handler 锚尾随死 return 位）。
+    const Bytes in = asmM("t/U", "m", "()V",
+                          "      L0:\n      ldc 1\n      anewarray java/lang/Object\n"
+                          "      dup\n      iconst_0\n      aconst_null\n      aastore\n"
+                          "      pop\n      return\n      Lend:\n      return\n",
+                          "      { L0, Lend, Lend, * }\n");
+    const MethodPassRun r = runMethodPass(in, mjbase::pass::WriteOnlyArrayCleaner{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
 }
 
-// ── 窗内锚标签（GOTO 直指窗尾 pop，回边重执行分配语义改变）：整窗放弃 ──
+// ── 窗内锚标签（锚直指窗尾 pop，回边重执行分配语义改变）：整窗放弃 ──
+// 例外①申报：原形为可达 goto 直指窗尾 pop（栈形断裂不可装配），以死段
+// goto 锚同一位合法重表达——锚点落窗内的守卫决策面同实。
 TEST(WriteOnlyArrayCleanerTest, labelAnchorInsideWindowKeepsArray)
 {
-    FixtureBuilder b("t/U");
-    // goto pc12（= pop 位）；bipush@3; anew@5; dup@8; iconst_0@9; null@10;
-    // aastore@11; pop@12; return@13。
-    Bytes code = {0xa7, 0x00, 0x0c};
-    code = cat(code, {0x10, 0x01});
-    code = cat(code, anewObject(b));
-    code = cat(code, {0x59, 0x03, 0x01, 0x53, 0x57, 0xb1});
-    b.addMethod(method("m", "()V", std::move(code)));
-    const Bytes         in = b.assemble();
-    const MethodPassRun r  = runMethodPass(in, mjbase::pass::WriteOnlyArrayCleaner{});
+    const Bytes in = asmM("t/U", "m", "()V",
+                          "      L0:\n      ldc 1\n      anewarray java/lang/Object\n"
+                          "      dup\n      iconst_0\n      aconst_null\n      aastore\n"
+                          "      Lp:\n      pop\n      return\n"
+                          "      Ldead:\n      goto Lp\n");
+    const MethodPassRun r = runMethodPass(in, mjbase::pass::WriteOnlyArrayCleaner{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
 }
@@ -276,23 +237,19 @@ TEST(WriteOnlyArrayCleanerTest, labelAnchorInsideWindowKeepsArray)
 TEST(WriteOnlyArrayCleanerTest, pipelineScalarizerResidueZeroThenDummyCleaned)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder b("Svc");
-        const ca::u16  strCls = b.cls("java/lang/String");
-        b.addMethod(method("go", "([Ljava/lang/Object;)V",
-                           cat(cat({0x2a, 0x03, 0x32, 0xc0}, u16b(strCls)), {0x4c, 0xb1})));
-        addClassResource(container, "Svc.class", b.assemble());
-    }
-    {
-        FixtureBuilder b("Caller");
-        b.addMethod(method("main", "()V", buildCallerBoxed(b)));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
-    {
-        FixtureBuilder b("Dummy");
-        b.addMethod(method("dummy", "()V", buildLocalWindow(b)));
-        addClassResource(container, "Dummy.class", b.assemble());
-    }
+    addClassResource(container, "Svc.class",
+                     asmM("Svc", "go", "([Ljava/lang/Object;)V",
+                          "      aload 0\n      iconst_0\n      aaload\n"
+                          "      checkcast java/lang/String\n      astore 1\n"
+                          "      return\n"));
+    addClassResource(container, "Caller.class",
+                     asmM("Caller", "main", "()V",
+                          "      iconst_1\n      anewarray java/lang/Object\n"
+                          "      dup\n      ldc \"x\"\n      iconst_0\n      aastore\n"
+                          "      invokestatic Svc.go ([Ljava/lang/Object;)V\n"
+                          "      return\n"));
+    addClassResource(container, "Dummy.class",
+                     asmM("Dummy", "dummy", "()V", localWindowBody()));
 
     ca::str::Utf8StringArena           arena;
     mjbase::spi::GlobalAnalysisManager gam(arena);
@@ -313,7 +270,7 @@ TEST(WriteOnlyArrayCleanerTest, pipelineScalarizerResidueZeroThenDummyCleaned)
     ASSERT_NE(dummy, nullptr);
     const std::vector<Op> dopsBefore = methodOps(dummy->get(), "dummy");
     ASSERT_EQ(dopsBefore.size(), 8u);
-    EXPECT_EQ(dopsBefore[1], Op::ANEWARRAY);   // bipush; anewarray; astore; ...
+    EXPECT_EQ(dopsBefore[1], Op::ANEWARRAY);   // size; anewarray; astore; ...
     const MethodPassRun r =
         runMethodPass(dummy->get(), mjbase::pass::WriteOnlyArrayCleaner{});
     EXPECT_TRUE(r.pa.changed());
