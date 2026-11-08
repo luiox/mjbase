@@ -1,11 +1,29 @@
-/// IllegalClassFileCleaner
-/// 段（889 行起），并补齐独立直接用例。断言口径：
-/// 不可解析字节原样保留；可解析资源清洗后仍可解析；改动走两阶段提交；
-/// PA 与实际改动一致。
+/// IllegalClassFileCleaner 单元测试：清洗器判据验收 + 补齐独立直接用例。
+/// 断言口径：不可解析字节原样保留；可解析资源清洗后仍可解析；改动走两阶段
+/// 提交；PA 与实际改动一致。
 /// F 线清洗批起规则面为两级流水全量：libjclassfile 前置级 5 条挂账规则
 /// （属性级 CP 校验剔除 / 越界跳转与 LDC 桩替 / LVT·LVTT·LNT 修剪 / BSM 压缩
 /// 与 condy 手术 / 无效句柄出池）+ libjbc 级 2 条结构规则；craft 畸形样本
-/// 逐规则验收 + 合法输入字节逐位不动断言，载体见文件尾部 CraftBuilder。
+/// 逐规则验收 + 合法输入字节逐位不动断言。
+///
+/// 夹具纪律：合法基座（含正面控制组）一律 jasm 文本装配；本件的被测形态
+/// 是「清洗器吃下的非法类」，判据落法：
+/// - 例外①（装配器可判的非法形）：装配合法基座 → mutateClassFile DOM 单点
+///   偏差（越界跳转偏移 / LDC2_W 槽类别错挂 / LDC 悬垂索引），改写前后
+///   relaxed validate 自检 Ok→Fail 内置。
+/// - 例外①申报（前置级规则面，validate 语义未覆盖）：异常表越界/空区间、
+///   成员描述符残缺、BSM/句柄/condy 深层 CP 形——偏差后不做 Fail 断言
+///  （relaxed validate 不含此三门），以清洗 pass 实跑为最终证明。
+/// - 例外②（jasm 无属性指令面）：ConstantValue / BootstrapMethods /
+///   LNT·LVT·LVTT 载荷经 CP/AttrSlot DOM 挂 Raw 槽（载荷 putU16 拼装属
+///   属性载荷构建而非类构造）。
+/// - 例外①字节面（writer 拒收形）：MethodHandle kind/tag 错挂非法形连
+///   DOM+writer 都无法物化（JVMS 4.4.8 写回门）——规则 5 用例以合法基座
+///   写回后按池布局走查，对目标条目 kind 字节单点翻转（patchMethodHandleKind）。
+///   BSM 条目维度的非法形（句柄 kind/tag 错挂）writer 同拒——两处 BSM
+///   用例同样合法基座写回后 patchMethodHandleKind 翻转（前置级
+///   isValidMethodHandle 同矩阵判拒 → 条目剔除/出池级联）。
+/// 原 CraftBuilder 手拼载体随字节级 builder 一并退役。
 #include <gtest/gtest.h>
 
 #include <filesystem>
@@ -16,7 +34,6 @@
 #include <string>
 #include <string_view>
 #include <tuple>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -41,7 +58,7 @@
 #include "mjbase/pass/illegal_class_file_cleaner.hpp"
 #include "mjbase/spi/analysis_manager.hpp"
 #include "mjbase/spi/preserved_analyses.hpp"
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 
@@ -89,6 +106,250 @@ ParsedCode parsedCodeOf(const std::vector<ca::u8>& bytes, ca::usize methodIdx)
     return out;
 }
 
+// ── jasm 合法基座便捷形 ─────────────────────────────────────────────
+
+/// 单方法类装配（public super 骨架，超 java/lang/Object）。
+Bytes asmOne(const std::string& cls, std::string_view mods, std::string_view name,
+             std::string_view desc, std::string_view body, ca::i32 major = 49)
+{
+    const std::string src = R"JASM(.super java/lang/Object
+.class public super )JASM" + cls + R"JASM( {
+  .method )JASM" + std::string(mods) + " " + std::string(name) + " " + std::string(desc)
+        + R"JASM( {
+    code: {
+)JASM" + std::string(body) + R"JASM(    }
+  }
+}
+)JASM";
+    return assembleJasm(src, major);
+}
+
+/// 字段声明 + 方法集装配（正面控制组与多成员基座用）。
+Bytes asmT(const std::string& cls, const std::vector<std::string>& fields,
+           const std::vector<std::tuple<std::string_view, std::string_view, std::string_view,
+                                        std::string_view>>& ms)
+{
+    std::string src = ".super java/lang/Object\n.class public super ";
+    src.append(cls).append(" {\n");
+    for (const std::string& f : fields) src += "  .field " + f + "\n";
+    for (const auto& [mods, name, desc, body] : ms) {
+        src += "  .method ";
+        src.append(mods).append(" ").append(name).append(" ").append(desc);
+        src += " {\n    code: {\n";
+        src.append(body);
+        src += "    }\n  }\n";
+    }
+    src += "}\n";
+    return assembleJasm(src);
+}
+
+// ── DOM 单点偏差面（例外①载体）────────────────────────────────────
+
+/// 把首方法 Code 里第一条 2 字节偏移分支（opcode）的操作数改写为 off。
+/// 前后 relaxed validate 自检内置：改写前 Ok（装配基座），改写后 Fail
+///（越界分支落点为验证级非法形）。
+Bytes rewriteBranchOffset(const Bytes& bytes, ca::u8 op, ca::u16 off)
+{
+    expectValidateOk(bytes);
+    Bytes deviated = mutateClassFile(bytes, "rewriteBranchOffset",
+                                     [&](jbc::core::ClassFile& cf) {
+        for (jbc::core::MemberInfo& m : cf.methods) {
+            for (jbc::core::AttrSlot& slot : m.attrs) {
+                if (!cf.cp.utf8Equals(slot.nameCp, "Code")) continue;
+                if (!slot.decoded() && cf.decodeAttr(slot).is_err()) return;
+                auto* code = ca::core::tag_cast::cast<jbc::core::CodeAttr>(slot.mutate());
+                if (code == nullptr) return;
+                for (ca::u32 pc = 0; pc + 2 < code->code.size(); ++pc) {
+                    if (code->code[pc] != op) continue;
+                    code->code[pc + 1] = static_cast<ca::u8>(off >> 8);
+                    code->code[pc + 2] = static_cast<ca::u8>(off);
+                    return;
+                }
+            }
+        }
+    });
+    EXPECT_NE(deviated.size(), 0u) << "rewriteBranchOffset: 未找到目标分支";
+    if (deviated.empty()) return {};
+    expectValidateFail(deviated);
+    return deviated;
+}
+
+/// 把首方法 Code 里第一条 ldc（op）的 CP 操作数改写为 newIdx。
+/// expectFailAfter=true 时改写后 expectValidateFail（悬垂索引越界为验证级
+/// 非法形）；LDC 族常量类别错挂 validate 不判（前置级规则面申报，见文件头
+/// 与用例注）——置 false 跳过 Fail 断言，以清洗 pass 实跑为最终证明。
+Bytes rewriteLdcOperand(const Bytes& bytes, ca::u8 op, ca::u16 newIdx,
+                        bool expectFailAfter = true)
+{
+    expectValidateOk(bytes);
+    const bool wide = op == 0x14;   // LDC2_W 带 2 字节索引
+    Bytes deviated = mutateClassFile(bytes, "rewriteLdcOperand",
+                                     [&](jbc::core::ClassFile& cf) {
+        for (jbc::core::MemberInfo& m : cf.methods) {
+            for (jbc::core::AttrSlot& slot : m.attrs) {
+                if (!cf.cp.utf8Equals(slot.nameCp, "Code")) continue;
+                if (!slot.decoded() && cf.decodeAttr(slot).is_err()) return;
+                auto* code = ca::core::tag_cast::cast<jbc::core::CodeAttr>(slot.mutate());
+                if (code == nullptr) return;
+                for (ca::u32 pc = 0; pc < code->code.size(); ++pc) {
+                    if (code->code[pc] != op) continue;
+                    if (wide) {
+                        code->code[pc + 1] = static_cast<ca::u8>(newIdx >> 8);
+                        code->code[pc + 2] = static_cast<ca::u8>(newIdx);
+                    } else {
+                        code->code[pc + 1] = static_cast<ca::u8>(newIdx);
+                    }
+                    return;
+                }
+            }
+        }
+    });
+    EXPECT_NE(deviated.size(), 0u) << "rewriteLdcOperand: 未找到目标 LDC";
+    if (deviated.empty()) return {};
+    if (expectFailAfter) expectValidateFail(deviated);
+    return deviated;
+}
+
+// ── 属性载荷构建（例外②；putU16 属载荷拼装而非类构造）─────────────
+
+/// BootstrapMethods 属性体：entries = (handleIdx, args...) 列表。
+Bytes bsmBody(const std::vector<std::pair<ca::u16, std::vector<ca::u16>>>& entries)
+{
+    Bytes b;
+    b.push_back(static_cast<ca::u8>(entries.size() >> 8));
+    b.push_back(static_cast<ca::u8>(entries.size()));
+    for (const auto& [handle, args] : entries) {
+        b.push_back(static_cast<ca::u8>(handle >> 8));
+        b.push_back(static_cast<ca::u8>(handle));
+        b.push_back(static_cast<ca::u8>(args.size() >> 8));
+        b.push_back(static_cast<ca::u8>(args.size()));
+        for (const ca::u16 arg : args) {
+            b.push_back(static_cast<ca::u8>(arg >> 8));
+            b.push_back(static_cast<ca::u8>(arg));
+        }
+    }
+    return b;
+}
+
+/// LineNumberTable 属性体：(startPc, line) 列表。
+Bytes lntBody(const std::vector<std::pair<ca::u16, ca::u16>>& entries)
+{
+    Bytes b;
+    b.push_back(static_cast<ca::u8>(entries.size() >> 8));
+    b.push_back(static_cast<ca::u8>(entries.size()));
+    for (const auto& [startPc, line] : entries) {
+        b.push_back(static_cast<ca::u8>(startPc >> 8));
+        b.push_back(static_cast<ca::u8>(startPc));
+        b.push_back(static_cast<ca::u8>(line >> 8));
+        b.push_back(static_cast<ca::u8>(line));
+    }
+    return b;
+}
+
+/// LVT/LVTT 属性体（同一布局）：(startPc, length, name, desc/sig, slot)。
+Bytes lvtBody(const std::vector<std::tuple<ca::u16, ca::u16, std::string_view,
+                                           std::string_view, ca::u16>>& entries,
+              jbc::core::ClassFile& scratch)
+{
+    auto put16 = [](Bytes& out, ca::u16 v) {
+        out.push_back(static_cast<ca::u8>(v >> 8));
+        out.push_back(static_cast<ca::u8>(v));
+    };
+    auto putUtf8Idx = [&scratch](Bytes& out, std::string_view s) {
+        const ca::u32 idx = scratch.cp.addUtf8(s);
+        out.push_back(static_cast<ca::u8>(idx >> 8));
+        out.push_back(static_cast<ca::u8>(idx));
+    };
+    Bytes b;
+    put16(b, static_cast<ca::u16>(entries.size()));
+    for (const auto& [startPc, length, name, desc, slot] : entries) {
+        put16(b, startPc);
+        put16(b, length);
+        putUtf8Idx(b, name);
+        putUtf8Idx(b, desc);
+        put16(b, slot);
+    }
+    return b;
+}
+
+/// 向类/方法/Code 内嵌属性表挂 Raw 新槽（例外②附着面）。
+void attachRawAttr(jbc::core::ClassFile& cf, std::vector<jbc::core::AttrSlot>& attrs,
+                   std::string_view name, Bytes body)
+{
+    attrs.push_back(jbc::core::AttrSlot::makeNew(
+        cf.cp.addUtf8(name), std::make_unique<jbc::core::RawAttr>(std::move(body))));
+}
+
+/// 把类字节常量池里第 nth（0 起）个 MethodHandle（tag 0x0F）条目的
+/// reference_kind 字节单点改写为 newKind（例外①字节面偏差载面）。
+///
+/// libjbc 写回侧按 JVMS 4.4.8 拒收 kind/tag 错挂的 CP 追加——非法句柄形
+/// 无法经 DOM+writer 物化；合法基座写回后按池布局走查（Long/Double 占双
+/// 槽），对目标条目第 2 字节（kind）单点翻转。走查失败返回空并报失败。
+Bytes patchMethodHandleKind(const Bytes& bytes, ca::usize nth, ca::u8 newKind)
+{
+    if (bytes.size() < 11) return {};
+    const ca::usize cpCount
+        = (static_cast<ca::usize>(bytes[8]) << 8) | static_cast<ca::usize>(bytes[9]);
+    ca::usize pos  = 10;
+    ca::usize seen = 0;
+    for (ca::u32 idx = 1; idx < cpCount;) {
+        if (pos >= bytes.size()) {
+            ADD_FAILURE() << "patchMethodHandleKind: 走查越界 pos=" << pos << " idx=" << idx
+                          << " cpCount=" << cpCount << " 已见 MH=" << seen;
+            return {};
+        }
+        const ca::u8 tag = bytes[pos];
+        if (tag == 0x0F && seen++ == nth) {
+            Bytes out = bytes;
+            out[pos + 1] = newKind;
+            return out;
+        }
+        switch (tag) {
+        case 0x01: {   // Utf8：2 字节长度 + 载荷
+            const ca::usize len
+                = (static_cast<ca::usize>(bytes[pos + 1]) << 8) | bytes[pos + 2];
+            pos += 3 + len;
+            break;
+        }
+        case 0x03:   // Integer
+        case 0x04:   // Float
+        case 0x09:   // Fieldref
+        case 0x0A:   // Methodref
+        case 0x0B:   // InterfaceMethodref
+        case 0x0C:   // NameAndType
+        case 0x11:   // Dynamic
+        case 0x12:   // InvokeDynamic
+        case 0x13:   // Module
+        case 0x14:   // Package
+            pos += 5;
+            break;
+        case 0x05:   // Long（占双槽）
+        case 0x06:   // Double（占双槽）
+            pos += 9;
+            idx += 1;
+            break;
+        case 0x07:   // Class
+        case 0x08:   // String
+        case 0x10:   // MethodType
+            pos += 3;
+            break;
+        case 0x0F:   // MethodHandle（kind u1 + ref u2，共 4 字节）
+            pos += 4;
+            break;
+        default:
+            ADD_FAILURE() << "patchMethodHandleKind: 未知 CP tag " << static_cast<int>(tag)
+                          << " pos=" << pos << " idx=" << idx << " cpCount=" << cpCount
+                          << " 已见 MH=" << seen;
+            return {};
+        }
+        idx += 1;
+    }
+    ADD_FAILURE() << "patchMethodHandleKind: MethodHandle 条目不足（nth=" << nth
+                  << " 实见=" << seen << " cpCount=" << cpCount << "）";
+    return {};
+}
+
 }   // namespace
 
 // 用例：3 字节垃圾不可解析 → PA all()、原字节原样保留。
@@ -114,14 +375,27 @@ TEST(MjPassIllegalClassFileCleanerTest, PreservesUnparseableClassBytes)
 }
 
 // 补齐直接用例：非法描述符成员整条剔除，合法成员保留；PA none()；产物可重读。
+// 例外①申报面：描述符残缺（"HI" / "(V)V"）为前置级规则面——装配器词表不收，
+// 从装配合法四成员基座出发经 DOM 单点改写 descCp（addUtf8 新条目不共池），
+// 偏差后不做 Fail 断言（relaxed validate 不判描述符残缺），清洗实跑为最终证明。
 TEST(MjPassIllegalClassFileCleanerTest, StripsIllegalDescriptorMembers)
 {
-    FixtureBuilder builder("T");
-    builder.addField({"goodField", "I"});
-    builder.addField({"badField", "HI"});      // 'H' 非字段类型起始
-    builder.addMethod({"goodMethod", "()V", bareReturn()});
-    builder.addMethod({"badMethod", "(V)V", bareReturn()});   // V 不在参数位
-    auto bytes = builder.assemble();
+    const Bytes base = asmT("T", {"goodField I", "badField I"},
+        {
+            {"public static", "goodMethod", "()V", "      return\n"},
+            {"public static", "badMethod", "()V", "      return\n"},
+        });
+
+    Bytes bytes = mutateClassFile(base, "illegalDescriptors",
+                                  [&](jbc::core::ClassFile& cf) {
+        for (jbc::core::MemberInfo& f : cf.fields) {
+            if (cf.utf8(f.nameCp) == "badField") f.descCp = cf.cp.addUtf8("HI");
+        }
+        for (jbc::core::MemberInfo& m : cf.methods) {
+            if (cf.utf8(m.nameCp) == "badMethod") m.descCp = cf.cp.addUtf8("(V)V");
+        }
+    });
+    ASSERT_NE(bytes.size(), 0u);
 
     mjbase::model::ResourceContainer container;
     addClassResource(container, "T.class", bytes);
@@ -149,20 +423,45 @@ TEST(MjPassIllegalClassFileCleanerTest, StripsIllegalDescriptorMembers)
 }
 
 // 补齐直接用例：越界/空区间异常表条目剪除，合法条目保留。
-// 注意：合法条目取 (0,1,1)——前置级语义以「最后一条指令起始偏移」为
-// startPc/endPc/handlerPc 上界（endPc==code_length 越过该上界的条目也会被
-// 剪），夹具取两边界语义下都合法的形态，验证「垃圾剪除、合法保留」本身。
+// 合法条目取 (0,1,1)——前置级语义以「最后一条指令起始偏移」为上界，夹具取
+// 两边界语义下都合法的形态。例外①申报面：越界/空区间条目为前置级规则面
+//（validate 不判），合法条目 jasm 表达（{L0, L1, L1, *}=pc(0,1,1)），垃圾
+// 条目经 DOM 追加，清洗实跑为最终证明。
 TEST(MjPassIllegalClassFileCleanerTest, PrunesJunkExceptionTableEntries)
 {
-    FixtureBuilder builder("T");
-    FixtureMethod  m;
-    m.name = "t";
-    m.desc = "()V";
-    m.code = nopReturn();   // code_length = 2，最后一条指令起始偏移 = 1
-    // (0,1,1) 界内合法保留；(5,7,1) 全越界剪除；(1,1,1) 空区间剪除。
-    m.exc  = {ExcSpec{0, 1, 1, 0}, ExcSpec{5, 7, 1, 0}, ExcSpec{1, 1, 1, 0}};
-    builder.addMethod(m);
-    auto bytes = builder.assemble();
+    const std::string src = R"JASM(.super java/lang/Object
+.class public super T {
+  .method public static t ()V {
+    exceptions: {
+      { L0, L1, L1, * }
+    },
+    code: {
+      L0:
+      nop
+      L1:
+      return
+    }
+  }
+}
+)JASM";
+    const Bytes base = assembleJasm(src);
+    ASSERT_NE(base.size(), 0u);
+    expectValidateOk(base);
+
+    // DOM 追加垃圾条目：(5,7,1) 全越界剪除；(1,1,1) 空区间剪除。
+    Bytes bytes = mutateClassFile(base, "junkExcEntries", [&](jbc::core::ClassFile& cf) {
+        for (jbc::core::MemberInfo& m : cf.methods) {
+            for (jbc::core::AttrSlot& slot : m.attrs) {
+                if (!cf.cp.utf8Equals(slot.nameCp, "Code")) continue;
+                if (!slot.decoded() && cf.decodeAttr(slot).is_err()) return;
+                auto* code = ca::core::tag_cast::cast<jbc::core::CodeAttr>(slot.mutate());
+                if (code == nullptr) return;
+                code->excTable.push_back({5, 7, 1, 0});
+                code->excTable.push_back({1, 1, 1, 0});
+            }
+        }
+    });
+    ASSERT_NE(bytes.size(), 0u);
 
     mjbase::model::ResourceContainer container;
     addClassResource(container, "T.class", bytes);
@@ -187,11 +486,12 @@ TEST(MjPassIllegalClassFileCleanerTest, PrunesJunkExceptionTableEntries)
 // 补齐直接用例：结构本就干净的可解析类 → 字节逐位不变、PA all()。
 TEST(MjPassIllegalClassFileCleanerTest, LeavesValidClassUntouched)
 {
-    FixtureBuilder builder("T");
-    builder.addField({"f", "I"});
-    builder.addMethod({"t", "()V", nopReturn()});
-    builder.addMethod({"u", "()V", bareReturn()});
-    auto bytes = builder.assemble();
+    const Bytes bytes = asmT("T", {"f I"},
+        {
+            {"public static", "t", "()V", "      nop\n      return\n"},
+            {"public static", "u", "()V", "      return\n"},
+        });
+    ASSERT_NE(bytes.size(), 0u);
 
     mjbase::model::ResourceContainer container;
     addClassResource(container, "T.class", bytes);
@@ -280,9 +580,9 @@ TEST(MjPassIllegalClassFileCleanerTest, ProguardFixtureStaysParseable)
 }
 
 // ==================== F 线清洗批：libjclassfile 前置级 5 条挂账规则 ====================
-// craft 畸形样本逐规则验收 + 合法输入字节不动。craft 载体为文件局部的
-// CraftBuilder（共享 structural_pass_util 不建模属性级/BSM/condy 形态），
-// 产物级断言经 libjclassfile 模型重读 + libjbc 可重读双面验收。
+// craft 畸形样本逐规则验收 + 合法输入字节不动。合法基座 jasm 装配；非法形
+// 经 mutateClassFile DOM 单点偏差（CP 物化走 libjbc add* 追加面），产物级
+// 断言经 libjclassfile 模型重读 + libjbc 可重读双面验收。
 
 namespace {
 
@@ -292,336 +592,6 @@ using jclassfile::model::ClassFile;
 using jclassfile::model::CodeAttribute;
 using jclassfile::model::CpTag;
 using CjMethod = jclassfile::model::Method;
-
-/// 任意属性（名字 + 体字节；长度由组装器落）。
-struct RawAttr
-{
-    std::string name;
-    Bytes       body;
-};
-
-struct CraftField
-{
-    std::string          name;
-    std::string          desc;
-    ca::u16              access = 0x0019;   // public static final
-    std::vector<RawAttr> attrs;
-};
-
-struct CraftMethod
-{
-    std::string          name;
-    std::string          desc;
-    Bytes                code;
-    ca::u16              access = 0x0009;   // public static
-    std::vector<ExcSpec> exc;
-    ca::u16              maxStack  = 1;
-    ca::u16              maxLocals = 1;
-    std::vector<RawAttr> codeAttrs;    // Code 内嵌套属性（LNT/LVT/LVTT 载体）
-    std::vector<RawAttr> methodAttrs;  // Code 之外的方法属性
-};
-
-/// @brief 手工拼 classfile 的 craft 载体：支持字段/类属性、Code 内嵌属性、
-/// MethodHandle / CONSTANT_Dynamic 等全部测试面 CP 条目。
-///
-/// methodHandle 的 kind 与 reference 索引由用例显式给定——允许构造 kind/tag
-/// 不匹配的非法句柄（规则 4/5 的触发面）；condy 的 bsm 索引同理。
-class CraftBuilder
-{
-public:
-    explicit CraftBuilder(std::string thisClass)
-        : thisClass_(std::move(thisClass))
-    {
-        thisIdx_  = cls(thisClass_);
-        superIdx_ = cls("java/lang/Object");
-        codeName_ = utf8("Code");
-    }
-
-    void addField(CraftField f) { fields_.push_back(std::move(f)); }
-    void addMethod(CraftMethod m) { methods_.push_back(std::move(m)); }
-    void addClassAttr(RawAttr a) { classAttrs_.push_back(std::move(a)); }
-
-    Bytes assemble()
-    {
-        struct NameDesc
-        {
-            ca::u16 name;
-            ca::u16 desc;
-        };
-        // 第一遍：全部 CP 条目（含各属性名 utf8）必须在写头部 cpCount 前物化——
-        // cpCount 冻结后再物化会少算条目，整池错位。
-        std::vector<NameDesc> fieldSlots;
-        fieldSlots.reserve(fields_.size());
-        for (const CraftField& f : fields_) {
-            fieldSlots.push_back({utf8(f.name), utf8(f.desc)});
-            for (const RawAttr& a : f.attrs) utf8(a.name);
-        }
-        std::vector<NameDesc> methodSlots;
-        methodSlots.reserve(methods_.size());
-        for (const CraftMethod& m : methods_) {
-            methodSlots.push_back({utf8(m.name), utf8(m.desc)});
-            for (const RawAttr& a : m.methodAttrs) utf8(a.name);
-            for (const RawAttr& a : m.codeAttrs) utf8(a.name);
-        }
-        for (const RawAttr& a : classAttrs_) utf8(a.name);
-
-        Bytes out;
-        putU32(out, 0xCAFEBABEu);
-        putU16(out, 0x00);
-        putU16(out, 0x34);   // V1_8
-        putU16(out, next_);
-        out.insert(out.end(), cp_.begin(), cp_.end());
-        putU16(out, 0x0021);
-        putU16(out, thisIdx_);
-        putU16(out, superIdx_);
-        putU16(out, 0);   // interfaces
-        putU16(out, static_cast<ca::u16>(fields_.size()));
-        for (ca::usize i = 0; i < fields_.size(); ++i) {
-            const CraftField& f = fields_[i];
-            putU16(out, f.access);
-            putU16(out, fieldSlots[i].name);
-            putU16(out, fieldSlots[i].desc);
-            putAttrs(out, f.attrs);
-        }
-        putU16(out, static_cast<ca::u16>(methods_.size()));
-        for (ca::usize i = 0; i < methods_.size(); ++i) {
-            const CraftMethod& m = methods_[i];
-            putU16(out, m.access);
-            putU16(out, methodSlots[i].name);
-            putU16(out, methodSlots[i].desc);
-            std::vector<RawAttr> methodAttributes = m.methodAttrs;
-            methodAttributes.push_back(codeAttrOf(m));
-            putAttrs(out, methodAttributes);
-        }
-        putAttrs(out, classAttrs_);
-        return out;
-    }
-
-    // ---- CP 物化入口 ----
-
-    ca::u16 utf8(std::string_view s)
-    {
-        std::string key(s);
-        const auto  it = utf8s_.find(key);
-        if (it != utf8s_.end()) return it->second;
-        putU8(cp_, 0x01);
-        putU16(cp_, static_cast<ca::u16>(s.size()));
-        putRaw(cp_, s);
-        const ca::u16 idx = next_++;
-        utf8s_.emplace(std::move(key), idx);
-        return idx;
-    }
-
-    ca::u16 cls(std::string_view n)
-    {
-        std::string key(n);
-        const auto  it = classes_.find(key);
-        if (it != classes_.end()) return it->second;
-        const ca::u16 u = utf8(n);
-        putU8(cp_, 0x07);
-        putU16(cp_, u);
-        const ca::u16 idx = next_++;
-        classes_.emplace(std::move(key), idx);
-        return idx;
-    }
-
-    ca::u16 nameType(std::string_view n, std::string_view d)
-    {
-        std::string key(std::string(n).append("|").append(d));
-        const auto  it = nameTypes_.find(key);
-        if (it != nameTypes_.end()) return it->second;
-        const ca::u16 ni = utf8(n);
-        const ca::u16 di = utf8(d);
-        putU8(cp_, 0x0c);
-        putU16(cp_, ni);
-        putU16(cp_, di);
-        const ca::u16 idx = next_++;
-        nameTypes_.emplace(std::move(key), idx);
-        return idx;
-    }
-
-    ca::u16 strConst(std::string_view v)
-    {
-        std::string key(v);
-        const auto  it = strs_.find(key);
-        if (it != strs_.end()) return it->second;
-        const ca::u16 u = utf8(v);
-        putU8(cp_, 0x08);
-        putU16(cp_, u);
-        const ca::u16 idx = next_++;
-        strs_.emplace(std::move(key), idx);
-        return idx;
-    }
-
-    ca::u16 intConst(ca::i32 v)
-    {
-        std::string key = "int:" + std::to_string(v);
-        const auto  it = ints_.find(key);
-        if (it != ints_.end()) return it->second;
-        putU8(cp_, 0x03);
-        putU32(cp_, static_cast<ca::u32>(v));
-        const ca::u16 idx = next_++;
-        ints_.emplace(std::move(key), idx);
-        return idx;
-    }
-
-    ca::u16 fieldRef(std::string_view owner, std::string_view n, std::string_view d)
-    {
-        return memberRef(0x09, owner, n, d, fieldRefs_);
-    }
-
-    ca::u16 methodRef(std::string_view owner, std::string_view n, std::string_view d)
-    {
-        return memberRef(0x0a, owner, n, d, methodRefs_);
-    }
-
-    /// MethodHandle（tag 15）：kind 与 reference 索引显式给定，允许非法组合。
-    ca::u16 methodHandle(ca::u8 kind, ca::u16 refIdx)
-    {
-        std::string key = "mh:" + std::to_string(kind) + ":" + std::to_string(refIdx);
-        const auto  it = handles_.find(key);
-        if (it != handles_.end()) return it->second;
-        putU8(cp_, 0x0f);
-        putU8(cp_, kind);
-        putU16(cp_, refIdx);
-        const ca::u16 idx = next_++;
-        handles_.emplace(std::move(key), idx);
-        return idx;
-    }
-
-    /// CONSTANT_Dynamic（tag 17）。
-    ca::u16 condy(ca::u16 bsmIdx, ca::u16 ntIdx)
-    {
-        std::string key = "condy:" + std::to_string(bsmIdx) + ":" + std::to_string(ntIdx);
-        const auto  it = condies_.find(key);
-        if (it != condies_.end()) return it->second;
-        putU8(cp_, 0x11);
-        putU16(cp_, bsmIdx);
-        putU16(cp_, ntIdx);
-        const ca::u16 idx = next_++;
-        condies_.emplace(std::move(key), idx);
-        return idx;
-    }
-
-    // ---- 属性体片段（用例侧拼 RawAttr::body 用）----
-
-    Bytes u16Body(ca::u16 v)
-    {
-        Bytes b;
-        putU16(b, v);
-        return b;
-    }
-
-    /// BootstrapMethods 属性体：entries = (handleIdx, args...) 列表。
-    Bytes bsmBody(const std::vector<std::pair<ca::u16, std::vector<ca::u16>>>& entries)
-    {
-        Bytes b;
-        putU16(b, static_cast<ca::u16>(entries.size()));
-        for (const auto& [handle, args] : entries) {
-            putU16(b, handle);
-            putU16(b, static_cast<ca::u16>(args.size()));
-            for (const ca::u16 arg : args) putU16(b, arg);
-        }
-        return b;
-    }
-
-    /// LineNumberTable 属性体：(startPc, line) 列表。
-    Bytes lntBody(const std::vector<std::pair<ca::u16, ca::u16>>& entries)
-    {
-        Bytes b;
-        putU16(b, static_cast<ca::u16>(entries.size()));
-        for (const auto& [startPc, line] : entries) {
-            putU16(b, startPc);
-            putU16(b, line);
-        }
-        return b;
-    }
-
-    /// LVT/LVTT 属性体（同一布局）：(startPc, length, name, desc/sig, slot)。
-    Bytes lvtBody(const std::vector<std::tuple<ca::u16, ca::u16, std::string_view,
-                                               std::string_view, ca::u16>>& entries)
-    {
-        Bytes b;
-        putU16(b, static_cast<ca::u16>(entries.size()));
-        for (const auto& [startPc, length, name, desc, slot] : entries) {
-            putU16(b, startPc);
-            putU16(b, length);
-            putU16(b, utf8(name));
-            putU16(b, utf8(desc));
-            putU16(b, slot);
-        }
-        return b;
-    }
-
-private:
-    ca::u16 memberRef(ca::u8 tag, std::string_view owner, std::string_view n,
-                      std::string_view d, std::unordered_map<std::string, ca::u16>& cache)
-    {
-        std::string key(std::string(owner).append("|").append(n).append("|").append(d));
-        const auto  it = cache.find(key);
-        if (it != cache.end()) return it->second;
-        const ca::u16 ci = cls(owner);
-        const ca::u16 nt = nameType(n, d);
-        putU8(cp_, tag);
-        putU16(cp_, ci);
-        putU16(cp_, nt);
-        const ca::u16 idx = next_++;
-        cache.emplace(std::move(key), idx);
-        return idx;
-    }
-
-    Bytes attrBytes(const RawAttr& a)
-    {
-        Bytes b;
-        putU16(b, utf8(a.name));
-        putU32(b, static_cast<ca::u32>(a.body.size()));
-        b.insert(b.end(), a.body.begin(), a.body.end());
-        return b;
-    }
-
-    void putAttrs(Bytes& out, const std::vector<RawAttr>& attrs)
-    {
-        putU16(out, static_cast<ca::u16>(attrs.size()));
-        for (const RawAttr& a : attrs) appendBytes(out, attrBytes(a));
-    }
-
-    RawAttr codeAttrOf(const CraftMethod& m)
-    {
-        Bytes body;
-        putU16(body, m.maxStack);
-        putU16(body, m.maxLocals);
-        putU32(body, static_cast<ca::u32>(m.code.size()));
-        body.insert(body.end(), m.code.begin(), m.code.end());
-        putU16(body, static_cast<ca::u16>(m.exc.size()));
-        for (const ExcSpec& e : m.exc) {
-            putU16(body, e.startPc);
-            putU16(body, e.endPc);
-            putU16(body, e.handlerPc);
-            putU16(body, e.catchCp);
-        }
-        putAttrs(body, m.codeAttrs);
-        return RawAttr{"Code", std::move(body)};
-    }
-
-    Bytes   cp_;
-    ca::u16 next_ = 1;
-    std::string thisClass_;
-    std::unordered_map<std::string, ca::u16> utf8s_;
-    std::unordered_map<std::string, ca::u16> classes_;
-    std::unordered_map<std::string, ca::u16> nameTypes_;
-    std::unordered_map<std::string, ca::u16> strs_;
-    std::unordered_map<std::string, ca::u16> ints_;
-    std::unordered_map<std::string, ca::u16> fieldRefs_;
-    std::unordered_map<std::string, ca::u16> methodRefs_;
-    std::unordered_map<std::string, ca::u16> handles_;
-    std::unordered_map<std::string, ca::u16> condies_;
-    ca::u16 thisIdx_  = 0;
-    ca::u16 superIdx_ = 0;
-    ca::u16 codeName_ = 0;
-    std::vector<CraftField>  fields_;
-    std::vector<CraftMethod> methods_;
-    std::vector<RawAttr>     classAttrs_;
-};
 
 /// 跑清洗 pass，返回 PA。
 mjbase::spi::PreservedAnalyses runCleaner(mjbase::model::ResourceContainer& container)
@@ -679,20 +649,39 @@ ca::usize countPoolTag(const ClassFile& model, CpTag tag)
     return count;
 }
 
+/// 首方法 Code 的可变视图（mutateClassFile 变换器用；未找到为 nullptr）。
+jbc::core::CodeAttr* mutableFirstCode(jbc::core::ClassFile& cf)
+{
+    for (jbc::core::MemberInfo& m : cf.methods) {
+        for (jbc::core::AttrSlot& slot : m.attrs) {
+            if (!cf.cp.utf8Equals(slot.nameCp, "Code")) continue;
+            if (!slot.decoded() && cf.decodeAttr(slot).is_err()) return nullptr;
+            return ca::core::tag_cast::cast<jbc::core::CodeAttr>(slot.mutate());
+        }
+    }
+    return nullptr;
+}
+
 }   // namespace
 
 // 规则 1：属性级 CP 校验剔除——ConstantValue 引用的条目种类与字段类型不符
 // （int 字段挂 Class 条目）→ 该属性剔除，字段本体保留。
+// 例外②：ConstantValue 经 DOM 挂 Raw 槽（u2 CP 指针载荷），错挂条目为
+// Class 条目（addClass 物化）。
 TEST(MjPassIllegalClassFileCleanerTest, DropsConstantValueWithWrongCpKind)
 {
-    CraftBuilder builder("T");
-    CraftField   bad;
-    bad.name  = "cvBad";
-    bad.desc  = "I";
-    bad.attrs.push_back({"ConstantValue", builder.u16Body(builder.cls("java/lang/String"))});
-    builder.addField(bad);
+    const Bytes base = asmT("T", {"cvGood I"}, {});   // 占位，deviate 时改字段名
+    ASSERT_NE(base.size(), 0u);
+    expectValidateOk(base);
+    Bytes bytes = mutateClassFile(base, "wrongKindConstantValue",
+                                  [&](jbc::core::ClassFile& cf) {
+        cf.fields[0].nameCp = cf.cp.addUtf8("cvBad");
+        const ca::u32 clsCp = cf.cp.addClass(cf.cp.addUtf8("java/lang/String"));
+        attachRawAttr(cf, cf.fields[0].attrs, "ConstantValue",
+                      Bytes{static_cast<ca::u8>(clsCp >> 8), static_cast<ca::u8>(clsCp)});
+    });
+    ASSERT_NE(bytes.size(), 0u);
 
-    auto bytes = builder.assemble();
     mjbase::model::ResourceContainer container;
     addClassResource(container, "T.class", bytes);
 
@@ -712,16 +701,22 @@ TEST(MjPassIllegalClassFileCleanerTest, DropsConstantValueWithWrongCpKind)
 }
 
 // 规则 1 正面控制：合法 ConstantValue（int 字段挂 Integer 条目）→ 字节逐位不动。
+// 例外②：合法 ConstantValue 同面 DOM 挂槽（Integer 条目 addInteger 物化）。
 TEST(MjPassIllegalClassFileCleanerTest, KeepsValidConstantValueUntouched)
 {
-    CraftBuilder builder("T");
-    CraftField   good;
-    good.name = "cvGood";
-    good.desc = "I";
-    good.attrs.push_back({"ConstantValue", builder.u16Body(builder.intConst(42))});
-    builder.addField(good);
+    // 字段须 static：ConstantValue 仅静态字段合法（前置级规则把非静态挂载
+    // 一并判非法），正面控制组用 static 字段隔离「合法性保持」维度。
+    const Bytes base = asmT("T", {"public static cvGood I"}, {});
+    ASSERT_NE(base.size(), 0u);
+    expectValidateOk(base);
+    const Bytes bytes = mutateClassFile(base, "validConstantValue",
+                                        [&](jbc::core::ClassFile& cf) {
+        const ca::u32 intCp = cf.cp.addInteger(42);
+        attachRawAttr(cf, cf.fields[0].attrs, "ConstantValue",
+                      Bytes{static_cast<ca::u8>(intCp >> 8), static_cast<ca::u8>(intCp)});
+    });
+    ASSERT_NE(bytes.size(), 0u);
 
-    auto bytes = builder.assemble();
     mjbase::model::ResourceContainer container;
     addClassResource(container, "T.class", bytes);
 
@@ -738,16 +733,16 @@ TEST(MjPassIllegalClassFileCleanerTest, KeepsValidConstantValueUntouched)
 }
 
 // 规则 2a：越界跳转（GOTO 目标越过代码体）→ RETURN 桩替换，代码长度不变。
+// 例外①：合法基座 goto Lend（偏移 +3），DOM 单点改写偏移为 +100（越界），
+// 前后 validate Ok→Fail 自检内置。
 TEST(MjPassIllegalClassFileCleanerTest, StubsOutOfBoundsJumpWithReturn)
 {
-    CraftBuilder builder("T");
-    CraftMethod  m;
-    m.name = "j";
-    m.desc = "()V";
-    m.code = {0xA7, 0x00, 0x64, 0xB1};   // GOTO +100（越界）; RETURN
-    builder.addMethod(m);
+    const Bytes base = asmOne("T", "public static", "j", "()V",
+                              "      goto Lend\n      Lend:\n      return\n");
+    ASSERT_NE(base.size(), 0u);
+    const Bytes bytes = rewriteBranchOffset(base, 0xA7, 100);
+    ASSERT_NE(bytes.size(), 0u);
 
-    auto bytes = builder.assemble();
     mjbase::model::ResourceContainer container;
     addClassResource(container, "T.class", bytes);
 
@@ -761,17 +756,15 @@ TEST(MjPassIllegalClassFileCleanerTest, StubsOutOfBoundsJumpWithReturn)
     EXPECT_EQ(parsed.code->code, (Bytes{0x00, 0x00, 0xB1, 0xB1}));
 }
 
-// 规则 2a 正面控制：界内 GOTO 不触发，字节逐位不动。
+// 规则 2a 正面控制：界内 GOTO 不触发，字节逐位不动。纯 jasm 表达
+//（goto Lskip 落 pc3 NOP，偏移恰 +3）。
 TEST(MjPassIllegalClassFileCleanerTest, KeepsInBoundsJumpUntouched)
 {
-    CraftBuilder builder("T");
-    CraftMethod  m;
-    m.name = "j";
-    m.desc = "()V";
-    m.code = {0xA7, 0x00, 0x03, 0x00, 0xB1};   // GOTO +3（指向界内 NOP）; NOP; RETURN
-    builder.addMethod(m);
+    const Bytes bytes = asmOne("T", "public static", "j", "()V",
+                               "      goto Lskip\n      nop\n      Lskip:\n      return\n");
+    ASSERT_NE(bytes.size(), 0u);
+    expectValidateOk(bytes);
 
-    auto bytes = builder.assemble();
     mjbase::model::ResourceContainer container;
     addClassResource(container, "T.class", bytes);
 
@@ -782,26 +775,32 @@ TEST(MjPassIllegalClassFileCleanerTest, KeepsInBoundsJumpUntouched)
 
 // 规则 2b：LDC 族与常量种类不符（LDC2_W 指向 Integer）与悬垂索引（LDC 指向
 // 越界 CP 槽）→ 一律 RETURN 桩替换。
+// 例外①：合法基座 ldc 1L / ldc 7，DOM 单点改写 CP 操作数（Integer 条目
+// / 越界槽 127），前后 validate Ok→Fail 自检内置。
 TEST(MjPassIllegalClassFileCleanerTest, StubsIllegalLdcInstructions)
 {
-    CraftBuilder builder("T");
-    const ca::u16 intIdx = builder.intConst(7);
-    CraftMethod   wide;
-    wide.name = "w";
-    wide.desc = "()V";
-    wide.code = {0x14, static_cast<ca::u8>(intIdx >> 8), static_cast<ca::u8>(intIdx),
-                 0xB1};   // LDC2_W(0x14) <Integer>（cat2 槽挂 cat1 条目）; RETURN
-    builder.addMethod(wide);
+    // wide：LDC2_W 挂 Integer 条目（cat2 槽挂 cat1 条目）。validate 不判
+    // LDC 族常量类别（前置级规则面申报，见文件头）——Fail 断言跳过。
+    ca::u16 intIdx = 0;
+    const Bytes wideBase = mutateClassFile(
+        asmOne("T", "public static", "w", "()V", "      ldc 1L\n      return\n"),
+        "internInt", [&](jbc::core::ClassFile& cf) {
+            intIdx = static_cast<ca::u16>(cf.cp.addInteger(7));
+        });
+    ASSERT_NE(wideBase.size(), 0u);
+    const Bytes wide = rewriteLdcOperand(wideBase, 0x14, intIdx, false);
+    ASSERT_NE(wide.size(), 0u);
 
-    CraftMethod dangling;
-    dangling.name = "d";
-    dangling.desc = "()V";
-    dangling.code = {0x12, 0x7F, 0xB1};   // LDC 127（越出池界 → null entry）; RETURN
-    builder.addMethod(dangling);
+    // dangling：LDC 指向越出池界的槽 127（越界索引为验证级非法形，Fail
+    // 断言保留）。
+    const Bytes dangling =
+        rewriteLdcOperand(asmOne("T", "public static", "d", "()V", "      ldc 7\n      return\n"),
+                          0x12, 127);
+    ASSERT_NE(dangling.size(), 0u);
 
-    auto bytes = builder.assemble();
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "T.class", bytes);
+    addClassResource(container, "T.class", wide);
+    addClassResource(container, "Td.class", dangling);
 
     const auto pa = runCleaner(container);
     EXPECT_TRUE(pa.changed()) << "illegal LDC forms must be stubbed";
@@ -811,32 +810,41 @@ TEST(MjPassIllegalClassFileCleanerTest, StubsIllegalLdcInstructions)
     // LDC2_W(3B) → NOP NOP RETURN；原 RETURN 保留。
     EXPECT_EQ(wideParsed.code->code, (Bytes{0x00, 0x00, 0xB1, 0xB1}));
 
-    const ParsedCode danglingParsed = parsedCodeOf(cleanedBytes(container, "T.class"), 1);
+    const ParsedCode danglingParsed = parsedCodeOf(cleanedBytes(container, "Td.class"), 0);
     ASSERT_NE(danglingParsed.code, nullptr);
     // LDC(2B) → NOP RETURN；原 RETURN 保留。
     EXPECT_EQ(danglingParsed.code->code, (Bytes{0x00, 0xB1, 0xB1}));
 }
 
 // 规则 3：LVT/LVTT/LineNumberTable 越界/悬垂条目修剪，合法条目保留。
+// 基座 jasm（istore 0 使 maxLocals 真值 = 1，LVT slot-0 合法门成立）；三张
+// 调试表经例外② DOM 挂 Raw 槽（载荷 putU16 拼装）。
 TEST(MjPassIllegalClassFileCleanerTest, PrunesLvtLvttLntEntries)
 {
-    CraftBuilder builder("T");
-    CraftMethod  m;
-    m.name      = "d";
-    m.desc      = "()V";
-    m.code      = nopReturn();   // code_length = 2, maxLocals = 1
-    m.codeAttrs.push_back({"LineNumberTable",
-                           builder.lntBody({{0, 10}, {5, 20}})});   // (5,20) 越界
-    m.codeAttrs.push_back({"LocalVariableTable",
-                           builder.lvtBody({{0, 2, "a", "I", 0},      // 合法
-                                            {0, 2, "b", "J", 9},      // slot >= maxLocals
-                                            {5, 1, "c", "I", 0}})});  // 区间越界
-    m.codeAttrs.push_back({"LocalVariableTypeTable",
-                           builder.lvtBody({{0, 2, "s", "Ljava/util/List;", 0},   // 合法
-                                            {0, 2, "t", "J", 9}})});              // wide 且 slot 越界
-    builder.addMethod(m);
+    // code_length = 4（iconst_0; istore_0; nop; return），末条指令起始偏移 3。
+    const Bytes base =
+        asmOne("T", "public static", "d", "()V",
+               "      iconst_0\n      istore 0\n      nop\n      return\n");
+    ASSERT_NE(base.size(), 0u);
+    expectValidateOk(base);
 
-    auto bytes = builder.assemble();
+    Bytes bytes = mutateClassFile(base, "debugTables", [&](jbc::core::ClassFile& cf) {
+        jbc::core::CodeAttr* code = mutableFirstCode(cf);
+        ASSERT_NE(code, nullptr);
+        attachRawAttr(cf, code->attrs, "LineNumberTable",
+                      lntBody({{0, 10}, {5, 20}}));   // (5,20) 越界
+        attachRawAttr(cf, code->attrs, "LocalVariableTable",
+                      lvtBody({{0, 2, "a", "I", 0},      // 合法
+                               {0, 2, "b", "J", 9},      // slot >= maxLocals
+                               {5, 1, "c", "I", 0}},     // 区间越界
+                              cf));
+        attachRawAttr(cf, code->attrs, "LocalVariableTypeTable",
+                      lvtBody({{0, 2, "s", "Ljava/util/List;", 0},   // 合法
+                               {0, 2, "t", "J", 9}},                 // wide 且 slot 越界
+                              cf));
+    });
+    ASSERT_NE(bytes.size(), 0u);
+
     mjbase::model::ResourceContainer container;
     addClassResource(container, "T.class", bytes);
 
@@ -872,26 +880,52 @@ TEST(MjPassIllegalClassFileCleanerTest, PrunesLvtLvttLntEntries)
 // 规则 4（级联形态）：LDC 引用指向无效 BSM 条目的 condy → LDC 桩替；该 condy
 // 不再被任何代码引用 → BootstrapMethods 整表移除 + 池内无主 condy 出池 +
 // 无效句柄出池。
+// 例外②申报面：BootstrapMethods/句柄/condy 深层 CP 形装配器不建模——合法
+// 基座（ldc 7）经 DOM 物化 CP 追加面 + Raw 类属性挂槽 + LDC 操作数单点改写
+// 产出被测形态；validate 不判句柄 kind 深语义，清洗实跑为最终证明。
 TEST(MjPassIllegalClassFileCleanerTest, CompactsBsmAndDropsCondyChain)
 {
-    CraftBuilder builder("T");
-    // 非法句柄：REF_INVOKE_INTERFACE（要求 InterfaceMethodRef）挂在 Methodref 上。
-    const ca::u16 mhBad  = builder.methodHandle(9, builder.methodRef("B", "bsm", "()V"));
-    const ca::u16 mhGood = builder.methodHandle(6, builder.methodRef("B", "bsm", "()V"));
-    const ca::u16 nt     = builder.nameType("x", "I");
-    const ca::u16 str    = builder.strConst("A");
-    const ca::u16 condyBad = builder.condy(0, nt);   // 指向 BSM 条目 0（非法）
-    builder.addClassAttr(
-        {"BootstrapMethods",
-         builder.bsmBody({{mhBad, {str}}, {mhGood, {str}}})});
+    ca::u16 condyBad = 0;
+    const Bytes plain = asmOne("T", "public static", "c", "()V", "      ldc 7\n      return\n", 61);   // major 61：condy 常量域（<55 读侧判废 LDC-condy）
+    ASSERT_NE(plain.size(), 0u);
+    expectValidateOk(plain);
+    const Bytes base = mutateClassFile(plain, "condyChain", [&](jbc::core::ClassFile& cf) {
+            // BSM 条目句柄按合法形物化（kind 6 + Methodref；writer 同矩
+            // 阵拒收错挂形）——非法形经写回后字节面翻转（申报见文件头）：
+            // 前置级 isValidMethodHandle 判拒 → 条目剔除 → remap 把被指索
+            // 引写 0xFFFF → LDC-condy 判废打桩 → dynamicRefs 空 → BSM 整表
+            // 删 + 无主 condy/坏句柄出池。
+            const ca::u32 clsB    = cf.cp.addClass(cf.cp.addUtf8("B"));
+            const ca::u32 nt      = cf.cp.addNameAndType(cf.cp.addUtf8("x"),
+                                                         cf.cp.addUtf8("I"));
+            const ca::u32 str     = cf.cp.addString(cf.cp.addUtf8("A"));
+            // 坏句柄走独立 Methodref（B2.x）：写回侧池压缩按 (kind,ref) 归
+            // 并同参条目，同参双柄会被合并成单槽、nth 拆分失效。
+            const ca::u32 mrefBad = cf.cp.addRef(
+                jbc::core::CpTag::Methodref, cf.cp.addClass(cf.cp.addUtf8("B2")), nt);
+            const ca::u32 mref    = cf.cp.addRef(jbc::core::CpTag::Methodref, clsB, nt);
+            const ca::u32 mhBad   = cf.cp.addMethodHandle(6, mrefBad);
+            const ca::u32 mhGood  = cf.cp.addMethodHandle(6, mref);
+            ASSERT_NE(static_cast<ca::u32>(mhBad), static_cast<ca::u32>(mhGood));
+            condyBad = static_cast<ca::u16>(cf.cp.addDynamic(0, nt));
+            attachRawAttr(cf, cf.attrs, "BootstrapMethods",
+                          bsmBody({{static_cast<ca::u16>(mhBad), {static_cast<ca::u16>(str)}},
+                                   {static_cast<ca::u16>(mhGood),
+                                    {static_cast<ca::u16>(str)}}}));
+            jbc::core::CodeAttr* code = mutableFirstCode(cf);
+            ASSERT_NE(code, nullptr);
+            for (ca::u32 pc = 0; pc < code->code.size(); ++pc) {
+                if (code->code[pc] != 0x12) continue;
+                code->code[pc + 1] = static_cast<ca::u8>(condyBad);
+                break;
+            }
+        });
+    ASSERT_NE(base.size(), 0u);
+    // 例外①字节面：池内第 0 个 MethodHandle（mhBad，先加）kind 翻 9
+    //（REF_INVOKE_INTERFACE 挂 Methodref → 错挂非法形）。
+    const Bytes bytes = patchMethodHandleKind(base, 0, 9);
+    ASSERT_NE(bytes.size(), 0u);
 
-    CraftMethod m;
-    m.name = "c";
-    m.desc = "()V";
-    m.code = {0x12, static_cast<ca::u8>(condyBad), 0xB1};   // LDC <condy>; RETURN
-    builder.addMethod(m);
-
-    auto bytes = builder.assemble();
     mjbase::model::ResourceContainer container;
     addClassResource(container, "T.class", bytes);
 
@@ -906,8 +940,9 @@ TEST(MjPassIllegalClassFileCleanerTest, CompactsBsmAndDropsCondyChain)
     EXPECT_EQ(findAttrByName(model->attributes(), AttributeConstants::BOOTSTRAP_METHODS),
               nullptr)
         << "BSM table must be removed once no code references a dynamic constant";
-    EXPECT_EQ(countPoolTag(*model, CpTag::DYNAMIC), 0u) << "orphan condy must leave the pool";
-    EXPECT_EQ(countPoolTag(*model, CpTag::METHOD_HANDLE), 1u)
+    EXPECT_EQ(countPoolTag(*model, jclassfile::model::CpTag::DYNAMIC), 0u)
+        << "orphan condy must leave the pool";
+    EXPECT_EQ(countPoolTag(*model, jclassfile::model::CpTag::METHOD_HANDLE), 1u)
         << "invalid handle must leave the pool, valid one stays";
 
     const CodeAttribute* code = findCodeOf(*model, "c");
@@ -920,31 +955,52 @@ TEST(MjPassIllegalClassFileCleanerTest, CompactsBsmAndDropsCondyChain)
 
 // 规则 4（压缩+重映射形态）：condy 指向合法 BSM 条目、表内另有非法条目 →
 // 非法条目剔除、表压缩、condy 的 bootstrap 索引重映射后仍指合法条目，LDC 保留。
+// 例外②申报面同上。
 TEST(MjPassIllegalClassFileCleanerTest, RemapsCondyAfterBsmCompaction)
 {
-    CraftBuilder builder("T");
-    const ca::u16 mhGood = builder.methodHandle(6, builder.methodRef("B", "bsm", "()V"));
-    const ca::u16 mhBad  = builder.methodHandle(9, builder.methodRef("B", "bsm", "()V"));
-    const ca::u16 nt     = builder.nameType("x", "I");
-    const ca::u16 str    = builder.strConst("A");
-    const ca::u16 condy   = builder.condy(0, nt);   // 指向 BSM 条目 0（合法）
-    builder.addClassAttr(
-        {"BootstrapMethods",
-         builder.bsmBody({{mhGood, {str}}, {mhBad, {str}}})});
-
-    CraftMethod m;
-    m.name = "c";
-    m.desc = "()V";
-    m.code = {0x12, static_cast<ca::u8>(condy), 0xB1};   // LDC <condy>; RETURN
-    builder.addMethod(m);
-
-    auto bytes = builder.assemble();
+    ca::u16 condy = 0;
+    const Bytes plain = asmOne("T", "public static", "c", "()V", "      ldc 7\n      return\n", 61);   // major 61：condy 常量域（<55 读侧判废 LDC-condy）
+    ASSERT_NE(plain.size(), 0u);
+    expectValidateOk(plain);
+    const Bytes base = mutateClassFile(plain, "condyRemap", [&](jbc::core::ClassFile& cf) {
+            // 条目 1 非法：句柄合法形物化（kind 6 + Methodref），写回后
+            // 字节面翻转（申报同上）——前置级判拒 → 条目剔除 + 表压缩 +
+            // condy 索引重映射仍指合法条目。
+            const ca::u32 clsB  = cf.cp.addClass(cf.cp.addUtf8("B"));
+            const ca::u32 nt    = cf.cp.addNameAndType(cf.cp.addUtf8("x"),
+                                                       cf.cp.addUtf8("I"));
+            const ca::u32 str   = cf.cp.addString(cf.cp.addUtf8("A"));
+            const ca::u32 mref  = cf.cp.addRef(jbc::core::CpTag::Methodref, clsB, nt);
+            // 坏句柄走独立 Methodref（B2.x，归并申报同上）。
+            const ca::u32 mrefBad = cf.cp.addRef(
+                jbc::core::CpTag::Methodref, cf.cp.addClass(cf.cp.addUtf8("B2")), nt);
+            const ca::u32 mhGood = cf.cp.addMethodHandle(6, mref);
+            const ca::u32 mhBad  = cf.cp.addMethodHandle(6, mrefBad);
+            ASSERT_NE(static_cast<ca::u32>(mhGood), static_cast<ca::u32>(mhBad));
+            condy = static_cast<ca::u16>(cf.cp.addDynamic(0, nt));
+            attachRawAttr(cf, cf.attrs, "BootstrapMethods",
+                          bsmBody({{static_cast<ca::u16>(mhGood),
+                                    {static_cast<ca::u16>(str)}},
+                                   {static_cast<ca::u16>(mhBad),
+                                    {static_cast<ca::u16>(str)}}}));
+            jbc::core::CodeAttr* code = mutableFirstCode(cf);
+            ASSERT_NE(code, nullptr);
+            for (ca::u32 pc = 0; pc < code->code.size(); ++pc) {
+                if (code->code[pc] != 0x12) continue;
+                code->code[pc + 1] = static_cast<ca::u8>(condy);
+                break;
+            }
+        });
+    ASSERT_NE(base.size(), 0u);
+    // 例外①字节面：池内第 1 个 MethodHandle（mhBad，后加）kind 翻 9
+    //（REF_INVOKE_INTERFACE 挂 Methodref → 错挂非法形；申报同上）。
+    const Bytes bytes = patchMethodHandleKind(base, 1, 9);
+    ASSERT_NE(bytes.size(), 0u);
     mjbase::model::ResourceContainer container;
     addClassResource(container, "T.class", bytes);
 
     const auto pa = runCleaner(container);
     EXPECT_TRUE(pa.changed()) << "invalid BSM entry must compact the table";
-
 
     auto model = rereadModel(cleanedBytes(container, "T.class"));
     ASSERT_NE(model, nullptr);
@@ -958,8 +1014,10 @@ TEST(MjPassIllegalClassFileCleanerTest, RemapsCondyAfterBsmCompaction)
     ASSERT_NE(bsm->bootstrapMethods()[0].bsmMethodRef(), nullptr);
     EXPECT_EQ(bsm->bootstrapMethods()[0].bsmMethodRef()->kind(),
               jclassfile::model::CpMethodHandle::REF_INVOKE_STATIC);
-    EXPECT_EQ(countPoolTag(*model, CpTag::DYNAMIC), 1u) << "live condy must stay";
-    EXPECT_EQ(countPoolTag(*model, CpTag::METHOD_HANDLE), 1u) << "only the valid handle stays";
+    EXPECT_EQ(countPoolTag(*model, jclassfile::model::CpTag::DYNAMIC), 1u)
+        << "live condy must stay";
+    EXPECT_EQ(countPoolTag(*model, jclassfile::model::CpTag::METHOD_HANDLE), 1u)
+        << "only the valid handle stays";
 
     // 重映射后 condy 的 bootstrap 索引仍指向压缩表的合法条目。
     const jclassfile::model::CpEntry* poolCondy = nullptr;
@@ -976,20 +1034,28 @@ TEST(MjPassIllegalClassFileCleanerTest, RemapsCondyAfterBsmCompaction)
 }
 
 // 规则 5：无主且 reference kind 与被引条目不符的 MethodHandle → 出池。
+// 例外②：孤儿句柄经 DOM CP 追加面物化；kind/tag 错挂非法形写回侧拒收，
+// 以写回后字节面单点翻转载出（patchMethodHandleKind 申报）。
 TEST(MjPassIllegalClassFileCleanerTest, RemovesInvalidMethodHandleFromPool)
 {
-    CraftBuilder builder("T");
-    // REF_INVOKE_VIRTUAL（要求 Methodref）挂在 Fieldref 上 → 非法句柄。
-    const ca::u16 mhBad =
-        builder.methodHandle(static_cast<ca::u8>(5), builder.fieldRef("B", "f", "I"));
-    (void)mhBad;   // 池中无主条目：不被任何结构引用。
-    CraftMethod m;
-    m.name = "m";
-    m.desc = "()V";
-    m.code = nopReturn();
-    builder.addMethod(m);
+    const Bytes plain = asmOne("T", "public static", "m", "()V", "      nop\n      return\n");
+    ASSERT_NE(plain.size(), 0u);
+    expectValidateOk(plain);
+    const Bytes legal = mutateClassFile(plain, "orphanBadHandle", [&](jbc::core::ClassFile& cf) {
+            // 句柄按合法形追加（kind 5 需 Methodref，写回侧拒收 Fieldref
+            // 错挂）；非法形经写回后字节面单点翻转（申报同上）。
+            const ca::u32 clsB = cf.cp.addClass(cf.cp.addUtf8("B"));
+            const ca::u32 nt   = cf.cp.addNameAndType(cf.cp.addUtf8("f"),
+                                                      cf.cp.addUtf8("I"));
+            const ca::u32 fref = cf.cp.addRef(jbc::core::CpTag::Fieldref, clsB, nt);
+            (void)cf.cp.addMethodHandle(4, fref);
+        });
+    ASSERT_NE(legal.size(), 0u);
+    // 例外①字节面偏差：kind 翻转为 5（REF_INVOKE_VIRTUAL 挂 Fieldref →
+    // 非法形，池中无主条目；申报同上）。
+    const Bytes bytes = patchMethodHandleKind(legal, 0, 5);
+    ASSERT_NE(bytes.size(), 0u);
 
-    auto bytes = builder.assemble();
     mjbase::model::ResourceContainer container;
     addClassResource(container, "T.class", bytes);
 
@@ -1000,23 +1066,25 @@ TEST(MjPassIllegalClassFileCleanerTest, RemovesInvalidMethodHandleFromPool)
     ASSERT_NE(model, nullptr);
     auto read = jbc::core::readClass(jbc::core::ByteView(cleanedBytes(container, "T.class")));
     ASSERT_TRUE(read.is_ok()) << "cleaned bytes must stay parseable";
-    EXPECT_EQ(countPoolTag(*model, CpTag::METHOD_HANDLE), 0u);
+    EXPECT_EQ(countPoolTag(*model, jclassfile::model::CpTag::METHOD_HANDLE), 0u);
 }
 
 // 规则 5 正面控制：合法的无主 MethodHandle 保留，字节逐位不动。
+// 例外②：孤儿合法句柄（kind 6 REF_INVOKESTATIC 挂 Methodref）同面物化。
 TEST(MjPassIllegalClassFileCleanerTest, KeepsValidFloatingMethodHandleUntouched)
 {
-    CraftBuilder builder("T");
-    const ca::u16 mhGood =
-        builder.methodHandle(static_cast<ca::u8>(6), builder.methodRef("B", "bsm", "()V"));
-    (void)mhGood;
-    CraftMethod m;
-    m.name = "m";
-    m.desc = "()V";
-    m.code = nopReturn();
-    builder.addMethod(m);
+    const Bytes plain = asmOne("T", "public static", "m", "()V", "      nop\n      return\n");
+    ASSERT_NE(plain.size(), 0u);
+    expectValidateOk(plain);
+    const Bytes bytes = mutateClassFile(plain, "orphanGoodHandle", [&](jbc::core::ClassFile& cf) {
+            const ca::u32 clsB = cf.cp.addClass(cf.cp.addUtf8("B"));
+            const ca::u32 nt   = cf.cp.addNameAndType(cf.cp.addUtf8("bsm"),
+                                                      cf.cp.addUtf8("()V"));
+            const ca::u32 mref = cf.cp.addRef(jbc::core::CpTag::Methodref, clsB, nt);
+            (void)cf.cp.addMethodHandle(6, mref);
+        });
+    ASSERT_NE(bytes.size(), 0u);
 
-    auto bytes = builder.assemble();
     mjbase::model::ResourceContainer container;
     addClassResource(container, "T.class", bytes);
 

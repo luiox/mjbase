@@ -2,13 +2,18 @@
 // 修正序列）+ 保守停止 + 负被除数差分矩阵 + 幂等 + maxStack 抬升 +
 // A1 帧链接线（resolver 注入 → SMT 再生被读侧接受）。
 //
-// 差分面：asm_evaluator 已摘除（libjsim 接位，未落包前不引测试依赖），
-// 矩阵验证改为「发射形状逐操作数读取 + C++ 位精确模拟」——k/mask/符号
-// 移位量全部从重写后字节读出，按 JVM i32/i64 环绕与算术移位语义在 C++
-// 侧重放发射序列，对照原始体的闭式语义（wrap 乘 / 向零取整除）。
+// 夹具纪律：类骨架与方法体一律 jasm 文本装配（JvmJasmService）；bipush/
+// sipush 窄常量装配器保形落地，`iload 0` 规范化为 ILOAD_0，maxStack 由
+// 装配器栈分析按真实峰值写入（与原字节级夹具手填值同实）。差分面：
+// asm_evaluator 已摘除（libjsim 接位，未落包前不引测试依赖），矩阵验证改为
+// 「发射形状逐操作数读取 + C++ 位精确模拟」——k/mask/符号移位量全部从
+// 重写后字节读出，按 JVM i32/i64 环绕与算术移位语义在 C++ 侧重放发射序列，
+// 对照原始体的闭式语义（wrap 乘 / 向零取整除）。
 #include <gtest/gtest.h>
 
 #include <limits>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -23,66 +28,23 @@
 #include "mjbase/spi/strict_type_resolver.hpp"
 
 #include "method_pass_test_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 using jbc::core::Op;
 
 namespace {
 
-/// 字节片段拼接（测试组装用）。
-Bytes cat(Bytes a, Bytes b)
+/// static int m(int)：ILOAD_0; body; IRETURN（jasm 文本装配；帧less 49 面）。
+Bytes intMethod(std::string_view body)
 {
-    appendBytes(a, std::move(b));
-    return a;
+    return assembleMethodClass("m", "(I)I", "iload 0\n" + std::string(body) + "\nireturn\n");
 }
 
-/// LDC（int 常量）指令字节：操作数是 u1，cp 须 <= 0xFF。
-Bytes ldcInt(ca::u16 cp)
+/// static long m(long)：LLOAD_0; body; LRETURN（long 局部双槽，帧less 49 面）。
+Bytes longMethod(std::string_view body)
 {
-    return {0x12, static_cast<ca::u8>(cp)};
-}
-
-/// LDC_W（int 常量）指令字节：操作数是 u2。
-Bytes ldcWInt(ca::u16 cp)
-{
-    return {0x13, static_cast<ca::u8>(cp >> 8), static_cast<ca::u8>(cp)};
-}
-
-/// LDC2_W（long 常量）指令字节：操作数是 u2。
-Bytes ldc2Long(ca::u16 cp)
-{
-    return {0x14, static_cast<ca::u8>(cp >> 8), static_cast<ca::u8>(cp)};
-}
-
-/// int 立即数推送字节（按值选 BIPUSH/SIPUSH；调用方保证值在域内）。
-Bytes pushInt(ca::i32 v)
-{
-    if (v >= -128 && v <= 127) {
-        return {0x10, static_cast<ca::u8>(v)};
-    }
-    return {0x11, static_cast<ca::u8>((v >> 8) & 0xFF), static_cast<ca::u8>(v & 0xFF)};
-}
-
-/// 在 builder 上组装 static int m(int)：ILOAD_0; body; IRETURN。
-Bytes intMethodOn(FixtureBuilder& b, Bytes body, ca::u16 maxStack = 2)
-{
-    Bytes code;
-    code.push_back(0x1a);   // ILOAD_0
-    appendBytes(code, std::move(body));
-    code.push_back(0xac);   // IRETURN
-    b.addMethod({"m", "(I)I", std::move(code), 0x0009, {}, maxStack, 1});
-    return b.assemble();
-}
-
-/// 在 builder 上组装 static long m(long)：LLOAD_0; body; LRETURN（long 局部双槽）。
-Bytes longMethodOn(FixtureBuilder& b, Bytes body, ca::u16 maxStack = 4)
-{
-    Bytes code;
-    code.push_back(0x1e);   // LLOAD_0
-    appendBytes(code, std::move(body));
-    code.push_back(0xad);   // LRETURN
-    b.addMethod({"m", "(J)J", std::move(code), 0x0009, {}, maxStack, 2});
-    return b.assemble();
+    return assembleMethodClass("m", "(J)J", "lload 0\n" + std::string(body) + "\nlreturn\n");
 }
 
 /// ldc 族指令装载的 int 常量值（constOf 解析失败即测试失败）。
@@ -164,13 +126,13 @@ constexpr ca::i32 kIntMax = (std::numeric_limits<ca::i32>::max)();
 constexpr ca::i64 kLongMin = (std::numeric_limits<ca::i64>::min)();
 constexpr ca::i64 kLongMax = (std::numeric_limits<ca::i64>::max)();
 
-// ── imul → ishl：happy path（BIPUSH/ICONST/LDC/LDC_W 常量来源）──
+// ── imul → ishl：happy path（ICONST/BIPUSH/LDC 常量来源；LDC_W 同义形由
+//    装配器按 CP 下标自选，双臂不再区分）──
 TEST(StrengthReducerTest, imulByPowerOfTwoRewritesToShl)
 {
     {
         // k=1（ICONST_2）：ILOAD_0; ICONST_2; IMUL → ILOAD_0; BIPUSH 1; ISHL。
-        FixtureBuilder b("t/S");
-        const Bytes    in = intMethodOn(b, {0x05, 0x68});
+        const Bytes in = intMethod("iconst_2\nimul");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         EXPECT_TRUE(r.pa.changed());
         const Inspection      ins = inspect(r.out);
@@ -183,21 +145,18 @@ TEST(StrengthReducerTest, imulByPowerOfTwoRewritesToShl)
     }
     {
         // k=6（BIPUSH 64）。
-        FixtureBuilder    b("t/S");
-        const Bytes       in = intMethodOn(b, cat(pushInt(64), {0x68}));
+        const Bytes in = intMethod("bipush 64\nimul");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed());
-        const std::vector<Op> ops = opsOf(inspect(r.out));
+        const Inspection      ins = inspect(r.out);
+        const std::vector<Op> ops = opsOf(ins);
         const std::vector<Op> expect = {Op::ILOAD_0, Op::BIPUSH, Op::ISHL, Op::IRETURN};
         ASSERT_EQ(ops, expect);
-        const Inspection ins = inspect(r.out);
         EXPECT_EQ(ins.cu->dom.peek(ins.cu->dom.order()[1])->a, 6);
     }
     {
-        // k=20（LDC 大常量 2^20）与 LDC_W 同义形态。
-        FixtureBuilder    b("t/S");
-        const ca::u16     c  = b.intConst(1048576);
-        const Bytes       in = intMethodOn(b, cat(ldcInt(c), {0x68}));
+        // k=20（LDC 大常量 2^20）。
+        const Bytes in = intMethod("ldc 1048576\nimul");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed());
         const Inspection      ins = inspect(r.out);
@@ -205,16 +164,6 @@ TEST(StrengthReducerTest, imulByPowerOfTwoRewritesToShl)
         const std::vector<Op> expect = {Op::ILOAD_0, Op::BIPUSH, Op::ISHL, Op::IRETURN};
         ASSERT_EQ(ops, expect);
         EXPECT_EQ(ins.cu->dom.peek(ins.cu->dom.order()[1])->a, 20);
-
-        FixtureBuilder    b2("t/S");
-        const ca::u16     c2  = b2.intConst(1048576);
-        const Bytes       in2 = intMethodOn(b2, cat(ldcWInt(c2), {0x68}));
-        const MethodPassRun r2 = runMethodPass(in2, mjbase::pass::StrengthReducer{});
-        ASSERT_TRUE(r2.pa.changed());
-        const std::vector<Op> ops2 = opsOf(inspect(r2.out));
-        ASSERT_EQ(ops2, expect);
-        const Inspection ins2 = inspect(r2.out);
-        EXPECT_EQ(ins2.cu->dom.peek(ins2.cu->dom.order()[1])->a, 20);
     }
 }
 
@@ -224,8 +173,9 @@ TEST(StrengthReducerTest, imulRewritePreservesSemantics)
     const ca::i32 xs[] = {kIntMin, -7, -1, 0, 1, 7, kIntMax};
     const ca::i32 ks[] = {1, 2, 3, 7, 14};
     for (const ca::i32 k : ks) {
-        FixtureBuilder    b("t/S");
-        const Bytes       in = intMethodOn(b, cat(pushInt(1 << k), {0x68}));
+        // 常量载体统一 ldc 文本（装配器窄常量规范化为 LDC，入参值域不受
+        // bipush 限制；产出断言钉的是 pass 发射形，与输入载体无关）。
+        const Bytes in = intMethod("ldc " + std::to_string(1 << k) + "\nimul");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed()) << "k=" << k;
         const Inspection after = inspect(r.out);
@@ -237,7 +187,7 @@ TEST(StrengthReducerTest, imulRewritePreservesSemantics)
         ASSERT_TRUE(emittedIntConstOf(after, 1, emittedK)) << "k=" << k;
         ASSERT_EQ(emittedK, k) << "k=" << k;
         for (const ca::i32 x : xs) {
-            const ca::i32 want = wrapMul(x, 1 << k);   // 原始体 pushInt(1<<k); IMUL
+            const ca::i32 want = wrapMul(x, 1 << k);   // 原始体 <1<<k>; IMUL
             const ca::i32 got  = wrapShl(x, emittedK); // 重写体 ILOAD_0;BIPUSH;ISHL
             EXPECT_EQ(got, want) << "k=" << k << " x=" << x;
         }
@@ -248,9 +198,7 @@ TEST(StrengthReducerTest, imulRewritePreservesSemantics)
 TEST(StrengthReducerTest, lmulByPowerOfTwoRewritesToLshl)
 {
     {
-        FixtureBuilder    b("t/S");
-        const ca::u16     c  = b.longConst(4);
-        const Bytes       in = longMethodOn(b, cat(ldc2Long(c), {0x69}));
+        const Bytes in = longMethod("ldc2_w 4L\nlmul");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed());
         const Inspection      ins = inspect(r.out);
@@ -262,9 +210,7 @@ TEST(StrengthReducerTest, lmulByPowerOfTwoRewritesToLshl)
     }
     {
         // k=62（2^62，long 侧可达的最大 2 幂指数）。
-        FixtureBuilder    b("t/S");
-        const ca::u16     c  = b.longConst(static_cast<ca::i64>(1) << 62);
-        const Bytes       in = longMethodOn(b, cat(ldc2Long(c), {0x69}));
+        const Bytes in = longMethod("ldc2_w 4611686018427387904L\nlmul");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed());
         const Inspection      ins = inspect(r.out);
@@ -298,20 +244,18 @@ TEST(StrengthReducerTest, idivByPowerOfTwoRewritesToSequence)
 
     {
         // k=1（BIPUSH 2）：mask=1 → ICONST_1。
-        FixtureBuilder    b("t/S");
-        const Bytes       in = intMethodOn(b, cat(pushInt(2), {0x6c}));
+        const Bytes in = intMethod("bipush 2\nidiv");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed());
         const Inspection ins = inspect(r.out);
         expectDivShape(ins, 31, 1);
         EXPECT_EQ(opsOf(ins)[4], Op::ICONST_1);
-        // div 序列峰值 +1：输入 maxStack=2 → 输出 3。
+        // div 序列峰值 +1：输入 maxStack=2（装配器真值）→ 输出 3。
         EXPECT_EQ(maxStackOf(ins), 3);
     }
     {
         // k=2（ICONST_4）：mask=3 → ICONST_3。
-        FixtureBuilder    b("t/S");
-        const Bytes       in = intMethodOn(b, {0x07, 0x6c}); // ICONST_4（除 4）
+        const Bytes in = intMethod("iconst_4\nidiv");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed());
         const Inspection ins = inspect(r.out);
@@ -320,8 +264,7 @@ TEST(StrengthReducerTest, idivByPowerOfTwoRewritesToSequence)
     }
     {
         // k=3（BIPUSH 8）：mask=7 → BIPUSH 7。
-        FixtureBuilder    b("t/S");
-        const Bytes       in = intMethodOn(b, cat(pushInt(8), {0x6c}));
+        const Bytes in = intMethod("bipush 8\nidiv");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed());
         const Inspection ins = inspect(r.out);
@@ -331,8 +274,7 @@ TEST(StrengthReducerTest, idivByPowerOfTwoRewritesToSequence)
     }
     {
         // k=8（SIPUSH 256）：mask=255 → SIPUSH 255。
-        FixtureBuilder    b("t/S");
-        const Bytes       in = intMethodOn(b, cat(pushInt(256), {0x6c}));
+        const Bytes in = intMethod("sipush 256\nidiv");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed());
         const Inspection ins = inspect(r.out);
@@ -342,9 +284,7 @@ TEST(StrengthReducerTest, idivByPowerOfTwoRewritesToSequence)
     }
     {
         // k=16（LDC 65536）：mask=65535 → LDC（constOf 读回值）。
-        FixtureBuilder    b("t/S");
-        const ca::u16     c  = b.intConst(65536);
-        const Bytes       in = intMethodOn(b, cat(ldcInt(c), {0x6c}));
+        const Bytes in = intMethod("ldc 65536\nidiv");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed());
         const Inspection ins = inspect(r.out);
@@ -355,9 +295,7 @@ TEST(StrengthReducerTest, idivByPowerOfTwoRewritesToSequence)
     {
         // k=30（LDC 2^30，int 侧可达极值）：mask=2^30-1 → LDC。
         // 注：k=31 不可达——+2^31 不是正 i32 常量（见头文件保守停止清单）。
-        FixtureBuilder    b("t/S");
-        const ca::u16     c  = b.intConst(1 << 30);
-        const Bytes       in = intMethodOn(b, cat(ldcInt(c), {0x6c}));
+        const Bytes in = intMethod("ldc 1073741824\nidiv");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed());
         const Inspection ins = inspect(r.out);
@@ -373,8 +311,8 @@ TEST(StrengthReducerTest, idivRewritePreservesSemantics)
     const ca::i32 xs[] = {kIntMin, kIntMin + 1, -8, -7, -1, 0, 1, 7, 8, kIntMax};
     const ca::i32 ks[] = {1, 2, 3, 7, 14};
     for (const ca::i32 k : ks) {
-        FixtureBuilder    b("t/S");
-        const Bytes       in = intMethodOn(b, cat(pushInt(1 << k), {0x6c}));
+        // 常量载体统一 ldc 文本（同 imul 矩阵注）。
+        const Bytes in = intMethod("ldc " + std::to_string(1 << k) + "\nidiv");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed()) << "k=" << k;
         const Inspection after = inspect(r.out);
@@ -419,23 +357,19 @@ TEST(StrengthReducerTest, ldivByPowerOfTwoRewritesToSequence)
 
     {
         // k=1（LDC2_W 2）：mask=1 → LCONST_1（无 CP 追加）。
-        FixtureBuilder    b("t/S");
-        const ca::u16     c  = b.longConst(2);
-        const Bytes       in = longMethodOn(b, cat(ldc2Long(c), {0x6d}));
+        const Bytes in = longMethod("ldc2_w 2L\nldiv");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed());
         const Inspection ins = inspect(r.out);
         expectLongDivShape(ins, 1);
         EXPECT_EQ(opsOf(ins)[4], Op::LCONST_1);
         // long div 序列峰值 +2（DUP2 4 槽 → BIPUSH 5 槽 → mask long 6 槽）：
-        // 输入 maxStack=4（原 [x long][c long] 顶格）→ 输出 6 恰覆盖新峰。
+        // 输入 maxStack=4（装配器真值，原 [x long][c long] 顶格）→ 输出 6 恰覆盖新峰。
         EXPECT_EQ(maxStackOf(ins), 6);
     }
     {
         // k=2（LDC2_W 4）：mask=3 → LDC2_W（constOf 读回值）。
-        FixtureBuilder    b("t/S");
-        const ca::u16     c  = b.longConst(4);
-        const Bytes       in = longMethodOn(b, cat(ldc2Long(c), {0x6d}));
+        const Bytes in = longMethod("ldc2_w 4L\nldiv");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         ASSERT_TRUE(r.pa.changed());
         const Inspection ins = inspect(r.out);
@@ -448,9 +382,7 @@ TEST(StrengthReducerTest, ldivByPowerOfTwoRewritesToSequence)
 // ── ldiv k=1 重写序列：按 Java 向零取整求值（负被除数矩阵）──
 TEST(StrengthReducerTest, ldivRewrittenSequenceComputesJavaDivision)
 {
-    FixtureBuilder    b("t/S");
-    const ca::u16     c  = b.longConst(2);
-    const Bytes       in = longMethodOn(b, cat(ldc2Long(c), {0x6d}));
+    const Bytes in = longMethod("ldc2_w 2L\nldiv");
     const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
     ASSERT_TRUE(r.pa.changed());
 
@@ -484,56 +416,44 @@ TEST(StrengthReducerTest, conservativeStopsLeaveSequenceIntact)
     };
     {
         // 除数 0（ICONST_0）：保留运行期 ArithmeticException 语义。
-        FixtureBuilder b("t/S");
-        const Bytes    in = intMethodOn(b, {0x03, 0x6c});
+        const Bytes in = intMethod("iconst_0\nidiv");
         EXPECT_EQ(untouched(in).out, in);
     }
     {
         // 非 2 幂（3 / 6 / -2）。
-        FixtureBuilder b("t/S");
-        const Bytes    in = intMethodOn(b, cat(pushInt(3), {0x6c}));
+        const Bytes in = intMethod("bipush 3\nidiv");
         EXPECT_EQ(untouched(in).out, in);
-        FixtureBuilder b2("t/S");
-        const Bytes    in2 = intMethodOn(b2, cat(pushInt(6), {0x6c}));
+        const Bytes in2 = intMethod("bipush 6\nidiv");
         EXPECT_EQ(untouched(in2).out, in2);
-        FixtureBuilder b3("t/S");
-        const Bytes    in3 = intMethodOn(b3, cat(pushInt(-2), {0x6c}));
+        const Bytes in3 = intMethod("bipush -2\nidiv");
         EXPECT_EQ(untouched(in3).out, in3);
     }
     {
         // 乘 1（k==0）：留给 nop 清理家族。
-        FixtureBuilder b("t/S");
-        const Bytes    in = intMethodOn(b, {0x04, 0x68});
+        const Bytes in = intMethod("iconst_1\nimul");
         EXPECT_EQ(untouched(in).out, in);
     }
     {
         // 除数非常量（ILOAD_1）。
-        FixtureBuilder b("t/S");
-        b.addMethod({"m", "(II)I", {0x1a, 0x1b, 0x6c, 0xac}, 0x0009, {}, 2, 2});
-        const Bytes in = b.assemble();
+        const Bytes in = assembleMethodClass("m", "(II)I", "iload 0\niload 1\nidiv\nireturn\n");
         EXPECT_EQ(untouched(in).out, in);
     }
     {
         // 其他二元运算（IREM / ISHL / IADD）不匹配：只认 mul/div 四形态。
-        FixtureBuilder b("t/S");
-        const Bytes    in = intMethodOn(b, cat(pushInt(2), {0x70}));   // IREM
+        const Bytes in = intMethod("bipush 2\nirem");
         EXPECT_EQ(untouched(in).out, in);
-        FixtureBuilder b2("t/S");
-        const Bytes    in2 = intMethodOn(b2, cat(pushInt(2), {0x78}));   // ISHL
+        const Bytes in2 = intMethod("bipush 2\nishl");
         EXPECT_EQ(untouched(in2).out, in2);
-        FixtureBuilder b3("t/S");
-        const Bytes    in3 = intMethodOn(b3, cat(pushInt(2), {0x60}));   // IADD
+        const Bytes in3 = intMethod("bipush 2\niadd");
         EXPECT_EQ(untouched(in3).out, in3);
     }
     {
-        // float / double 不做（IEEE 形态不同，留后续）：FMUL 2.0f、DDIV 2.0。
-        FixtureBuilder b("t/S");
-        b.addMethod({"m", "(F)F", {0x22, 0x0d, 0x6a, 0xae}, 0x0009, {}, 2, 1});
-        const Bytes in = b.assemble();
+        // float / double 不做（IEEE 形态不同，留后续）：FMUL 2.0f、DDIV 1.0。
+        const Bytes in =
+            assembleMethodClass("m", "(F)F", "fload 0\nfconst_2\nfmul\nfreturn\n");
         EXPECT_EQ(untouched(in).out, in);
-        FixtureBuilder b2("t/S");
-        b2.addMethod({"m", "(D)D", {0x26, 0x0f, 0x6f, 0xaf}, 0x0009, {}, 4, 2});
-        const Bytes in2 = b2.assemble();
+        const Bytes in2 =
+            assembleMethodClass("m", "(D)D", "dload 0\ndconst_1\nddiv\ndreturn\n");
         EXPECT_EQ(untouched(in2).out, in2);
     }
 }
@@ -542,37 +462,27 @@ TEST(StrengthReducerTest, conservativeStopsLeaveSequenceIntact)
 TEST(StrengthReducerTest, labelAnchoredMemberBlocksRewrite)
 {
     {
-        // 标签锚在除数常量（BIPUSH, pc1）上：尾部 GOTO 回跳 pc1。
-        // ILOAD_0(0) BIPUSH 2(1) IDIV(3) IRETURN(4) GOTO(5) offset -4 → pc1。
-        FixtureBuilder b("t/S");
-        b.addMethod({"m", "(I)I", {0x1a, 0x10, 0x02, 0x6c, 0xac, 0xa7, 0xff, 0xfc},
-                     0x0009,
-                     {},
-                     2,
-                     1});
-        const Bytes       in = b.assemble();
+        // 标签锚在除数常量上：尾部 GOTO 回跳（死段回边，装配器放行——探针
+        // 实证；goto 落点无栈断言面）。注：窄常量经装配器规范化落 LDC。
+        const Bytes in = assembleMethodClass(
+            "m", "(I)I", "iload 0\nLd:\nbipush 2\nidiv\nireturn\ngoto Ld\n");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         EXPECT_TRUE(r.pa.areAllPreserved());
         const std::vector<Op> ops = opsOf(inspect(r.out));
-        // ILOAD_0; BIPUSH 2; IDIV; IRETURN; GOTO = 5 条（GOTO 回跳被守卫挡下）。
+        // ILOAD_0; LDC; IDIV; IRETURN; GOTO = 5 条（GOTO 回跳被守卫挡下）。
         ASSERT_EQ(ops.size(), 5u);
-        EXPECT_EQ(ops[1], Op::BIPUSH);
+        EXPECT_EQ(ops[1], Op::LDC);
         EXPECT_EQ(ops[2], Op::IDIV);
     }
     {
-        // 标签锚在运算指令（IDIV, pc3）上：尾部 GOTO 回跳 pc3（offset -2）。
-        FixtureBuilder b("t/S");
-        b.addMethod({"m", "(I)I", {0x1a, 0x10, 0x02, 0x6c, 0xac, 0xa7, 0xff, 0xfe},
-                     0x0009,
-                     {},
-                     2,
-                     1});
-        const Bytes       in = b.assemble();
+        // 标签锚在运算指令（IDIV）上：尾部 GOTO 回跳同位。
+        const Bytes in = assembleMethodClass(
+            "m", "(I)I", "iload 0\nbipush 2\nLd:\nidiv\nireturn\ngoto Ld\n");
         const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
         EXPECT_TRUE(r.pa.areAllPreserved());
         const std::vector<Op> ops = opsOf(inspect(r.out));
         ASSERT_EQ(ops.size(), 5u);
-        EXPECT_EQ(ops[1], Op::BIPUSH);
+        EXPECT_EQ(ops[1], Op::LDC);
         EXPECT_EQ(ops[2], Op::IDIV);
     }
 }
@@ -581,8 +491,7 @@ TEST(StrengthReducerTest, labelAnchoredMemberBlocksRewrite)
 TEST(StrengthReducerTest, rewritesEveryMatchInOneSweep)
 {
     // ILOAD_0; BIPUSH 2; IDIV; ILOAD_0; BIPUSH 4; IMUL; IADD; IRETURN。
-    FixtureBuilder    b("t/S");
-    const Bytes       in = intMethodOn(b, {0x10, 0x02, 0x6c, 0x1a, 0x10, 0x04, 0x68, 0x60});
+    const Bytes in = intMethod("bipush 2\nidiv\niload 0\nbipush 4\nimul\niadd");
     const MethodPassRun r = runMethodPass(in, mjbase::pass::StrengthReducer{});
     ASSERT_TRUE(r.pa.changed());
 
@@ -596,14 +505,15 @@ TEST(StrengthReducerTest, rewritesEveryMatchInOneSweep)
                                     Op::IADD,    Op::IRETURN};
     ASSERT_EQ(ops, expect);
     EXPECT_EQ(ins.cu->dom.peek(ins.cu->dom.order()[10])->a, 2);
-    EXPECT_EQ(maxStackOf(ins), 3);
+    // maxStack 只升不降按重写增量抬（int div 增 +1）：装配器真值 3 → 4，
+    // 上界语义（≥ 重写序列真峰 3 即合法）。
+    EXPECT_EQ(maxStackOf(ins), 4);
 }
 
 // ── 幂等：第二次运行 no-op（字节级不变）──
 TEST(StrengthReducerTest, secondRunIsNoOp)
 {
-    FixtureBuilder    b("t/S");
-    const Bytes       in = intMethodOn(b, cat(pushInt(2), {0x6c}));
+    const Bytes in = intMethod("bipush 2\nidiv");
     const MethodPassRun first = runMethodPass(in, mjbase::pass::StrengthReducer{});
     ASSERT_TRUE(first.pa.changed());
     const MethodPassRun second = runMethodPass(first.out, mjbase::pass::StrengthReducer{});
@@ -622,20 +532,26 @@ TEST(StrengthReducerTest, resolverWiredPipelineRegeneratesSmt)
     mjbase::spi::PassPipelineOptions options;
     options.typeResolver = &typeResolver;
 
-    // 带分支夹具（直线方法无分支目标 → SMT 恒空，测不到再生）：
-    //   ILOAD_0; IFEQ +10 → pc11; ILOAD_0; BIPUSH 2; IDIV; GOTO +4 → pc12;
-    //   ICONST_1(pc11, IFEQ 目标); IRETURN(pc12, GOTO 目标)。
-    // 偏移基准 = 分支操作码自身 pc（code_dom.cpp resolve：dst = r.pc + off）。
-    // div 模式（pc4..pc7 三指令）改写后扩为 8 条，模式区外分支偏移由 DOM
-    // 写回按标签位置重编码；resolver 接线后 Strict 重算两个分支目标帧。
-    FixtureBuilder b("t/S");
-    b.addMethod({"m", "(I)I",
-                 {0x1a, 0x99, 0x00, 0x0a, 0x1a, 0x10, 0x02, 0x6c, 0xa7, 0x00, 0x04, 0x04, 0xac},
-                 0x0009,
-                 {},
-                 2,
-                 1});
-    const Bytes          in = b.assemble();
+    // 带分支夹具（直线方法无分支目标 → SMT 恒空，测不到再生）——52 帧面
+    //（jasm ≥50 自带 SMT，装配器直出 L1/L2 目标帧）：
+    //   ILOAD_0; IFEQ L1; ILOAD_0; BIPUSH 2; IDIV; GOTO L2;
+    //   L1: ICONST_1; L2: IRETURN。
+    // div 模式（ILOAD_0..IDIV 三指令）改写后扩为 8 条，模式区外分支偏移由
+    // DOM 写回按标签位置重编码；resolver 接线后 Strict 重算两个分支目标帧。
+    const Bytes in = assembleMethodClass("m",
+                                         "(I)I",
+                                         "iload 0\n"
+                                         "ifeq L1\n"
+                                         "iload 0\n"
+                                         "bipush 2\n"
+                                         "idiv\n"
+                                         "goto L2\n"
+                                         "L1:\n"
+                                         "iconst_1\n"
+                                         "L2:\n"
+                                         "ireturn\n",
+                                         "t/S",
+                                         52);
     const MethodPassRun  r  = runMethodPassOpts(in, options, mjbase::pass::StrengthReducer{});
     EXPECT_TRUE(r.pa.changed());
 

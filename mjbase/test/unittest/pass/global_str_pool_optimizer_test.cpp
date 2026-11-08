@@ -1,9 +1,8 @@
 // GlobalStrPoolOptimizer（全局件）：容器内 String ldc 去重迁移进合成池类，
 // ldc 改写为「索引装载 + getStr 调用」——迁移与改写（含索引波段与 maxStack
 // 上界）、跨类去重、非 String ldc 保留、非 class 资源忽略、池类已存在幂等
-// 跳过、不可解析整件放弃、无字符串不动、helper 形状、注册面。夹具经
-// shared/structural_pass_util.hpp 手拼 classfile；方法体断言经会话 promote
-// 后的指令序完成。
+// 跳过、不可解析整件放弃、无字符串不动、helper 形状、注册面。夹具经 jasm
+// 文本装配（JvmJasmService）；方法体断言经会话 promote 后的指令序完成。
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -19,16 +18,27 @@
 #include "mjbase/pass/global_str_pool_optimizer.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
 
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 
 namespace {
 
-constexpr ca::u16 kAccPublicStatic = 0x0009;
-
-/// LDC 1 字节 CP 索引。
-Bytes ldc(ca::u16 cp) { return {0x12, static_cast<ca::u8>(cp)}; }
+/// 单类单方法夹具：internalName 定类名，desc/body 为 m 方法的描述符与
+/// 指令体片段（jasm 文本）。
+Bytes oneClass(const std::string& internalName, const std::string& desc,
+               const std::string& body)
+{
+    return assembleJasm(R"JASM(
+.super java/lang/Object
+.class public super )JASM" + internalName + R"JASM( {
+  .method public static m )JASM" + desc + R"JASM( {
+    code: {
+)JASM" + body + R"JASM(    }
+  }
+}
+)JASM");
+}
 
 mjbase::spi::PreservedAnalyses runPass(mjbase::model::ResourceContainer& container)
 {
@@ -143,17 +153,14 @@ TEST(GlobalStrPoolOptimizerTest, stringsRelocatedToPool)
 {
     mjbase::model::ResourceContainer container;
     {
-        FixtureBuilder b("C1");
-        const ca::u16 sb = b.strConst("b");
-        const ca::u16 sa = b.strConst("a");
-        Bytes        code;   // ldc "b"; ldc "a"; ldc "a"; areturn
-        appendBytes(code, ldc(sb));
-        appendBytes(code, ldc(sa));
-        appendBytes(code, ldc(sa));
-        code.push_back(0xb0);
-        b.addMethod({"m", "()Ljava/lang/String;", std::move(code), kAccPublicStatic,
-                     {}, 2, 0});
-        addClassResource(container, "C1.class", b.assemble());
+        // ldc "b"; ldc "a"; ldc "a"; areturn（索引按遭遇序：b→0、a→1）。
+        addClassResource(container, "C1.class",
+                         oneClass("C1", "()Ljava/lang/String;",
+                                  R"JASM(      ldc "b"
+      ldc "a"
+      ldc "a"
+      areturn
+)JASM"));
     }
 
     EXPECT_TRUE(runPass(container).changed());
@@ -173,8 +180,8 @@ TEST(GlobalStrPoolOptimizerTest, stringsRelocatedToPool)
     // 三次 getStr 调用共享同一 methodref。
     EXPECT_EQ(ops[1].cp, ops[3].cp);
     EXPECT_EQ(ops[3].cp, ops[5].cp);
-    // 改写方法 maxStack 保守 +1（夹具 2 → 3）。
-    EXPECT_EQ(methodMaxStack(c1->get(), "m"), 3);
+    // 改写方法 maxStack 保守 +1：装配器真值 3（三条 ldc 同栈）→ 4。
+    EXPECT_EQ(methodMaxStack(c1->get(), "m"), 4);
     expectPoolShape(classResource(container, "str/Pool.class"), 2u);
 }
 
@@ -183,25 +190,19 @@ TEST(GlobalStrPoolOptimizerTest, dedupAcrossClasses)
 {
     mjbase::model::ResourceContainer container;
     {
-        FixtureBuilder b("C1");
-        const ca::u16  sx = b.strConst("x");
-        Bytes          c  = ldc(sx);
-        c.push_back(0xb0);
-        b.addMethod({"m", "()Ljava/lang/String;", std::move(c), kAccPublicStatic,
-                     {}, 2, 0});
-        addClassResource(container, "C1.class", b.assemble());
+        addClassResource(container, "C1.class",
+                         oneClass("C1", "()Ljava/lang/String;",
+                                  R"JASM(      ldc "x"
+      areturn
+)JASM"));
     }
     {
-        FixtureBuilder b("C2");
-        const ca::u16  sx = b.strConst("x");
-        const ca::u16  sy = b.strConst("y");
-        Bytes          c  = ldc(sx);
-        Bytes          cy = ldc(sy);
-        c.insert(c.end(), cy.begin(), cy.end());
-        c.push_back(0xb0);
-        b.addMethod({"m", "()Ljava/lang/String;", std::move(c), kAccPublicStatic,
-                     {}, 2, 0});
-        addClassResource(container, "C2.class", b.assemble());
+        addClassResource(container, "C2.class",
+                         oneClass("C2", "()Ljava/lang/String;",
+                                  R"JASM(      ldc "x"
+      ldc "y"
+      areturn
+)JASM"));
     }
 
     EXPECT_TRUE(runPass(container).changed());
@@ -220,15 +221,13 @@ TEST(GlobalStrPoolOptimizerTest, nonStringLdcKept)
 {
     mjbase::model::ResourceContainer container;
     {
-        FixtureBuilder b("C1");
-        const ca::u16 icp  = b.intConst(42);
-        const ca::u16 scp  = b.strConst("s");
-        Bytes         code = ldc(icp);   // LDC Integer
-        appendBytes(code, ldc(scp));      // LDC String
-        code.push_back(0xb0);
-        b.addMethod({"m", "()Ljava/lang/String;", std::move(code), kAccPublicStatic,
-                     {}, 2, 0});
-        addClassResource(container, "C1.class", b.assemble());
+        // LDC Integer; LDC String; areturn。
+        addClassResource(container, "C1.class",
+                         oneClass("C1", "()Ljava/lang/String;",
+                                  R"JASM(      ldc 42
+      ldc "s"
+      areturn
+)JASM"));
     }
 
     EXPECT_TRUE(runPass(container).changed());
@@ -248,15 +247,11 @@ TEST(GlobalStrPoolOptimizerTest, nonClassResourceIgnored)
     container.replaceResource(
         "meta.txt", std::make_unique<mjbase::model::UnknownResource>(
                         "meta.txt", Bytes{0x00, 0x01, 0x02}));
-    {
-        FixtureBuilder b("C1");
-        const ca::u16  scp = b.strConst("s");
-        Bytes          c    = ldc(scp);
-        c.push_back(0xb0);
-        b.addMethod({"m", "()Ljava/lang/String;", std::move(c), kAccPublicStatic,
-                     {}, 2, 0});
-        addClassResource(container, "C1.class", b.assemble());
-    }
+        addClassResource(container, "C1.class",
+                         oneClass("C1", "()Ljava/lang/String;",
+                                  R"JASM(      ldc "s"
+      areturn
+)JASM"));
 
     EXPECT_TRUE(runPass(container).changed());
     EXPECT_NE(container.getResource("meta.txt"), nullptr);
@@ -269,13 +264,11 @@ TEST(GlobalStrPoolOptimizerTest, poolPresentSkips)
     mjbase::model::ResourceContainer container;
     {
         // 先跑一遍产出池类，再放回池类 + 一个含字符串的新类。
-        FixtureBuilder b("C1");
-        const ca::u16  scp = b.strConst("s");
-        Bytes          c    = ldc(scp);
-        c.push_back(0xb0);
-        b.addMethod({"m", "()Ljava/lang/String;", std::move(c), kAccPublicStatic,
-                     {}, 2, 0});
-        addClassResource(container, "C1.class", b.assemble());
+        addClassResource(container, "C1.class",
+                         oneClass("C1", "()Ljava/lang/String;",
+                                  R"JASM(      ldc "s"
+      areturn
+)JASM"));
     }
     EXPECT_TRUE(runPass(container).changed());
     const auto* pool = classResource(container, "str/Pool.class");
@@ -287,13 +280,11 @@ TEST(GlobalStrPoolOptimizerTest, poolPresentSkips)
                                std::make_unique<mjbase::model::ClassResource>(
                                    "str/Pool.class", poolBytes));
     {
-        FixtureBuilder b("C2");
-        const ca::u16  scp = b.strConst("t");
-        Bytes          c    = ldc(scp);
-        c.push_back(0xb0);
-        b.addMethod({"m", "()Ljava/lang/String;", std::move(c), kAccPublicStatic,
-                     {}, 2, 0});
-        addClassResource(container2, "C2.class", b.assemble());
+        addClassResource(container2, "C2.class",
+                         oneClass("C2", "()Ljava/lang/String;",
+                                  R"JASM(      ldc "t"
+      areturn
+)JASM"));
     }
     EXPECT_TRUE(runPass(container2).areAllPreserved());
     // C2 未被改写（池已存在，字符串不迁移）。
@@ -311,15 +302,11 @@ TEST(GlobalStrPoolOptimizerTest, unparsableClassAborts)
     container.replaceResource("bad.class",
                               std::make_unique<mjbase::model::ClassResource>(
                                   "bad.class", Bytes{0xCA, 0xFE, 0xBA, 0xBE, 0x00}));
-    {
-        FixtureBuilder b("C1");
-        const ca::u16  scp = b.strConst("s");
-        Bytes          c    = ldc(scp);
-        c.push_back(0xb0);
-        b.addMethod({"m", "()Ljava/lang/String;", std::move(c), kAccPublicStatic,
-                     {}, 2, 0});
-        addClassResource(container, "C1.class", b.assemble());
-    }
+        addClassResource(container, "C1.class",
+                         oneClass("C1", "()Ljava/lang/String;",
+                                  R"JASM(      ldc "s"
+      areturn
+)JASM"));
 
     EXPECT_TRUE(runPass(container).areAllPreserved());
     EXPECT_EQ(classResource(container, "str/Pool.class"), nullptr);
@@ -333,9 +320,11 @@ TEST(GlobalStrPoolOptimizerTest, noStringsNoop)
 {
     mjbase::model::ResourceContainer container;
     {
-        FixtureBuilder b("C1");
-        b.addMethod({"m", "()I", {0x04, 0xac}, kAccPublicStatic, {}, 1, 0});
-        addClassResource(container, "C1.class", b.assemble());
+        addClassResource(container, "C1.class",
+                         oneClass("C1", "()I",
+                                  R"JASM(      iconst_1
+      ireturn
+)JASM"));
     }
     EXPECT_TRUE(runPass(container).areAllPreserved());
     EXPECT_EQ(classResource(container, "str/Pool.class"), nullptr);
@@ -345,15 +334,11 @@ TEST(GlobalStrPoolOptimizerTest, noStringsNoop)
 TEST(GlobalStrPoolOptimizerTest, secondRunNoop)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder b("C1");
-        const ca::u16  scp = b.strConst("s");
-        Bytes          c    = ldc(scp);
-        c.push_back(0xb0);
-        b.addMethod({"m", "()Ljava/lang/String;", std::move(c), kAccPublicStatic,
-                     {}, 2, 0});
-        addClassResource(container, "C1.class", b.assemble());
-    }
+        addClassResource(container, "C1.class",
+                         oneClass("C1", "()Ljava/lang/String;",
+                                  R"JASM(      ldc "s"
+      areturn
+)JASM"));
     EXPECT_TRUE(runPass(container).changed());
     EXPECT_TRUE(runPass(container).areAllPreserved());
 }

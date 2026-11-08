@@ -12,7 +12,7 @@
 // typed AnnotationsAttr 写面挂载（纪律例外②申报——模拟上游 kotlinc 工序）。
 // d1 载荷编码器（BitEncoding + protobuf 线格式）为 kotlin_metadata_collection_
 // test.cpp 同口径复制件（申报：未抽公共 helper，避免回改已落库收集件测试）；
-// 编码器只产注解元素值数据面内容，不经任何 classfile 级 putU8/putU16 拼装。
+// 编码器只产注解元素值数据面内容，不经任何 classfile 结构级字节拼装。
 #include <gtest/gtest.h>
 
 #include <memory>

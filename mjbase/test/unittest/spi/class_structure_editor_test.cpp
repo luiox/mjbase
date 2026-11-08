@@ -1,7 +1,6 @@
 /// 类级结构编辑原语的直接用例：双面落盘一致性、backingIndex 全量修正、
 /// 恒等排列零改动、非法置换拒绝、成员增删四操作（双面落盘 / 稳定身份 /
-/// 失效账目 / 错误族收口）。夹具用升格后的共享 structural_pass_util（与
-/// pass 域 sorter 用例共用）。
+/// 失效账目 / 错误族收口）。夹具一律 jasm 文本装配（原字节级 builder 退役）。
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -16,7 +15,7 @@
 
 #include "mjbase/spi/class_structure_editor.hpp"
 #include "mjbase/spi/preserved_analyses.hpp"
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 
@@ -63,14 +62,33 @@ const jbc::core::CodeAttr* decodedCodeOf(jbc::core::ClassFile&           cf,
 /// 构造三字段（c:J / a:I / b:I）+ 三方法（m0/m1/m2）的会话。
 std::shared_ptr<jbc::ir::ClassSession> makeThreeMemberSession()
 {
-    FixtureBuilder builder("T");
-    builder.addField({"c", "J", 0x0000});
-    builder.addField({"a", "I", 0x0000});
-    builder.addField({"b", "I", 0x0000});
-    builder.addMethod({"m0", "()V", bareReturn()});
-    builder.addMethod({"m1", "()V", nopReturn()});
-    builder.addMethod({"m2", "()V", bareReturn()});
-    auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(builder.assemble()));
+    auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(assembleJasm(
+        R"JASM(.super java/lang/Object
+.class public super T {
+  .field c J
+  .field a I
+  .field b I
+
+  .method m0 ()V {
+    code: {
+      return
+    }
+  }
+
+  .method m1 ()V {
+    code: {
+      nop
+      return
+    }
+  }
+
+  .method m2 ()V {
+    code: {
+      return
+    }
+  }
+}
+)JASM")));
     EXPECT_TRUE(sessionResult.is_ok());
     if (sessionResult.is_err()) return nullptr;
     return std::move(sessionResult).unwrap();
@@ -106,10 +124,23 @@ TEST(ClassStructureEditorTest, ReorderFieldsSyncsUnitAndBacking)
 // 重排前 promote 的方法体按稳定身份 lower 写回自己的槽位，不污染他人。
 TEST(ClassStructureEditorTest, ReorderMethodsFixesBackingIndex)
 {
-    FixtureBuilder builder("T");
-    builder.addMethod({"zz", "()V", bareReturn()});   // 物理位 0，排完必被挪走
-    builder.addMethod({"aa", "()V", nopReturn()});    // 物理位 1
-    auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(builder.assemble()));
+    auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(assembleJasm(
+        R"JASM(.super java/lang/Object
+.class public super T {
+  .method zz ()V {
+    code: {
+      return
+    }
+  }
+
+  .method aa ()V {
+    code: {
+      nop
+      return
+    }
+  }
+}
+)JASM")));
     ASSERT_TRUE(sessionResult.is_ok());
     auto session = std::move(sessionResult).unwrap();
 
@@ -228,8 +259,11 @@ TEST(ClassStructureEditorTest, BadPermutationRejectedLeavesSessionIntact)
 // 空类边界：零成员类配空序是恒等排列，Ok 且零改动。
 TEST(ClassStructureEditorTest, EmptyOrderOnEmptyClassIsOk)
 {
-    FixtureBuilder builder("T");
-    auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(builder.assemble()));
+    auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(assembleJasm(
+        R"JASM(.super java/lang/Object
+.class public super T {
+}
+)JASM")));
     ASSERT_TRUE(sessionResult.is_ok());
     auto session = std::move(sessionResult).unwrap();
 

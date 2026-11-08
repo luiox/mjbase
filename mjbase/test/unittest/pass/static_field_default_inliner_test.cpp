@@ -2,8 +2,11 @@
 /// （单次写内联 / 多次写保守跳过 / owner 校验）+ 新载体特有面
 /// （ConstantValue RawAttr 槽与 CP 值条目类型、clinit 指令重编码字节、
 /// 无操作路径 writeClass 字节恒等、注册面 scope:class 种子）。
-/// 字节模式经 FixtureBuilder 手拼（lconst/dconst/fconst 不进 CP，夹具
-/// 无双槽条目）。
+///
+/// 夹具纪律：类骨架与 clinit 方法体一律 jasm 文本装配（JvmJasmService），
+/// `iload 0` 读未播种槽为装配器放行面。纪律例外②申报：SkipsExisting-
+/// ConstantValue 的字段 ConstantValue 属性 jasm 无对应指令面，从装配合法
+/// 类出发经 CP/AttrSlot DOM 追加（addInteger + AttrSlot::makeNew）。
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -21,7 +24,8 @@
 #include "mjbase/pass/static_field_default_inliner.hpp"
 #include "mjbase/spi/analysis_manager.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
-#include "shared/structural_pass_util.hpp"
+
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 
@@ -34,8 +38,6 @@ using jbc::core::CodeAttr;
 using jbc::core::CpTag;
 using jbc::core::MemberInfo;
 using jbc::core::RawAttr;
-
-using Bytes = std::vector<ca::u8>;
 
 /// 解码后的 ConstantValue 视图：值条目 tag + 数值/位图。
 struct CvView
@@ -105,47 +107,79 @@ std::optional<CvView> constantValueOf(ClassFile& cf, MemberInfo& f)
     return std::nullopt;
 }
 
-/// clinit 拼装：常量装载 + putstatic 序列 + return。
-Bytes clinitCode(FixtureBuilder& b, std::string_view owner)
+/// 类骨架：T + fields 声明序列 + clinitBody 为 <clinit> 的 code 体文本。
+/// clinit 传 nullptr 即不带 clinit（无操作路径）。
+Bytes classWithFields(std::string_view fieldDecls, const char* clinitBody)
 {
-    Bytes code;
-    putU8(code, 0x08);                                        // iconst_5
-    putU8(code, 0xB3); putU16(code, b.fieldRef(owner, "a", "I"));
-    putU8(code, 0x10); putU8(code, 100);                      // bipush 100
-    putU8(code, 0xB3); putU16(code, b.fieldRef(owner, "ab", "I"));
-    putU8(code, 0x11); putU16(code, 30000);                   // sipush 30000
-    putU8(code, 0xB3); putU16(code, b.fieldRef(owner, "cd", "I"));
-    putU8(code, 0x0A);                                        // lconst_1
-    putU8(code, 0xB3); putU16(code, b.fieldRef(owner, "e", "J"));
-    putU8(code, 0x0F);                                        // dconst_1
-    putU8(code, 0xB3); putU16(code, b.fieldRef(owner, "f", "D"));
-    putU8(code, 0x0D);                                        // fconst_2
-    putU8(code, 0xB3); putU16(code, b.fieldRef(owner, "g", "F"));
-    putU8(code, 0xB1);                                        // return
-    return code;
-}
-
-/// 组会话（按值收 builder，CP 物化在 assemble 内完成）。
-std::shared_ptr<jbc::ir::ClassSession> makeSession(FixtureBuilder builder)
-{
-    const Bytes bytes = builder.assemble();
-    auto        result = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
-    EXPECT_TRUE(result.is_ok());
-    return std::move(result).unwrap();
+    std::string source = R"JASM(
+.super java/lang/Object
+.class public super T {
+)JASM" + std::string(fieldDecls);
+    if (clinitBody != nullptr) {
+        source += R"JASM(  .method static <clinit> ()V {
+    code: {
+)JASM" + std::string(clinitBody) + R"JASM(    }
+  }
+)JASM";
+    }
+    source += "}\n";
+    return assembleJasm(source);
 }
 
 /// 全字段候选夹具：七字段（I×3 + J/D/F 各一），clinit 逐字段单写。
-FixtureBuilder sevenFieldFixture()
+Bytes sevenFieldFixture()
 {
-    FixtureBuilder b("T");
-    b.addField({"a", "I", 0x0009});
-    b.addField({"ab", "I", 0x0009});
-    b.addField({"cd", "I", 0x0009});
-    b.addField({"e", "J", 0x0009});
-    b.addField({"f", "D", 0x0009});
-    b.addField({"g", "F", 0x0009});
-    b.addMethod({"<clinit>", "()V", clinitCode(b, "T"), 0x0008});
-    return b;
+    return classWithFields(R"JASM(  .field public static a I
+  .field public static ab I
+  .field public static cd I
+  .field public static e J
+  .field public static f D
+  .field public static g F
+)JASM",
+                           R"JASM(      iconst_5
+      putstatic T.a I
+      bipush 100
+      putstatic T.ab I
+      sipush 30000
+      putstatic T.cd I
+      lconst_1
+      putstatic T.e J
+      dconst_1
+      putstatic T.f D
+      fconst_2
+      putstatic T.g F
+      return
+)JASM");
+}
+
+/// 纪律例外②：装配合法类后经 CP/AttrSlot DOM 给字段 a 追加 ConstantValue
+///（Integer 42）。jasm 无字段属性指令面，写面为申报的 CF 级偏差。
+Bytes withExistingConstantValue(Bytes bytes)
+{
+    auto made = jbc::core::readClass(jbc::core::ByteView(bytes));
+    EXPECT_TRUE(made.is_ok());
+    if (made.is_err()) return {};
+    jbc::core::ReadResult rr = std::move(made).unwrap();
+    jbc::core::ClassFile&  cf = *rr.file;
+    const ca::u32          valIdx  = cf.cp.addInteger(42);
+    const ca::u32          nameCp  = cf.cp.addUtf8("ConstantValue");
+    auto                   body    = std::make_unique<jbc::core::ConstantValueAttr>();
+    body->constantValueCp        = valIdx;
+    MemberInfo* f = findField(cf, "a");
+    EXPECT_NE(f, nullptr);
+    if (f == nullptr) return {};
+    f->attrs.push_back(AttrSlot::makeNew(nameCp, std::move(body)));
+    auto written = jbc::core::writeClass(cf);
+    EXPECT_TRUE(written.is_ok());
+    return written.is_ok() ? std::move(written).unwrap() : Bytes{};
+}
+
+/// 组会话（按字节开组）。
+std::shared_ptr<jbc::ir::ClassSession> makeSession(const Bytes& bytes)
+{
+    auto result = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
+    EXPECT_TRUE(result.is_ok());
+    return result.is_ok() ? std::move(result).unwrap() : nullptr;
 }
 
 /// 跑一遍 pass（arena/cam 组装对齐全仓 class pass 用例）。
@@ -164,6 +198,7 @@ mjbase::spi::PreservedAnalyses runPass(jbc::ir::ClassSession& session)
 TEST(MjPassStaticFieldDefaultInlinerTest, InlinesAllFourKindsAndIntForms)
 {
     auto session = makeSession(sevenFieldFixture());
+    ASSERT_NE(session, nullptr);
     const auto pa = runPass(*session);
     EXPECT_TRUE(pa.changed());
 
@@ -174,10 +209,10 @@ TEST(MjPassStaticFieldDefaultInlinerTest, InlinesAllFourKindsAndIntForms)
     EXPECT_EQ(a->num, 5);
     const auto ab = constantValueOf(cf, *findField(cf, "ab"));
     ASSERT_TRUE(ab.has_value());
-    EXPECT_EQ(ab->num, 100);                                  // bipush
+    EXPECT_EQ(ab->num, 100);                                  // bipush→LDC 同收
     const auto cd = constantValueOf(cf, *findField(cf, "cd"));
     ASSERT_TRUE(cd.has_value());
-    EXPECT_EQ(cd->num, 30000);                                // sipush
+    EXPECT_EQ(cd->num, 30000);                                // sipush→LDC 同收
     const auto e = constantValueOf(cf, *findField(cf, "e"));
     ASSERT_TRUE(e.has_value());
     EXPECT_EQ(e->tag, CpTag::Long);
@@ -200,14 +235,14 @@ TEST(MjPassStaticFieldDefaultInlinerTest, InlinesAllFourKindsAndIntForms)
 
 TEST(MjPassStaticFieldDefaultInlinerTest, InlinesLdcWideInt)
 {
-    FixtureBuilder b("T");
-    b.addField({"big", "I", 0x0009});
-    Bytes code;
-    putU8(code, 0x12); putU8(code, static_cast<ca::u8>(b.intConst(100000)));   // ldc
-    putU8(code, 0xB3); putU16(code, b.fieldRef("T", "big", "I"));
-    putU8(code, 0xB1);
-    b.addMethod({"<clinit>", "()V", std::move(code), 0x0008});
-    auto session = makeSession(std::move(b));
+    const Bytes in = classWithFields(R"JASM(  .field public static big I
+)JASM",
+                                     R"JASM(      ldc 100000
+      putstatic T.big I
+      return
+)JASM");
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
     EXPECT_TRUE(runPass(*session).changed());
 
     ClassFile& cf = session->backing();
@@ -221,16 +256,16 @@ TEST(MjPassStaticFieldDefaultInlinerTest, InlinesLdcWideInt)
 
 TEST(MjPassStaticFieldDefaultInlinerTest, SkipsMultipleWritesByteIdentical)
 {
-    FixtureBuilder b("T");
-    b.addField({"a", "I", 0x0009});
-    Bytes code;
-    putU8(code, 0x04);                                        // iconst_1
-    putU8(code, 0xB3); putU16(code, b.fieldRef("T", "a", "I"));
-    putU8(code, 0x05);                                        // iconst_2
-    putU8(code, 0xB3); putU16(code, b.fieldRef("T", "a", "I"));
-    putU8(code, 0xB1);
-    b.addMethod({"<clinit>", "()V", std::move(code), 0x0008});
-    auto session = makeSession(std::move(b));
+    const Bytes in = classWithFields(R"JASM(  .field public static a I
+)JASM",
+                                     R"JASM(      iconst_1
+      putstatic T.a I
+      iconst_2
+      putstatic T.a I
+      return
+)JASM");
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     auto before = jbc::core::writeClass(session->backing());
     ASSERT_TRUE(before.is_ok());
@@ -246,18 +281,16 @@ TEST(MjPassStaticFieldDefaultInlinerTest, SkipsMultipleWritesByteIdentical)
 
 TEST(MjPassStaticFieldDefaultInlinerTest, SkipsExistingConstantValue)
 {
-    FixtureBuilder b("T");
-    b.addField({"a", "I", 0x0019, {{"ConstantValue", [&b] {
-        Bytes p;
-        putU16(p, b.intConst(42));
-        return p;
-    }()}}});
-    Bytes code;
-    putU8(code, 0x08);
-    putU8(code, 0xB3); putU16(code, b.fieldRef("T", "a", "I"));
-    putU8(code, 0xB1);
-    b.addMethod({"<clinit>", "()V", std::move(code), 0x0008});
-    auto session = makeSession(std::move(b));
+    const Bytes in =
+        withExistingConstantValue(classWithFields(R"JASM(  .field public static a I
+)JASM",
+                                                  R"JASM(      iconst_5
+      putstatic T.a I
+      return
+)JASM"));
+    ASSERT_NE(in.size(), 0u);
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     EXPECT_TRUE(runPass(*session).areAllPreserved());
     const auto cv = constantValueOf(session->backing(), *findField(session->backing(), "a"));
@@ -267,17 +300,17 @@ TEST(MjPassStaticFieldDefaultInlinerTest, SkipsExistingConstantValue)
 
 TEST(MjPassStaticFieldDefaultInlinerTest, SkipsNonStaticFieldAndForeignOwner)
 {
-    FixtureBuilder b("T");
-    b.addField({"a", "I", 0x0001});                           // 非 static
-    b.addField({"st", "I", 0x0009});
-    Bytes code;
-    putU8(code, 0x08);
-    putU8(code, 0xB3); putU16(code, b.fieldRef("T", "a", "I"));
-    putU8(code, 0x07);                                        // iconst_4
-    putU8(code, 0xB3); putU16(code, b.fieldRef("Other", "st", "I"));
-    putU8(code, 0xB1);
-    b.addMethod({"<clinit>", "()V", std::move(code), 0x0008});
-    auto session = makeSession(std::move(b));
+    const Bytes in = classWithFields(R"JASM(  .field public a I
+  .field public static st I
+)JASM",
+                                     R"JASM(      iconst_5
+      putstatic T.a I
+      iconst_4
+      putstatic Other.st I
+      return
+)JASM");
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     EXPECT_TRUE(runPass(*session).areAllPreserved());
     ClassFile& cf = session->backing();
@@ -287,14 +320,14 @@ TEST(MjPassStaticFieldDefaultInlinerTest, SkipsNonStaticFieldAndForeignOwner)
 
 TEST(MjPassStaticFieldDefaultInlinerTest, SkipsNonConstantProducer)
 {
-    FixtureBuilder b("T");
-    b.addField({"a", "I", 0x0009});
-    Bytes code;
-    putU8(code, 0x1A);                                        // iload_0（非常量）
-    putU8(code, 0xB3); putU16(code, b.fieldRef("T", "a", "I"));
-    putU8(code, 0xB1);
-    b.addMethod({"<clinit>", "()V", std::move(code), 0x0008, {}, 1, 1});
-    auto session = makeSession(std::move(b));
+    const Bytes in = classWithFields(R"JASM(  .field public static a I
+)JASM",
+                                     R"JASM(      iload 0
+      putstatic T.a I
+      return
+)JASM");
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     EXPECT_TRUE(runPass(*session).areAllPreserved());
     EXPECT_FALSE(constantValueOf(session->backing(), *findField(session->backing(), "a")).has_value());
@@ -302,10 +335,16 @@ TEST(MjPassStaticFieldDefaultInlinerTest, SkipsNonConstantProducer)
 
 TEST(MjPassStaticFieldDefaultInlinerTest, NoClinitIsNoop)
 {
-    FixtureBuilder b("T");
-    b.addField({"a", "I", 0x0009});
-    b.addMethod({"m", "()V", Bytes{0xB1}, 0x0009});
-    auto session = makeSession(std::move(b));
+    const Bytes in = classWithFields(R"JASM(  .field public static a I
+  .method public m ()V {
+    code: {
+      return
+    }
+  }
+)JASM",
+                                     nullptr);
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     EXPECT_TRUE(runPass(*session).areAllPreserved());
     EXPECT_FALSE(constantValueOf(session->backing(), *findField(session->backing(), "a")).has_value());

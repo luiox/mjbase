@@ -1,6 +1,15 @@
 // IntrinsicFolding：装箱/拆箱对整删、种子 Random 五窗 LCG 折叠、白名单
 // 纯函数常量折叠（Math/String/Integer/Long）、toCharArray+valueOf 恒等对、
 // 窗内边界锚标签拒收、不动点链折、非白名单形态保留。
+//
+// 夹具纪律：方法体一律 jasm 文本装配（JvmJasmService），原 FixtureBuilder
+// 手拼载体退役；窄整数（bipush/sipush）装配器规范化为 ldc——折叠残留的
+// 常量生产者期望值随之改记 LDC；long 形态走 `ldc <n>L`（装配器发
+// LDC2_W，折 Long.parseLong 期望同面）。三处「窗内边界锚标签」守卫载体
+// 以异常区间边界锚合法重表达——守卫面 labelsAnchorAt 对分支目标与异常
+// 边界同源在 DOM 留锚，锚位（intValue 前置 / 种子装载 / invoke 自身）同
+// 位触发；handler 收口为裸 athrow（吃掉异常栈，帧自洽），原字节级 goto
+// 中腹进窗的栈形断裂形不再出现。
 #include <gtest/gtest.h>
 
 #include <string>
@@ -16,32 +25,26 @@
 #include "mjbase/spi/pass_name_registry.hpp"
 
 #include "method_pass_test_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 using jbc::core::Op;
 
 namespace {
 
-void put16(Bytes& b, ca::u16 v)
+/// 方法级夹具便捷形：t/C 单 public static m(desc)（excText 为 exceptions
+/// 段条目文本，可空）。
+Bytes asmM(std::string_view desc, std::string_view codeBody,
+           std::string_view excText = "")
 {
-    b.push_back(static_cast<ca::u8>(v >> 8));
-    b.push_back(static_cast<ca::u8>(v & 0xff));
-}
-
-void putSipush(Bytes& b, ca::i16 v) { put16(b, static_cast<ca::u16>(v)); }
-
-/// 带 u16 CP 槽的 invoke/new/ldc2_w 形指令落笔（op + u16，共 3 字节）。
-void putInvoke(Bytes& b, ca::u8 op, ca::u16 cp)
-{
-    b.push_back(op);
-    put16(b, cp);
-}
-
-Bytes oneMethod(std::string_view desc, Bytes code, ca::u16 maxStack = 1)
-{
-    FixtureBuilder b("t/C");
-    b.addMethod({"m", desc, std::move(code), 0x0009, {}, maxStack});
-    return b.assemble();
+    const std::string excSeg = excText.empty()
+        ? std::string()
+        : "    exceptions: {\n" + std::string(excText) + "    },\n";
+    const std::string src = R"JASM(.super java/lang/Object
+.class public super t/C {
+  .method public static m )JASM" + std::string(desc) + R"JASM( {
+)JASM" + excSeg + "    code: {\n" + std::string(codeBody) + "    }\n  }\n}\n";
+    return assembleJasm(src);
 }
 
 std::vector<const jbc::ir::Insn*> allInsns(const Inspection& ins)
@@ -60,79 +63,67 @@ std::vector<const jbc::ir::Insn*> allInsns(const Inspection& ins)
 // ── 装箱/拆箱对：Integer.valueOf(I) + intValue() 整对删除 ──
 TEST(IntrinsicFoldingTest, boxUnboxIntPairFolds)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 valueOf =
-        b.methodRef("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;");
-    const ca::u16 intValue = b.methodRef("java/lang/Integer", "intValue", "()I");
-    Bytes code = {0x10, 0x07};   // BIPUSH 7
-    putInvoke(code, 0xb8, valueOf);
-    putInvoke(code, 0xb6, intValue);
-    code.push_back(0xac);   // IRETURN
-    b.addMethod({"m", "()I", std::move(code)});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()I",
+             "      ldc 7\n"
+             "      invokestatic java/lang/Integer.valueOf (I)Ljava/lang/Integer;\n"
+             "      invokevirtual java/lang/Integer.intValue ()I\n"
+             "      ireturn\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     ASSERT_EQ(ops.size(), 2u);
-    EXPECT_EQ(ops[0], Op::BIPUSH);
+    EXPECT_EQ(ops[0], Op::LDC);   // 窄整数生产者经装配器规范化为 ldc
     EXPECT_EQ(ops[1], Op::IRETURN);
 }
 
 // ── cat2 装箱对：Long.valueOf(J) + longValue() ──
 TEST(IntrinsicFoldingTest, boxUnboxLongPairFolds)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 seed = b.longConst(9);
-    const ca::u16 valueOf =
-        b.methodRef("java/lang/Long", "valueOf", "(J)Ljava/lang/Long;");
-    const ca::u16 longValue = b.methodRef("java/lang/Long", "longValue", "()J");
-    Bytes code;
-    putInvoke(code, 0x14, seed);   // LDC2_W
-    putInvoke(code, 0xb8, valueOf);
-    putInvoke(code, 0xb6, longValue);
-    code.push_back(0xad);   // LRETURN
-    b.addMethod({"m", "()J", std::move(code), 0x0009, {}, 2});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()J",
+             "      ldc 9L\n"
+             "      invokestatic java/lang/Long.valueOf (J)Ljava/lang/Long;\n"
+             "      invokevirtual java/lang/Long.longValue ()J\n"
+             "      lreturn\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     ASSERT_EQ(ops.size(), 2u);
-    EXPECT_EQ(ops[0], Op::LDC2_W);
+    EXPECT_EQ(ops[0], Op::LDC2_W);   // ldc <n>L 装配器发 LDC2_W
     EXPECT_EQ(ops[1], Op::LRETURN);
 }
 
 // ── 族失配：valueOf 与他类拆箱混搭不折 ──
 TEST(IntrinsicFoldingTest, boxUnboxMismatchKept)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 valueOf =
-        b.methodRef("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;");
-    const ca::u16 doubleValue = b.methodRef("java/lang/Double", "doubleValue", "()D");
-    Bytes code = {0x10, 0x07};
-    putInvoke(code, 0xb8, valueOf);
-    putInvoke(code, 0xb6, doubleValue);
-    code.push_back(0xac);
-    b.addMethod({"m", "()I", std::move(code), 0x0009, {}, 2});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()I",
+             "      ldc 7\n"
+             "      invokestatic java/lang/Integer.valueOf (I)Ljava/lang/Integer;\n"
+             "      invokevirtual java/lang/Double.doubleValue ()D\n"
+             "      ireturn\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(opsOf(inspect(r.out)).size(), 4u);
 }
 
-// ── 拆箱前置边界锚标签（外部路径持包装引用进入）→ 整对拒收 ──
+// ── 拆箱前置边界锚标签（异常区间起点锚 intValue）→ 整对拒收 ──
+// 合法重表达：原字节形 goto 中腹进窗（栈形断裂不可装配）；守卫面
+// labelsAnchorAt 对异常边界与分支目标同源留锚，起点锚 intValue 同位触发。
 TEST(IntrinsicFoldingTest, boxUnboxInteriorLabelKept)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 valueOf =
-        b.methodRef("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;");
-    const ca::u16 intValue = b.methodRef("java/lang/Integer", "intValue", "()I");
-    Bytes code;
-    code.push_back(0xa7);   // GOTO（pc0）→ pc8（intValue）
-    putSipush(code, 8);
-    code.push_back(0x10);   // BIPUSH 7（pc3）
-    code.push_back(0x07);
-    putInvoke(code, 0xb8, valueOf);   // valueOf（pc5）
-    putInvoke(code, 0xb6, intValue);  // intValue（pc8，锚点）
-    code.push_back(0xac);
-    b.addMethod({"m", "()I", std::move(code)});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()I",
+             "      ldc 7\n"
+             "      invokestatic java/lang/Integer.valueOf (I)Ljava/lang/Integer;\n"
+             "      Lb:\n"
+             "      invokevirtual java/lang/Integer.intValue ()I\n"
+             "      ireturn\n"
+             "      Lr:\n"
+             "      athrow\n",
+             "      { Lb, Lr, Lr, * }\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(opsOf(inspect(r.out)).size(), 5u);
 }
@@ -140,22 +131,17 @@ TEST(IntrinsicFoldingTest, boxUnboxInteriorLabelKept)
 // ── 种子 Random：new Random(0).nextInt() 折叠为 JDK 已知位模式 ──
 TEST(IntrinsicFoldingTest, randomSeedNextIntFolds)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 cls   = b.cls("java/util/Random");
-    const ca::u16 seed  = b.longConst(0);
-    const ca::u16 init  = b.methodRef("java/util/Random", "<init>", "(J)V");
-    const ca::u16 nextI = b.methodRef("java/util/Random", "nextInt", "()I");
-    Bytes code;
-    putInvoke(code, 0xbb, cls);   // NEW
-    code.push_back(0x59);   // DUP
-    putInvoke(code, 0x14, seed);   // LDC2_W
-    putInvoke(code, 0xb7, init);
-    putInvoke(code, 0xb6, nextI);
-    code.push_back(0xac);
-    b.addMethod({"m", "()I", std::move(code), 0x0009, {}, 4});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()I",
+             "      new java/util/Random\n"
+             "      dup\n"
+             "      ldc 0L\n"
+             "      invokespecial java/util/Random.<init> (J)V\n"
+             "      invokevirtual java/util/Random.nextInt ()I\n"
+             "      ireturn\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.changed());
-    const Inspection            ins = inspect(r.out);
+    const Inspection                        ins = inspect(r.out);
     const std::vector<const jbc::ir::Insn*> all = allInsns(ins);
     ASSERT_EQ(all.size(), 2u);
     ca::i32 v = 0;
@@ -169,22 +155,17 @@ TEST(IntrinsicFoldingTest, randomSeedNextIntFolds)
 // ── nextBoolean：消耗 1 位 ──
 TEST(IntrinsicFoldingTest, randomSeedNextBooleanFolds)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 cls   = b.cls("java/util/Random");
-    const ca::u16 seed  = b.longConst(7);
-    const ca::u16 init  = b.methodRef("java/util/Random", "<init>", "(J)V");
-    const ca::u16 nextB = b.methodRef("java/util/Random", "nextBoolean", "()Z");
-    Bytes code;
-    putInvoke(code, 0xbb, cls);
-    code.push_back(0x59);
-    putInvoke(code, 0x14, seed);
-    putInvoke(code, 0xb7, init);
-    putInvoke(code, 0xb6, nextB);
-    code.push_back(0xac);
-    b.addMethod({"m", "()I", std::move(code), 0x0009, {}, 4});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()I",
+             "      new java/util/Random\n"
+             "      dup\n"
+             "      ldc 7L\n"
+             "      invokespecial java/util/Random.<init> (J)V\n"
+             "      invokevirtual java/util/Random.nextBoolean ()Z\n"
+             "      ireturn\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.changed());
-    const Inspection            ins = inspect(r.out);
+    const Inspection                        ins = inspect(r.out);
     const std::vector<const jbc::ir::Insn*> all = allInsns(ins);
     ASSERT_EQ(all.size(), 2u);
     ca::i32 v = 0;
@@ -193,24 +174,23 @@ TEST(IntrinsicFoldingTest, randomSeedNextBooleanFolds)
 }
 
 // ── 种子装载前置边界锚标签 → 五窗拒收 ──
+// 合法重表达：异常起点锚种子装载位（五窗 interior，守卫扫 DUP..消费同位
+// 触发），handler 裸 athrow。
 TEST(IntrinsicFoldingTest, randomSeedInteriorLabelKept)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 cls   = b.cls("java/util/Random");
-    const ca::u16 seed  = b.longConst(0);
-    const ca::u16 init  = b.methodRef("java/util/Random", "<init>", "(J)V");
-    const ca::u16 nextI = b.methodRef("java/util/Random", "nextInt", "()I");
-    Bytes code;
-    code.push_back(0xa7);   // GOTO（pc0）→ pc7（LDC2_W 种子装载）
-    putSipush(code, 7);
-    putInvoke(code, 0xbb, cls);   // NEW（pc3）
-    code.push_back(0x59);   // DUP（pc6）
-    putInvoke(code, 0x14, seed);   // LDC2_W（pc7，锚点）
-    putInvoke(code, 0xb7, init);
-    putInvoke(code, 0xb6, nextI);
-    code.push_back(0xac);
-    b.addMethod({"m", "()I", std::move(code), 0x0009, {}, 4});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()I",
+             "      new java/util/Random\n"
+             "      dup\n"
+             "      Lb:\n"
+             "      ldc 0L\n"
+             "      invokespecial java/util/Random.<init> (J)V\n"
+             "      invokevirtual java/util/Random.nextInt ()I\n"
+             "      ireturn\n"
+             "      Lr:\n"
+             "      athrow\n",
+             "      { Lb, Lr, Lr, * }\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(opsOf(inspect(r.out)).size(), 7u);
 }
@@ -218,14 +198,12 @@ TEST(IntrinsicFoldingTest, randomSeedInteriorLabelKept)
 // ── Math.abs(-42) → BIPUSH 42 ──
 TEST(IntrinsicFoldingTest, mathAbsFolds)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 abs = b.methodRef("java/lang/Math", "abs", "(I)I");
-    Bytes code = {0x11};
-    putSipush(code, -42);
-    putInvoke(code, 0xb8, abs);
-    code.push_back(0xac);
-    b.addMethod({"m", "()I", std::move(code)});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()I",
+             "      ldc -42\n"
+             "      invokestatic java/lang/Math.abs (I)I\n"
+             "      ireturn\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     ASSERT_EQ(ops.size(), 2u);
@@ -236,17 +214,12 @@ TEST(IntrinsicFoldingTest, mathAbsFolds)
 // ── Math.max(3, 9) → BIPUSH 9；幂等 ──
 TEST(IntrinsicFoldingTest, mathMaxFolds)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 max = b.methodRef("java/lang/Math", "max", "(II)I");
-    Bytes code = {0x11};
-    putSipush(code, 3);
-    code.push_back(0x11);
-    putSipush(code, 9);
-    putInvoke(code, 0xb8, max);
-    code.push_back(0xac);
-    b.addMethod({"m", "()I", std::move(code), 0x0009, {}, 2});
-    const Bytes bytes = b.assemble();
-    const MethodPassRun  r     = runMethodPass(bytes, mjbase::pass::IntrinsicFolding{});
+    const Bytes in = asmM("()I",
+                          "      ldc 3\n"
+                          "      ldc 9\n"
+                          "      invokestatic java/lang/Math.max (II)I\n"
+                          "      ireturn\n");
+    const MethodPassRun r = runMethodPass(in, mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     ASSERT_EQ(ops.size(), 2u);
@@ -258,17 +231,14 @@ TEST(IntrinsicFoldingTest, mathMaxFolds)
 // ── Math.abs(Integer.MIN_VALUE) 溢出面：仍折叠、物化为同值 ──
 TEST(IntrinsicFoldingTest, mathAbsIntMinFoldsToSameValue)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 vcp = b.intConst(-2147483647 - 1);
-    const ca::u16 abs = b.methodRef("java/lang/Math", "abs", "(I)I");
-    Bytes code = {0x12};   // LDC
-    code.push_back(static_cast<ca::u8>(vcp));
-    putInvoke(code, 0xb8, abs);
-    code.push_back(0xac);
-    b.addMethod({"m", "()I", std::move(code)});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()I",
+             "      ldc -2147483648\n"
+             "      invokestatic java/lang/Math.abs (I)I\n"
+             "      ireturn\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.changed());
-    const Inspection            ins = inspect(r.out);
+    const Inspection                        ins = inspect(r.out);
     const std::vector<const jbc::ir::Insn*> all = allInsns(ins);
     ASSERT_EQ(all.size(), 2u);
     ca::i32 v = 0;
@@ -279,13 +249,13 @@ TEST(IntrinsicFoldingTest, mathAbsIntMinFoldsToSameValue)
 // ── Math.min(2.0f, 1.0f) → FCONST_1 ──
 TEST(IntrinsicFoldingTest, mathMinFloatFolds)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 min = b.methodRef("java/lang/Math", "min", "(FF)F");
-    Bytes code = {0x0d, 0x0c};   // FCONST_2 FCONST_1
-    putInvoke(code, 0xb8, min);
-    code.push_back(0xae);   // FRETURN
-    b.addMethod({"m", "()F", std::move(code), 0x0009, {}, 2});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()F",
+             "      fconst_2\n"
+             "      fconst_1\n"
+             "      invokestatic java/lang/Math.min (FF)F\n"
+             "      freturn\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     ASSERT_EQ(ops.size(), 2u);
@@ -296,15 +266,12 @@ TEST(IntrinsicFoldingTest, mathMinFloatFolds)
 // ── String.length：常量接收者 → BIPUSH 5 ──
 TEST(IntrinsicFoldingTest, stringLengthFolds)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 s   = b.strConst("hello");
-    const ca::u16 len = b.methodRef("java/lang/String", "length", "()I");
-    Bytes code = {0x12};
-    code.push_back(static_cast<ca::u8>(s));
-    putInvoke(code, 0xb6, len);
-    code.push_back(0xac);
-    b.addMethod({"m", "()I", std::move(code)});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()I",
+             "      ldc \"hello\"\n"
+             "      invokevirtual java/lang/String.length ()I\n"
+             "      ireturn\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     ASSERT_EQ(ops.size(), 2u);
@@ -314,21 +281,16 @@ TEST(IntrinsicFoldingTest, stringLengthFolds)
 // ── String.substring(1,3) → LDC "el" ──
 TEST(IntrinsicFoldingTest, stringSubstringFolds)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 s   = b.strConst("hello");
-    const ca::u16 sub = b.methodRef("java/lang/String", "substring", "(II)Ljava/lang/String;");
-    Bytes code = {0x12};
-    code.push_back(static_cast<ca::u8>(s));
-    code.push_back(0x11);
-    putSipush(code, 1);
-    code.push_back(0x11);
-    putSipush(code, 3);
-    putInvoke(code, 0xb6, sub);
-    code.push_back(0xb0);   // ARETURN
-    b.addMethod({"m", "()Ljava/lang/String;", std::move(code), 0x0009, {}, 3});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()Ljava/lang/String;",
+             "      ldc \"hello\"\n"
+             "      ldc 1\n"
+             "      ldc 3\n"
+             "      invokevirtual java/lang/String.substring (II)Ljava/lang/String;\n"
+             "      areturn\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.changed());
-    const Inspection            ins = inspect(r.out);
+    const Inspection                        ins = inspect(r.out);
     const std::vector<const jbc::ir::Insn*> all = allInsns(ins);
     ASSERT_EQ(all.size(), 2u);
     std::string_view v;
@@ -340,19 +302,14 @@ TEST(IntrinsicFoldingTest, stringSubstringFolds)
 // ── substring 界非法（end < start）→ 保留 ──
 TEST(IntrinsicFoldingTest, stringSubstringInvalidKept)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 s   = b.strConst("hello");
-    const ca::u16 sub = b.methodRef("java/lang/String", "substring", "(II)Ljava/lang/String;");
-    Bytes code = {0x12};
-    code.push_back(static_cast<ca::u8>(s));
-    code.push_back(0x11);
-    putSipush(code, 3);
-    code.push_back(0x11);
-    putSipush(code, 1);
-    putInvoke(code, 0xb6, sub);
-    code.push_back(0xb0);
-    b.addMethod({"m", "()Ljava/lang/String;", std::move(code), 0x0009, {}, 3});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()Ljava/lang/String;",
+             "      ldc \"hello\"\n"
+             "      ldc 3\n"
+             "      ldc 1\n"
+             "      invokevirtual java/lang/String.substring (II)Ljava/lang/String;\n"
+             "      areturn\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(opsOf(inspect(r.out)).size(), 5u);
 }
@@ -361,30 +318,24 @@ TEST(IntrinsicFoldingTest, stringSubstringInvalidKept)
 TEST(IntrinsicFoldingTest, parseIntAndParseLongFold)
 {
     {
-        FixtureBuilder b("t/C");
-        const ca::u16 s  = b.strConst("42");
-        const ca::u16 ps = b.methodRef("java/lang/Integer", "parseInt", "(Ljava/lang/String;)I");
-        Bytes code = {0x12};
-        code.push_back(static_cast<ca::u8>(s));
-        putInvoke(code, 0xb8, ps);
-        code.push_back(0xac);
-        b.addMethod({"m", "()I", std::move(code)});
-        const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+        const MethodPassRun r = runMethodPass(
+            asmM("()I",
+                 "      ldc \"42\"\n"
+                 "      invokestatic java/lang/Integer.parseInt (Ljava/lang/String;)I\n"
+                 "      ireturn\n"),
+            mjbase::pass::IntrinsicFolding{});
         EXPECT_TRUE(r.pa.changed());
         const std::vector<Op> ops = opsOf(inspect(r.out));
         ASSERT_EQ(ops.size(), 2u);
         EXPECT_EQ(ops[0], Op::BIPUSH);
     }
     {
-        FixtureBuilder b("t/C");
-        const ca::u16 s  = b.strConst("123");
-        const ca::u16 pl = b.methodRef("java/lang/Long", "parseLong", "(Ljava/lang/String;)J");
-        Bytes code = {0x12};
-        code.push_back(static_cast<ca::u8>(s));
-        putInvoke(code, 0xb8, pl);
-        code.push_back(0xad);
-        b.addMethod({"m", "()J", std::move(code), 0x0009, {}, 2});
-        const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+        const MethodPassRun r = runMethodPass(
+            asmM("()J",
+                 "      ldc \"123\"\n"
+                 "      invokestatic java/lang/Long.parseLong (Ljava/lang/String;)J\n"
+                 "      lreturn\n"),
+            mjbase::pass::IntrinsicFolding{});
         EXPECT_TRUE(r.pa.changed());
         const std::vector<Op> ops = opsOf(inspect(r.out));
         ASSERT_EQ(ops.size(), 2u);
@@ -396,15 +347,12 @@ TEST(IntrinsicFoldingTest, parseIntAndParseLongFold)
 // ── parseInt 尾随杂质拒收 → 保留 ──
 TEST(IntrinsicFoldingTest, parseInvalidKept)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 s  = b.strConst("4x2");
-    const ca::u16 ps = b.methodRef("java/lang/Integer", "parseInt", "(Ljava/lang/String;)I");
-    Bytes code = {0x12};
-    code.push_back(static_cast<ca::u8>(s));
-    putInvoke(code, 0xb8, ps);
-    code.push_back(0xac);
-    b.addMethod({"m", "()I", std::move(code)});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()I",
+             "      ldc \"4x2\"\n"
+             "      invokestatic java/lang/Integer.parseInt (Ljava/lang/String;)I\n"
+             "      ireturn\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(opsOf(inspect(r.out)).size(), 3u);
 }
@@ -413,14 +361,12 @@ TEST(IntrinsicFoldingTest, parseInvalidKept)
 TEST(IntrinsicFoldingTest, bitOpsFolds)
 {
     {
-        FixtureBuilder b("t/C");
-        const ca::u16 bc = b.methodRef("java/lang/Integer", "bitCount", "(I)I");
-        Bytes code = {0x11};
-        putSipush(code, 255);
-        putInvoke(code, 0xb8, bc);
-        code.push_back(0xac);
-        b.addMethod({"m", "()I", std::move(code)});
-        const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+        const MethodPassRun r = runMethodPass(
+            asmM("()I",
+                 "      ldc 255\n"
+                 "      invokestatic java/lang/Integer.bitCount (I)I\n"
+                 "      ireturn\n"),
+            mjbase::pass::IntrinsicFolding{});
         EXPECT_TRUE(r.pa.changed());
         const std::vector<Op> ops = opsOf(inspect(r.out));
         ASSERT_EQ(ops.size(), 2u);
@@ -429,17 +375,14 @@ TEST(IntrinsicFoldingTest, bitOpsFolds)
         EXPECT_TRUE(r2.pa.areAllPreserved());
     }
     {
-        FixtureBuilder b("t/C");
-        const ca::u16 hx =
-            b.methodRef("java/lang/Integer", "toHexString", "(I)Ljava/lang/String;");
-        Bytes code = {0x11};
-        putSipush(code, 255);
-        putInvoke(code, 0xb8, hx);
-        code.push_back(0xb0);
-        b.addMethod({"m", "()Ljava/lang/String;", std::move(code)});
-        const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+        const MethodPassRun r = runMethodPass(
+            asmM("()Ljava/lang/String;",
+                 "      ldc 255\n"
+                 "      invokestatic java/lang/Integer.toHexString (I)Ljava/lang/String;\n"
+                 "      areturn\n"),
+            mjbase::pass::IntrinsicFolding{});
         EXPECT_TRUE(r.pa.changed());
-        const Inspection            ins = inspect(r.out);
+        const Inspection                        ins = inspect(r.out);
         const std::vector<const jbc::ir::Insn*> all = allInsns(ins);
         ASSERT_EQ(all.size(), 2u);
         std::string_view v;
@@ -452,17 +395,13 @@ TEST(IntrinsicFoldingTest, bitOpsFolds)
 // ── toCharArray + valueOf([C) 恒等对：整对删除、接收者生产者保留 ──
 TEST(IntrinsicFoldingTest, toCharArrayValueOfPairFolds)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 s  = b.strConst("abc");
-    const ca::u16 tc = b.methodRef("java/lang/String", "toCharArray", "()[C");
-    const ca::u16 vo = b.methodRef("java/lang/String", "valueOf", "([C)Ljava/lang/String;");
-    Bytes code = {0x12};
-    code.push_back(static_cast<ca::u8>(s));
-    putInvoke(code, 0xb6, tc);
-    putInvoke(code, 0xb8, vo);
-    code.push_back(0xb0);
-    b.addMethod({"m", "()Ljava/lang/String;", std::move(code)});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()Ljava/lang/String;",
+             "      ldc \"abc\"\n"
+             "      invokevirtual java/lang/String.toCharArray ()[C\n"
+             "      invokestatic java/lang/String.valueOf ([C)Ljava/lang/String;\n"
+             "      areturn\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOf(inspect(r.out));
     ASSERT_EQ(ops.size(), 2u);
@@ -473,32 +412,31 @@ TEST(IntrinsicFoldingTest, toCharArrayValueOfPairFolds)
 // ── 非常量实参（ILOAD_0）不在白名单 → 保留 ──
 TEST(IntrinsicFoldingTest, nonConstantArgKept)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 abs = b.methodRef("java/lang/Math", "abs", "(I)I");
-    Bytes code = {0x1a};   // ILOAD_0
-    putInvoke(code, 0xb8, abs);
-    code.push_back(0xac);
-    b.addMethod({"m", "(I)I", std::move(code)});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("(I)I",
+             "      iload 0\n"
+             "      invokestatic java/lang/Math.abs (I)I\n"
+             "      ireturn\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(opsOf(inspect(r.out)).size(), 3u);
 }
 
-// ── invoke 前置边界锚标签（外部路径持部分实参进入）→ 白名单窗拒收 ──
+// ── invoke 前置边界锚标签（异常起点锚 invoke，外部路径持部分实参进入的
+// 守卫面）→ 白名单窗拒收 ──
 TEST(IntrinsicFoldingTest, stdConsInteriorLabelKept)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 max = b.methodRef("java/lang/Math", "max", "(II)I");
-    Bytes code = {0x11};
-    putSipush(code, 3);   // SIPUSH 3（pc0）
-    code.push_back(0x11);
-    putSipush(code, 9);   // SIPUSH 9（pc3）
-    code.push_back(0xa7); // GOTO（pc6）→ pc9（invoke）
-    putSipush(code, 3);
-    putInvoke(code, 0xb8, max);   // max（pc9，锚点）
-    code.push_back(0xac);
-    b.addMethod({"m", "()I", std::move(code), 0x0009, {}, 2});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()I",
+             "      ldc 3\n"
+             "      ldc 9\n"
+             "      Lb:\n"
+             "      invokestatic java/lang/Math.max (II)I\n"
+             "      ireturn\n"
+             "      Lr:\n"
+             "      athrow\n",
+             "      { Lb, Lr, Lr, * }\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(opsOf(inspect(r.out)).size(), 5u);
 }
@@ -506,20 +444,16 @@ TEST(IntrinsicFoldingTest, stdConsInteriorLabelKept)
 // ── 不动点链折：装箱对折叠暴露 Math.abs 常量窗，再折为单一常量 ──
 TEST(IntrinsicFoldingTest, chainedFoldsToFixedPoint)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 valueOf =
-        b.methodRef("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;");
-    const ca::u16 intValue = b.methodRef("java/lang/Integer", "intValue", "()I");
-    const ca::u16 abs      = b.methodRef("java/lang/Math", "abs", "(I)I");
-    Bytes code = {0x10, 0x07};
-    putInvoke(code, 0xb8, valueOf);
-    putInvoke(code, 0xb6, intValue);
-    putInvoke(code, 0xb8, abs);
-    code.push_back(0xac);
-    b.addMethod({"m", "()I", std::move(code)});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::IntrinsicFolding{});
+    const MethodPassRun r = runMethodPass(
+        asmM("()I",
+             "      ldc 7\n"
+             "      invokestatic java/lang/Integer.valueOf (I)Ljava/lang/Integer;\n"
+             "      invokevirtual java/lang/Integer.intValue ()I\n"
+             "      invokestatic java/lang/Math.abs (I)I\n"
+             "      ireturn\n"),
+        mjbase::pass::IntrinsicFolding{});
     EXPECT_TRUE(r.pa.changed());
-    const Inspection            ins = inspect(r.out);
+    const Inspection                        ins = inspect(r.out);
     const std::vector<const jbc::ir::Insn*> all = allInsns(ins);
     ASSERT_EQ(all.size(), 2u);
     ca::i32 v = 0;

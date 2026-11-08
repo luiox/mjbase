@@ -1,70 +1,34 @@
-/// ClassRenamerTest 段，
-/// 并补齐独立直接用例（空容器 / 不可解析资源 / 命名确定性）。
-/// 断言面：URI 重写（旧条目删除、新条目入容器）、描述符与调用点同步改写、
-/// 编号确定性（旧名序 → Class0/Class1/...）。
+/// ClassRenamerTest：类改名 + 描述符/调用点同步 + URI 重写 + Multi-Release
+/// 族契约 + 泛型 Signature / type annotation 结构化同步，并补齐独立直接用例
+///（空容器 / 不可解析资源 / 命名确定性）。
+///
+/// 夹具纪律：类骨架一律 jasm 文本装配（JvmJasmService），原 FixtureBuilder /
+/// ClassBytesBuilder 手拼载体退役。例外②：Signature 与
+/// RuntimeVisibleTypeAnnotations 属性 jasm 无声明面——从装配合法基座出发经
+/// CP/AttrSlot DOM 挂已解码槽（SignatureAttr / TypeAnnotationsAttr）。
 #include <gtest/gtest.h>
 
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
-#include "jbc/core/attr_codec.hpp"
 #include "jbc/core/attribute.hpp"
 #include "jbc/core/class_file.hpp"
-#include "jbc/core/opcode.hpp"
 #include "jbc/core/reader.hpp"
 #include "jbc/ir/units.hpp"
 #include "libca/core/tag_cast.hpp"
 
-#include "asm/remapper/class_bytes_builder.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/pass/class_renamer.hpp"
 #include "mjbase/spi/analysis_manager.hpp"
 #include "mjbase/spi/preserved_analyses.hpp"
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 
 namespace {
-
-constexpr ca::u16 kAccPublic  = 0x0001;
-constexpr ca::u16 kAccStatic  = 0x0008;
-
-/// buildRenameTarget：pkg/Target，id(Lpkg/Target;)Lpkg/Target;
-/// （ALOAD 0; ARETURN 形态，self 描述符含自身类型）。
-Bytes buildRenameTarget()
-{
-    FixtureBuilder builder("pkg/Target");
-    FixtureMethod id;
-    id.name     = "id";
-    id.desc     = "(Lpkg/Target;)Lpkg/Target;";
-    id.access   = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    id.maxStack = 1;
-    id.maxLocals = 0;
-    id.code     = {0x2A, 0xB0};   // ALOAD 0; ARETURN
-    builder.addMethod(id);
-    return builder.assemble();
-}
-
-/// buildRenameCaller：pkg/Caller，call(Lpkg/Target;)Lpkg/Target;
-/// 内 INVOKESTATIC pkg/Target.id:(Lpkg/Target;)Lpkg/Target;。
-Bytes buildRenameCaller()
-{
-    FixtureBuilder builder("pkg/Caller");
-    const ca::u16  mref = builder.methodRef("pkg/Target", "id", "(Lpkg/Target;)Lpkg/Target;");
-    FixtureMethod call;
-    call.name      = "call";
-    call.desc      = "(Lpkg/Target;)Lpkg/Target;";
-    call.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    call.maxStack  = 1;
-    call.maxLocals = 1;
-    // ALOAD 0; INVOKESTATIC Target.id; ARETURN
-    Bytes code{0x2A, 0xB8, static_cast<ca::u8>(mref >> 8), static_cast<ca::u8>(mref), 0xB0};
-    call.code = std::move(code);
-    builder.addMethod(call);
-    return builder.assemble();
-}
 
 /// 重读容器内 class 资源（不可解析即断言失败）。模型由静态 keeper 持有，
 /// 引用在本用例内有效。
@@ -106,7 +70,49 @@ const jbc::core::AttrSlot* slotOf(const jbc::core::ClassFile&                   
     return nullptr;
 }
 
+/// 例外②附着面：向属性表挂已解码新槽（名字入池，体持 unique_ptr）。
+void attachAttr(jbc::core::ClassFile& cf, std::vector<jbc::core::AttrSlot>& attrs,
+                std::string_view name, std::unique_ptr<jbc::core::AttrBody> body)
+{
+    attrs.push_back(jbc::core::AttrSlot::makeNew(cf.cp.addUtf8(name), std::move(body)));
+}
+
 }   // namespace
+
+// ── 基础改名面 ──────────────────────────────────────────────────────────────
+
+/// buildRenameTarget：pkg/Target，id(Lpkg/Target;)Lpkg/Target;
+/// （ALOAD 0; ARETURN 形态，self 描述符含自身类型）。
+Bytes buildRenameTarget()
+{
+    return assembleJasm(R"JASM(.super java/lang/Object
+.class public super pkg/Target {
+  .method public static id (Lpkg/Target;)Lpkg/Target; {
+    code: {
+      aload 0
+      areturn
+    }
+  }
+}
+)JASM");
+}
+
+/// buildRenameCaller：pkg/Caller，call(Lpkg/Target;)Lpkg/Target;
+/// 内 INVOKESTATIC pkg/Target.id:(Lpkg/Target;)Lpkg/Target;。
+Bytes buildRenameCaller()
+{
+    return assembleJasm(R"JASM(.super java/lang/Object
+.class public super pkg/Caller {
+  .method public static call (Lpkg/Target;)Lpkg/Target; {
+    code: {
+      aload 0
+      invokestatic pkg/Target.id (Lpkg/Target;)Lpkg/Target;
+      areturn
+    }
+  }
+}
+)JASM");
+}
 
 // 用例：类重命名 + 描述符与调用点同步改写 + URI 重写。
 TEST(MjPassClassRenamerTest, RenamesClassesAndRewritesDescriptorsAndCallSites)
@@ -166,14 +172,15 @@ TEST(MjPassClassRenamerTest, RenamesClassesAndRewritesDescriptorsAndCallSites)
 TEST(MjPassClassRenamerTest, RenamesDefaultPackageClassesToRootName)
 {
     mjbase::model::ResourceContainer container;
-    FixtureBuilder                   builder("Lonely");
-    FixtureMethod                    t;
-    t.name     = "t";
-    t.desc     = "()V";
-    t.maxLocals = 0;
-    t.code     = bareReturn();
-    builder.addMethod(t);
-    addClassResource(container, "Lonely.class", builder.assemble());
+    addClassResource(container, "Lonely.class", assembleJasm(R"JASM(.super java/lang/Object
+.class public super Lonely {
+  .method t ()V {
+    code: {
+      return
+    }
+  }
+}
+)JASM"));
 
     mjbase::pass::ClassRenamer         pass;
     ca::str::Utf8StringArena           arena;
@@ -215,49 +222,47 @@ TEST(MjPassClassRenamerTest, KeepsContainerUntouchedWhenNothingLoadable)
 // 覆盖第一次；写回一律 `新名.class`——族内两份写回同一 URI，旧 URI 双删后一
 // 次 replaceResource 胜出，多版本对坍缩成单条目、另一份静默丢失。
 
-/// app/Main：call(Lapp/Api;)V 内 INVOKESTATIC app/Api.touch()V（族引用改写面）。
+/// app/Main：call()V 内 INVOKESTATIC app/Api.touch()V（族引用改写面）。
 Bytes buildApiCaller()
 {
-    FixtureBuilder builder("app/Main");
-    const ca::u16  mref = builder.methodRef("app/Api", "touch", "()V");
-    FixtureMethod  call;
-    call.name      = "call";
-    call.desc      = "()V";
-    call.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    call.maxStack  = 0;
-    call.maxLocals = 0;
-    call.code      = invokeStatic(mref);
-    call.code.push_back(0xB1);
-    builder.addMethod(call);
-    return builder.assemble();
+    return assembleJasm(R"JASM(.super java/lang/Object
+.class public super app/Main {
+  .method public static call ()V {
+    code: {
+      invokestatic app/Api.touch ()V
+      return
+    }
+  }
+}
+)JASM");
 }
 
 /// app/Api 族成员（base 与 versions/N 变体同内名同字节形态即可）。
 Bytes buildApiMember()
 {
-    FixtureBuilder builder("app/Api");
-    FixtureMethod  touch;
-    touch.name      = "touch";
-    touch.desc      = "()V";
-    touch.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    touch.maxStack  = 0;
-    touch.maxLocals = 0;
-    touch.code      = bareReturn();
-    builder.addMethod(touch);
-    return builder.assemble();
+    return assembleJasm(R"JASM(.super java/lang/Object
+.class public super app/Api {
+  .method public static touch ()V {
+    code: {
+      return
+    }
+  }
+}
+)JASM");
 }
 
 /// app/Util：改名目标（编号占位断言用）。
 Bytes buildUtilClass()
 {
-    FixtureBuilder builder("app/Util");
-    FixtureMethod  t;
-    t.name      = "t";
-    t.desc      = "()V";
-    t.maxLocals = 0;
-    t.code      = bareReturn();
-    builder.addMethod(t);
-    return builder.assemble();
+    return assembleJasm(R"JASM(.super java/lang/Object
+.class public super app/Util {
+  .method t ()V {
+    code: {
+      return
+    }
+  }
+}
+)JASM");
 }
 
 TEST(MjPassClassRenamerTest, RenamesMultiReleaseFamilyWithoutCollapsing)
@@ -397,65 +402,82 @@ TEST(MjPassClassRenamerTest, RenamesVariantOnlyFamilyKeepingVersionShape)
 // 落新名，非类名字节（类型变量/通配符）原样。
 TEST(MjPassClassRenamerTest, RewritesGenericSignatureAndTypeAnnotationReferences)
 {
-    namespace test = mjbase::asm_remapper::test_support;
-    using test::ClassBytesBuilder;
-
     // 依赖类：Tool（泛型被引用类）、Tool$Inner（'.' 段链后缀段→独立新名）、
-    // Mark（注解
-    // 类型）。Holder 承载全被改写面。装载序按旧名排序：Holder→pkg/Class0、
-    // Mark→pkg/Class1、Tool→pkg/Class2、Tool$Inner→pkg/Class3。
+    // Mark（注解类型）。Holder 承载全被改写面。装载序按旧名排序：
+    // Holder→pkg/Class0、Mark→pkg/Class1、Tool→pkg/Class2、Tool$Inner→pkg/Class3。
     mjbase::model::ResourceContainer container;
+    addClassResource(container, "pkg/Tool.class", assembleJasm(R"JASM(.super java/lang/Object
+.class public super pkg/Tool {
+}
+)JASM"));
+    addClassResource(container, "pkg/Tool$Inner.class", assembleJasm(R"JASM(.super java/lang/Object
+.class public super pkg/Tool$Inner {
+}
+)JASM"));
+    addClassResource(container, "pkg/Mark.class", assembleJasm(R"JASM(.super java/lang/Object
+.class public super pkg/Mark {
+}
+)JASM"));
     {
-        ClassBytesBuilder tool("pkg/Tool");
-        const Bytes       toolBytes = tool.assemble({});
-        addClassResource(container, "pkg/Tool.class", toolBytes);
+        // Holder 基座：两字段（通配符上界签名 / '.' 段链签名的载体）+ 一方法
+        //（类型参数界 + 返回位指 Tool）。Signature/RVTA 随后 DOM 挂槽（例外②）。
+        const Bytes base = assembleJasm(R"JASM(.super java/lang/Object
+.class public super pkg/Holder {
+  .field public list Ljava/util/List;
+  .field public inner Lpkg/Tool;
+  .method public static make ()Ljava/lang/Object; {
+    code: {
+      aconst_null
+      areturn
     }
-    {
-        ClassBytesBuilder inner("pkg/Tool$Inner");
-        const Bytes       innerBytes = inner.assemble({});
-        addClassResource(container, "pkg/Tool$Inner.class", innerBytes);
-    }
-    {
-        ClassBytesBuilder mark("pkg/Mark");
-        addClassResource(container, "pkg/Mark.class", mark.assemble({}));
-    }
-    {
-        ClassBytesBuilder holder("pkg/Holder");
-        holder.setClassSignature("Ljava/lang/Object;Lpkg/Tool;");
+  }
+}
+)JASM");
+        ASSERT_NE(base.size(), 0u);
+        const Bytes bytes = mutateClassFile(base, "holderAttrs", [](jbc::core::ClassFile& cf) {
+            // 类签名：父类实现的接口名指 Tool。
+            auto classSig = std::make_unique<jbc::core::SignatureAttr>();
+            classSig->signatureCp = cf.cp.addUtf8("Ljava/lang/Object;Lpkg/Tool;");
+            attachAttr(cf, cf.attrs, "Signature", std::move(classSig));
 
-        // 类级 RVTA：supertype 位 + 'c' 元素值指 Tool。
-        test::TypeAnnotationSpec classTa;
-        classTa.targetType = 0x10;
-        classTa.index16    = 0xFFFF;
-        classTa.anno.type  = "Lpkg/Mark;";
-        classTa.anno.pairs.push_back({"v", test::ElementValue{'c', "Lpkg/Tool;"}});
-        holder.addClassTypeAnnotation(classTa);
+            // 类级 RVTA：supertype 位 + 'c' 元素值指 Tool。
+            auto rvta = std::make_unique<jbc::core::TypeAnnotationsAttr>();
+            jbc::core::TypeAnnotationsAttr::Annotation ta;
+            ta.targetType     = jbc::core::TypeAnnotationsAttr::kSupertype;
+            ta.supertypeIndex = 0xFFFF;   // superclass 位
+            ta.typeIndexCp    = cf.cp.addUtf8("Lpkg/Mark;");
+            jbc::core::AnnotationsAttr::ElemValue ev;
+            ev.tag = 'c';
+            ev.cp  = cf.cp.addUtf8("Lpkg/Tool;");
+            ta.values.push_back({cf.cp.addUtf8("v"), std::move(ev)});
+            rvta->annotations.push_back(std::move(ta));
+            attachAttr(cf, cf.attrs, "RuntimeVisibleTypeAnnotations", std::move(rvta));
 
-        // 字段：通配符上界签名 + '.' 段链签名（后缀段属另一被改名类，改名后独立新名）。
-        test::FieldSpec list;
-        list.access    = 0x0001;
-        list.name      = "list";
-        list.desc      = "Ljava/util/List;";
-        list.signature = "Ljava/util/List<+Lpkg/Tool;>;";
-        holder.addField(list);
-        test::FieldSpec inner;
-        inner.access    = 0x0001;
-        inner.name      = "inner";
-        inner.desc      = "Lpkg/Tool;";
-        inner.signature = "Lpkg/Tool<Lpkg/Tool;>.Inner;";
-        holder.addField(inner);
+            // 字段签名：通配符上界 + '.' 段链（后缀段属另一被改名类，改名后独立新名）。
+            for (jbc::core::MemberInfo& f : cf.fields) {
+                auto sig = std::make_unique<jbc::core::SignatureAttr>();
+                if (cf.utf8(f.nameCp) == "list") {
+                    sig->signatureCp = cf.cp.addUtf8("Ljava/util/List<+Lpkg/Tool;>;");
+                }
+                else if (cf.utf8(f.nameCp) == "inner") {
+                    sig->signatureCp = cf.cp.addUtf8("Lpkg/Tool<Lpkg/Tool;>.Inner;");
+                }
+                else {
+                    continue;
+                }
+                attachAttr(cf, f.attrs, "Signature", std::move(sig));
+            }
 
-        // 方法：类型参数界 + 返回位指 Tool。
-        test::MethodSpec make;
-        make.access    = 0x0009;
-        make.name      = "make";
-        make.desc      = "()Ljava/lang/Object;";
-        make.signature = "<T:Lpkg/Tool;>(TT;)Lpkg/Tool;";
-        make.emit      = [](test::CodeEmit& e) {
-            e.op(jbc::core::Op::ACONST_NULL);
-            e.op(jbc::core::Op::ARETURN);
-        };
-        addClassResource(container, "pkg/Holder.class", holder.assemble({make}));
+            // 方法签名：类型参数界 + 返回位指 Tool，类型变量 T 原样。
+            for (jbc::core::MemberInfo& m : cf.methods) {
+                if (cf.utf8(m.nameCp) != "make") continue;
+                auto sig = std::make_unique<jbc::core::SignatureAttr>();
+                sig->signatureCp = cf.cp.addUtf8("<T:Lpkg/Tool;>(TT;)Lpkg/Tool;");
+                attachAttr(cf, m.attrs, "Signature", std::move(sig));
+            }
+        });
+        ASSERT_NE(bytes.size(), 0u);
+        addClassResource(container, "pkg/Holder.class", bytes);
     }
 
     mjbase::pass::ClassRenamer         pass;

@@ -1,20 +1,29 @@
-/// DevirtualizeSingleTarget 单测：手工 classfile 夹具（structural_pass_util）
-/// 覆盖改写面（自类唯一目标 / 继承唯一目标 / 同类私有目标）与放弃面全清单
-/// （多目标、外部 owner、接口目标、非 ALOAD_0 接收者、锚定窗、bridge 目标、
-/// 跨 nest 私有、调用者 major<52、目标不在调用者 super 链），另含幂等与
-/// 分析未注册契约。真 JVM verifier/行为等价硬验收在同名 *_jvm_test.cpp。
-///
-/// 形态注记：INVOKEINTERFACE 用例的操作数指向 Methodref 形态 CP 条目（共享
-/// 夹具构造器无 InterfaceMethodref 入口）——libjbc 读取面容忍两种 ref 形态
-/// 交叉（JVMS 5.4.3.3 同源口径），分析只消费 opcode 与 owner/name/desc 文本，
-/// 该简化不影响站点门语义。abstract 目标门与 bridge 门同一位掩码行，由
-/// bridge 用例承载（abstract 方法按夹具构造器形态无法表达「无 Code 属性」）。
+// DevirtualizeSingleTarget 单测：jasm 装配夹具覆盖改写面（自类唯一目标 /
+// 继承唯一目标 / 同类私有目标）与放弃面全清单（多目标、外部 owner、接口
+// 目标、非 ALOAD_0 接收者、锚定窗、bridge 目标、跨 nest 私有、调用者
+// major<52、目标不在调用者 super 链），另含幂等与分析未注册契约。真 JVM
+// verifier/行为等价硬验收在同名 *_jvm_test.cpp。
+//
+// 夹具纪律：类与方法一律 jasm 文本装配（JvmJasmService），原
+// structural_pass_util 手拼载体退役；Code 字节/CP 条目断言仍经 libjbc
+// 读回完成。四处按语义合法重表达：
+// - 接口目标面：jasm 原生 invokeinterface（发 InterfaceMethodref + count
+//   操作数）替代原 Methodref 交叉形态，站点门语义同实（原形态注记失效）；
+// - 非 ALOAD_0 接收者面：aload 1 取 1 槽需有定义——caller 带一个
+//   Object 实参（1 槽即实参，帧自洽），接收者非 this 的门面同实；
+// - 锚定窗面：原 ExcSpec 手填 handler 指向调用点 pc，以 jasm 原生
+//   exceptions: 段同位表达（{ L0, Lb, Lb, * }：区间止于调用点前缘、
+//   handler 锚调用点自身，labelsAt 同源留锚）；
+// - bridge 目标面：jasm 修饰集未证 bridge 记号——例外①申报：装配合法
+//   基类后单点 access-flag 翻转（0x0040 ACC_BRIDGE），翻转前后各做一次
+//   relaxed validate 自检（pass 读 flags 不读文本，面同实）。
 #include <gtest/gtest.h>
 
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "jbc/core/attribute.hpp"
@@ -30,67 +39,62 @@
 #include "mjbase/reference/reference_index_analysis.hpp"
 #include "mjbase/spi/analysis_manager.hpp"
 #include "mjbase/spi/preserved_analyses.hpp"
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 
 namespace {
 
-constexpr ca::u16 kAccPublic    = 0x0001;
-constexpr ca::u16 kAccPrivate   = 0x0002;
-constexpr ca::u16 kAccBridge    = 0x0040;
-constexpr ca::u16 kAccInterface = 0x0200;
-
-constexpr ca::u8 kOpAload0          = 0x2a;
-constexpr ca::u8 kOpAload1          = 0x2b;
 constexpr ca::u8 kOpInvokeVirtual   = 0xb6;
 constexpr ca::u8 kOpInvokeSpecial   = 0xb7;
 constexpr ca::u8 kOpInvokeInterface = 0xb9;
-constexpr ca::u8 kOpReturn          = 0xb1;
 
-Bytes selfCallCode(ca::u16 cp)
+/// 类便捷装配：super 为超类 internal name，classMods 形如 "public super"，
+/// methodsText 为若干 `.method` 声明文本。
+Bytes asmClass(const std::string& cls, const std::string& super,
+               std::string_view classMods, std::string_view methodsText)
 {
-    return {kOpAload0, kOpInvokeVirtual, static_cast<ca::u8>(cp >> 8),
-            static_cast<ca::u8>(cp), kOpReturn};
+    const std::string src = R"JASM(.super )JASM" + super + R"JASM(
+.class )JASM" + std::string(classMods) + " " + cls + R"JASM( {
+)JASM" + std::string(methodsText) + R"JASM(}
+)JASM";
+    // major 61：改写面受 pass 版本门（<52 不改写）约束，须 52+；61 走装配器
+    // 全帧分析，体面帧自洽。
+    return assembleJasm(src, 61);
 }
 
-Bytes interfaceCallCode(ca::u16 cp)
+/// public m()V（return 体）声明文本（唯一具体目标 / 基类声明）。
+std::string_view declM()
 {
-    return {kOpAload0, kOpInvokeInterface, static_cast<ca::u8>(cp >> 8),
-            static_cast<ca::u8>(cp), /*count=*/0x01, /*zero=*/0x00, kOpReturn};
+    return "  .method public m ()V {\n    code: {\n      return\n    }\n  }\n";
+}
+
+/// this 直调唯一目标的 caller 文本（receiver 形如 "aload 0"；tail 为
+/// return 前尾段，默认空；excText 为 exceptions 段条目文本，默认空）。
+std::string callerMethod(std::string_view receiver, std::string_view inv,
+                         std::string_view tail = "",
+                         std::string_view excText = "")
+{
+    const std::string excSeg = excText.empty()
+        ? std::string()
+        : "    exceptions: {\n" + std::string(excText) + "    },\n";
+    std::string s;
+    s += "  .method public caller ()V {\n";
+    s += excSeg;
+    s += "    code: {\n";
+    s += "      " + std::string(receiver) + '\n';
+    s += "      " + std::string(inv) + '\n';
+    s += std::string(tail);
+    s += "      return\n    }\n  }\n";
+    return s;
 }
 
 /// 唯一具体声明 + this 直调唯一目标的载体类（各夹具用独立类名避免跨用例
 /// 覆盖族串扰）。
-void addUniquePair(FixtureBuilder& builder, std::string_view encodedOwner)
+Bytes uniquePairClass(const std::string& cls)
 {
-    FixtureMethod target;
-    target.name   = "m";
-    target.desc   = "()V";
-    target.access = kAccPublic;
-    target.code   = bareReturn();
-    builder.addMethod(target);
-
-    const ca::u16 cp = builder.methodRef(encodedOwner, "m", "()V");
-    FixtureMethod caller;
-    caller.name      = "caller";
-    caller.desc      = "()V";
-    caller.access    = kAccPublic;
-    caller.maxStack  = 1;
-    caller.maxLocals = 1;
-    caller.code      = selfCallCode(cp);
-    builder.addMethod(caller);
-}
-
-/// 声明 m()V 的基类（public 具体）。
-void addDeclaringBase(FixtureBuilder& builder)
-{
-    FixtureMethod target;
-    target.name   = "m";
-    target.desc   = "()V";
-    target.access = kAccPublic;
-    target.code   = bareReturn();
-    builder.addMethod(target);
+    return asmClass(cls, "java/lang/Object", "public super",
+                    std::string(declM()) + callerMethod("aload 0", "invokevirtual " + cls + ".m ()V"));
 }
 
 /// 读某方法 Code 属性的指令字节（夹具方法恒有 Code）。
@@ -180,13 +184,11 @@ Bytes classBytesOf(mjbase::model::ResourceContainer& container, const char* uri)
 TEST(MjPassDevirtualizeSingleTargetTest, RewritesUniqueSelfTargetAndIsIdempotent)
 {
     mjbase::model::ResourceContainer container;
-    FixtureBuilder                   builder("A");
-    addUniquePair(builder, "A");
-    addClassResource(container, "A.class", builder.assemble());
+    addClassResource(container, "A.class", uniquePairClass("A"));
 
     const Bytes before = classBytesOf(container, "A.class");
     const Bytes beforeCaller = codeOf(before, "caller");
-    ASSERT_EQ(beforeCaller.size(), 5u);
+    ASSERT_EQ(beforeCaller.size(), 5u);   // aload_0; invokevirtual(3); return
     ASSERT_EQ(beforeCaller[1], kOpInvokeVirtual);
 
     const auto pa = runDevirtualize(container);
@@ -218,22 +220,11 @@ TEST(MjPassDevirtualizeSingleTargetTest, RewritesUniqueSelfTargetAndIsIdempotent
 TEST(MjPassDevirtualizeSingleTargetTest, RewritesInheritedUniqueTarget)
 {
     mjbase::model::ResourceContainer container;
-    FixtureBuilder                   sup("Sup");
-    addDeclaringBase(sup);
-    addClassResource(container, "Sup.class", sup.assemble());
-
-    FixtureBuilder sub("Sub");
-    sub.setSuper("Sup");
-    const ca::u16 cp = sub.methodRef("Sub", "m", "()V");
-    FixtureMethod caller;
-    caller.name      = "caller";
-    caller.desc      = "()V";
-    caller.access    = kAccPublic;
-    caller.maxStack  = 1;
-    caller.maxLocals = 1;
-    caller.code      = selfCallCode(cp);
-    sub.addMethod(caller);
-    addClassResource(container, "Sub.class", sub.assemble());
+    addClassResource(container, "Sup.class",
+                     asmClass("Sup", "java/lang/Object", "public super", declM()));
+    addClassResource(container, "Sub.class",
+                     asmClass("Sub", "Sup", "public super",
+                              callerMethod("aload 0", "invokevirtual Sub.m ()V")));
 
     const auto pa = runDevirtualize(container);
     EXPECT_FALSE(pa.areAllPreserved());
@@ -255,24 +246,11 @@ TEST(MjPassDevirtualizeSingleTargetTest, RewritesInheritedUniqueTarget)
 TEST(MjPassDevirtualizeSingleTargetTest, RewritesPrivateSelfTarget)
 {
     mjbase::model::ResourceContainer container;
-    FixtureBuilder                   builder("Priv");
-    FixtureMethod secret;
-    secret.name   = "secret";
-    secret.desc   = "()V";
-    secret.access = kAccPrivate;
-    secret.code   = bareReturn();
-    builder.addMethod(secret);
-
-    const ca::u16 cp = builder.methodRef("Priv", "secret", "()V");
-    FixtureMethod caller;
-    caller.name      = "caller";
-    caller.desc      = "()V";
-    caller.access    = kAccPublic;
-    caller.maxStack  = 1;
-    caller.maxLocals = 1;
-    caller.code      = selfCallCode(cp);
-    builder.addMethod(caller);
-    addClassResource(container, "Priv.class", builder.assemble());
+    addClassResource(
+        container, "Priv.class",
+        asmClass("Priv", "java/lang/Object", "public super",
+                 "  .method private secret ()V {\n    code: {\n      return\n    }\n  }\n"
+                     + callerMethod("aload 0", "invokevirtual Priv.secret ()V")));
 
     const auto pa = runDevirtualize(container);
     EXPECT_FALSE(pa.areAllPreserved());
@@ -287,26 +265,13 @@ TEST(MjPassDevirtualizeSingleTargetTest, RewritesPrivateSelfTarget)
 TEST(MjPassDevirtualizeSingleTargetTest, KeepsMultiTargetSites)
 {
     mjbase::model::ResourceContainer container;
-    FixtureBuilder                   base("MBase");
-    addDeclaringBase(base);
-    addClassResource(container, "MBase.class", base.assemble());
-
-    FixtureBuilder child("MChild");
-    child.setSuper("MBase");
-    addDeclaringBase(child);
-    addClassResource(container, "MChild.class", child.assemble());
-
-    FixtureBuilder callerCls("MCaller");
-    const ca::u16  cp = callerCls.methodRef("MBase", "m", "()V");
-    FixtureMethod  caller;
-    caller.name      = "caller";
-    caller.desc      = "()V";
-    caller.access    = kAccPublic;
-    caller.maxStack  = 1;
-    caller.maxLocals = 1;
-    caller.code      = selfCallCode(cp);
-    callerCls.addMethod(caller);
-    addClassResource(container, "MCaller.class", callerCls.assemble());
+    addClassResource(container, "MBase.class",
+                     asmClass("MBase", "java/lang/Object", "public super", declM()));
+    addClassResource(container, "MChild.class",
+                     asmClass("MChild", "MBase", "public super", declM()));
+    addClassResource(container, "MCaller.class",
+                     asmClass("MCaller", "java/lang/Object", "public super",
+                              callerMethod("aload 0", "invokevirtual MBase.m ()V")));
 
     const Bytes callerBefore = classBytesOf(container, "MCaller.class");
     const auto  pa           = runDevirtualize(container);
@@ -319,18 +284,12 @@ TEST(MjPassDevirtualizeSingleTargetTest, KeepsMultiTargetSites)
 TEST(MjPassDevirtualizeSingleTargetTest, KeepsExternalOwnerSites)
 {
     mjbase::model::ResourceContainer container;
-    FixtureBuilder                   builder("Ext");
-    const ca::u16 cp = builder.methodRef("java/lang/Object", "toString",
-                                         "()Ljava/lang/String;");
-    FixtureMethod caller;
-    caller.name      = "caller";
-    caller.desc      = "()V";
-    caller.access    = kAccPublic;
-    caller.maxStack  = 1;
-    caller.maxLocals = 1;
-    caller.code      = selfCallCode(cp);
-    builder.addMethod(caller);
-    addClassResource(container, "Ext.class", builder.assemble());
+    addClassResource(
+        container, "Ext.class",
+        asmClass("Ext", "java/lang/Object", "public super",
+                 callerMethod("aload 0",
+                              "invokevirtual java/lang/Object.toString ()Ljava/lang/String;",
+                              "      pop\n")));
 
     const Bytes before = classBytesOf(container, "Ext.class");
     EXPECT_TRUE(runDevirtualize(container).areAllPreserved());
@@ -342,34 +301,15 @@ TEST(MjPassDevirtualizeSingleTargetTest, KeepsExternalOwnerSites)
 TEST(MjPassDevirtualizeSingleTargetTest, KeepsInterfaceTargetSites)
 {
     mjbase::model::ResourceContainer container;
-    FixtureBuilder                   iface("IFunc");
-    iface.setClassAccess(static_cast<ca::u16>(kAccPublic | kAccInterface));
-    addDeclaringBase(iface);
-    addClassResource(container, "IFunc.class", iface.assemble());
-
-    FixtureBuilder virtCaller("IfaceUserV");
-    const ca::u16  virtCp = virtCaller.methodRef("IFunc", "m", "()V");
-    FixtureMethod  virt;
-    virt.name      = "caller";
-    virt.desc      = "()V";
-    virt.access    = kAccPublic;
-    virt.maxStack  = 1;
-    virt.maxLocals = 1;
-    virt.code      = selfCallCode(virtCp);
-    virtCaller.addMethod(virt);
-    addClassResource(container, "IfaceUserV.class", virtCaller.assemble());
-
-    FixtureBuilder itfCaller("IfaceUserI");
-    const ca::u16  itfCp = itfCaller.methodRef("IFunc", "m", "()V");
-    FixtureMethod  itf;
-    itf.name      = "caller";
-    itf.desc      = "()V";
-    itf.access    = kAccPublic;
-    itf.maxStack  = 1;
-    itf.maxLocals = 1;
-    itf.code      = interfaceCallCode(itfCp);
-    itfCaller.addMethod(itf);
-    addClassResource(container, "IfaceUserI.class", itfCaller.assemble());
+    addClassResource(container, "IFunc.class",
+                     asmClass("IFunc", "java/lang/Object", "public interface abstract",
+                              declM()));
+    addClassResource(container, "IfaceUserV.class",
+                     asmClass("IfaceUserV", "java/lang/Object", "public super",
+                              callerMethod("aload 0", "invokevirtual IFunc.m ()V")));
+    addClassResource(container, "IfaceUserI.class",
+                     asmClass("IfaceUserI", "java/lang/Object", "public super",
+                              callerMethod("aload 0", "invokeinterface IFunc.m ()V")));
 
     const Bytes vBefore = classBytesOf(container, "IfaceUserV.class");
     const Bytes iBefore = classBytesOf(container, "IfaceUserI.class");
@@ -380,24 +320,18 @@ TEST(MjPassDevirtualizeSingleTargetTest, KeepsInterfaceTargetSites)
               kOpInvokeInterface);
 }
 
-// 非 ALOAD_0 接收者（aload_1 局部可能是兄弟类型，verifier 接收者约束）→ 放弃。
+// 非 ALOAD_0 接收者（aload 1 局部可能是兄弟类型，verifier 接收者约束）→ 放弃。
+// caller 带 Object 实参使 1 槽有定义（帧自洽），接收者非 this 的门面同实。
 TEST(MjPassDevirtualizeSingleTargetTest, KeepsNonThisReceiverSites)
 {
     mjbase::model::ResourceContainer container;
-    FixtureBuilder                   builder("Rcv");
-    addDeclaringBase(builder);
-
-    const ca::u16 cp = builder.methodRef("Rcv", "m", "()V");
-    FixtureMethod caller;
-    caller.name      = "caller";
-    caller.desc      = "()V";
-    caller.access    = kAccPublic;
-    caller.maxStack  = 1;
-    caller.maxLocals = 2;
-    caller.code      = selfCallCode(cp);
-    caller.code[0]   = kOpAload1;   // 接收者不是 this
-    builder.addMethod(caller);
-    addClassResource(container, "Rcv.class", builder.assemble());
+    addClassResource(
+        container, "Rcv.class",
+        asmClass("Rcv", "java/lang/Object", "public super",
+                 std::string(declM())
+                     + "  .method public caller (Ljava/lang/Object;)V {\n"
+                       "    code: {\n      aload 1\n      invokevirtual Rcv.m ()V\n"
+                       "      return\n    }\n  }\n"));
 
     const Bytes before = classBytesOf(container, "Rcv.class");
     EXPECT_TRUE(runDevirtualize(container).areAllPreserved());
@@ -408,21 +342,28 @@ TEST(MjPassDevirtualizeSingleTargetTest, KeepsNonThisReceiverSites)
 TEST(MjPassDevirtualizeSingleTargetTest, KeepsAnchoredSites)
 {
     mjbase::model::ResourceContainer container;
-    FixtureBuilder                   builder("Anc");
-    addDeclaringBase(builder);
-
-    const ca::u16 cp = builder.methodRef("Anc", "m", "()V");
-    FixtureMethod caller;
-    caller.name      = "caller";
-    caller.desc      = "()V";
-    caller.access    = kAccPublic;
-    caller.maxStack  = 1;
-    caller.maxLocals = 1;
-    caller.code      = selfCallCode(cp);
-    // handler 指向调用点 pc=1：标签锚定调用点前置边界。
-    caller.exc.push_back(ExcSpec{0, 1, 1, 0});
-    builder.addMethod(caller);
-    addClassResource(container, "Anc.class", builder.assemble());
+    // 异常表 start 标签锚在调用点前置边界（原字节面 handler=调用点 pc；
+    // 61 帧分析下 handler 必须独立成块收 Throwable，锚定面由 start 标签
+    // 同样触发 labelsAnchorAt 前置边界守卫——行为契约同实）。
+    const std::string caller =
+        "  .method public caller ()V {\n"
+        "    exceptions: {\n"
+        "      { Ls, Le, H, * },\n"
+        "    },\n"
+        "    code: {\n"
+        "      aload 0\n"
+        "      Ls:\n"
+        "      invokevirtual Anc.m ()V\n"
+        "      Le:\n"
+        "      return\n"
+        "      H:\n"
+        "      pop\n"
+        "      return\n"
+        "    }\n"
+        "  }\n";
+    addClassResource(container, "Anc.class",
+                     asmClass("Anc", "java/lang/Object", "public super",
+                              std::string(declM()) + caller));
 
     const Bytes before = classBytesOf(container, "Anc.class");
     EXPECT_TRUE(runDevirtualize(container).areAllPreserved());
@@ -430,27 +371,19 @@ TEST(MjPassDevirtualizeSingleTargetTest, KeepsAnchoredSites)
 }
 
 // bridge 目标（签名/泛型桥成员禁改红线；abstract 门同行承载）→ 放弃。
+// 例外①申报：jasm 修饰集未证 bridge 记号——装配合法基类后单点
+// access-flag 翻转（0x0040 ACC_BRIDGE），翻转前后各做一次 relaxed validate
+// 自检；pass 读 flags 不读文本，门面同实。
 TEST(MjPassDevirtualizeSingleTargetTest, KeepsBridgeTargetSites)
 {
     mjbase::model::ResourceContainer container;
-    FixtureBuilder                   builder("Brd");
-    FixtureMethod bridge;
-    bridge.name   = "m";
-    bridge.desc   = "()V";
-    bridge.access = static_cast<ca::u16>(kAccPublic | kAccBridge);
-    bridge.code   = bareReturn();
-    builder.addMethod(bridge);
-
-    const ca::u16 cp = builder.methodRef("Brd", "m", "()V");
-    FixtureMethod caller;
-    caller.name      = "caller";
-    caller.desc      = "()V";
-    caller.access    = kAccPublic;
-    caller.maxStack  = 1;
-    caller.maxLocals = 1;
-    caller.code      = selfCallCode(cp);
-    builder.addMethod(caller);
-    addClassResource(container, "Brd.class", builder.assemble());
+    const Bytes base = asmClass("Brd", "java/lang/Object", "public super",
+                                std::string(declM()) + callerMethod("aload 0", "invokevirtual Brd.m ()V"));
+    expectValidateOk(base);
+    // declM 声明在前（物理序 0）：单点翻转 m 的 ACC_BRIDGE。
+    const Bytes bridged = flipMemberAccess(base, false, 0, 0x0040, 0, "bridge flag");
+    expectValidateOk(bridged);
+    addClassResource(container, "Brd.class", bridged);
 
     const Bytes before = classBytesOf(container, "Brd.class");
     EXPECT_TRUE(runDevirtualize(container).areAllPreserved());
@@ -462,27 +395,13 @@ TEST(MjPassDevirtualizeSingleTargetTest, KeepsBridgeTargetSites)
 TEST(MjPassDevirtualizeSingleTargetTest, KeepsCrossNestPrivateTargetSites)
 {
     mjbase::model::ResourceContainer container;
-    FixtureBuilder                   host("NestA");
-    FixtureMethod hidden;
-    hidden.name   = "hidden";
-    hidden.desc   = "()V";
-    hidden.access = kAccPrivate;
-    hidden.code   = bareReturn();
-    host.addMethod(hidden);
-    addClassResource(container, "NestA.class", host.assemble());
-
-    FixtureBuilder sub("NestB");
-    sub.setSuper("NestA");
-    const ca::u16 cp = sub.methodRef("NestA", "hidden", "()V");
-    FixtureMethod caller;
-    caller.name      = "caller";
-    caller.desc      = "()V";
-    caller.access    = kAccPublic;
-    caller.maxStack  = 1;
-    caller.maxLocals = 1;
-    caller.code      = selfCallCode(cp);
-    sub.addMethod(caller);
-    addClassResource(container, "NestB.class", sub.assemble());
+    addClassResource(
+        container, "NestA.class",
+        asmClass("NestA", "java/lang/Object", "public super",
+                 "  .method private hidden ()V {\n    code: {\n      return\n    }\n  }\n"));
+    addClassResource(container, "NestB.class",
+                     asmClass("NestB", "NestA", "public super",
+                              callerMethod("aload 0", "invokevirtual NestA.hidden ()V")));
 
     const Bytes before = classBytesOf(container, "NestB.class");
     EXPECT_TRUE(runDevirtualize(container).areAllPreserved());
@@ -493,9 +412,7 @@ TEST(MjPassDevirtualizeSingleTargetTest, KeepsCrossNestPrivateTargetSites)
 TEST(MjPassDevirtualizeSingleTargetTest, KeepsCallerBelowClassVersion52)
 {
     mjbase::model::ResourceContainer container;
-    FixtureBuilder                   builder("OldV");
-    addUniquePair(builder, "OldV");
-    Bytes bytes = builder.assemble();
+    Bytes bytes = uniquePairClass("OldV");
     ASSERT_GT(bytes.size(), 8u);
     bytes[6] = 0x00;   // major 高字节
     bytes[7] = 0x32;   // major 低字节 = 50
@@ -510,21 +427,11 @@ TEST(MjPassDevirtualizeSingleTargetTest, KeepsCallerBelowClassVersion52)
 TEST(MjPassDevirtualizeSingleTargetTest, KeepsTargetOffCallerChain)
 {
     mjbase::model::ResourceContainer container;
-    FixtureBuilder                   tgt("OffTgt");
-    addDeclaringBase(tgt);
-    addClassResource(container, "OffTgt.class", tgt.assemble());
-
-    FixtureBuilder callerCls("OffCaller");
-    const ca::u16  cp = callerCls.methodRef("OffTgt", "m", "()V");
-    FixtureMethod  caller;
-    caller.name      = "caller";
-    caller.desc      = "()V";
-    caller.access    = kAccPublic;
-    caller.maxStack  = 1;
-    caller.maxLocals = 1;
-    caller.code      = selfCallCode(cp);
-    callerCls.addMethod(caller);
-    addClassResource(container, "OffCaller.class", callerCls.assemble());
+    addClassResource(container, "OffTgt.class",
+                     asmClass("OffTgt", "java/lang/Object", "public super", declM()));
+    addClassResource(container, "OffCaller.class",
+                     asmClass("OffCaller", "java/lang/Object", "public super",
+                              callerMethod("aload 0", "invokevirtual OffTgt.m ()V")));
 
     const Bytes before = classBytesOf(container, "OffCaller.class");
     EXPECT_TRUE(runDevirtualize(container).areAllPreserved());
@@ -537,13 +444,11 @@ TEST(MjPassDevirtualizeSingleTargetTest, KeepsTargetOffCallerChain)
 TEST(MjPassDevirtualizeSingleTargetTest, UnregisteredAnalysisPropagatesWithoutRewrite)
 {
     mjbase::model::ResourceContainer container;
-    FixtureBuilder                   builder("Ct");
-    addUniquePair(builder, "Ct");
-    addClassResource(container, "Ct.class", builder.assemble());
+    addClassResource(container, "Ct.class", uniquePairClass("Ct"));
 
-    const Bytes before = classBytesOf(container, "Ct.class");
-    ca::str::Utf8StringArena           arena;
-    mjbase::spi::GlobalAnalysisManager gam(arena);   // 无任何注册
+    const Bytes before                     = classBytesOf(container, "Ct.class");
+    ca::str::Utf8StringArena               arena;
+    mjbase::spi::GlobalAnalysisManager     gam(arena);   // 无任何注册
     mjbase::pass::DevirtualizeSingleTarget pass;
     EXPECT_THROW(pass.run(container, gam), std::logic_error);
     EXPECT_EQ(classBytesOf(container, "Ct.class"), before);

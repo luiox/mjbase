@@ -116,7 +116,7 @@ TEST(PassJobContextTest, arenaInternDedup)
 TEST(RunClassPipelineTest, roundtripNoOpPasses)
 {
     PassJobContext job;
-    auto           input = buildClassBytes("T", {{"t", "()I", iconstReturn()}});
+    auto           input = buildClassBytes("T", {{"t", "()I", iconstReturnText()}});
     // 两个 manager 都为空，pipeline 不做任何重序列化
     auto result = runClassPipeline(input, nullptr, nullptr, job);
     ASSERT_TRUE(result.is_ok());
@@ -132,7 +132,7 @@ TEST(RunClassPipelineTest, runsMethodPass)
     MethodPassManager        mm;
     mm.addPass(std::make_unique<RecordingMethodPass>(log));
 
-    auto input = buildClassBytes("T", {{"t", "()I", iconstReturn()}});
+    auto input = buildClassBytes("T", {{"t", "()I", iconstReturnText()}});
     auto result = runClassPipeline(input, nullptr, &mm, job);
     ASSERT_TRUE(result.is_ok());
     auto output = std::move(result).unwrap();
@@ -146,7 +146,7 @@ TEST(RunClassPipelineTest, runsMethodPass)
 TEST(RunClassPipelineTest, acceptsClassToMethodAdaptorWithoutThrowing)
 {
     PassJobContext job;
-    auto           bytes = buildClassBytes("com/example/Foo", {{"run", "()V", iconstReturn()}});
+    auto           bytes = buildClassBytes("com/example/Foo", {{"run", "()V", iconstReturnText()}});
 
     std::vector<std::string> captured;
     MethodPassManager        mpm;
@@ -168,7 +168,7 @@ TEST(RunClassPipelineTest, acceptsClassToMethodAdaptorWithoutThrowing)
 TEST(RunClassPipelineTest, directMethodPassSeesOwnerIdentity)
 {
     PassJobContext job;
-    auto           bytes = buildClassBytes("com/example/Bar", {{"run", "()V", iconstReturn()}});
+    auto           bytes = buildClassBytes("com/example/Bar", {{"run", "()V", iconstReturnText()}});
 
     std::vector<std::string> captured;
     MethodPassManager        mpm;
@@ -223,10 +223,10 @@ TEST(RunContainerPipelineTest, containerPipelineProcessesClasses)
     mjbase::model::ResourceContainer container;
     container.addResource("A.class",
                           std::make_unique<mjbase::model::ClassResource>(
-                              "A.class", buildClassBytes("A", {{"t", "()I", iconstReturn()}})));
+                              "A.class", buildClassBytes("A", {{"t", "()I", iconstReturnText()}})));
     container.addResource("B.class",
                           std::make_unique<mjbase::model::ClassResource>(
-                              "B.class", buildClassBytes("B", {{"t", "()I", iconstReturn()}})));
+                              "B.class", buildClassBytes("B", {{"t", "()I", iconstReturnText()}})));
 
     auto result = runContainerPipeline(container, gpm, job);
     ASSERT_TRUE(result.is_ok());
@@ -252,10 +252,10 @@ TEST(RunContainerPipelineTest, doesNotReuseClassAnalysisAcrossClasses)
     mjbase::model::ResourceContainer container;
     container.addResource("A.class",
                           std::make_unique<mjbase::model::ClassResource>(
-                              "A.class", buildClassBytes("A", {{"t", "()I", iconstReturn()}})));
+                              "A.class", buildClassBytes("A", {{"t", "()I", iconstReturnText()}})));
     container.addResource("B.class",
                           std::make_unique<mjbase::model::ClassResource>(
-                              "B.class", buildClassBytes("B", {{"t", "()I", iconstReturn()}})));
+                              "B.class", buildClassBytes("B", {{"t", "()I", iconstReturnText()}})));
 
     auto result = runContainerPipeline(container, gpm, job);
     ASSERT_TRUE(result.is_ok());

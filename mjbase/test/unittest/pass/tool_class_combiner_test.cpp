@@ -3,12 +3,17 @@
 /// tool_class_combiner_jvm_test；本文件钉实现面契约：候选不足 no-op、
 /// NotModeled 候选保守保留、宿主成员序确定性、ConstantValue 重建、
 /// 供体引用零残留与消费面重指向。
+///
+/// 夹具纪律：候选/消费类骨架一律 jasm 文本装配（JvmJasmService），原
+/// FixtureBuilder 手拼载体退役。例外②：ConstantValue 经 CP/AttrSlot DOM
+/// 挂 Raw 槽（adopt 只搬元数据、本 pass 负责重建的输入面）。
 #include <gtest/gtest.h>
 
 #include <memory>
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "jbc/core/class_file.hpp"
@@ -23,159 +28,131 @@
 #include "mjbase/spi/analysis_manager.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
 #include "mjbase/spi/preserved_analyses.hpp"
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 
 namespace {
 
-constexpr ca::u16 kAccPublic     = 0x0001;
-constexpr ca::u16 kAccStatic     = 0x0008;
-
-Bytes u2Operand(ca::u16 cp) { return {static_cast<ca::u8>(cp >> 8), static_cast<ca::u8>(cp)}; }
-
 /// 候选甲：static 字段 + 自引用 GETSTATIC + 线性方法 + 默认构造器。
-/// 方法体全部为验证器干净形（Strict 帧再生与 JVM 门的字节前提）。
 Bytes buildUtAlpha()
 {
-    FixtureBuilder b("hb/ut/Alpha");
-    b.addField({"FLAG", "I", static_cast<ca::u16>(kAccPublic | kAccStatic)});
-    {
-        FixtureMethod init;
-        init.name      = "<init>";
-        init.desc      = "()V";
-        init.access    = kAccPublic;
-        init.maxStack  = 1;
-        init.maxLocals = 1;
-        const Bytes superCtor = u2Operand(b.methodRef("java/lang/Object", "<init>", "()V"));
-        init.code     = {0x2A, 0xB7, superCtor[0], superCtor[1], 0xB1};
-        b.addMethod(init);
+    return assembleJasm(R"JASM(.super java/lang/Object
+.class public super hb/ut/Alpha {
+  .field public static FLAG I
+
+  .method public <init> ()V {
+    code: {
+      aload 0
+      invokespecial java/lang/Object.<init> ()V
+      return
     }
-    {
-        FixtureMethod flag;
-        flag.name     = "flag";
-        flag.desc     = "()I";
-        flag.access   = static_cast<ca::u16>(kAccPublic | kAccStatic);
-        flag.maxStack = 1;
-        flag.maxLocals = 0;
-        const Bytes operand = u2Operand(b.fieldRef("hb/ut/Alpha", "FLAG", "I"));
-        flag.code     = {0xB2, operand[0], operand[1], 0xAC};   // GETSTATIC; IRETURN
-        b.addMethod(flag);
+  }
+
+  .method public static flag ()I {
+    code: {
+      getstatic hb/ut/Alpha.FLAG I
+      ireturn
     }
-    {
-        FixtureMethod trim;
-        trim.name      = "trim";
-        trim.desc      = "(I)I";
-        trim.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-        trim.maxStack  = 2;
-        trim.maxLocals = 1;
-        trim.code      = {0x1A, 0x04, 0x60, 0xAC};   // ILOAD_0; ICONST_1; IADD; IRETURN
-        b.addMethod(trim);
+  }
+
+  .method public static trim (I)I {
+    code: {
+      iload_0
+      iconst_1
+      iadd
+      ireturn
     }
-    return b.assemble();
+  }
+}
+)JASM");
 }
 
 /// 候选乙：分支体（IFEQ/GOTO）+ LDC Integer 方法（帧再生与宿主合并面）。
 Bytes buildUtBeta()
 {
-    FixtureBuilder b("hb/ut/Beta");
-    b.addField({"STATE", "I", static_cast<ca::u16>(kAccPublic | kAccStatic)});
-    {
-        FixtureMethod sign;
-        sign.name      = "sign";
-        sign.desc      = "(I)I";
-        sign.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-        sign.maxStack  = 1;
-        sign.maxLocals = 1;
-        // 0:ILOAD_0; 1..3:IFEQ→8（pc 1 + 偏移 7）; 4:ICONST_M1;
-        // 5..7:GOTO→9（pc 5 + 偏移 4）; 8:ICONST_1; 9:IRETURN——两条到 9
-        // 的路径栈高一致（各 1 个 int），验证器干净形（Strict 帧再生的
-        // 字节前提；分支偏移相对分支指令自身 pc）。
-        sign.code = {0x1A, 0x99, 0x00, 0x07, 0x02, 0xA7, 0x00, 0x04, 0x04, 0xAC};
-        b.addMethod(sign);
+    return assembleJasm(R"JASM(.super java/lang/Object
+.class public super hb/ut/Beta {
+  .field public static STATE I
+
+  .method public static sign (I)I {
+    code: {
+      iload_0
+      ifeq Lpos
+      iconst_m1
+      goto Lend
+      Lpos:
+      iconst_1
+      Lend:
+      ireturn
     }
-    {
-        FixtureMethod only;
-        only.name     = "betaOnly";
-        only.desc     = "()I";
-        only.access   = static_cast<ca::u16>(kAccPublic | kAccStatic);
-        only.maxStack = 1;
-        only.maxLocals = 0;
-        const Bytes operand = u2Operand(b.intConst(7));
-        only.code     = {0x13, operand[0], operand[1], 0xAC};   // LDC_W 7; IRETURN
-        b.addMethod(only);
+  }
+
+  .method public static betaOnly ()I {
+    code: {
+      ldc 7
+      ireturn
     }
-    return b.assemble();
+  }
+}
+)JASM");
 }
 
-/// 候选丙（NotModeled 载体）：LDC2_W 宽常量方法体——准入即落选，原资源保持。
+/// 候选丙（NotModeled 载体）：宽常量方法体——准入即落选，原资源保持。
 Bytes buildUtWide()
 {
-    FixtureBuilder b("hb/ut/Wide");
-    b.addField({"TOKEN", "J", static_cast<ca::u16>(kAccPublic | kAccStatic)});
-    {
-        FixtureMethod wideConst;
-        wideConst.name     = "wideConst";
-        wideConst.desc     = "()J";
-        wideConst.access   = static_cast<ca::u16>(kAccPublic | kAccStatic);
-        wideConst.maxStack = 2;
-        wideConst.maxLocals = 0;
-        const Bytes operand = u2Operand(b.longConst(5));
-        wideConst.code     = {0x14, operand[0], operand[1], 0xAD};   // LDC2_W 5; LRETURN
-        b.addMethod(wideConst);
+    return assembleJasm(R"JASM(.super java/lang/Object
+.class public super hb/ut/Wide {
+  .field public static TOKEN J
+
+  .method public static wideConst ()J {
+    code: {
+      ldc 5L
+      lreturn
     }
-    return b.assemble();
+  }
+}
+)JASM");
 }
 
-/// 消费面（非候选：含实例方法）：引用甲乙的 static 成员。方法体验证器
-/// 干净形：GETSTATIC(h1);POP(h0);ICONST_1(h1);INVOKESTATIC(h0→h1);
-/// POP(h0);GETSTATIC(h1);POP(h0);RETURN。
+/// 消费面（非候选：含实例方法）：引用甲乙的 static 成员。
 Bytes buildUtApp()
 {
-    FixtureBuilder b("hb/ut/App");
-    {
-        FixtureMethod init;
-        init.name      = "<init>";
-        init.desc      = "()V";
-        init.access    = kAccPublic;
-        init.maxStack  = 1;
-        init.maxLocals = 1;
-        const Bytes superCtor = u2Operand(b.methodRef("java/lang/Object", "<init>", "()V"));
-        init.code     = {0x2A, 0xB7, superCtor[0], superCtor[1], 0xB1};
-        b.addMethod(init);
+    return assembleJasm(R"JASM(.super java/lang/Object
+.class public super hb/ut/App {
+
+  .method public <init> ()V {
+    code: {
+      aload 0
+      invokespecial java/lang/Object.<init> ()V
+      return
     }
-    {
-        FixtureMethod call;
-        call.name      = "call";
-        call.desc      = "()V";
-        call.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-        call.maxStack  = 2;
-        call.maxLocals = 0;
-        call.code      = getStaticPop(b.fieldRef("hb/ut/Alpha", "FLAG", "I"));
-        call.code.push_back(0x04);   // ICONST_1（trim 的实参）
-        const Bytes trim = invokeStatic(b.methodRef("hb/ut/Alpha", "trim", "(I)I"));
-        appendBytes(call.code, trim);
-        call.code.push_back(0x57);   // POP（消费 trim 返回值）
-        const Bytes state = getStaticPop(b.fieldRef("hb/ut/Beta", "STATE", "I"));
-        appendBytes(call.code, state);
-        call.code.push_back(0xB1);   // RETURN
-        b.addMethod(call);
+  }
+
+  .method public static call ()V {
+    code: {
+      getstatic hb/ut/Alpha.FLAG I
+      pop
+      iconst_1
+      invokestatic hb/ut/Alpha.trim (I)I
+      pop
+      getstatic hb/ut/Beta.STATE I
+      pop
+      return
     }
-    {
-        FixtureMethod touch;
-        touch.name      = "instanceTouch";
-        touch.desc      = "()V";
-        touch.access    = kAccPublic;
-        touch.maxStack  = 0;
-        touch.maxLocals = 1;
-        touch.code      = {0xB1};
-        b.addMethod(touch);
+  }
+
+  .method public instanceTouch ()V {
+    code: {
+      return
     }
-    return b.assemble();
+  }
+}
+)JASM");
 }
 
 /// 给字段挂 ConstantValue(Integer) 属性（adopt 只搬元数据、本 pass 负责重建
-/// 的输入面）：走 libjbc 公共 DOM 面，写回字节。
+/// 的输入面；例外②）：走 libjbc 公共 DOM 面，写回字节。
 Bytes withConstantValue(Bytes classBytes, std::string_view fieldName, ca::i32 value)
 {
     auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(classBytes));

@@ -1,8 +1,8 @@
 // RedundantInvokeRemover（全局件）：容器内定义 × 弹弃消费 × 纯度提名的
 // 调用点整组摘除（委派 MethodCallRemover 点名面）——纯方法弹弃删、
 // 只读/非纯/返回被消费/容器外目标保留、跨类全应用、被调方不改写、
-// 注册面。夹具经 shared/structural_pass_util.hpp 手拼 classfile；方法体
-// 断言经会话 promote 后的指令序完成。
+// 注册面。夹具经 jasm 文本装配（JvmJasmService）；方法体断言经会话
+// promote 后的指令序完成。
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -17,34 +17,21 @@
 #include "mjbase/pass/redundant_invoke_remover.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
 
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 
 namespace {
 
-constexpr ca::u16 kAccPublicStatic = 0x0009;
-
-FixtureMethod method(const char* name, const char* desc, Bytes code)
+/// 单静态方法类夹具：internalName 定类名，methodDecl 为 .method 声明文本
+///（含 body，不含收尾 `}`——由本 helper 闭合类体）。
+Bytes oneClass(const std::string& internalName, const std::string& methodDecl)
 {
-    FixtureMethod m;
-    m.name      = name;
-    m.desc      = desc;
-    m.access    = kAccPublicStatic;
-    m.maxStack  = 6;
-    m.maxLocals = 2;
-    m.code      = std::move(code);
-    return m;
-}
-
-/// u16 大端两字节。
-Bytes u16b(ca::u16 v) { return {static_cast<ca::u8>(v >> 8), static_cast<ca::u8>(v)}; }
-
-/// 拼接指令片段。
-Bytes cat(Bytes a, Bytes b)
-{
-    a.insert(a.end(), b.begin(), b.end());
-    return a;
+    return assembleJasm(R"JASM(
+.super java/lang/Object
+.class public super )JASM" + internalName + R"JASM( {
+)JASM" + methodDecl + R"JASM(}
+)JASM");
 }
 
 /// 读回 class 字节中某方法 promote 后的指令序（按方法名取第一个命中）。
@@ -86,20 +73,39 @@ const mjbase::model::ClassResource* classResource(mjbase::model::ResourceContain
 /// write ()V 非纯（putstatic 写）。
 Bytes buildCalleeClass()
 {
-    FixtureBuilder builder("Callee");
-    builder.addMethod(method("pick", "()I", {0x04, 0xac}));   // ICONST_1; IRETURN
-    {
-        const ca::u16 fld = builder.fieldRef("Callee", "state", "I");
-        // GETSTATIC fld; IRETURN —— 只读面。
-        builder.addMethod(method("rw", "()I", cat(cat({0xb2}, u16b(fld)), {0xac})));
+    return oneClass("Callee",
+                    R"JASM(  .method public static pick ()I {
+    code: {
+      iconst_1
+      ireturn
     }
-    {
-        const ca::u16 fld = builder.fieldRef("Callee", "state", "I");
-        // ICONST_1; PUTSTATIC fld; RETURN —— 写堆面。
-        builder.addMethod(
-            method("write", "()V", cat(cat({0x04, 0xb3}, u16b(fld)), {0xb1})));
+  }
+  .method public static rw ()I {
+    code: {
+      getstatic Callee.state I
+      ireturn
     }
-    return builder.assemble();
+  }
+  .method public static write ()V {
+    code: {
+      iconst_1
+      putstatic Callee.state I
+      return
+    }
+  }
+)JASM");
+}
+
+/// Caller 单方法夹具：body 为 go 方法体指令片段。
+Bytes callerClass(const std::string& internalName, const std::string& desc,
+                  const std::string& body)
+{
+    return oneClass(internalName,
+                    "  .method public static go " + desc + R"JASM( {
+    code: {
+)JASM" + body + R"JASM(    }
+  }
+)JASM");
 }
 
 mjbase::spi::PreservedAnalyses runPass(mjbase::model::ResourceContainer& container)
@@ -118,12 +124,12 @@ TEST(RedundantInvokeRemoverTest, pureDiscardedCallRemoved)
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Callee.class", buildCalleeClass());
     {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("Callee", "pick", "()I");
-        // INVOKESTATIC pick; POP; RETURN
-        builder.addMethod(
-            method("go", "()V", cat(invokeStatic(mref), {0x57, 0xb1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+        addClassResource(container, "Caller.class",
+                         callerClass("Caller", "()V",
+                                     R"JASM(      invokestatic Callee.pick ()I
+      pop
+      return
+)JASM"));
     }
 
     EXPECT_TRUE(runPass(container).changed());
@@ -141,11 +147,12 @@ TEST(RedundantInvokeRemoverTest, readOnlyCalleeKept)
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Callee.class", buildCalleeClass());
     {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("Callee", "rw", "()I");
-        builder.addMethod(
-            method("go", "()V", cat(invokeStatic(mref), {0x57, 0xb1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+        addClassResource(container, "Caller.class",
+                         callerClass("Caller", "()V",
+                                     R"JASM(      invokestatic Callee.rw ()I
+      pop
+      return
+)JASM"));
     }
     runPass(container);
     const auto* caller = classResource(container, "Caller.class");
@@ -161,10 +168,11 @@ TEST(RedundantInvokeRemoverTest, impureCalleeKept)
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Callee.class", buildCalleeClass());
     {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("Callee", "write", "()V");
-        builder.addMethod(method("go", "()V", cat(invokeStatic(mref), {0xb1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+        addClassResource(container, "Caller.class",
+                         callerClass("Caller", "()V",
+                                     R"JASM(      invokestatic Callee.write ()V
+      return
+)JASM"));
     }
     runPass(container);
     const auto* caller = classResource(container, "Caller.class");
@@ -180,10 +188,11 @@ TEST(RedundantInvokeRemoverTest, consumedResultKept)
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Callee.class", buildCalleeClass());
     {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("Callee", "pick", "()I");
-        builder.addMethod(method("go", "()I", cat(invokeStatic(mref), {0xac})));
-        addClassResource(container, "Caller.class", builder.assemble());
+        addClassResource(container, "Caller.class",
+                         callerClass("Caller", "()I",
+                                     R"JASM(      invokestatic Callee.pick ()I
+      ireturn
+)JASM"));
     }
     runPass(container);
     const auto* caller = classResource(container, "Caller.class");
@@ -200,18 +209,20 @@ TEST(RedundantInvokeRemoverTest, nominationAppliesAcrossClasses)
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Callee.class", buildCalleeClass());
     {
-        FixtureBuilder builder("CallerA");
-        const ca::u16  mref = builder.methodRef("Callee", "pick", "()I");
-        builder.addMethod(
-            method("go", "()V", cat(invokeStatic(mref), {0x57, 0xb1})));
-        addClassResource(container, "CallerA.class", builder.assemble());
+        addClassResource(container, "CallerA.class",
+                         callerClass("CallerA", "()V",
+                                     R"JASM(      invokestatic Callee.pick ()I
+      pop
+      return
+)JASM"));
     }
     {
-        FixtureBuilder builder("CallerB");
-        const ca::u16  mref = builder.methodRef("Callee", "pick", "()I");
-        builder.addMethod(
-            method("go", "()V", cat(invokeStatic(mref), {0x57, 0xb1})));
-        addClassResource(container, "CallerB.class", builder.assemble());
+        addClassResource(container, "CallerB.class",
+                         callerClass("CallerB", "()V",
+                                     R"JASM(      invokestatic Callee.pick ()I
+      pop
+      return
+)JASM"));
     }
 
     EXPECT_TRUE(runPass(container).changed());
@@ -230,12 +241,13 @@ TEST(RedundantInvokeRemoverTest, externalTargetKept)
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Callee.class", buildCalleeClass());
     {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("java/lang/System", "nanoTime", "()J");
         // INVOKESTATIC nanoTime; POP2; RETURN（宽度匹配的弹弃但目标在容器外）
-        builder.addMethod(
-            method("go", "()V", cat(invokeStatic(mref), {0x58, 0xb1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+        addClassResource(container, "Caller.class",
+                         callerClass("Caller", "()V",
+                                     R"JASM(      invokestatic java/lang/System.nanoTime ()J
+      pop2
+      return
+)JASM"));
     }
     runPass(container);
     const auto* caller = classResource(container, "Caller.class");
@@ -251,11 +263,12 @@ TEST(RedundantInvokeRemoverTest, calleeBodyUntouched)
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Callee.class", buildCalleeClass());
     {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("Callee", "pick", "()I");
-        builder.addMethod(
-            method("go", "()V", cat(invokeStatic(mref), {0x57, 0xb1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+        addClassResource(container, "Caller.class",
+                         callerClass("Caller", "()V",
+                                     R"JASM(      invokestatic Callee.pick ()I
+      pop
+      return
+)JASM"));
     }
     const Bytes before = classResource(container, "Callee.class")->get();
     runPass(container);

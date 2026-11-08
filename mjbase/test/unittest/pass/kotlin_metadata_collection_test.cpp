@@ -9,7 +9,7 @@
 // 解 jasm 方言无法表达（无注解 overlay），经 CF 级 typed AnnotationsAttr 写
 // 面挂载（纪律例外②申报）。d1 载荷由测试侧 kotlinc 同口径编码器（BitEncoding
 // encodeBytes + protobuf 线格式）在**注解元素值数据面**生成——这些字节是 CP
-// 串内容，不是 classfile 结构字节，不经任何 classfile 级 putU8/putU16 拼装。
+// 串内容，不是 classfile 结构字节，不经任何 classfile 结构级字节拼装。
 #include <gtest/gtest.h>
 
 #include <filesystem>

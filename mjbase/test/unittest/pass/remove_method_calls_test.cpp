@@ -1,13 +1,24 @@
-/// MethodCallRemover（调用点收尾件，opt pass 波次）单测：点名删调用点的栈
-/// 等价（四族 invoke / cat2 吞参 / 死局部 store / void 吞参）、放弃路径
-/// （dup 前缀 / 方法句柄钉死 / 引用锚定 / 返回值被消费 / 容器不可读）、
-/// 调用图边同步（none() 失效驱动重建）、默认 no-op 与无用结果白名单
-/// 可配置面。夹具经 shared/structural_pass_util.hpp 手拼 classfile；方法体
-/// 断言经 libjbc 会话 promote 后的 CodeDom 指令序完成（不依赖字节偏移）。
+// MethodCallRemover（调用点收尾件，opt pass 波次）单测：点名删调用点的栈
+// 等价（四族 invoke / cat2 吞参 / 死局部 store / void 吞参）、放弃路径
+// （dup 前缀 / 方法句柄钉死 / 引用锚定 / 返回值被消费 / 容器不可读）、
+// 调用图边同步（none() 失效驱动重建）、默认 no-op 与无用结果白名单
+// 可配置面。
+//
+// 夹具纪律：方法体一律 jasm 文本装配（JvmJasmService），原
+// structural_pass_util 手拼载体退役；方法体断言仍经 libjbc 会话 promote
+// 后的 CodeDom 指令序完成（不依赖字节偏移）。三处按语义合法重表达：
+// - 方法句柄钉死面：condy ldc 表达——BSM 引用位 { invokestatic,
+//   Used.pick, ()I } 落 CP MethodHandle 条目（句柄扫描逐条目覆盖），
+//   钉死三元组与原 ldc 直载柄同实；
+// - 分支锚定面：原 goto 直落调用点（栈形断裂不可装配）以异常区间起点锚
+//   调用点同位重表达（labelsAt 对分支目标与异常边界同源留锚）；
+// - dup2 前缀面：原 return 欠清栈不可装配，窗尾补 pop2 清栈——放弃判定
+//   只看调用点前一条为 DUP2，面同实。
 #include <gtest/gtest.h>
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "jbc/core/opcode.hpp"
@@ -24,7 +35,7 @@
 #include "mjbase/spi/analysis_manager.hpp"
 #include "mjbase/spi/pass_pipeline.hpp"
 #include "mjbase/spi/preserved_analyses.hpp"
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 
@@ -34,83 +45,34 @@ using mjbase::pass::MethodCallRemovalConfig;
 using mjbase::pass::MethodCallRemover;
 using mjbase::pass::MethodCallSpec;
 
-constexpr ca::u16 kAccPublicStatic = 0x0009;
-
 // ── 夹具构造 ─────────────────────────────────────────────────────────────────
 
-/// FixtureMethod 便捷装配（public static，栈深给足余量）。
-FixtureMethod method(const char* name, const char* desc, Bytes code)
+/// 类便捷装配：cls 类挂 methodsText（若干 `.method` 声明文本）。
+Bytes callerClass(const std::string& cls, std::string_view methodsText)
 {
-    FixtureMethod m;
-    m.name      = name;
-    m.desc      = desc;
-    m.access    = kAccPublicStatic;
-    m.maxStack  = 6;
-    m.maxLocals = 2;
-    m.code      = std::move(code);
-    return m;
+    const std::string src = R"JASM(.super java/lang/Object
+.class public super )JASM" + cls + R"JASM( {
+)JASM" + std::string(methodsText) + R"JASM(}
+)JASM";
+    // major 61：帧面产物（分支体改写走 Strict 帧再生，再生后 SMT 在场）。
+    return assembleJasm(src, 61);
 }
 
 /// 被调用方类：pick()I（返回 1）+ keep()V。调用点删除不得改写它。
-Bytes buildCalleeClass(const char* name)
+Bytes buildCalleeClass(const std::string& name)
 {
-    FixtureBuilder builder(name);
-    builder.addMethod(method("pick", "()I", {0x04, 0xAC}));       // ICONST_1; IRETURN
-    builder.addMethod(method("keep", "()V", bareReturn()));
-    return builder.assemble();
-}
-
-/// 指令片段顺序拼接（右值友好版 appendBytes；重载到 5 段足够单测用）。
-inline Bytes chain(Bytes a, Bytes b)
-{
-    appendBytes(a, std::move(b));
-    return a;
-}
-
-inline Bytes chain(Bytes a, Bytes b, Bytes c)
-{
-    appendBytes(a, std::move(b));
-    appendBytes(a, std::move(c));
-    return a;
-}
-
-inline Bytes chain(Bytes a, Bytes b, Bytes c, Bytes d)
-{
-    appendBytes(a, std::move(b));
-    appendBytes(a, std::move(c));
-    appendBytes(a, std::move(d));
-    return a;
-}
-
-inline Bytes chain(Bytes a, Bytes b, Bytes c, Bytes d, Bytes e)
-{
-    appendBytes(a, std::move(b));
-    appendBytes(a, std::move(c));
-    appendBytes(a, std::move(d));
-    appendBytes(a, std::move(e));
-    return a;
-}
-
-/// 常用指令片段。
-Bytes invokeVirtual(ca::u16 cp)
-{
-    return {0xB6, static_cast<ca::u8>(cp >> 8), static_cast<ca::u8>(cp)};
-}
-
-Bytes invokeSpecial(ca::u16 cp)
-{
-    return {0xB7, static_cast<ca::u8>(cp >> 8), static_cast<ca::u8>(cp)};
-}
-
-Bytes invokeInterface(ca::u16 cp)
-{
-    return {0xB9, static_cast<ca::u8>(cp >> 8), static_cast<ca::u8>(cp), 0x01, 0x00};
-}
-
-Bytes ldc(ca::u16 cp)
-{
-    // LDC 操作数是 u1：夹具池很小，索引恒在 0xFF 内。
-    return {0x12, static_cast<ca::u8>(cp)};
+    return callerClass(name, R"JASM(  .method public static pick ()I {
+    code: {
+      iconst_1
+      ireturn
+    }
+  }
+  .method public static keep ()V {
+    code: {
+      return
+    }
+  }
+)JASM");
 }
 
 /// 点名 include 规格。
@@ -191,12 +153,15 @@ mjbase::spi::PreservedAnalyses runPass(MethodCallRemover&                 pass,
 TEST(MethodCallRemover, NoConfigIsCompleteNoOp)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("Used", "pick", "()I");
-        builder.addMethod(method("go", "()V", chain(invokeStatic(mref), {0x57, 0xB1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static go ()V {
+    code: {
+      invokestatic Used.pick ()I
+      pop
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
 
     const auto* before = classResource(container, "Caller.class");
@@ -213,12 +178,15 @@ TEST(MethodCallRemover, NoConfigIsCompleteNoOp)
 TEST(MethodCallRemover, RemovesStaticCallWithSwallowedCat1Result)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("Used", "pick", "()I");
-        builder.addMethod(method("go", "()V", chain(invokeStatic(mref), {0x57, 0xB1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static go ()V {
+    code: {
+      invokestatic Used.pick ()I
+      pop
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
     const Bytes callerBefore = classResource(container, "Caller.class")->get();
     const Bytes usedBefore   = classResource(container, "Used.class")->get();
@@ -242,22 +210,37 @@ TEST(MethodCallRemover, RemovesStaticCallWithSwallowedCat1Result)
 TEST(MethodCallRemover, RemovesAllFourInvokeFamilies)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  st  = builder.methodRef("Used", "keep", "()V");
-        const ca::u16  vt  = builder.methodRef("Used", "virt", "()V");
-        const ca::u16  sp  = builder.methodRef("Used", "priv", "()V");
-        const ca::u16  itf = builder.interfaceMethodRef("Itf", "f", "()V");
-        builder.addMethod(method("mStatic", "()V", chain(invokeStatic(st), {0xB1})));
-        // aconst_null; invokevirtual; return —— void 接收者吞 pop。
-        builder.addMethod(method("mVirtual", "()V",
-                                 chain({0x01}, invokeVirtual(vt), {0xB1})));
-        builder.addMethod(method("mSpecial", "()V",
-                                 chain({0x01}, invokeSpecial(sp), {0xB1})));
-        builder.addMethod(method("mIface", "()V",
-                                 chain({0x01}, invokeInterface(itf), {0xB1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(
+        container, "Caller.class",
+        callerClass("Caller",
+                    R"JASM(  .method public static mStatic ()V {
+    code: {
+      invokestatic Used.keep ()V
+      return
     }
+  }
+  .method public static mVirtual ()V {
+    code: {
+      aconst_null
+      invokevirtual Used.virt ()V
+      return
+    }
+  }
+  .method public static mSpecial ()V {
+    code: {
+      aconst_null
+      invokespecial Used.priv ()V
+      return
+    }
+  }
+  .method public static mIface ()V {
+    code: {
+      aconst_null
+      invokeinterface Itf.f ()V
+      return
+    }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
 
     MethodCallRemovalConfig config;
@@ -286,18 +269,25 @@ TEST(MethodCallRemover, RemovesAllFourInvokeFamilies)
 TEST(MethodCallRemover, SwallowsCat2ResultAndCat2Args)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  jret = builder.methodRef("Used", "jl", "()J");
-        const ca::u16  jarg = builder.methodRef("Used", "pl", "(J)I");
-        // invokestatic ()J; pop2; return → [RETURN]。
-        builder.addMethod(method("mLongRet", "()V",
-                                 chain(invokeStatic(jret), {0x58, 0xB1})));
-        // lconst_1; invokestatic (J)I; pop; return → [LCONST_1, POP2, POP, RETURN]。
-        builder.addMethod(method("mLongArg", "()V",
-                                 chain({0x0A}, invokeStatic(jarg), {0x57, 0xB1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(
+        container, "Caller.class",
+        callerClass("Caller",
+                    R"JASM(  .method public static mLongRet ()V {
+    code: {
+      invokestatic Used.jl ()J
+      pop2
+      return
     }
+  }
+  .method public static mLongArg ()V {
+    code: {
+      lconst_1
+      invokestatic Used.pl (J)I
+      pop
+      return
+    }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
 
     MethodCallRemovalConfig config;
@@ -319,14 +309,17 @@ TEST(MethodCallRemover, SwallowsCat2ResultAndCat2Args)
 TEST(MethodCallRemover, VoidCallArgsSwallowedByPops)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  str = builder.strConst("x");
-        const ca::u16  one = builder.methodRef("Used", "takes", "(IJLjava/lang/String;)V");
-        builder.addMethod(
-            method("go", "()V", chain({0x04, 0x0A}, ldc(str), invokeStatic(one), {0xB1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static go ()V {
+    code: {
+      iconst_1
+      lconst_1
+      ldc "x"
+      invokestatic Used.takes (IJLjava/lang/String;)V
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
 
     MethodCallRemovalConfig config;
@@ -336,7 +329,7 @@ TEST(MethodCallRemover, VoidCallArgsSwallowedByPops)
 
     const auto* caller = classResource(container, "Caller.class");
     ASSERT_NE(caller, nullptr);
-    // iconst_1 + lconst_0 + ldc 生产者保留；吞参序 POP(I) POP2(J) POP(ref)。
+    // iconst_1 + lconst_1 + ldc 生产者保留；吞参序 POP(I) POP2(J) POP(ref)。
     const auto ops = methodOps(caller->get(), "go");
     ASSERT_EQ(ops.size(), 7u);
     EXPECT_EQ(ops[3], jbc::core::Op::POP);
@@ -348,18 +341,26 @@ TEST(MethodCallRemover, VoidCallArgsSwallowedByPops)
 TEST(MethodCallRemover, DeadLocalStoreResultRemovedLiveStoreKept)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("Used", "pick", "()I");
-        // 结果存入死局部：istore_1 后全方法无 iload 1 → 随调用整删。
-        builder.addMethod(method("deadStore", "()V",
-                                 chain(invokeStatic(mref), {0x3C, 0xB1})));
-        // 存入活局部：后文 iload_1 读 → 调用保留。
-        builder.addMethod(method(
-            "liveStore", "()V",
-            chain(invokeStatic(mref), {0x3C, 0x1B, 0x57, 0xB1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(
+        container, "Caller.class",
+        callerClass("Caller",
+                    R"JASM(  .method public static deadStore ()V {
+    code: {
+      invokestatic Used.pick ()I
+      istore 1
+      return
     }
+  }
+  .method public static liveStore ()V {
+    code: {
+      invokestatic Used.pick ()I
+      istore 1
+      iload 1
+      pop
+      return
+    }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
 
     MethodCallRemovalConfig config;
@@ -379,18 +380,17 @@ TEST(MethodCallRemover, DeadLocalStoreResultRemovedLiveStoreKept)
 TEST(MethodCallRemover, DupPrefixConstructorSiteAbandoned)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  ctor = builder.methodRef("Used", "<init>", "()V");
-        const ca::u16  cls  = builder.cls("Used");
-        // new Used; dup; invokespecial <init>; pop; return —— dup 前缀放弃。
-        const Bytes code = {0xBB, static_cast<ca::u8>(cls >> 8), static_cast<ca::u8>(cls),
-                            0x59,
-                            0xB7, static_cast<ca::u8>(ctor >> 8), static_cast<ca::u8>(ctor),
-                            0x57, 0xB1};
-        builder.addMethod(method("make", "()V", code));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static make ()V {
+    code: {
+      new Used
+      dup
+      invokespecial Used.<init> ()V
+      pop
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
     const Bytes before = classResource(container, "Caller.class")->get();
 
@@ -403,17 +403,19 @@ TEST(MethodCallRemover, DupPrefixConstructorSiteAbandoned)
 
 TEST(MethodCallRemover, Dup2PrefixStaticSiteAbandoned)
 {
+    // 窗尾补 pop2 清栈（放弃判定只看调用点前一条为 DUP2，面同实）。
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("Used", "pl", "(J)V");
-        // lconst_1; dup2; invokestatic (J)V; return —— dup2 前缀放弃。
-        const Bytes code = {0x0A, 0x5C,
-                            0xB8, static_cast<ca::u8>(mref >> 8), static_cast<ca::u8>(mref),
-                            0xB1};
-        builder.addMethod(method("go", "()V", code));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static go ()V {
+    code: {
+      lconst_1
+      dup2
+      invokestatic Used.pl (J)V
+      pop2
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
     const Bytes before = classResource(container, "Caller.class")->get();
 
@@ -426,19 +428,20 @@ TEST(MethodCallRemover, Dup2PrefixStaticSiteAbandoned)
 
 TEST(MethodCallRemover, MethodHandlePinnedMemberAbandoned)
 {
+    // condy ldc 的 BSM 引用位 { invokestatic, Used.pick, ()I } 落 CP
+    // MethodHandle(6, Used.pick()I)——钉死三元组与原 ldc 直载柄同实。
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref    = builder.methodRef("Used", "pick", "()I");
-        const ca::u16  handle  = builder.methodHandle(6, mref);   // REF_invokeStatic
-        // ldc (MethodHandle pick); pop; invokestatic pick()I; pop; return。
-        Bytes code = ldc(handle);
-        appendBytes(code, {0x57});
-        appendBytes(code, invokeStatic(mref));
-        appendBytes(code, {0x57, 0xB1});
-        builder.addMethod(method("go", "()V", code));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static go ()V {
+    code: {
+      ldc { mh, Ljava/lang/invoke/MethodHandle;, { invokestatic, Used.pick, ()I }, { } }
+      pop
+      invokestatic Used.pick ()I
+      pop
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
     const Bytes before = classResource(container, "Caller.class")->get();
 
@@ -453,12 +456,15 @@ TEST(MethodCallRemover, MethodHandlePinnedMemberAbandoned)
 TEST(MethodCallRemover, ExcludeCancelsInclude)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("Used", "pick", "()I");
-        builder.addMethod(method("go", "()V", chain(invokeStatic(mref), {0x57, 0xB1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static go ()V {
+    code: {
+      invokestatic Used.pick ()I
+      pop
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
     const Bytes before = classResource(container, "Caller.class")->get();
 
@@ -473,14 +479,18 @@ TEST(MethodCallRemover, ExcludeCancelsInclude)
 TEST(MethodCallRemover, UnreadableClassAbortsWholePass)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("Used", "pick", "()I");
-        builder.addMethod(method("go", "()V", chain(invokeStatic(mref), {0x57, 0xB1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static go ()V {
+    code: {
+      invokestatic Used.pick ()I
+      pop
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
-    // 畸形 class 资源：句柄钉死证明需要全容器可读，任一不可读整 pass 放弃。
+    // 畸形 class 资源（刻意截断样本，非手拼类）：句柄钉死证明需要全容器
+    // 可读，任一不可读整 pass 放弃。
     container.addResource("broken.class",
                           std::make_unique<mjbase::model::ClassResource>(
                               "broken.class", Bytes{0xCA, 0xFE, 0xBA, 0xBE, 0x00}));
@@ -495,17 +505,24 @@ TEST(MethodCallRemover, UnreadableClassAbortsWholePass)
 
 TEST(MethodCallRemover, BranchAnchoredSiteKept)
 {
+    // 异常区间起点锚调用点（labelsAt 对分支目标与异常边界同源留锚，
+    // handler 裸 athrow 吃掉异常栈）→ 调用点被锚定，放弃。
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("Used", "pick", "()I");
-        // goto +3 直落到 invoke 指令上：调用点被分支锚定 → 放弃。
-        Bytes code = {0xA7, 0x00, 0x03};
-        appendBytes(code, invokeStatic(mref));
-        code.push_back(0xB1);
-        builder.addMethod(method("go", "()V", code));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static go ()V {
+    exceptions: {
+      { Lb, Lr, Lr, * }
+    },
+    code: {
+      Lb:
+      invokestatic Used.pick ()I
+      pop
+      return
+      Lr:
+      athrow
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
     const Bytes before = classResource(container, "Caller.class")->get();
 
@@ -519,15 +536,17 @@ TEST(MethodCallRemover, BranchAnchoredSiteKept)
 TEST(MethodCallRemover, ConsumedResultSiteAbandoned)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("Used", "pick", "()I");
-        // invokestatic; iconst_1; iadd; pop; return —— 返回值被消费 → 放弃。
-        Bytes code = invokeStatic(mref);
-        appendBytes(code, {0x04, 0x60, 0x57, 0xB1});
-        builder.addMethod(method("go", "()V", code));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static go ()V {
+    code: {
+      invokestatic Used.pick ()I
+      iconst_1
+      iadd
+      pop
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
     const Bytes before = classResource(container, "Caller.class")->get();
 
@@ -544,12 +563,15 @@ TEST(MethodCallRemover, CallGraphEdgesResyncAfterRemoval)
 {
     namespace ref = mjbase::reference;
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("App");
-        const ca::u16  mref = builder.methodRef("Used", "pick", "()I");
-        builder.addMethod(method("main", "()V", chain(invokeStatic(mref), {0x57, 0xB1})));
-        addClassResource(container, "App.class", builder.assemble());
+    addClassResource(container, "App.class",
+                     callerClass("App", R"JASM(  .method public static main ()V {
+    code: {
+      invokestatic Used.pick ()I
+      pop
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
 
     ca::str::Utf8StringArena           arena;
@@ -580,31 +602,29 @@ TEST(MethodCallRemover, CallGraphEdgesResyncAfterRemoval)
 
 TEST(MethodCallRemover, BranchyMethodRewrittenWithFrameRewire)
 {
+    // 调用点在分支方法头部（分支目标都不落在删除区间内）：
+    //   invokestatic pick()I; pop; iload 0; ifeq L1; iconst_0; pop;
+    //   goto L2; L1: iconst_1; pop; L2: return
+    // 方法带分支 → 写回走 Strict 帧再生链（V61 装配产物，再生后 SMT 在场）。
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("Used", "pick", "()I");
-        // 调用点在分支方法头部（分支目标都不落在删除区间内）：
-        //   0  invokestatic pick()I   (3 字节)
-        //   3  pop
-        //   4  iload_0
-        //   5  ifeq +8 → 13
-        //   8  iconst_0; pop
-        //  10  goto +5 → 15
-        //  13  iconst_1; pop
-        //  15  return
-        // 方法带分支 → 写回走 Strict 帧再生链（V52 夹具，再生后 SMT 在场）。
-        Bytes code = invokeStatic(mref);
-        appendBytes(code, {0x57,              // pop
-                           0x1A,              // iload_0
-                           0x99, 0x00, 0x08,  // ifeq +8 → 13（目标 = 本指令 pc 5 + 8）
-                           0x03, 0x57,        // iconst_0; pop
-                           0xA7, 0x00, 0x05,  // goto +5 → 15（目标 = 本指令 pc 10 + 5）
-                           0x04, 0x57,        // iconst_1; pop
-                           0xB1});            // return
-        builder.addMethod(method("go", "(I)V", code));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static go (I)V {
+    code: {
+      invokestatic Used.pick ()I
+      pop
+      iload 0
+      ifeq L1
+      iconst_0
+      pop
+      goto L2
+      L1:
+      iconst_1
+      pop
+      L2:
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
 
     MethodCallRemovalConfig config;
@@ -645,12 +665,15 @@ TEST(MethodCallRemover, BranchyMethodRewrittenWithFrameRewire)
 TEST(MethodCallRemover, SecondRunIsStrictNoOp)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("Used", "pick", "()I");
-        builder.addMethod(method("go", "()V", chain(invokeStatic(mref), {0x57, 0xB1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static go ()V {
+    code: {
+      invokestatic Used.pick ()I
+      pop
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
 
     MethodCallRemovalConfig config;
@@ -668,14 +691,16 @@ TEST(MethodCallRemover, SecondRunIsStrictNoOp)
 TEST(MethodCallRemover, WhitelistStringWindowRemoved)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  str  = builder.strConst("hello");
-        const ca::u16  mref = builder.methodRef("java/lang/String", "length", "()I");
-        builder.addMethod(
-            method("go", "()V", chain(ldc(str), invokeVirtual(mref), {0x57, 0xB1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static go ()V {
+    code: {
+      ldc "hello"
+      invokevirtual java/lang/String.length ()I
+      pop
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
 
     MethodCallRemovalConfig config;
@@ -688,15 +713,18 @@ TEST(MethodCallRemover, WhitelistStringWindowRemoved)
 
 TEST(MethodCallRemover, WhitelistStringNonConstReceiverKept)
 {
+    // aload 0（实参，非常量接收者，可能 NPE）→ 保守保留。
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  mref = builder.methodRef("java/lang/String", "length", "()I");
-        // aload_0（非常量接收者，可能 NPE）→ 保守保留。
-        builder.addMethod(
-            method("go", "()V", chain({0x2A}, invokeVirtual(mref), {0x57, 0xB1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static go (Ljava/lang/String;)V {
+    code: {
+      aload 0
+      invokevirtual java/lang/String.length ()I
+      pop
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
     const Bytes before = classResource(container, "Caller.class")->get();
 
@@ -710,19 +738,26 @@ TEST(MethodCallRemover, WhitelistStringNonConstReceiverKept)
 TEST(MethodCallRemover, WhitelistMathWindowRemovedNonConstArgKept)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  abs = builder.methodRef("java/lang/Math", "abs", "(I)I");
-        // iconst_5; invokestatic Math.abs; pop; return → 整窗删。
-        builder.addMethod(
-            method("constArg", "()V",
-                   chain({0x08}, invokeStatic(abs), {0x57, 0xB1})));
-        // iload_0（非常量实参）→ 保留。
-        builder.addMethod(
-            method("varArg", "()V",
-                   chain({0x1A}, invokeStatic(abs), {0x57, 0xB1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(
+        container, "Caller.class",
+        callerClass("Caller",
+                    R"JASM(  .method public static constArg ()V {
+    code: {
+      iconst_5
+      invokestatic java/lang/Math.abs (I)I
+      pop
+      return
     }
+  }
+  .method public static varArg (I)V {
+    code: {
+      iload 0
+      invokestatic java/lang/Math.abs (I)I
+      pop
+      return
+    }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
     const Bytes before = classResource(container, "Caller.class")->get();
 
@@ -742,14 +777,15 @@ TEST(MethodCallRemover, WhitelistMathWindowRemovedNonConstArgKept)
 TEST(MethodCallRemover, WhitelistCat2JdkCallRemoved)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  nano = builder.methodRef("java/lang/System", "nanoTime", "()J");
-        // invokestatic System.nanoTime()J; pop2; return → [RETURN]。
-        builder.addMethod(
-            method("go", "()V", chain(invokeStatic(nano), {0x58, 0xB1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static go ()V {
+    code: {
+      invokestatic java/lang/System.nanoTime ()J
+      pop2
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
 
     MethodCallRemovalConfig config;
@@ -763,19 +799,17 @@ TEST(MethodCallRemover, WhitelistCat2JdkCallRemoved)
 TEST(MethodCallRemover, WhitelistUserDiscardableEntrySwallowsArgs)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  tag = builder.strConst("TAG");
-        const ca::u16  msg = builder.strConst("msg");
-        const ca::u16  log = builder.methodRef(
-            "com/example/Log", "d", "(Ljava/lang/String;Ljava/lang/String;)I");
-        Bytes code = ldc(tag);
-        appendBytes(code, ldc(msg));
-        appendBytes(code, invokeStatic(log));
-        appendBytes(code, {0x57, 0xB1});
-        builder.addMethod(method("go", "()V", code));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(container, "Caller.class",
+                     callerClass("Caller", R"JASM(  .method public static go ()V {
+    code: {
+      ldc "TAG"
+      ldc "msg"
+      invokestatic com/example/Log.d (Ljava/lang/String;Ljava/lang/String;)I
+      pop
+      return
     }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
 
     MethodCallRemovalConfig config;
@@ -799,18 +833,25 @@ TEST(MethodCallRemover, WhitelistUserDiscardableEntrySwallowsArgs)
 TEST(MethodCallRemover, WhitelistFacetOffByDefault)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder builder("Caller");
-        const ca::u16  str  = builder.strConst("hello");
-        const ca::u16  len  = builder.methodRef("java/lang/String", "length", "()I");
-        const ca::u16  nano = builder.methodRef("java/lang/System", "nanoTime", "()J");
-        builder.addMethod(
-            method("s", "()V",
-                   chain(ldc(str), invokeVirtual(len), {0x57, 0xB1})));
-        builder.addMethod(
-            method("t", "()V", chain(invokeStatic(nano), {0x58, 0xB1})));
-        addClassResource(container, "Caller.class", builder.assemble());
+    addClassResource(
+        container, "Caller.class",
+        callerClass("Caller",
+                    R"JASM(  .method public static s ()V {
+    code: {
+      ldc "hello"
+      invokevirtual java/lang/String.length ()I
+      pop
+      return
     }
+  }
+  .method public static t ()V {
+    code: {
+      invokestatic java/lang/System.nanoTime ()J
+      pop2
+      return
+    }
+  }
+)JASM"));
     addClassResource(container, "Used.class", buildCalleeClass("Used"));
     const Bytes before = classResource(container, "Caller.class")->get();
 

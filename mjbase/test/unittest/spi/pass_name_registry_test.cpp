@@ -19,7 +19,7 @@
 #include "mjbase/spi/analysis_manager.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
 #include "mjbase/spi/preserved_analyses.hpp"
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 
@@ -38,27 +38,50 @@ public:
 
 constexpr ca::u16 kAccPrivate = 0x0002;
 
-/// 自类 GETSTATIC/INVOKESTATIC 引用自己 public static 成员的单类容器
+/// 自类 GETSTATIC 引用自己 public static 成员的单类容器
 ///（收紧器的最小触发形态：普查命中 + 无异类引用 → 收紧 private）。
 mjbase::model::ResourceContainer makeSelfRefContainer()
 {
-    FixtureBuilder builder("Owner");
-    builder.addField({"internalField", "I"});   // 缺省 access = public static
-    FixtureMethod self;
-    self.name     = "self";
-    self.desc     = "()V";
-    self.maxStack = 1;
-    self.maxLocals = 0;
-    // GETSTATIC Owner.internalField:I; POP; RETURN
-    Bytes code = getStaticPop(builder.fieldRef("Owner", "internalField", "I"));
-    code.push_back(0x57);   // POP
-    code.push_back(0xb1);   // RETURN
-    self.code = std::move(code);
-    builder.addMethod(self);
-
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "Owner.class", builder.assemble());
+    addClassResource(container, "Owner.class", assembleJasm(R"JASM(.super java/lang/Object
+.class public super Owner {
+  .field public static internalField I
+
+  .method public static self ()V {
+    code: {
+      getstatic Owner.internalField I
+      pop
+      return
+    }
+  }
+}
+)JASM"));
     return container;
+}
+
+/// 例外①申报载体：装配合法基座（badField 占位 I 描述符）经 DOM 单点改写
+/// descCp 为 "HI"——描述符残缺为装配器词表不收的非法形（cleaner 直接用例
+/// 同款）。
+Bytes buildBadDescriptorClass()
+{
+    const Bytes base = assembleJasm(R"JASM(.super java/lang/Object
+.class public super B {
+  .field public static goodField I
+  .field public static badField I
+
+  .method public static goodMethod ()V {
+    code: {
+      return
+    }
+  }
+}
+)JASM");
+    EXPECT_NE(base.size(), 0u);
+    return mutateClassFile(base, "badDescriptor", [](jbc::core::ClassFile& cf) {
+        for (jbc::core::MemberInfo& f : cf.fields) {
+            if (cf.utf8(f.nameCp) == "badField") f.descCp = cf.cp.addUtf8("HI");
+        }
+    });
 }
 
 /// 容器内按 uri 取重读后的 ClassFile（测试进程内静态 keeper 持有模型）。
@@ -214,11 +237,19 @@ TEST(PassNameRegistryTest, PilotsConstructibleViaRegistryAndRun)
     mjbase::spi::PassNameRegistry& reg = mjbase::spi::defaultPassRegistry();
 
     // sorter：类级，b/a 两字段排序为 a/b（对齐 sorter 直接用例的断言口径）。
-    FixtureBuilder builder("T");
-    builder.addField({"b", "I", 0x0000});
-    builder.addField({"a", "I", 0x0000});
-    builder.addMethod({"t", "()V", bareReturn()});
-    auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(builder.assemble()));
+    auto sessionResult = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(assembleJasm(
+        R"JASM(.super java/lang/Object
+.class public super T {
+  .field b I
+  .field a I
+
+  .method t ()V {
+    code: {
+      return
+    }
+  }
+}
+)JASM")));
     ASSERT_TRUE(sessionResult.is_ok());
     auto session = std::move(sessionResult).unwrap();
 
@@ -236,13 +267,10 @@ TEST(PassNameRegistryTest, PilotsConstructibleViaRegistryAndRun)
     EXPECT_EQ(unit.symbols().str(unit.fields[0].name), "a");
     EXPECT_EQ(unit.symbols().str(unit.fields[1].name), "b");
 
-    // cleaner：容器级，非法描述符成员剔除、合法保留（对齐 cleaner 直接用例）。
-    FixtureBuilder bad("B");
-    bad.addField({"goodField", "I"});
-    bad.addField({"badField", "HI"});   // 'H' 非字段类型起始
-    bad.addMethod({"goodMethod", "()V", bareReturn()});
+    // cleaner：容器级，非法描述符成员剔除、合法保留（对齐 cleaner 直接用例；
+    // 载体见 buildBadDescriptorClass 例外①申报）。
     mjbase::model::ResourceContainer container;
-    addClassResource(container, "B.class", bad.assemble());
+    addClassResource(container, "B.class", buildBadDescriptorClass());
     auto cleaner = reg.createGlobalPass("IllegalClassFileCleaner");
     ASSERT_TRUE(cleaner.is_ok());
     mjbase::spi::GlobalAnalysisManager gam(arena);

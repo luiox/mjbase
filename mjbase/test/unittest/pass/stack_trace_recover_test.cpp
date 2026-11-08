@@ -1,9 +1,8 @@
 // StackTraceRecover（全局件）：SourceFile/SourceDebug 恢复、handler 入口
 // dup+printStackTrace 插入（单型取该型、catch-all/多型共享取 Throwable）、
 // 每标签一行 LNT（类级跨方法递增）。覆盖：四类 owner 归组、LNT 行与
-// 跨方法行号、source 属性覆盖式写入、fail-closed、注册面。夹具经
-// shared/structural_pass_util.hpp 手拼 classfile；LNT/source 断言经写回
-// 字节的属性解码完成。
+// 跨方法行号、source 属性覆盖式写入、fail-closed、注册面。夹具经 jasm
+// 文本装配（JvmJasmService）；LNT/source 断言经写回字节的属性解码完成。
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -21,13 +20,11 @@
 #include "mjbase/pass/stack_trace_recover.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
 
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 
 namespace {
-
-constexpr ca::u16 kAccPublicStatic = 0x0009;
 
 mjbase::spi::PreservedAnalyses runPass(mjbase::model::ResourceContainer& container)
 {
@@ -44,12 +41,36 @@ const mjbase::model::ClassResource* classResource(
         container.getResource(uri));
 }
 
-/// 单方法类：code + 可选异常表（catchCp 由调用方给 0 或 Class 索引）。
-Bytes singleMethodClass(FixtureBuilder& b, Bytes code, std::vector<ExcSpec> exc)
+/// 单方法类夹具：codeBody 为 m ()V 指令体片段，excEntries 为异常表条目
+/// 片段（labels 口径，可空 = 无异常表）。
+Bytes singleMethodClass(std::string_view codeBody, std::string_view excEntries = "")
 {
-    b.addMethod({"m", "()V", std::move(code), kAccPublicStatic, std::move(exc), 1,
-                 0});
-    return b.assemble();
+    std::string source;
+    if (excEntries.empty()) {
+        source = std::string{R"JASM(
+.super java/lang/Object
+.class public super t/S {
+  .method public static m ()V {
+    code: {
+)JASM"} + std::string(codeBody) + R"JASM(    }
+  }
+}
+)JASM";
+    }
+    else {
+        source = std::string{R"JASM(
+.super java/lang/Object
+.class public super t/S {
+  .method public static m ()V {
+    exceptions: {
+)JASM"} + std::string(excEntries) + R"JASM(    },
+    code: {
+)JASM" + std::string(codeBody) + R"JASM(    }
+  }
+}
+)JASM";
+    }
+    return assembleJasm(source);
 }
 
 /// 读回写回字节中方法 m 的指令操作码序列。
@@ -122,11 +143,16 @@ TEST(StackTraceRecoverTest, handlerInsertsPrintStackTrace)
     mjbase::model::ResourceContainer container;
     Bytes bytes;
     {
-        FixtureBuilder b("t/S");
-        const ca::u16  cpEx = b.cls("java/lang/Exception");
-        // nop; nop; return + exc(0,2,2,Exception)：handler = pc2（return）。
-        bytes = singleMethodClass(b, {0x00, 0x00, 0xb1}, {ExcSpec{0, 2, 2, cpEx}});
-        addClassResource(container, "t/S.class", std::move(bytes));
+        // nop; nop; return + exc[pc0,pc2)→pc2：handler = return（标签口径）。
+        addClassResource(container, "t/S.class",
+                         singleMethodClass(R"JASM(      L0:
+      nop
+      nop
+      L2:
+      return
+)JASM",
+                                           R"JASM(      { L0, L2, L2, java/lang/Exception }
+)JASM"));
     }
 
     EXPECT_TRUE(runPass(container).changed());
@@ -152,9 +178,15 @@ TEST(StackTraceRecoverTest, catchAllUsesThrowable)
 {
     mjbase::model::ResourceContainer container;
     {
-        FixtureBuilder b("t/S");
-        Bytes bytes = singleMethodClass(b, {0x00, 0x00, 0xb1}, {ExcSpec{0, 2, 2, 0}});
-        addClassResource(container, "t/S.class", std::move(bytes));
+        addClassResource(container, "t/S.class",
+                         singleMethodClass(R"JASM(      L0:
+      nop
+      nop
+      L2:
+      return
+)JASM",
+                                           R"JASM(      { L0, L2, L2, * }
+)JASM"));
     }
     EXPECT_TRUE(runPass(container).changed());
     const auto* cls = classResource(container, "t/S.class");
@@ -169,13 +201,17 @@ TEST(StackTraceRecoverTest, conflictedSharedHandlerUsesThrowable)
 {
     mjbase::model::ResourceContainer container;
     {
-        FixtureBuilder b("t/S");
-        const ca::u16 cpEx  = b.cls("java/lang/Exception");
-        const ca::u16 cpErr = b.cls("java/lang/Error");
-        Bytes         bytes = singleMethodClass(
-            b, {0x00, 0x00, 0xb1},
-            {ExcSpec{0, 1, 2, cpEx}, ExcSpec{1, 2, 2, cpErr}});
-        addClassResource(container, "t/S.class", std::move(bytes));
+        addClassResource(container, "t/S.class",
+                         singleMethodClass(R"JASM(      L0:
+      nop
+      L1:
+      nop
+      L2:
+      return
+)JASM",
+                                           R"JASM(      { L0, L1, L2, java/lang/Exception },
+      { L1, L2, L2, java/lang/Error }
+)JASM"));
     }
     EXPECT_TRUE(runPass(container).changed());
     const auto* cls = classResource(container, "t/S.class");
@@ -193,12 +229,17 @@ TEST(StackTraceRecoverTest, sameTypeSharedHandlerUsesType)
 {
     mjbase::model::ResourceContainer container;
     {
-        FixtureBuilder b("t/S");
-        const ca::u16 cpEx  = b.cls("java/lang/Exception");
-        Bytes         bytes = singleMethodClass(
-            b, {0x00, 0x00, 0xb1},
-            {ExcSpec{0, 1, 2, cpEx}, ExcSpec{1, 2, 2, cpEx}});
-        addClassResource(container, "t/S.class", std::move(bytes));
+        addClassResource(container, "t/S.class",
+                         singleMethodClass(R"JASM(      L0:
+      nop
+      L1:
+      nop
+      L2:
+      return
+)JASM",
+                                           R"JASM(      { L0, L1, L2, java/lang/Exception },
+      { L1, L2, L2, java/lang/Exception }
+)JASM"));
     }
     EXPECT_TRUE(runPass(container).changed());
     const auto* cls = classResource(container, "t/S.class");
@@ -213,10 +254,14 @@ TEST(StackTraceRecoverTest, lntRowsWritten)
 {
     mjbase::model::ResourceContainer container;
     {
-        FixtureBuilder b("t/S");
-        // goto pc5; nop; nop; return —— GOTO 目标锚在 return（pc5）。
-        Bytes bytes = singleMethodClass(b, {0xa7, 0x00, 0x05, 0x00, 0x00, 0xb1}, {});
-        addClassResource(container, "t/S.class", std::move(bytes));
+        // goto → L5; nop; nop（死段）；L5: return —— GOTO 目标锚在 return。
+        addClassResource(container, "t/S.class",
+                         singleMethodClass(R"JASM(      goto L5
+      nop
+      nop
+      L5:
+      return
+)JASM"));
     }
     EXPECT_TRUE(runPass(container).changed());
     const auto* cls = classResource(container, "t/S.class");
@@ -232,13 +277,29 @@ TEST(StackTraceRecoverTest, lineCounterCrossesMethods)
 {
     mjbase::model::ResourceContainer container;
     {
-        FixtureBuilder b("t/S");
-        b.addMethod({"a", "()V",
-                     Bytes{0xa7, 0x00, 0x04, 0x00, 0xb1},   // goto pc4; nop; return
-                     kAccPublicStatic, {}, 1, 0});
-        b.addMethod({"b", "()V",
-                     Bytes{0xa7, 0x00, 0x04, 0x00, 0xb1}, kAccPublicStatic, {}, 1, 0});
-        addClassResource(container, "t/S.class", b.assemble());
+        // 两方法各 goto → L4; nop（死段）；L4: return。
+        addClassResource(container, "t/S.class",
+                         assembleJasm(R"JASM(
+.super java/lang/Object
+.class public super t/S {
+  .method public static a ()V {
+    code: {
+      goto L4
+      nop
+      L4:
+      return
+    }
+  }
+  .method public static b ()V {
+    code: {
+      goto L4
+      nop
+      L4:
+      return
+    }
+  }
+}
+)JASM"));
     }
     EXPECT_TRUE(runPass(container).changed());
     const auto* cls = classResource(container, "t/S.class");
@@ -256,9 +317,9 @@ TEST(StackTraceRecoverTest, sourceAttrsWritten)
 {
     mjbase::model::ResourceContainer container;
     {
-        FixtureBuilder b("t/S");
-        b.addMethod({"m", "()V", Bytes{0xb1}, kAccPublicStatic, {}, 1, 0});
-        addClassResource(container, "t/S.class", b.assemble());
+        addClassResource(container, "t/S.class",
+                         singleMethodClass(R"JASM(      return
+)JASM"));
     }
     EXPECT_TRUE(runPass(container).changed());
     const auto* cls = classResource(container, "t/S.class");
@@ -294,14 +355,19 @@ TEST(StackTraceRecoverTest, sourceFileOverwriteExisting)
 {
     mjbase::model::ResourceContainer container;
     {
-        FixtureBuilder b("t/S");
-        const ca::u16  oldUtf8 = b.utf8("Old.java");
-        FixtureAttr    attr;
-        attr.name   = "SourceFile";
-        attr.payload = {static_cast<ca::u8>(oldUtf8 >> 8), static_cast<ca::u8>(oldUtf8)};
-        b.addClassAttr(attr);
-        b.addMethod({"m", "()V", Bytes{0xb1}, kAccPublicStatic, {}, 1, 0});
-        addClassResource(container, "t/S.class", b.assemble());
+        // .sourcefile 声明（jasm 方言原生表达 SourceFile 属性）。
+        addClassResource(container, "t/S.class",
+                         assembleJasm(R"JASM(
+.sourcefile "Old.java"
+.super java/lang/Object
+.class public super t/S {
+  .method public static m ()V {
+    code: {
+      return
+    }
+  }
+}
+)JASM"));
     }
     EXPECT_TRUE(runPass(container).changed());
     const auto* cls = classResource(container, "t/S.class");
@@ -327,9 +393,9 @@ TEST(StackTraceRecoverTest, unparsableClassAborts)
                               std::make_unique<mjbase::model::ClassResource>(
                                   "bad.class", Bytes{0xCA, 0xFE, 0xBA, 0xBE, 0x00}));
     {
-        FixtureBuilder b("t/S");
-        b.addMethod({"m", "()V", Bytes{0xb1}, kAccPublicStatic, {}, 1, 0});
-        addClassResource(container, "t/S.class", b.assemble());
+        addClassResource(container, "t/S.class",
+                         singleMethodClass(R"JASM(      return
+)JASM"));
     }
     EXPECT_TRUE(runPass(container).areAllPreserved());
     const auto* cls = classResource(container, "t/S.class");

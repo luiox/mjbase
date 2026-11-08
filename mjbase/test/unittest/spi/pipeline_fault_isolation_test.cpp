@@ -82,9 +82,9 @@ struct MethodLoopFixture
     MethodLoopFixture()
     {
         session = makeSession(buildClassBytes("hostile/Owner",
-                                              {{"a", "()V", iconstReturn()},
-                                               {"b", "()V", iconstReturn()},
-                                               {"c", "()V", iconstReturn()}}));
+                                              {{"a", "()V", iconstReturnText()},
+                                               {"b", "()V", iconstReturnText()},
+                                               {"c", "()V", iconstReturnText()}}));
         cam.setPinned<MethodAnalysisManagerProxy>(InnerAMProxyResult<MethodAnalysisManager>{&mam});
     }
 };

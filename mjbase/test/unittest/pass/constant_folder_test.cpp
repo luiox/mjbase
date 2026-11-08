@@ -1,12 +1,19 @@
 // ConstantFolder：操作数栈常量链折叠。op 族全覆盖 + 回绕/除零/MIN/-1 红线 +
 // 负操作数矩阵 + 链识别边界（链长 1 / 类型混用 / 标签守卫）+ 幂等 + PA 纪律。
+//
+// 夹具纪律：类骨架与方法体一律 jasm 文本装配（JvmJasmService）；窄常量
+//（bipush/sipush）装配器按自身口径规范化为 LDC，float/double 经 ldc 字面
+// 直写（canonical 宽常量字面，长整带 L 双精带 D 后缀）（本地 FloatDoubleFixture 随字节级 builder 一并退役）。装配器栈
+// 分析只约束可达代码（JVMS 口径）：验证「栈欠额/类型混用拒绝折叠」的输入
+// 形以 goto 越段死代码表达（死段不进帧分析、pass 的虚拟栈照判失配），字节
+// 语义与原手拼夹具同实。
 #include <gtest/gtest.h>
 
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <string>
-#include <unordered_map>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -17,6 +24,7 @@
 #include "mjbase/pass/method_rewrite_util.hpp"
 
 #include "method_pass_test_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 using jbc::core::Op;
@@ -27,12 +35,19 @@ namespace {
 // 夹具辅助
 // ---------------------------------------------------------------------------
 
-/// 单方法容器（其余字段缺省；maxStack 由链深决定，用例按需给）。
-Bytes oneMethod(Bytes code, ca::u16 maxStack = 2, ca::u16 maxLocals = 1)
+/// 单方法容器：body 为 jasm 指令体文本（maxStack 由装配器按真值写入）。
+Bytes oneMethod(std::string_view body)
 {
-    FixtureBuilder b("t/R");
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {}, maxStack, maxLocals});
-    return b.assemble();
+    return assembleMethodClass("m", "()V", body);
+}
+
+/// 死段表达：goto 越段后 return，中段为 pass 扫描面（死段不进帧分析）。
+/// 用于装配器活代码帧分析拒收的「欠额 / 类型混用」折叠失配输入。
+Bytes deadBody(std::string_view deadInsns)
+{
+    return assembleMethodClass("m",
+                               "()V",
+                               "goto Lend\n" + std::string(deadInsns) + "Lend:\nreturn\n");
 }
 
 /// float/double CP 位图案。
@@ -48,129 +63,6 @@ ca::u64 f64Bits(ca::f64 v)
     std::memcpy(&b, &v, sizeof(b));
     return b;
 }
-
-/// @brief FixtureBuilder 的 float/double 补充面：共享夹具只到 int/long/
-///        string（structural_pass_util.hpp 头注明示「仅用单槽 CP 条目」），
-///        float(tag4)/double(tag6 双槽) 条目在本文件本地组装。仅支持本文件
-///        用例所需的最小面：单方法 + float/double 常量条目。
-class FloatDoubleFixture
-{
-public:
-    explicit FloatDoubleFixture(std::string_view thisClass)
-    {
-        thisIdx_  = cls(thisClass);
-        superIdx_ = cls("java/lang/Object");
-        codeName_ = utf8("Code");
-    }
-
-    ca::u16 floatConst(ca::f32 v)
-    {
-        const std::string key = "f:" + std::to_string(f32Bits(v));
-        const auto        it  = floats_.find(key);
-        if (it != floats_.end()) return it->second;
-        putU8(cp_, 0x04);
-        putU32(cp_, f32Bits(v));
-        const ca::u16 idx = next_++;
-        floats_.emplace(key, idx);
-        return idx;
-    }
-
-    ca::u16 doubleConst(ca::f64 v)
-    {
-        const std::string key = "d:" + std::to_string(f64Bits(v));
-        const auto        it  = doubles_.find(key);
-        if (it != doubles_.end()) return it->second;
-        putU8(cp_, 0x06);
-        putU32(cp_, static_cast<ca::u32>(f64Bits(v) >> 32));
-        putU32(cp_, static_cast<ca::u32>(f64Bits(v)));
-        const ca::u16 idx = next_;
-        next_ += 2;   // 双槽条目：下一 CP 下标跳过 placeholder
-        doubles_.emplace(key, idx);
-        return idx;
-    }
-
-    void addMethod(Bytes code, ca::u16 maxStack = 2, ca::u16 maxLocals = 1)
-    {
-        methods_.push_back({"m", "()V", std::move(code), 0x0009, {}, maxStack, maxLocals});
-    }
-
-    Bytes assemble()
-    {
-        const NameDesc method{utf8("m"), utf8("()V")};
-        Bytes          out;
-        putU32(out, 0xCAFEBABEu);
-        putU16(out, 0x00);
-        putU16(out, 0x34);
-        putU16(out, next_);
-        out.insert(out.end(), cp_.begin(), cp_.end());
-        putU16(out, 0x0021);
-        putU16(out, thisIdx_);
-        putU16(out, superIdx_);
-        putU16(out, 0);   // interfaces
-        putU16(out, 0);   // fields
-        putU16(out, 1);   // methods
-        putU16(out, 0x0009);
-        putU16(out, method.name);
-        putU16(out, method.desc);
-        Bytes attr;
-        putU16(attr, methods_[0].maxStack);
-        putU16(attr, methods_[0].maxLocals);
-        putU32(attr, static_cast<ca::u32>(methods_[0].code.size()));
-        attr.insert(attr.end(), methods_[0].code.begin(), methods_[0].code.end());
-        putU16(attr, 0);   // exc
-        putU16(attr, 0);   // Code 嵌套属性
-        putU16(out, 1);
-        putU16(out, codeName_);
-        putU32(out, static_cast<ca::u32>(attr.size()));
-        out.insert(out.end(), attr.begin(), attr.end());
-        putU16(out, 0);   // class attrs
-        return out;
-    }
-
-private:
-    struct NameDesc
-    {
-        ca::u16 name;
-        ca::u16 desc;
-    };
-
-    ca::u16 utf8(std::string_view s)
-    {
-        const std::string key(s);
-        const auto        it = utf8s_.find(key);
-        if (it != utf8s_.end()) return it->second;
-        putU8(cp_, 0x01);
-        putU16(cp_, static_cast<ca::u16>(s.size()));
-        putRaw(cp_, s);
-        const ca::u16 idx = next_++;
-        utf8s_.emplace(key, idx);
-        return idx;
-    }
-
-    ca::u16 cls(std::string_view n)
-    {
-        const std::string key(n);
-        const auto        it = classes_.find(key);
-        if (it != classes_.end()) return it->second;
-        const ca::u16 u = utf8(n);
-        putU8(cp_, 0x07);
-        putU16(cp_, u);
-        const ca::u16 idx = next_++;
-        classes_.emplace(key, idx);
-        return idx;
-    }
-
-    Bytes                                    cp_;
-    ca::u16                                  next_ = 1;
-    std::unordered_map<std::string, ca::u16> utf8s_;
-    std::unordered_map<std::string, ca::u16> classes_;
-    std::unordered_map<std::string, ca::u16> floats_;
-    std::unordered_map<std::string, ca::u16> doubles_;
-    ca::u16                                  thisIdx_  = 0;
-    ca::u16                                  superIdx_ = 0;
-    ca::u16                                  codeName_ = 0;
-    std::vector<FixtureMethod>               methods_;
-};
 
 // ---------------------------------------------------------------------------
 // 断言辅助：折叠产物 = 「单条常量装载 + RETURN」，值经共享探测面读回
@@ -320,63 +212,21 @@ void expectUnchanged(const Bytes& in, const MethodPassRun& r)
     EXPECT_EQ(r.out, in);
 }
 
-// 常用立即数助记（字节值即 JVMS 操作码；读取处一律走 Op 枚举）。
-constexpr ca::u8 kBipush = 0x10;
-constexpr ca::u8 kSipush = 0x11;
-constexpr ca::u8 kLdc    = 0x12;
-constexpr ca::u8 kLdc2W  = 0x14;
-constexpr ca::u8 kPop    = 0x57;
-constexpr ca::u8 kReturn = 0xb1;
-constexpr ca::u8 kGoto   = 0xa7;
-
-/// 值 → FCONST 形态（用例只用 0.0/1.0/2.0 三档）。
-Op fconstOp(ca::f32 v)
+/// 值 → float 装载指令文本（0.0/1.0/2.0 走 FCONST 短形，其余 LDC 字面）。
+std::string fconstText(ca::f32 v)
 {
-    return v == 0.0f ? Op::FCONST_0 : v == 1.0f ? Op::FCONST_1 : Op::FCONST_2;
+    if (v == 0.0f) return "fconst_0";
+    if (v == 1.0f) return "fconst_1";
+    if (v == 2.0f) return "fconst_2";
+    return "ldc " + std::to_string(v) + "f";
 }
 
-/// 值 → DCONST 形态（用例只用 0.0/1.0 两档）。
-Op dconstOp(ca::f64 v)
+/// 值 → double 装载指令文本（0.0/1.0 走 DCONST 短形，其余 ldc 字面）。
+std::string dconstText(ca::f64 v)
 {
-    return v == 0.0 ? Op::DCONST_0 : Op::DCONST_1;
-}
-
-/// bipush v（v ∈ [-128,127]）。
-void bipush(Bytes& b, ca::i32 v)
-{
-    b.push_back(kBipush);
-    b.push_back(static_cast<ca::u8>(v));
-}
-
-/// sipush v（v ∈ [-32768,32767]）。
-void sipush(Bytes& b, ca::i32 v)
-{
-    b.push_back(kSipush);
-    b.push_back(static_cast<ca::u8>(static_cast<ca::u16>(v) >> 8));
-    b.push_back(static_cast<ca::u8>(v));
-}
-
-/// ldc idx（u1 操作数；idx ≤ 0xFF）。
-void ldc(Bytes& b, ca::u16 idx)
-{
-    b.push_back(kLdc);
-    b.push_back(static_cast<ca::u8>(idx));
-}
-
-/// ldc2_w idx（u2 操作数；long/double）。
-void ldc2w(Bytes& b, ca::u16 idx)
-{
-    b.push_back(kLdc2W);
-    b.push_back(static_cast<ca::u8>(idx >> 8));
-    b.push_back(static_cast<ca::u8>(idx));
-}
-
-/// goto offset（2 字节有符号偏移）。
-void goto16(Bytes& b, ca::i32 offset)
-{
-    b.push_back(kGoto);
-    b.push_back(static_cast<ca::u8>(static_cast<ca::u16>(offset) >> 8));
-    b.push_back(static_cast<ca::u8>(offset));
+    if (v == 0.0) return "dconst_0";
+    if (v == 1.0) return "dconst_1";
+    return "ldc " + std::to_string(v) + "D";
 }
 
 }   // namespace
@@ -384,12 +234,7 @@ void goto16(Bytes& b, ca::i32 offset)
 // ── int 运算族 happy path（11 个 op 全覆盖）──
 TEST(ConstantFolderTest, intAddFolds)
 {
-    Bytes code;
-    bipush(code, 20);
-    bipush(code, 22);
-    code.push_back(static_cast<ca::u8>(Op::IADD));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
+    const MethodPassRun r = runMethodPass(oneMethod("bipush 20\nbipush 22\niadd\nreturn\n"),
                                           mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectIntFold(r, 42);
@@ -397,12 +242,7 @@ TEST(ConstantFolderTest, intAddFolds)
 
 TEST(ConstantFolderTest, intSubFolds)
 {
-    Bytes code;
-    bipush(code, 50);
-    bipush(code, 8);
-    code.push_back(static_cast<ca::u8>(Op::ISUB));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
+    const MethodPassRun r = runMethodPass(oneMethod("bipush 50\nbipush 8\nisub\nreturn\n"),
                                           mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectIntFold(r, 42);
@@ -410,12 +250,7 @@ TEST(ConstantFolderTest, intSubFolds)
 
 TEST(ConstantFolderTest, intMulFolds)
 {
-    Bytes code;
-    bipush(code, 6);
-    bipush(code, 7);
-    code.push_back(static_cast<ca::u8>(Op::IMUL));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
+    const MethodPassRun r = runMethodPass(oneMethod("bipush 6\nbipush 7\nimul\nreturn\n"),
                                           mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectIntFold(r, 42);
@@ -424,12 +259,7 @@ TEST(ConstantFolderTest, intMulFolds)
 TEST(ConstantFolderTest, intDivFoldsWithTruncation)
 {
     // -43 / 10 = -4（向零截断，JLS 15.17.2）。
-    Bytes code;
-    bipush(code, -43);
-    bipush(code, 10);
-    code.push_back(static_cast<ca::u8>(Op::IDIV));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
+    const MethodPassRun r = runMethodPass(oneMethod("bipush -43\nbipush 10\nidiv\nreturn\n"),
                                           mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectIntFold(r, -4);
@@ -437,12 +267,7 @@ TEST(ConstantFolderTest, intDivFoldsWithTruncation)
 
 TEST(ConstantFolderTest, intRemFolds)
 {
-    Bytes code;
-    bipush(code, 43);
-    bipush(code, 10);
-    code.push_back(static_cast<ca::u8>(Op::IREM));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
+    const MethodPassRun r = runMethodPass(oneMethod("bipush 43\nbipush 10\nirem\nreturn\n"),
                                           mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectIntFold(r, 3);
@@ -450,12 +275,7 @@ TEST(ConstantFolderTest, intRemFolds)
 
 TEST(ConstantFolderTest, intAndFolds)
 {
-    Bytes code;
-    bipush(code, 12);
-    bipush(code, 10);
-    code.push_back(static_cast<ca::u8>(Op::IAND));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
+    const MethodPassRun r = runMethodPass(oneMethod("bipush 12\nbipush 10\niand\nreturn\n"),
                                           mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectIntFold(r, 8);
@@ -463,12 +283,7 @@ TEST(ConstantFolderTest, intAndFolds)
 
 TEST(ConstantFolderTest, intOrFolds)
 {
-    Bytes code;
-    bipush(code, 12);
-    bipush(code, 10);
-    code.push_back(static_cast<ca::u8>(Op::IOR));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
+    const MethodPassRun r = runMethodPass(oneMethod("bipush 12\nbipush 10\nior\nreturn\n"),
                                           mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectIntFold(r, 14);
@@ -476,12 +291,7 @@ TEST(ConstantFolderTest, intOrFolds)
 
 TEST(ConstantFolderTest, intXorFolds)
 {
-    Bytes code;
-    bipush(code, 12);
-    bipush(code, 10);
-    code.push_back(static_cast<ca::u8>(Op::IXOR));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
+    const MethodPassRun r = runMethodPass(oneMethod("bipush 12\nbipush 10\nixor\nreturn\n"),
                                           mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectIntFold(r, 6);
@@ -489,12 +299,7 @@ TEST(ConstantFolderTest, intXorFolds)
 
 TEST(ConstantFolderTest, intShlFolds)
 {
-    Bytes code;
-    bipush(code, 1);
-    bipush(code, 4);
-    code.push_back(static_cast<ca::u8>(Op::ISHL));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
+    const MethodPassRun r = runMethodPass(oneMethod("bipush 1\nbipush 4\nishl\nreturn\n"),
                                           mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectIntFold(r, 16);
@@ -503,12 +308,7 @@ TEST(ConstantFolderTest, intShlFolds)
 TEST(ConstantFolderTest, intShrNegativeFolds)
 {
     // -16 >> 2 = -4（算术右移，符号扩展）。
-    Bytes code;
-    bipush(code, -16);
-    bipush(code, 2);
-    code.push_back(static_cast<ca::u8>(Op::ISHR));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
+    const MethodPassRun r = runMethodPass(oneMethod("bipush -16\nbipush 2\nishr\nreturn\n"),
                                           mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectIntFold(r, -4);
@@ -517,12 +317,7 @@ TEST(ConstantFolderTest, intShrNegativeFolds)
 TEST(ConstantFolderTest, intUshrNegativeFolds)
 {
     // -16 >>> 2 = 0x3FFFFFFC = 1073741820（逻辑右移，零扩展）。
-    Bytes code;
-    bipush(code, -16);
-    bipush(code, 2);
-    code.push_back(static_cast<ca::u8>(Op::IUSHR));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
+    const MethodPassRun r = runMethodPass(oneMethod("bipush -16\nbipush 2\niushr\nreturn\n"),
                                           mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectIntFold(r, 1073741820);
@@ -532,12 +327,7 @@ TEST(ConstantFolderTest, intUshrNegativeFolds)
 TEST(ConstantFolderTest, intShiftMaskedToFiveBits)
 {
     // 1 << 33 == 1 << (33 & 31) == 2。
-    Bytes code;
-    bipush(code, 1);
-    bipush(code, 33);
-    code.push_back(static_cast<ca::u8>(Op::ISHL));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
+    const MethodPassRun r = runMethodPass(oneMethod("bipush 1\nbipush 33\nishl\nreturn\n"),
                                           mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectIntFold(r, 2);
@@ -546,15 +336,9 @@ TEST(ConstantFolderTest, intShiftMaskedToFiveBits)
 // ── 回绕边界：INT_MAX + 1 → INT_MIN（u32 回绕后按位读回）──
 TEST(ConstantFolderTest, intAddWrapsAtIntMax)
 {
-    FixtureBuilder b("t/R");
-    const ca::u16  max = b.intConst((std::numeric_limits<ca::i32>::max)());
-    Bytes          code;
-    ldc(code, max);
-    code.push_back(static_cast<ca::u8>(Op::ICONST_1));
-    code.push_back(static_cast<ca::u8>(Op::IADD));
-    code.push_back(kReturn);
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {}, 2, 1});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::ConstantFolder{});
+    const MethodPassRun r =
+        runMethodPass(oneMethod("ldc 2147483647\niconst_1\niadd\nreturn\n"),
+                      mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectIntFold(r, (std::numeric_limits<ca::i32>::min)());
 }
@@ -562,16 +346,8 @@ TEST(ConstantFolderTest, intAddWrapsAtIntMax)
 // ── 物化分级：结果 1023 落 SIPUSH 形态 ──
 TEST(ConstantFolderTest, intLdcInputFoldsToSipush)
 {
-    FixtureBuilder b("t/R");
-    const ca::u16  a = b.intConst(1000);
-    const ca::u16  c = b.intConst(23);
-    Bytes          code;
-    ldc(code, a);
-    ldc(code, c);
-    code.push_back(static_cast<ca::u8>(Op::IADD));
-    code.push_back(kReturn);
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {}, 2, 1});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::ConstantFolder{});
+    const MethodPassRun r = runMethodPass(oneMethod("ldc 1000\nldc 23\niadd\nreturn\n"),
+                                          mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     const Inspection ins = inspect(r.out);
     EXPECT_EQ(opsOf(ins).front(), Op::SIPUSH);
@@ -582,12 +358,7 @@ TEST(ConstantFolderTest, intLdcInputFoldsToSipush)
 TEST(ConstantFolderTest, intRemNegativeFoldsToIconstM1)
 {
     // -7 % 3 = -1（余数符号跟随被除数，JLS 15.17.3）。
-    Bytes code;
-    bipush(code, -7);
-    bipush(code, 3);
-    code.push_back(static_cast<ca::u8>(Op::IREM));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
+    const MethodPassRun r = runMethodPass(oneMethod("bipush -7\nbipush 3\nirem\nreturn\n"),
                                           mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectIntFold(r, -1);
@@ -609,13 +380,10 @@ TEST(ConstantFolderTest, negativeRemSignMatrix)
         {-43, 10, -3}, // 截断取模
     };
     for (const Case& c : cases) {
-        Bytes code;
-        bipush(code, c.a);
-        bipush(code, c.b);
-        code.push_back(static_cast<ca::u8>(Op::IREM));
-        code.push_back(kReturn);
-        const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
-                                              mjbase::pass::ConstantFolder{});
+        const MethodPassRun r =
+            runMethodPass(oneMethod("ldc " + std::to_string(c.a) + "\nldc "
+                                        + std::to_string(c.b) + "\nirem\nreturn\n"),
+                          mjbase::pass::ConstantFolder{});
         EXPECT_TRUE(r.pa.changed());
         expectIntFold(r, c.want);
     }
@@ -636,19 +404,10 @@ TEST(ConstantFolderTest, negativeShrSignMatrix)
         {-1, 31, -1},          // 掩码内最大位移
     };
     for (const Case& c : cases) {
-        Bytes code;
-        // -256 超出 bipush 值域 → SIPUSH（截断会静默变 0）。
-        if (c.v >= -128 && c.v <= 127) {
-            bipush(code, c.v);
-        }
-        else {
-            sipush(code, c.v);
-        }
-        bipush(code, c.d);
-        code.push_back(static_cast<ca::u8>(Op::ISHR));
-        code.push_back(kReturn);
-        const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
-                                              mjbase::pass::ConstantFolder{});
+        const MethodPassRun r =
+            runMethodPass(oneMethod("ldc " + std::to_string(c.v) + "\nldc "
+                                        + std::to_string(c.d) + "\nishr\nreturn\n"),
+                          mjbase::pass::ConstantFolder{});
         EXPECT_TRUE(r.pa.changed());
         expectIntFold(r, c.want);
     }
@@ -657,15 +416,9 @@ TEST(ConstantFolderTest, negativeShrSignMatrix)
 // ── 回绕边界：LONG_MIN - 1 → LONG_MAX ──
 TEST(ConstantFolderTest, longSubWrapsAtLongMin)
 {
-    FixtureBuilder b("t/R");
-    const ca::u16  min = b.longConst((std::numeric_limits<ca::i64>::min)());
-    Bytes          code;
-    ldc2w(code, min);
-    code.push_back(static_cast<ca::u8>(Op::LCONST_1));
-    code.push_back(static_cast<ca::u8>(Op::LSUB));
-    code.push_back(kReturn);
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {}, 3, 1});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::ConstantFolder{});
+    const MethodPassRun r =
+        runMethodPass(oneMethod("ldc -9223372036854775808L\nlconst_1\nlsub\nreturn\n"),
+                      mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectLongFold(r, (std::numeric_limits<ca::i64>::max)());
 }
@@ -673,132 +426,77 @@ TEST(ConstantFolderTest, longSubWrapsAtLongMin)
 // ── 红线：INT_MIN / -1 的 idiv/irem 保留不折 ──
 TEST(ConstantFolderTest, intDivMinMinusOneNotFolded)
 {
-    FixtureBuilder b("t/R");
-    const ca::u16  min = b.intConst((std::numeric_limits<ca::i32>::min)());
-    Bytes          code;
-    ldc(code, min);
-    code.push_back(static_cast<ca::u8>(Op::ICONST_M1));
-    code.push_back(static_cast<ca::u8>(Op::IDIV));
-    code.push_back(kReturn);
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {}, 2, 1});
-    const Bytes in = b.assemble();
+    const Bytes in = oneMethod("ldc -2147483648\niconst_m1\nidiv\nreturn\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
 TEST(ConstantFolderTest, intRemMinMinusOneNotFolded)
 {
-    FixtureBuilder b("t/R");
-    const ca::u16  min = b.intConst((std::numeric_limits<ca::i32>::min)());
-    Bytes          code;
-    ldc(code, min);
-    code.push_back(static_cast<ca::u8>(Op::ICONST_M1));
-    code.push_back(static_cast<ca::u8>(Op::IREM));
-    code.push_back(kReturn);
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {}, 2, 1});
-    const Bytes in = b.assemble();
+    const Bytes in = oneMethod("ldc -2147483648\niconst_m1\nirem\nreturn\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
 // ── 红线：除数 0 保留 ArithmeticException（不折）──
 TEST(ConstantFolderTest, intDivZeroNotFolded)
 {
-    Bytes code;
-    bipush(code, 1);
-    code.push_back(static_cast<ca::u8>(Op::ICONST_0));
-    code.push_back(static_cast<ca::u8>(Op::IDIV));
-    code.push_back(kReturn);
-    const Bytes in = oneMethod(std::move(code));
+    const Bytes in = oneMethod("bipush 1\niconst_0\nidiv\nreturn\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
 TEST(ConstantFolderTest, intRemZeroNotFolded)
 {
-    Bytes code;
-    bipush(code, 1);
-    code.push_back(static_cast<ca::u8>(Op::ICONST_0));
-    code.push_back(static_cast<ca::u8>(Op::IREM));
-    code.push_back(kReturn);
-    const Bytes in = oneMethod(std::move(code));
+    const Bytes in = oneMethod("bipush 1\niconst_0\nirem\nreturn\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
 // ── 链长 1（无运算可消费）：不折 ──
 TEST(ConstantFolderTest, singlePushNotFolded)
 {
-    Bytes code;
-    bipush(code, 5);
-    code.push_back(kReturn);
-    const Bytes in = oneMethod(std::move(code));
+    const Bytes in = oneMethod("bipush 5\nreturn\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
 TEST(ConstantFolderTest, purePushSequenceNotFolded)
 {
-    // 两条装载无运算：虚拟栈深 2 回不到 1 → 不折。
-    Bytes code;
-    bipush(code, 5);
-    bipush(code, 6);
-    code.push_back(kReturn);
-    const Bytes in = oneMethod(std::move(code));
+    // 两条装载无运算：虚拟栈深 2 回不到 1 → 不折。装载留栈在 return——
+    // 活代码帧面拒收，按死段表达（pass 扫描面照见，语义同实）。
+    const Bytes in = deadBody("bipush 5\nbipush 6\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
 // ── 常量 + 变量混合：运算消费链外值 → 保守停 ──
 TEST(ConstantFolderTest, mixedWithVariableNotFolded)
 {
-    Bytes code;
-    bipush(code, 1);
-    code.push_back(static_cast<ca::u8>(Op::ILOAD_0));
-    code.push_back(static_cast<ca::u8>(Op::IADD));
-    code.push_back(kReturn);
-    const Bytes in = oneMethod(std::move(code));
+    const Bytes in = oneMethod("bipush 1\niload 0\niadd\nreturn\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
-// ── 类型混用：int 链遇 long 装载 → 停（该字节码本身是验证错误，pass 不得折叠）──
+// ── 类型混用：int 链遇 long 装载 → 停（该字节码本身是验证错误，pass 不得
+//    折叠）——int 链折半遇 cat2 装载活代码帧面拒收，按死段表达 ──
 TEST(ConstantFolderTest, typeMixIntLongNotFolded)
 {
-    Bytes code;
-    bipush(code, 1);
-    code.push_back(static_cast<ca::u8>(Op::LCONST_1));
-    code.push_back(static_cast<ca::u8>(Op::LADD));
-    code.push_back(kReturn);
-    const Bytes in = oneMethod(std::move(code), 4);
+    const Bytes in = deadBody("bipush 1\nlconst_1\nladd\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
 // ── int 链遇 long 移位（操作数形状 (long,int) 与 (int,int) 不符）→ 停 ──
 TEST(ConstantFolderTest, intChainLongShiftNotFolded)
 {
-    Bytes code;
-    code.push_back(static_cast<ca::u8>(Op::ICONST_1));
-    code.push_back(static_cast<ca::u8>(Op::ICONST_2));
-    code.push_back(static_cast<ca::u8>(Op::LSHL));
-    code.push_back(kReturn);
-    const Bytes in = oneMethod(std::move(code));
+    const Bytes in = deadBody("iconst_1\niconst_2\nlshl\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
 // ── 一元 op（INEG）不在支持集：链止于其前，无折叠点 → 不折 ──
 TEST(ConstantFolderTest, unaryOpNotFolded)
 {
-    Bytes code;
-    bipush(code, 1);
-    bipush(code, 2);
-    code.push_back(static_cast<ca::u8>(Op::INEG));
-    code.push_back(kReturn);
-    const Bytes in = oneMethod(std::move(code));
+    const Bytes in = oneMethod("bipush 1\nbipush 2\nineg\nreturn\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
-// ── 运算消费链外值（栈深 1 处的 IADD）→ 不折 ──
+// ── 运算消费链外值（栈深 1 处的 IADD）→ 不折（活代码帧面拒收，死段表达）──
 TEST(ConstantFolderTest, opUnderflowsVirtualStackNotFolded)
 {
-    Bytes code;
-    bipush(code, 1);
-    code.push_back(static_cast<ca::u8>(Op::IADD));
-    code.push_back(kReturn);
-    const Bytes in = oneMethod(std::move(code));
+    const Bytes in = deadBody("bipush 1\niadd\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
@@ -806,17 +504,9 @@ TEST(ConstantFolderTest, opUnderflowsVirtualStackNotFolded)
 TEST(ConstantFolderTest, maximalChainFolds)
 {
     // ((1 + 2) + 3) * 4 = 24。
-    Bytes code;
-    bipush(code, 1);
-    bipush(code, 2);
-    code.push_back(static_cast<ca::u8>(Op::IADD));
-    bipush(code, 3);
-    code.push_back(static_cast<ca::u8>(Op::IADD));
-    bipush(code, 4);
-    code.push_back(static_cast<ca::u8>(Op::IMUL));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code), 3),
-                                          mjbase::pass::ConstantFolder{});
+    const MethodPassRun r =
+        runMethodPass(oneMethod("bipush 1\nbipush 2\niadd\nbipush 3\niadd\nbipush 4\nimul\nreturn\n"),
+                      mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectIntFold(r, 24);
 }
@@ -824,23 +514,18 @@ TEST(ConstantFolderTest, maximalChainFolds)
 // ── 链尾后续装载：折叠点之后的 push 原样保留 ──
 TEST(ConstantFolderTest, trailingPushAfterFoldKept)
 {
-    // BIPUSH 1; BIPUSH 2; IADD; BIPUSH 3 → ICONST_3; BIPUSH 3。
-    // 产物 3 ∈ [-1,5] 落 ICONST_3 短形态（intConstInsn 分级，
-    // InsnUtil）；链尾 push 不经折叠，原样保留 BIPUSH 3。
-    Bytes code;
-    bipush(code, 1);
-    bipush(code, 2);
-    code.push_back(static_cast<ca::u8>(Op::IADD));
-    bipush(code, 3);
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
-                                          mjbase::pass::ConstantFolder{});
+    // LDC 1; LDC 2; IADD; LDC 3 → ICONST_3; LDC 3。
+    // 产物 3 ∈ [-1,5] 落 ICONST_3 短形态（intConstInsn 分级，InsnUtil）；
+    // 链尾 push 不经折叠，原样保留（装配器窄常量规范化落 LDC 3）。
+    const MethodPassRun r =
+        runMethodPass(oneMethod("bipush 1\nbipush 2\niadd\nbipush 3\nreturn\n"),
+                      mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     const Inspection      ins = inspect(r.out);
     const std::vector<Op> ops = opsOf(ins);
     ASSERT_EQ(ops.size(), 3u);
     EXPECT_EQ(ops[0], Op::ICONST_3);
-    EXPECT_EQ(ops[1], Op::BIPUSH);
+    EXPECT_EQ(ops[1], Op::LDC);
     EXPECT_EQ(ops[2], Op::RETURN);
     const jbc::ir::Insn* first = firstInsn(ins);
     ASSERT_NE(first, nullptr);
@@ -852,16 +537,9 @@ TEST(ConstantFolderTest, trailingPushAfterFoldKept)
 // ── 非数值装载（LDC String）不起始链，但其后的常量链照常折叠 ──
 TEST(ConstantFolderTest, stringPushDoesNotStartChain)
 {
-    FixtureBuilder b("t/R");
-    const ca::u16  s = b.strConst("x");
-    Bytes          code;
-    ldc(code, s);
-    bipush(code, 1);
-    bipush(code, 2);
-    code.push_back(static_cast<ca::u8>(Op::IADD));
-    code.push_back(kReturn);
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {}, 3, 1});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::ConstantFolder{});
+    const MethodPassRun r =
+        runMethodPass(oneMethod("ldc \"x\"\nbipush 1\nbipush 2\niadd\nreturn\n"),
+                      mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     const Inspection      ins = inspect(r.out);
     const std::vector<Op> ops = opsOf(ins);
@@ -874,30 +552,19 @@ TEST(ConstantFolderTest, stringPushDoesNotStartChain)
 // ── 边界守卫：分支跳入链中段 → 整链不动 ──
 TEST(ConstantFolderTest, branchIntoChainMiddleBlocksFold)
 {
-    // pc0 BIPUSH 1 / pc2 BIPUSH 2 / pc4 IADD / pc5 RETURN / pc6 GOTO→pc2
-    // （锚定链中段成员）。
-    Bytes code;
-    bipush(code, 1);
-    bipush(code, 2);
-    code.push_back(static_cast<ca::u8>(Op::IADD));
-    code.push_back(kReturn);
-    goto16(code, 2 - 6);
-    const Bytes in = oneMethod(std::move(code));
+    // LDC 1 / LDC 2 / Lmid: IADD / RETURN / GOTO→Lmid（锚定链中段成员；
+    // goto 居 return 后死段，装配器放行）。
+    const Bytes in = oneMethod("bipush 1\nbipush 2\nLmid:\niadd\nreturn\ngoto Lmid\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
 // ── 首成员标签：分支跳入链头 → 折叠 + 标签迁移到替换头 ──
 TEST(ConstantFolderTest, branchToChainHeadFoldsWithLabelMigration)
 {
-    // pc6 GOTO→pc0（链头）：折叠后 GOTO 随标签落到替换头。
-    Bytes code;
-    bipush(code, 1);
-    bipush(code, 2);
-    code.push_back(static_cast<ca::u8>(Op::IADD));
-    code.push_back(kReturn);
-    goto16(code, 0 - 6);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
-                                          mjbase::pass::ConstantFolder{});
+    // GOTO→链头：折叠后 GOTO 随标签落到替换头（goto 居尾，死段回边）。
+    const MethodPassRun r =
+        runMethodPass(oneMethod("Lh:\nbipush 1\nbipush 2\niadd\nreturn\ngoto Lh\n"),
+                      mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     const Inspection      ins = inspect(r.out);
     const std::vector<Op> ops = opsOf(ins);
@@ -915,17 +582,28 @@ TEST(ConstantFolderTest, branchToChainHeadFoldsWithLabelMigration)
 // ── 异常表：start 边界在链头 → 折叠 + start 标签迁移 ──
 TEST(ConstantFolderTest, excStartAtChainHeadFolds)
 {
-    // BIPUSH 1 / BIPUSH 2 / IADD / POP / RETURN；try 覆盖 [0,5)（仅链），
-    // handler 在 RETURN。
-    Bytes code;
-    bipush(code, 1);
-    bipush(code, 2);
-    code.push_back(static_cast<ca::u8>(Op::IADD));
-    code.push_back(kPop);
-    code.push_back(kReturn);
-    FixtureBuilder b("t/R");
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {{0, 5, 6, 0}}, 2, 1});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::ConstantFolder{});
+    // LDC 1 / LDC 2 / IADD / POP / RETURN；try 覆盖链头起（仅链），handler
+    // 落 RETURN（jasm handler 须绑定实体指令，悬空面由 end 悬空语义承消）。
+    const Bytes in = assembleJasm(R"JASM(
+.super java/lang/Object
+.class public super t/R {
+  .method public static m ()V {
+    exceptions: {
+      { L0, Lend, Lr, * }
+    },
+    code: {
+      L0:
+      bipush 1
+      bipush 2
+      iadd
+      pop
+      Lr:
+      return
+    }
+  }
+}
+)JASM");
+    const MethodPassRun r = runMethodPass(in, mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     const Inspection      ins = inspect(r.out);
     const std::vector<Op> ops = opsOf(ins);
@@ -944,28 +622,34 @@ TEST(ConstantFolderTest, excStartAtChainHeadFolds)
 // ── 异常表：start 边界在链中段 → 守卫拒绝 ──
 TEST(ConstantFolderTest, excStartInChainMiddleBlocksFold)
 {
-    Bytes code;
-    bipush(code, 1);
-    bipush(code, 2);
-    code.push_back(static_cast<ca::u8>(Op::IADD));
-    code.push_back(kPop);
-    code.push_back(kReturn);
-    FixtureBuilder b("t/R");
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {{2, 5, 6, 0}}, 2, 1});
-    const Bytes in = b.assemble();
+    const Bytes in = assembleJasm(R"JASM(
+.super java/lang/Object
+.class public super t/R {
+  .method public static m ()V {
+    exceptions: {
+      { Lmid, Lend, Lr, * }
+    },
+    code: {
+      bipush 1
+      Lmid:
+      bipush 2
+      iadd
+      pop
+      Lr:
+      return
+    }
+  }
+}
+)JASM");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
 // ── 幂等：二次运行 no-op ──
 TEST(ConstantFolderTest, secondRunIsNoOp)
 {
-    Bytes code;
-    bipush(code, 1);
-    bipush(code, 2);
-    code.push_back(static_cast<ca::u8>(Op::IADD));
-    code.push_back(kReturn);
-    const MethodPassRun first = runMethodPass(oneMethod(std::move(code)),
-                                              mjbase::pass::ConstantFolder{});
+    const MethodPassRun first =
+        runMethodPass(oneMethod("bipush 1\nbipush 2\niadd\nreturn\n"),
+                      mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(first.pa.changed());
     const MethodPassRun second =
         runMethodPass(first.out, mjbase::pass::ConstantFolder{});
@@ -976,13 +660,9 @@ TEST(ConstantFolderTest, secondRunIsNoOp)
 // ── maxStack 不升（折叠只降不升；管线未注入 resolver 时不重算）──
 TEST(ConstantFolderTest, maxStackNotRaised)
 {
-    Bytes code;
-    bipush(code, 1);
-    bipush(code, 2);
-    code.push_back(static_cast<ca::u8>(Op::IADD));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code), 2),
-                                          mjbase::pass::ConstantFolder{});
+    const MethodPassRun r =
+        runMethodPass(oneMethod("bipush 1\nbipush 2\niadd\nreturn\n"),
+                      mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     EXPECT_EQ(maxStackOf(inspect(r.out)), 2);
 }
@@ -993,32 +673,27 @@ TEST(ConstantFolderTest, longOpFamilyFolds)
     struct Case
     {
         Op          op;
+        const char* opText;
         ca::i64     a;
         ca::i64     b;
         ca::i64     want;
         const char* name;
     };
     const Case cases[] = {
-        {Op::LADD, 1, 1, 2, "ladd"},
-        {Op::LSUB, 1, 0, 1, "lsub"},
-        {Op::LMUL, 6, 7, 42, "lmul"},
-        {Op::LDIV, -7, 3, -2, "ldiv-truncation"},
-        {Op::LREM, -7, 3, -1, "lrem-sign"},
-        {Op::LAND, 12, 10, 8, "land"},
-        {Op::LOR, 12, 10, 14, "lor"},
-        {Op::LXOR, 12, 10, 6, "lxor"},
+        {Op::LADD, "ladd", 1, 1, 2, "ladd"},
+        {Op::LSUB, "lsub", 1, 0, 1, "lsub"},
+        {Op::LMUL, "lmul", 6, 7, 42, "lmul"},
+        {Op::LDIV, "ldiv", -7, 3, -2, "ldiv-truncation"},
+        {Op::LREM, "lrem", -7, 3, -1, "lrem-sign"},
+        {Op::LAND, "land", 12, 10, 8, "land"},
+        {Op::LOR, "lor", 12, 10, 14, "lor"},
+        {Op::LXOR, "lxor", 12, 10, 6, "lxor"},
     };
     for (const Case& c : cases) {
-        FixtureBuilder b("t/R");
-        const ca::u16  ia = b.longConst(c.a);
-        const ca::u16  ib = b.longConst(c.b);
-        Bytes          code;
-        ldc2w(code, ia);
-        ldc2w(code, ib);
-        code.push_back(static_cast<ca::u8>(c.op));
-        code.push_back(kReturn);
-        b.addMethod({"m", "()V", std::move(code), 0x0009, {}, 4, 1});
-        const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::ConstantFolder{});
+        const MethodPassRun r =
+            runMethodPass(oneMethod("ldc " + std::to_string(c.a) + "L\nldc "
+                                        + std::to_string(c.b) + "L\n" + c.opText + "\nreturn\n"),
+                          mjbase::pass::ConstantFolder{});
         EXPECT_TRUE(r.pa.changed()) << c.name;
         expectLongFold(r, c.want);
     }
@@ -1030,31 +705,22 @@ TEST(ConstantFolderTest, longShiftFamilyFolds)
     struct Case
     {
         Op      op;
+        const char* opText;
         ca::i64 v;
         ca::i32 d;
         ca::i64 want;
     };
     const Case cases[] = {
-        {Op::LSHL, 1, 3, 8},
-        {Op::LSHR, -8, 1, -4},
-        {Op::LUSHR, -8, 1, 0x7FFFFFFFFFFFFFFCLL},
-        {Op::LSHL, 1, 65, 2},        // 掩 6 位：65 & 63 == 1
+        {Op::LSHL, "lshl", 1, 3, 8},
+        {Op::LSHR, "lshr", -8, 1, -4},
+        {Op::LUSHR, "lushr", -8, 1, 0x7FFFFFFFFFFFFFFCLL},
+        {Op::LSHL, "lshl", 1, 65, 2},        // 掩 6 位：65 & 63 == 1
     };
     for (const Case& c : cases) {
-        FixtureBuilder b("t/R");
-        const ca::u16  lv = b.longConst(c.v);
-        Bytes          code;
-        ldc2w(code, lv);
-        if (c.d >= -128 && c.d <= 127) {
-            bipush(code, c.d);
-        }
-        else {
-            sipush(code, c.d);
-        }
-        code.push_back(static_cast<ca::u8>(c.op));
-        code.push_back(kReturn);
-        b.addMethod({"m", "()V", std::move(code), 0x0009, {}, 3, 1});
-        const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::ConstantFolder{});
+        const MethodPassRun r =
+            runMethodPass(oneMethod("ldc " + std::to_string(c.v) + "L\nldc "
+                                        + std::to_string(c.d) + "\n" + c.opText + "\nreturn\n"),
+                          mjbase::pass::ConstantFolder{});
         EXPECT_TRUE(r.pa.changed());
         expectLongFold(r, c.want);
     }
@@ -1064,15 +730,9 @@ TEST(ConstantFolderTest, longShiftFamilyFolds)
 TEST(ConstantFolderTest, longShiftChainFolds)
 {
     // (1 << 3) << 1 == 16。
-    Bytes code;
-    code.push_back(static_cast<ca::u8>(Op::LCONST_1));
-    bipush(code, 3);
-    code.push_back(static_cast<ca::u8>(Op::LSHL));
-    bipush(code, 1);
-    code.push_back(static_cast<ca::u8>(Op::LSHL));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code), 4),
-                                          mjbase::pass::ConstantFolder{});
+    const MethodPassRun r =
+        runMethodPass(oneMethod("lconst_1\nbipush 3\nlshl\nbipush 1\nlshl\nreturn\n"),
+                      mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectLongFold(r, 16);
 }
@@ -1080,68 +740,38 @@ TEST(ConstantFolderTest, longShiftChainFolds)
 // ── long 移位 int 操作数非常量：停 ──
 TEST(ConstantFolderTest, longShiftNonConstDistanceStops)
 {
-    Bytes code;
-    code.push_back(static_cast<ca::u8>(Op::LCONST_1));
-    code.push_back(static_cast<ca::u8>(Op::ILOAD_0));
-    code.push_back(static_cast<ca::u8>(Op::LSHL));
-    code.push_back(kReturn);
-    const Bytes in = oneMethod(std::move(code), 4);
+    const Bytes in = oneMethod("lconst_1\niload 0\nlshl\nreturn\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
-// ── long 移位 int 操作数是装载但后随非移位 op：停 ──
+// ── long 移位 int 操作数是装载但后随非移位 op：停（装载留栈到 return，
+//    活代码帧面拒收，按死段表达）──
 TEST(ConstantFolderTest, longChainIntPushNotFollowedByShiftStops)
 {
-    Bytes code;
-    code.push_back(static_cast<ca::u8>(Op::LCONST_1));
-    bipush(code, 2);
-    code.push_back(kReturn);
-    const Bytes in = oneMethod(std::move(code), 4);
+    const Bytes in = deadBody("lconst_1\nbipush 2\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
 // ── long 红线：除 0 与 MIN/-1 保留不折 ──
 TEST(ConstantFolderTest, longDivZeroNotFolded)
 {
-    FixtureBuilder b("t/R");
-    const ca::u16  one = b.longConst(1);
-    Bytes          code;
-    ldc2w(code, one);
-    code.push_back(static_cast<ca::u8>(Op::LCONST_0));
-    code.push_back(static_cast<ca::u8>(Op::LDIV));
-    code.push_back(kReturn);
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {}, 3, 1});
-    const Bytes in = b.assemble();
+    const Bytes in = oneMethod("ldc 1L\nlconst_0\nldiv\nreturn\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
 TEST(ConstantFolderTest, longDivMinMinusOneNotFolded)
 {
-    FixtureBuilder b("t/R");
-    const ca::u16  min = b.longConst((std::numeric_limits<ca::i64>::min)());
-    const ca::u16  m1  = b.longConst(-1);
-    Bytes          code;
-    ldc2w(code, min);
-    ldc2w(code, m1);
-    code.push_back(static_cast<ca::u8>(Op::LDIV));
-    code.push_back(kReturn);
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {}, 4, 1});
-    const Bytes in = b.assemble();
+    const Bytes in =
+        oneMethod("ldc -9223372036854775808L\nldc -1L\nldiv\nreturn\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
 // ── long 回绕：LONG_MAX + 1 → LONG_MIN ──
 TEST(ConstantFolderTest, longAddWrapsAtLongMax)
 {
-    FixtureBuilder b("t/R");
-    const ca::u16  max = b.longConst((std::numeric_limits<ca::i64>::max)());
-    Bytes          code;
-    ldc2w(code, max);
-    code.push_back(static_cast<ca::u8>(Op::LCONST_1));
-    code.push_back(static_cast<ca::u8>(Op::LADD));
-    code.push_back(kReturn);
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {}, 3, 1});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::ConstantFolder{});
+    const MethodPassRun r =
+        runMethodPass(oneMethod("ldc 9223372036854775807L\nlconst_1\nladd\nreturn\n"),
+                      mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectLongFold(r, (std::numeric_limits<ca::i64>::min)());
 }
@@ -1153,26 +783,24 @@ TEST(ConstantFolderTest, floatOpFamilyFolds)
     struct Case
     {
         Op      op;
+        const char* opText;
         ca::f32 a;
         ca::f32 b;
         ca::u32 want;
     };
     const Case cases[] = {
-        {Op::FADD, 1.0f, 2.0f, f32Bits(3.0f)},
-        {Op::FSUB, 2.0f, 1.0f, f32Bits(1.0f)},
-        {Op::FMUL, 2.0f, 2.0f, f32Bits(4.0f)},
-        {Op::FDIV, 2.0f, 1.0f, f32Bits(2.0f)},
-        {Op::FDIV, 1.0f, 0.0f, f32Bits(inf)},    // IEEE：除 0 不抛异常
-        {Op::FSUB, 1.0f, 2.0f, f32Bits(-1.0f)},
+        {Op::FADD, "fadd", 1.0f, 2.0f, f32Bits(3.0f)},
+        {Op::FSUB, "fsub", 2.0f, 1.0f, f32Bits(1.0f)},
+        {Op::FMUL, "fmul", 2.0f, 2.0f, f32Bits(4.0f)},
+        {Op::FDIV, "fdiv", 2.0f, 1.0f, f32Bits(2.0f)},
+        {Op::FDIV, "fdiv", 1.0f, 0.0f, f32Bits(inf)},    // IEEE：除 0 不抛异常
+        {Op::FSUB, "fsub", 1.0f, 2.0f, f32Bits(-1.0f)},
     };
     for (const Case& c : cases) {
-        Bytes code;
-        code.push_back(static_cast<ca::u8>(fconstOp(c.a)));
-        code.push_back(static_cast<ca::u8>(fconstOp(c.b)));
-        code.push_back(static_cast<ca::u8>(c.op));
-        code.push_back(kReturn);
-        const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
-                                              mjbase::pass::ConstantFolder{});
+        const MethodPassRun r =
+            runMethodPass(oneMethod(std::string(fconstText(c.a)) + "\n"
+                                        + fconstText(c.b) + "\n" + c.opText + "\nreturn\n"),
+                          mjbase::pass::ConstantFolder{});
         EXPECT_TRUE(r.pa.changed());
         expectFloatBitsFold(r, c.want);
     }
@@ -1181,12 +809,7 @@ TEST(ConstantFolderTest, floatOpFamilyFolds)
 // ── float 0/0 → NaN 物化（位图案不钉死，见 expectFloatIsNan 注）──
 TEST(ConstantFolderTest, floatZeroDivZeroFoldsToNan)
 {
-    Bytes code;
-    code.push_back(static_cast<ca::u8>(Op::FCONST_0));
-    code.push_back(static_cast<ca::u8>(Op::FCONST_0));
-    code.push_back(static_cast<ca::u8>(Op::FDIV));
-    code.push_back(kReturn);
-    const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
+    const MethodPassRun r = runMethodPass(oneMethod("fconst_0\nfconst_0\nfdiv\nreturn\n"),
                                           mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectFloatIsNan(r);
@@ -1197,13 +820,9 @@ TEST(ConstantFolderTest, floatMaterializesZeroSigns)
 {
     // +0.0：FCONST_0 - FCONST_0 → FCONST_0。
     {
-        Bytes code;
-        code.push_back(static_cast<ca::u8>(Op::FCONST_0));
-        code.push_back(static_cast<ca::u8>(Op::FCONST_0));
-        code.push_back(static_cast<ca::u8>(Op::FSUB));
-        code.push_back(kReturn);
-        const MethodPassRun r = runMethodPass(oneMethod(std::move(code)),
-                                              mjbase::pass::ConstantFolder{});
+        const MethodPassRun r =
+            runMethodPass(oneMethod("fconst_0\nfconst_0\nfsub\nreturn\n"),
+                          mjbase::pass::ConstantFolder{});
         EXPECT_TRUE(r.pa.changed());
         const Inspection ins = inspect(r.out);
         EXPECT_EQ(opsOf(ins).front(), Op::FCONST_0);
@@ -1211,15 +830,9 @@ TEST(ConstantFolderTest, floatMaterializesZeroSigns)
     }
     // -0.0：LDC(-1.0) * FCONST_0 → LDC(-0.0)（0x80000000，不走 FCONST_0）。
     {
-        FloatDoubleFixture f("t/R");
-        const ca::u16      negOne = f.floatConst(-1.0f);
-        Bytes              code;
-        ldc(code, negOne);
-        code.push_back(static_cast<ca::u8>(Op::FCONST_0));
-        code.push_back(static_cast<ca::u8>(Op::FMUL));
-        code.push_back(kReturn);
-        f.addMethod(std::move(code));
-        const MethodPassRun r = runMethodPass(f.assemble(), mjbase::pass::ConstantFolder{});
+        const MethodPassRun r =
+            runMethodPass(oneMethod("ldc -1.0f\nfconst_0\nfmul\nreturn\n"),
+                          mjbase::pass::ConstantFolder{});
         EXPECT_TRUE(r.pa.changed());
         const Inspection ins = inspect(r.out);
         EXPECT_EQ(opsOf(ins).front(), Op::LDC);
@@ -1230,16 +843,8 @@ TEST(ConstantFolderTest, floatMaterializesZeroSigns)
 // ── float LDC 输入（util 探测面外的 ldc 族 Float）──
 TEST(ConstantFolderTest, floatLdcInputFolds)
 {
-    FloatDoubleFixture f("t/R");
-    const ca::u16      a = f.floatConst(2.5f);
-    const ca::u16      b = f.floatConst(4.0f);
-    Bytes              code;
-    ldc(code, a);
-    ldc(code, b);
-    code.push_back(static_cast<ca::u8>(Op::FADD));
-    code.push_back(kReturn);
-    f.addMethod(std::move(code));
-    const MethodPassRun r = runMethodPass(f.assemble(), mjbase::pass::ConstantFolder{});
+    const MethodPassRun r = runMethodPass(oneMethod("ldc 2.5f\nldc 4.0f\nfadd\nreturn\n"),
+                                          mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectFloatBitsFold(r, f32Bits(6.5f));
 }
@@ -1251,26 +856,23 @@ TEST(ConstantFolderTest, doubleOpFamilyFolds)
     struct Case
     {
         Op      op;
+        const char* opText;
         ca::f64 a;
         ca::f64 b;
         ca::u64 want;
     };
     const Case cases[] = {
-        {Op::DADD, 1.0, 1.0, f64Bits(2.0)},
-        {Op::DSUB, 0.0, 1.0, f64Bits(-1.0)},
-        {Op::DMUL, 1.0, 1.0, f64Bits(1.0)},
-        {Op::DDIV, 1.0, 1.0, f64Bits(1.0)},
-        {Op::DDIV, 1.0, 0.0, f64Bits(inf)},
+        {Op::DADD, "dadd", 1.0, 1.0, f64Bits(2.0)},
+        {Op::DSUB, "dsub", 0.0, 1.0, f64Bits(-1.0)},
+        {Op::DMUL, "dmul", 1.0, 1.0, f64Bits(1.0)},
+        {Op::DDIV, "ddiv", 1.0, 1.0, f64Bits(1.0)},
+        {Op::DDIV, "ddiv", 1.0, 0.0, f64Bits(inf)},
     };
     for (const Case& c : cases) {
-        FloatDoubleFixture f("t/R");
-        Bytes              code;
-        code.push_back(static_cast<ca::u8>(dconstOp(c.a)));
-        code.push_back(static_cast<ca::u8>(dconstOp(c.b)));
-        code.push_back(static_cast<ca::u8>(c.op));
-        code.push_back(kReturn);
-        f.addMethod(std::move(code), 4);
-        const MethodPassRun r = runMethodPass(f.assemble(), mjbase::pass::ConstantFolder{});
+        const MethodPassRun r =
+            runMethodPass(oneMethod(std::string(dconstText(c.a)) + "\n"
+                                        + dconstText(c.b) + "\n" + c.opText + "\nreturn\n"),
+                          mjbase::pass::ConstantFolder{});
         EXPECT_TRUE(r.pa.changed());
         expectDoubleBitsFold(r, c.want);
     }
@@ -1279,14 +881,8 @@ TEST(ConstantFolderTest, doubleOpFamilyFolds)
 // ── double 0/0 → NaN 物化 ──
 TEST(ConstantFolderTest, doubleZeroDivZeroFoldsToNan)
 {
-    FloatDoubleFixture f("t/R");
-    Bytes              code;
-    code.push_back(static_cast<ca::u8>(Op::DCONST_0));
-    code.push_back(static_cast<ca::u8>(Op::DCONST_0));
-    code.push_back(static_cast<ca::u8>(Op::DDIV));
-    code.push_back(kReturn);
-    f.addMethod(std::move(code), 4);
-    const MethodPassRun r = runMethodPass(f.assemble(), mjbase::pass::ConstantFolder{});
+    const MethodPassRun r = runMethodPass(oneMethod("dconst_0\ndconst_0\nddiv\nreturn\n"),
+                                          mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectDoubleIsNan(r);
 }
@@ -1294,16 +890,8 @@ TEST(ConstantFolderTest, doubleZeroDivZeroFoldsToNan)
 // ── double LDC2_W 输入与输出（CP 双槽追加路径）──
 TEST(ConstantFolderTest, doubleLdc2wInputFolds)
 {
-    FloatDoubleFixture f("t/R");
-    const ca::u16      a = f.doubleConst(1.5);
-    const ca::u16      b = f.doubleConst(2.5);
-    Bytes              code;
-    ldc2w(code, a);
-    ldc2w(code, b);
-    code.push_back(static_cast<ca::u8>(Op::DMUL));
-    code.push_back(kReturn);
-    f.addMethod(std::move(code), 4);
-    const MethodPassRun r = runMethodPass(f.assemble(), mjbase::pass::ConstantFolder{});
+    const MethodPassRun r = runMethodPass(oneMethod("ldc 1.5\nldc 2.5\ndmul\nreturn\n"),
+                                          mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectDoubleBitsFold(r, f64Bits(3.75));
 }
@@ -1311,28 +899,20 @@ TEST(ConstantFolderTest, doubleLdc2wInputFolds)
 // ── double 链长 1：不折 ──
 TEST(ConstantFolderTest, doubleSinglePushNotFolded)
 {
-    Bytes code;
-    code.push_back(static_cast<ca::u8>(Op::DCONST_1));
-    code.push_back(kReturn);
-    const Bytes in = oneMethod(std::move(code), 2);
+    const Bytes in = oneMethod("dconst_1\nreturn\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
-// ── float/double 类型混用：停 ──
+// ── float/double 类型混用：停（cat1+cat2 欠额活代码帧面拒收，死段表达）──
 TEST(ConstantFolderTest, floatDoubleMixNotFolded)
 {
-    Bytes code;
-    code.push_back(static_cast<ca::u8>(Op::FCONST_1));
-    code.push_back(static_cast<ca::u8>(Op::DCONST_1));
-    code.push_back(static_cast<ca::u8>(Op::DADD));
-    code.push_back(kReturn);
-    const Bytes in = oneMethod(std::move(code), 4);
+    const Bytes in = deadBody("fconst_1\ndconst_1\ndadd\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
 // ── 空方法体（仅 RETURN）：不折 ──
 TEST(ConstantFolderTest, emptyBodyUntouched)
 {
-    const Bytes in = oneMethod({kReturn});
+    const Bytes in = oneMethod("return\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
