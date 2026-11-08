@@ -103,7 +103,11 @@ add_requires("libca " .. LUIOX_LIBCA_VERSION, {configs = {modules = LUIOX_LIBCA_
 -- 仓库清理/测试收编批，消费面无功能差异；待 libjhasm 发内联含 0.4.23 的
 -- 版本后再同步上移。
 add_requires("libjbc 0.4.22")
-add_requires("libjstr 0.0.3")
+-- libjstr 0.0.4 = 审计修正 + UTF-16 码元桥（luiox-repo 词条 2026-10-21）。
+-- 本行是 libjstr 单源：mjbase 包词条对本包为裸名 add_deps（按包仓最新浮动，
+-- 实测不吃消费图顶层钉版），消费方钉版须跟随本行与包仓最新三者一致，
+-- 落后即双实例分裂（mjt#78 同族病）；源仓先上，消费方随下一次包词条跟版。
+add_requires("libjstr 0.0.4")
 add_requires("libjzip 0.0.5")
 add_requires("libgarena 0.0.5")
 add_requires("libjclassfile 0.0.2")
