@@ -3,12 +3,21 @@
 ///              虚调用未解析标记、可达闭包与库类过滤、外部目标丢弃、会话喂入、
 ///              读段/升格/操作数三段错误路径。
 ///
-/// 类字节全部手工拼装（utf8/class/name_and_type/methodref 条目写法参考
-/// libs/libjbc/demo/control_flow.cpp）：每个字节受控，不依赖本地语料。
+/// 夹具纪律：类字节一律 jasm 文本装配（JvmJasmService）。默认帧less 49
+///（shared/jasm_fixture.hpp 版本口径）——调用图夹具只承载 invoke 序列结构，
+/// 静态 void 调用链栈面平凡成立。invokedynamic 站点走 61 装配（BSM 面的
+/// 实证径，indy_site_inliner_jvm_test 同径），61 装配期做帧分析，接收者以
+/// aconst_null 垫出、结果以 pop 清栈自洽——垫栈指令不产生调用点。
+///
+/// 例外①（装配器无法直发的非法形态：改写前 expectValidateOk 自检 + 申报，
+/// 以被测 build() 实跑为最终证明）：
+/// - PromoteFailureFailsBuild：合法 goto 基座经 retargetFirstGoto 单点把
+///   目标改指 pc1（落在自身操作数中间）——装配器只发合法跳转；
+/// - InvokeOperandMismatchFailsBuild：invokestatic 的 CP 操作数经 DOM 单点
+///   改指 Utf8 条目——装配器只发 tag 相符的 Methodref；
+/// - BadBytesFailAtReadStage：截断字节是读段语料（格式即坏），字节级保留。
 #include <gtest/gtest.h>
-#include <cstdio>
 
-#include <map>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -17,8 +26,11 @@
 #include "jbc/core/bytes.hpp"
 #include "jbc/core/opcode.hpp"
 #include "jbc/ir/units.hpp"
+#include "libca/core/tag_cast.hpp"
 
 #include "mjbase/asm/classpath/call_graph.hpp"
+
+#include "shared/jasm_fixture.hpp"
 
 namespace {
 
@@ -35,41 +47,29 @@ using mjbase::asm_classpath::CallTreeOptions;
 using mjbase::asm_classpath::InvokeKind;
 using mjbase::asm_classpath::kNoCallTreeParent;
 
-void putU8(Bytes& b, ca::u8 v) { b.push_back(v); }
-
-void putU16(Bytes& b, ca::u16 v)
+/// CallSpec → jasm 助记符（invoke 家族一一对应）。
+const char* invokeMnemonic(Op op)
 {
-    b.push_back(static_cast<ca::u8>(v >> 8));
-    b.push_back(static_cast<ca::u8>(v));
-}
-
-void putU32(Bytes& b, ca::u32 v)
-{
-    b.push_back(static_cast<ca::u8>(v >> 24));
-    b.push_back(static_cast<ca::u8>(v >> 16));
-    b.push_back(static_cast<ca::u8>(v >> 8));
-    b.push_back(static_cast<ca::u8>(v));
-}
-
-void putUtf8Raw(Bytes& b, std::string_view s)
-{
-    for (const char c : s) {
-        b.push_back(static_cast<ca::u8>(c));
+    switch (op) {
+    case Op::INVOKEVIRTUAL: return "invokevirtual";
+    case Op::INVOKESPECIAL: return "invokespecial";
+    case Op::INVOKESTATIC: return "invokestatic";
+    case Op::INVOKEINTERFACE: return "invokeinterface";
+    case Op::INVOKEDYNAMIC: return "invokedynamic";
+    default: return "invokestatic";
     }
 }
 
-/// 单条 invoke 指令规格。broken = true 时操作数故意指向 Utf8 条目
-/// （tag 与 invoke 不符），用于触发 BuildError::Stage::Operand。
+/// 单条 invoke 指令规格（调用点提取只看 invoke 指令本身）。
 struct CallSpec
 {
     Op op = Op::INVOKESTATIC;
     std::string_view owner;
     std::string_view name;
     std::string_view desc;
-    bool broken = false;
 };
 
-/// 方法规格：abstract 时无 Code 属性（calls 忽略）。
+/// 方法规格：abstract 时无方法体（calls 忽略，出边为空）。
 struct MethodSpec
 {
     std::string_view name;
@@ -78,255 +78,106 @@ struct MethodSpec
     bool abstract = false;
 };
 
-/// 手工拼最小 classfile（V1_8 / public super / super=java/lang/Object /
-/// 无接口无字段无类属性），方法各带一个 Code 属性，指令序列 = invokes + return。
-///
-/// 组装分两遍：先把全部 CP 条目物化（cpCount 才算得对），再写字节；
-/// 第二遍里 utf8/cls/nat/ref 全部命中缓存，不再追加。
-class ClassBytesBuilder
-{
-public:
-    explicit ClassBytesBuilder(std::string_view thisClass)
-    {
-        thisIdx_ = cls(thisClass);
-        superIdx_ = cls("java/lang/Object");
-        codeName_ = utf8("Code");
-    }
-
-    /// 物化一个方法的 CP 条目（名字/描述符/调用引用）。
-    void declare(const MethodSpec& m)
-    {
-        utf8(m.name);
-        utf8(m.desc);
-        for (const CallSpec& c : m.calls) {
-            if (c.broken) {
-                utf8(c.name);   // 故意只留 Utf8 条目
-            } else if (c.op == Op::INVOKEDYNAMIC) {
-                ref(0x12, "", c.name, c.desc);
-            } else if (c.op == Op::INVOKEINTERFACE) {
-                ref(0x0B, c.owner, c.name, c.desc);
-            } else {
-                ref(0x0A, c.owner, c.name, c.desc);
-            }
-        }
-    }
-
-    Bytes assemble(std::string_view thisClass, const std::vector<MethodSpec>& methods)
-    {
-        Bytes out;
-        putU32(out, 0xCAFEBABEu);
-        putU16(out, 0x00);
-        putU16(out, 0x34);   // V1_8
-        putU16(out, next_);   // cpCount（slot 0 无效，无 long/double 双槽）
-        out.insert(out.end(), cp_.begin(), cp_.end());
-        putU16(out, 0x0021);   // public super
-        putU16(out, thisIdx_);
-        putU16(out, superIdx_);
-        putU16(out, 0);   // interfaces
-        putU16(out, 0);   // fields
-        putU16(out, static_cast<ca::u16>(methods.size()));
-
-        for (const MethodSpec& m : methods) {
-            putU16(out, m.abstract ? 0x0401 : 0x0009);   // public [static|abstract]
-            putU16(out, utf8(m.name));
-            putU16(out, utf8(m.desc));
-            if (m.abstract) {
-                putU16(out, 0);
-                continue;
-            }
-            const Bytes code = codeOf(m);
-            Bytes attr;
-            putU16(attr, 4);   // maxStack
-            putU16(attr, 1);   // maxLocals
-            putU32(attr, static_cast<ca::u32>(code.size()));
-            attr.insert(attr.end(), code.begin(), code.end());
-            putU16(attr, 0);   // exc table
-            putU16(attr, 0);   // nested attrs
-            putU16(out, 1);    // method attr count
-            putU16(out, codeName_);
-            putU32(out, static_cast<ca::u32>(attr.size()));
-            out.insert(out.end(), attr.begin(), attr.end());
-        }
-        putU16(out, 0);   // class attrs
-        return out;
-    }
-
-private:
-    ca::u16 utf8(std::string_view s)
-    {
-        std::string key(s);
-        const auto it = utf8s_.find(key);
-        if (it != utf8s_.end()) {
-            return it->second;
-        }
-        putU8(cp_, 0x01);
-        putU16(cp_, static_cast<ca::u16>(s.size()));
-        putUtf8Raw(cp_, s);
-        const ca::u16 idx = next_++;
-        utf8s_.emplace(std::move(key), idx);
-        return idx;
-    }
-
-    ca::u16 cls(std::string_view n)
-    {
-        std::string key(n);
-        const auto it = classes_.find(key);
-        if (it != classes_.end()) {
-            return it->second;
-        }
-        const ca::u16 u = utf8(n);
-        putU8(cp_, 0x07);
-        putU16(cp_, u);
-        const ca::u16 idx = next_++;
-        classes_.emplace(std::move(key), idx);
-        return idx;
-    }
-
-    ca::u16 nat(std::string_view name, std::string_view desc)
-    {
-        std::string key = std::string(name) + "." + std::string(desc);
-        const auto it = nats_.find(key);
-        if (it != nats_.end()) {
-            return it->second;
-        }
-        const ca::u16 un = utf8(name);
-        const ca::u16 ud = utf8(desc);
-        putU8(cp_, 0x0C);
-        putU16(cp_, un);
-        putU16(cp_, ud);
-        const ca::u16 idx = next_++;
-        nats_.emplace(std::move(key), idx);
-        return idx;
-    }
-
-    /// tag：0x0A Methodref / 0x0B InterfaceMethodref / 0x12 InvokeDynamic。
-    ca::u16 ref(ca::u8 tag, std::string_view owner, std::string_view name,
-                std::string_view desc)
-    {
-        std::string key = std::string(1, static_cast<char>(tag)) + "." +
-                          std::string(owner) + "." + std::string(name) + "." +
-                          std::string(desc);
-        const auto it = refs_.find(key);
-        if (it != refs_.end()) {
-            return it->second;
-        }
-        // 先物化全部依赖条目再写字节：cls() 内部会向 cp_ 追加 utf8/Class，
-        // 若在 putU8(tag) 之后作为实参求值会把本条目结构冲乱。
-        const ca::u16 uc = tag == 0x12 ? 0 : cls(owner);
-        const ca::u16 un = nat(name, desc);
-        putU8(cp_, tag);
-        if (tag == 0x12) {
-            putU16(cp_, 0);   // bootstrap_method_attr_index：memberOf 不校验
-            putU16(cp_, un);
-        } else {
-            putU16(cp_, uc);
-            putU16(cp_, un);
-        }
-        const ca::u16 idx = next_++;
-        refs_.emplace(std::move(key), idx);
-        return idx;
-    }
-
-    Bytes codeOf(const MethodSpec& m)
-    {
-        Bytes code;
-        for (const CallSpec& c : m.calls) {
-            ca::u16 cpIdx = 0;
-            if (c.broken) {
-                cpIdx = utf8(c.name);   // 命中 declare 物化过的 Utf8 条目
-            } else if (c.op == Op::INVOKEDYNAMIC) {
-                cpIdx = ref(0x12, "", c.name, c.desc);
-            } else if (c.op == Op::INVOKEINTERFACE) {
-                cpIdx = ref(0x0B, c.owner, c.name, c.desc);
-            } else {
-                cpIdx = ref(0x0A, c.owner, c.name, c.desc);
-            }
-            putU8(code, static_cast<ca::u8>(c.op));
-            putU16(code, cpIdx);
-            if (c.op == Op::INVOKEINTERFACE) {
-                putU8(code, 1);   // count（读段不校验）
-                putU8(code, 0);
-            } else if (c.op == Op::INVOKEDYNAMIC) {
-                putU8(code, 0);
-                putU8(code, 0);
-            }
-        }
-        putU8(code, 0xB1);   // return
-        return code;
-    }
-
-    Bytes cp_;
-    ca::u16 next_ = 1;   // slot 0 无效
-    std::map<std::string, ca::u16> utf8s_;
-    std::map<std::string, ca::u16> classes_;
-    std::map<std::string, ca::u16> nats_;
-    std::map<std::string, ca::u16> refs_;
-    ca::u16 thisIdx_ = 0;
-    ca::u16 superIdx_ = 0;
-    ca::u16 codeName_ = 0;
-};
-
+/// jasm 装配最小 classfile（帧less 49：public super /
+/// super=java/lang/Object / 无接口无字段无类属性），方法各带一个 Code 属性，
+/// 指令序列 = invokes + return。
 Bytes makeClass(std::string_view thisClass, const std::vector<MethodSpec>& methods)
 {
-    ClassBytesBuilder b(thisClass);
+    std::string memberText;
     for (const MethodSpec& m : methods) {
-        b.declare(m);
+        if (m.abstract) {
+            memberText += "  .method public abstract ";
+            memberText += m.name;
+            memberText += ' ';
+            memberText += m.desc;
+            memberText += " { }\n";
+            continue;
+        }
+        memberText += "  .method public static ";
+        memberText += m.name;
+        memberText += ' ';
+        memberText += m.desc;
+        memberText += " {\n    code: {\n";
+        for (const CallSpec& c : m.calls) {
+            memberText += "      ";
+            memberText += invokeMnemonic(c.op);
+            memberText += ' ';
+            if (c.op != Op::INVOKEDYNAMIC) {
+                memberText += c.owner;
+                memberText += '.';
+            }
+            memberText += c.name;
+            memberText += ' ';
+            memberText += c.desc;
+            memberText += '\n';
+        }
+        memberText += "      return\n    }\n  }\n";
     }
-    return b.assemble(thisClass, methods);
+    const std::string src = ".super java/lang/Object\n.class public super "
+        + std::string(thisClass) + " {\n" + memberText + "}\n";
+    return mjbase::test::assembleJasm(src);
 }
 
-/// 单方法 + 直接给定 code 字节（畸形指令序列用，不走 invoke 拼装）。
-Bytes makeClassWithRawCode(std::string_view thisClass, std::string_view name,
-                           std::string_view desc, const Bytes& code)
+/// 五类 invoke 站点夹具（K.m）：invokedynamic 需 BootstrapMethods 面，
+/// 61 装配（indy_site_inliner_jvm_test 同径）；61 装配期做帧分析，接收者用
+/// aconst_null 垫出、结果以 pop 清栈——垫栈不产生调用点，站点 kind 次序
+/// 与原字节夹具一致（virtual/special/static/interface/dynamic）。
+const Bytes& invokeKindsClassBytes()
 {
-    Bytes cp;
-    ca::u16 next = 1;
-    const auto utf8 = [&](std::string_view s) {
-        putU8(cp, 0x01);
-        putU16(cp, static_cast<ca::u16>(s.size()));
-        putUtf8Raw(cp, s);
-        return next++;
-    };
-    const ca::u16 uThis = utf8(thisClass);
-    putU8(cp, 0x07);
-    putU16(cp, uThis);
-    const ca::u16 cThis = next++;
-    const ca::u16 uObj = utf8("java/lang/Object");
-    putU8(cp, 0x07);
-    putU16(cp, uObj);
-    const ca::u16 cObj = next++;
-    const ca::u16 uName = utf8(name);
-    const ca::u16 uDesc = utf8(desc);
-    const ca::u16 uCode = utf8("Code");
+    static const Bytes cls = mjbase::test::assembleJasm(R"JASM(.super java/lang/Object
+.class public super K {
+  .method public static m ()V {
+    code: {
+      aconst_null
+      invokevirtual java/lang/Object.toString ()Ljava/lang/String;
+      pop
+      aconst_null
+      invokespecial K.self ()V
+      invokestatic K.helper ()V
+      aconst_null
+      invokeinterface java/util/List.size ()I
+      pop
+      invokedynamic apply ()Ljava/lang/Object; { invokestatic, Boot.boot, (Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite; } { }
+      pop
+      return
+    }
+  }
+}
+)JASM", 61);
+    return cls;
+}
 
-    Bytes out;
-    putU32(out, 0xCAFEBABEu);
-    putU16(out, 0x00);
-    putU16(out, 0x34);
-    putU16(out, next);
-    out.insert(out.end(), cp.begin(), cp.end());
-    putU16(out, 0x0021);
-    putU16(out, cThis);
-    putU16(out, cObj);
-    putU16(out, 0);
-    putU16(out, 0);
-    putU16(out, 1);
-    putU16(out, 0x0009);
-    putU16(out, uName);
-    putU16(out, uDesc);
-    putU16(out, 1);
-    Bytes attr;
-    putU16(attr, 4);
-    putU16(attr, 1);
-    putU32(attr, static_cast<ca::u32>(code.size()));
-    attr.insert(attr.end(), code.begin(), code.end());
-    putU16(attr, 0);
-    putU16(attr, 0);
-    putU16(out, uCode);
-    putU32(out, static_cast<ca::u32>(attr.size()));
-    out.insert(out.end(), attr.begin(), attr.end());
-    putU16(out, 0);
-    return out;
+/// 例外①载面（invoke 操作数改锚）：首个方法 Code 内第一条 invokestatic
+///（0xB8）的 CP 操作数单点改指本方法名的 Utf8 槽位（tag 与 invoke 不符）。
+Bytes pointInvokeOperandAtUtf8(const Bytes& clsBytes)
+{
+    return mjbase::test::mutateClassFile(
+        clsBytes, "invoke-operand-utf8", [](jbc::core::ClassFile& cf) {
+            ASSERT_FALSE(cf.methods.empty());
+            if (cf.methods.empty()) return;
+            const ca::u32 utf8Slot = cf.methods[0].nameCp;
+            for (jbc::core::AttrSlot& slot : cf.methods[0].attrs) {
+                if (!cf.cp.utf8Equals(slot.nameCp, "Code")) continue;
+                if (!slot.decoded() && cf.decodeAttr(slot).is_err()) {
+                    ADD_FAILURE() << "invoke-operand-utf8: Code 解码失败";
+                    return;
+                }
+                auto* code = ca::core::tag_cast::cast<jbc::core::CodeAttr>(slot.mutate());
+                if (code == nullptr) {
+                    ADD_FAILURE() << "invoke-operand-utf8: Code 槽类型不符";
+                    return;
+                }
+                for (usize i = 0; i + 2 < code->code.size(); ++i) {
+                    if (code->code[i] != 0xB8) continue;   // INVOKESTATIC
+                    code->code[i + 1] = static_cast<ca::u8>(utf8Slot >> 8);
+                    code->code[i + 2] = static_cast<ca::u8>(utf8Slot);
+                    return;
+                }
+                ADD_FAILURE() << "invoke-operand-utf8: 未找到 INVOKESTATIC";
+                return;
+            }
+            ADD_FAILURE() << "invoke-operand-utf8: 无 Code 属性";
+        });
 }
 
 mjbase::MemberKey keyOf(CallGraph& g, std::string_view cls, std::string_view name,
@@ -472,15 +323,7 @@ TEST(MjAsmClasspathTest, CallSitesResolveInsnInKeptAliveSession)
 
 TEST(MjAsmClasspathTest, InvokeKindsMarkVirtualUnresolved)
 {
-    const Bytes cls = makeClass("K", {{"m", "()V", {
-        {Op::INVOKEVIRTUAL, "java/lang/Object", "toString", "()Ljava/lang/String;"},
-        {Op::INVOKESPECIAL, "K", "<init>", "()V"},
-        {Op::INVOKESTATIC, "K", "helper", "()V"},
-        {Op::INVOKEINTERFACE, "java/util/List", "size", "()I"},
-        {Op::INVOKEDYNAMIC, "", "apply", "()Ljava/lang/Object;"},
-    }}});
-
-    CallGraph g = buildGraphOf({cls});
+    CallGraph g = buildGraphOf({invokeKindsClassBytes()});
     const mjbase::MemberKey m = keyOf(g, "K", "m", "()V");
 
     const std::vector<CallSite> out = g.outgoingSitesOf(m);
@@ -867,8 +710,15 @@ TEST(MjAsmClasspathTest, BadBytesFailAtReadStage)
 
 TEST(MjAsmClasspathTest, PromoteFailureFailsBuild)
 {
-    // goto +1 落在自身操作数中间：Code 属性在、指令导入必败（BadTarget）。
-    const Bytes broken = makeClassWithRawCode("Bad", "m", "()V", {0xA7, 0x00, 0x01, 0xB1});
+    // goto 重锚例外①：合法基座 goto 直落下一指令，retargetFirstGoto 单点把
+    // 目标改指 pc1（落在自身操作数中间）——装配器只发合法跳转，此形无法从
+    // 源码直达；改写后指令导入必败（BadTarget → BadInstructions）。
+    const Bytes base = mjbase::test::assembleMethodClass(
+        "m", "()V", "      goto L0\n      L0:\n      return\n", "Bad");
+    ASSERT_FALSE(base.empty());
+    expectValidateOk(base);
+    const Bytes broken = mjbase::test::retargetFirstGoto(base, 1);
+    ASSERT_FALSE(broken.empty());
 
     CallGraphBuilder b;
     ASSERT_TRUE(
@@ -885,10 +735,16 @@ TEST(MjAsmClasspathTest, PromoteFailureFailsBuild)
 
 TEST(MjAsmClasspathTest, InvokeOperandMismatchFailsBuild)
 {
-    // invokestatic 的 CP 操作数指向 Utf8 条目（tag 不符）→ memberOf 失败。
-    const Bytes bad = makeClass("Bad2", {{"m", "()V", {
-        {Op::INVOKESTATIC, "X", "whatever", "()V", /*broken=*/true},
+    // invoke 操作数改锚例外①：invokestatic 的 CP 操作数单点改指 Utf8 条目
+    //（本方法名槽位）——装配器只发 tag 相符的 Methodref，此形无法从源码
+    // 直达；改写后 memberOf 失败由 build() 实跑证明（Operand 段）。
+    const Bytes base = makeClass("Bad2", {{"m", "()V", {
+        {Op::INVOKESTATIC, "X", "whatever", "()V"},
     }}});
+    ASSERT_FALSE(base.empty());
+    expectValidateOk(base);
+    const Bytes bad = pointInvokeOperandAtUtf8(base);
+    ASSERT_FALSE(bad.empty());
 
     CallGraphBuilder b;
     ASSERT_TRUE(
