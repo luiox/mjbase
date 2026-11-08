@@ -62,6 +62,12 @@ edit-ledger section 为 jsonl，每行一个自描述 JSON 对象，行级版本
 
 字段口径：txn ≥ 1 全局单调（被放弃分支的事务号不复用）；parent = 0 表示链根（基线态），否则必须指向同段内存在的事务行；entries 按 uri 字典序；op ∈replace|add|remove；before/after 为 "sha256:"+64hex，add 的 before 与 remove的 after 恒为空串；payload 仅 replace/add 携带，kind 恒 overlay（未知 kind拒载——引擎解不开的载荷不能假装能重放），ref 为 overlay section 名；锚行previous 仅在非首次压缩时携带（补链：新基线 digest → 上一基线 digest → 原始容器登记指纹的追溯链，RFC §6.4「新基线 digest + 被压缩区间记录」）。
 
+事务行可携带可选的 identity 注记（真改名语义旁车；字节重放不读它，undo/redo/restore 消费方读它反推分析库身份迁移的反向/前向规格。缺席 = 无名改语义，旧行零影响）：
+
+{"v":1,"row":"txn",…,"entries":[…],"identity":[{"target":"class","name":"a/b","new_name":"b/B"},{"target":"member","member_kind":"method","owner":"b/B","name":"take","desc":"(La/b;)V","new_name":"takeReal","new_desc":"(Lb/B;)V"}],"produced_by":…,"created_at":…}
+
+identity 元素字段集按 target 严格分流：class = target/name/new_name（member 专属字段出现即拒载）；member = target/member_kind/owner/name/desc/new_name + 可选 new_desc（空/缺席 = 描述符保持）。member 的 owner 是类规格先行迁移后的新内部名；newDesc 与 desc 的配对语义同 AnalysisDb::migrateIdentities。
+
 2.2 活动链与分支
 ~~~~~~~~~~~~~~~~
 

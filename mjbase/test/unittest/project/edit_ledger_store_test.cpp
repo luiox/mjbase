@@ -383,6 +383,59 @@ TEST(MjLedgerStoreTest, bundleFlushReopenRestoresChainBookmarksAndPayloads)
     EXPECT_EQ(0U, restored.lastTouchOf("missing.class", 9));
 }
 
+/// 身份注记随 append 落链、随 flush 落盘、随重开恢复（undo/redo 消费面的
+/// 持久性契约）。
+TEST(MjLedgerStoreTest, identityAnnotationSurvivesAppendFlushAndReopen)
+{
+    const auto  dir      = freshTempDir("mjbase_ledger_store_identity.mjt-project");
+    const std::string dirStr = dir.string();
+    ASSERT_FALSE(createBundleSkeleton(refOf(dirStr)).is_err());
+    const auto  baseline = makeBaseline();
+
+    {
+        auto opened = EditLedgerStore::openBundle(refOf(dirStr), refOf(baseline.digest));
+        ASSERT_FALSE(opened.is_err());
+        auto store = std::move(opened).unwrap();
+
+        auto draft = makeAppendInput(store.nextTxnId(),
+                                     {{"a.class", false, false, bytesOf("A0"), bytesOf("A1")}});
+        LedgerIdentityRename spec;
+        spec.isMember = true;
+        spec.isMethod = true;
+        spec.owner    = copyLedgerText("x/T");
+        spec.name     = copyLedgerText("run");
+        spec.desc     = copyLedgerText("()V");
+        spec.newName  = copyLedgerText("go");
+        draft.identity.push_back(std::move(spec));
+        auto appended = store.append(std::move(draft));
+        ASSERT_FALSE(appended.is_err());
+        const auto txn = std::move(appended).unwrap();
+        ASSERT_EQ(1U, txn.identity.size());
+        EXPECT_EQ("go", toStd(txn.identity[0].newName.ref()));
+
+        ASSERT_NE(nullptr, store.transaction(1));
+        ASSERT_EQ(1U, store.transaction(1)->identity.size());
+        EXPECT_EQ("x/T", toStd(store.transaction(1)->identity[0].owner.ref()));
+
+        auto flushed = store.flush("2026-10-23T00:00:03Z");
+        ASSERT_FALSE(flushed.is_err());
+        EXPECT_TRUE(std::move(flushed).unwrap().flushed);
+    }
+
+    auto reopened = EditLedgerStore::openBundle(refOf(dirStr), refOf(baseline.digest));
+    ASSERT_FALSE(reopened.is_err());
+    auto restored = std::move(reopened).unwrap();
+    ASSERT_NE(nullptr, restored.transaction(1));
+    ASSERT_EQ(1U, restored.transaction(1)->identity.size());
+    const auto& back = restored.transaction(1)->identity.front();
+    EXPECT_TRUE(back.isMember);
+    EXPECT_TRUE(back.isMethod);
+    EXPECT_EQ("run", toStd(back.name.ref()));
+    EXPECT_EQ("()V", toStd(back.desc.ref()));
+    EXPECT_EQ("go", toStd(back.newName.ref()));
+    EXPECT_TRUE(back.newDesc.is_empty());
+}
+
 TEST(MjLedgerStoreTest, boundStoreExcludesConcurrentOpenAndSurvivesDamagedLedger)
 {
     const auto  dir      = freshTempDir("mjbase_ledger_store_lock.mjt-project");

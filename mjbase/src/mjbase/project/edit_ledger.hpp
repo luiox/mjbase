@@ -69,6 +69,38 @@ struct LedgerEntry
     }
 };
 
+/// @brief 事务的身份迁移注记元素（真改名语义的持久旁车）。
+///
+/// 台账本体工作在 uri + digest + 字节面，不知道"改名"；本注记是 append 方
+/// （workspace 层）在同事务内携带的语义：该事务对类/成员真名做了哪些旧值→
+/// 新值改写。字节重放不读它；undo/redo/restore 消费方读它反推分析库身份
+/// 迁移的反向/前向规格。字段语义与 AnalysisDb::DbIdentityRename 对齐
+/// （member 的 owner 是类规格先行后的新内部名；newDesc 空 = 描述符保持）。
+struct LedgerIdentityRename
+{
+    bool                isMember = false;           ///< false = class，true = member
+    bool                isMethod = false;           ///< member 的成员类别（field/method）
+    ca::str::Utf8String owner;    ///< member：迁移时刻 owner 内部名；class 恒空
+    ca::str::Utf8String name;     ///< class = 旧内部名；member = 旧真名
+    ca::str::Utf8String desc;     ///< member 旧描述符；class 恒空
+    ca::str::Utf8String newName;  ///< 新名（class/member 通用）
+    ca::str::Utf8String newDesc;  ///< member 新描述符；空 = 保持旧值
+
+    /// @brief 深拷贝。
+    LedgerIdentityRename clone() const
+    {
+        LedgerIdentityRename copy;
+        copy.isMember = isMember;
+        copy.isMethod = isMethod;
+        copy.owner    = owner.clone();
+        copy.name     = name.clone();
+        copy.desc     = desc.clone();
+        copy.newName  = newName.clone();
+        copy.newDesc  = newDesc.clone();
+        return copy;
+    }
+};
+
 /// @brief 一条已提交编辑事务（row=txn）。
 struct LedgerTransaction
 {
@@ -79,6 +111,8 @@ struct LedgerTransaction
     std::vector<LedgerEntry> entries;  ///< 按 uri 字典序（写出定序）
     ca::str::Utf8String producedBy;    ///< 生产者自述串（非空）
     ca::str::Utf8String createdAt;     ///< ISO-8601 串（非空；格式不校验）
+    /// 身份迁移注记（空 = 无名改语义；元素见 LedgerIdentityRename）。
+    std::vector<LedgerIdentityRename> identity;
 
     /// @brief 深拷贝。
     LedgerTransaction clone() const
@@ -92,6 +126,8 @@ struct LedgerTransaction
         for (const auto& entry : entries) copy.entries.push_back(entry.clone());
         copy.producedBy = producedBy.clone();
         copy.createdAt  = createdAt.clone();
+        copy.identity.reserve(identity.size());
+        for (const auto& spec : identity) copy.identity.push_back(spec.clone());
         return copy;
     }
 };

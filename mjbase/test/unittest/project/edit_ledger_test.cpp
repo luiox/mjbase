@@ -203,6 +203,119 @@ TEST(MjLedgerRowTest, anchorAndBookmarkRowsRoundtrip)
     EXPECT_EQ(3U, bookmark.bookmark.txn);
 }
 
+/// 身份注记：class / member（带 newDesc）/ member（newDesc 空 = 保持）三形态
+/// 往返；写出字段序与省略面（class 不带 member 段、newDesc 空省略）固定。
+TEST(MjLedgerRowTest, identityAnnotationRoundtrips)
+{
+    LedgerRow row = makeTxnRow(5, 3);
+
+    LedgerIdentityRename classSpec;
+    classSpec.isMember = false;
+    classSpec.name     = Utf8String::from_cstr("a/b");
+    classSpec.newName  = Utf8String::from_cstr("b/B");
+    row.transaction.identity.push_back(std::move(classSpec));
+
+    LedgerIdentityRename fieldSpec;
+    fieldSpec.isMember = true;
+    fieldSpec.isMethod = false;
+    fieldSpec.owner    = Utf8String::from_cstr("b/B");
+    fieldSpec.name     = Utf8String::from_cstr("gift");
+    fieldSpec.desc     = Utf8String::from_cstr("La/b;");
+    fieldSpec.newName  = Utf8String::from_cstr("present");
+    fieldSpec.newDesc  = Utf8String::from_cstr("Lb/B;");
+    row.transaction.identity.push_back(std::move(fieldSpec));
+
+    LedgerIdentityRename methodSpec;
+    methodSpec.isMember = true;
+    methodSpec.isMethod = true;
+    methodSpec.owner    = Utf8String::from_cstr("b/B");
+    methodSpec.name     = Utf8String::from_cstr("take");
+    methodSpec.desc     = Utf8String::from_cstr("(La/b;)V");
+    methodSpec.newName  = Utf8String::from_cstr("takeReal");
+    row.transaction.identity.push_back(std::move(methodSpec));
+
+    auto text = serializeLedgerRow(row);
+    ASSERT_FALSE(text.is_err());
+    const auto body = std::move(text).unwrap().to_std_string();
+    EXPECT_NE(std::string::npos,
+              body.find("\"identity\":[{\"target\":\"class\",\"name\":\"a/b\","
+                        "\"new_name\":\"b/B\"}"));
+    EXPECT_NE(std::string::npos,
+              body.find("{\"target\":\"member\",\"member_kind\":\"field\",\"owner\":\"b/B\","
+                        "\"name\":\"gift\",\"desc\":\"La/b;\",\"new_name\":\"present\","
+                        "\"new_desc\":\"Lb/B;\"}"));
+    //newDesc 空 = 描述符保持：写出省略。
+    EXPECT_NE(std::string::npos,
+              body.find("{\"target\":\"member\",\"member_kind\":\"method\",\"owner\":\"b/B\","
+                        "\"name\":\"take\",\"desc\":\"(La/b;)V\",\"new_name\":\"takeReal\"}"));
+
+    auto parsed = parseLedgerRow(body, 1);
+    ASSERT_FALSE(parsed.is_err());
+    const auto& back = std::move(parsed).unwrap();
+    ASSERT_EQ(LedgerRow::Kind::Transaction, back.kind);
+    ASSERT_EQ(3U, back.transaction.identity.size());
+    EXPECT_FALSE(back.transaction.identity[0].isMember);
+    EXPECT_EQ("a/b", back.transaction.identity[0].name.to_std_string());
+    EXPECT_EQ("b/B", back.transaction.identity[0].newName.to_std_string());
+    EXPECT_TRUE(back.transaction.identity[1].isMember);
+    EXPECT_FALSE(back.transaction.identity[1].isMethod);
+    EXPECT_EQ("b/B", back.transaction.identity[1].owner.to_std_string());
+    EXPECT_EQ("Lb/B;", back.transaction.identity[1].newDesc.to_std_string());
+    EXPECT_TRUE(back.transaction.identity[2].isMember);
+    EXPECT_TRUE(back.transaction.identity[2].isMethod);
+    EXPECT_TRUE(back.transaction.identity[2].newDesc.is_empty());
+
+    // 往返再写出逐字节一致。
+    auto rewritten = serializeLedgerRow(back);
+    ASSERT_FALSE(rewritten.is_err());
+    EXPECT_EQ(body, std::move(rewritten).unwrap().to_std_string());
+}
+
+/// 旧版行（无 identity 键）照常解析：注记缺席 = 空向量，非错误。
+TEST(MjLedgerRowTest, legacyRowWithoutIdentityParses)
+{
+    auto text = serializeLedgerRow(makeTxnRow(2, 1));
+    ASSERT_FALSE(text.is_err());
+    const auto body = std::move(text).unwrap().to_std_string();
+    EXPECT_EQ(std::string::npos, body.find("\"identity\""));
+    auto parsed = parseLedgerRow(body, 1);
+    ASSERT_FALSE(parsed.is_err());
+    const auto& back = std::move(parsed).unwrap();
+    ASSERT_EQ(LedgerRow::Kind::Transaction, back.kind);
+    EXPECT_TRUE(back.transaction.identity.empty());
+}
+
+/// 身份注记拒载面：未知字段 / 成员缺 member_kind / class 带 member 段 /
+/// 非法 target / 顶层非数组。
+TEST(MjLedgerRowTest, identityAnnotationRejectsMalformedShapes)
+{
+    const std::string head =
+        "{\"v\":1,\"row\":\"txn\",\"txn\":1,\"parent\":0,"
+        "\"base_container\":\"" + hashOf('a') + "\",\"entries\":[],"
+        "\"produced_by\":\"mjbase-workspace/1\",\"created_at\":\"2026-10-23T00:00:00Z\"";
+    const auto expectReject = [&](const std::string& identityField) {
+        const std::string message =
+            expectRowError(head + ",\"identity\":" + identityField + "}");
+        EXPECT_NE(std::string::npos, message.find("identity")) << message;
+    };
+    // 顶层非数组。
+    expectReject("{\"target\":\"class\"}");
+    // 元素非对象。
+    expectReject("[\"class\"]");
+    // 未知字段。
+    expectReject("[{\"target\":\"class\",\"name\":\"a/b\",\"new_name\":\"b/B\",\"extra\":1}]");
+    // 成员缺 member_kind。
+    expectReject("[{\"target\":\"member\",\"owner\":\"b/B\",\"name\":\"take\","
+                 "\"desc\":\"()V\",\"new_name\":\"takeReal\"}]");
+    // class 携带 member 段。
+    expectReject("[{\"target\":\"class\",\"name\":\"a/b\",\"new_name\":\"b/B\","
+                 "\"owner\":\"b/B\"}]");
+    // 非法 target。
+    expectReject("[{\"target\":\"package\",\"name\":\"a\",\"new_name\":\"b\"}]");
+    // class 缺 new_name。
+    expectReject("[{\"target\":\"class\",\"name\":\"a/b\"}]");
+}
+
 TEST(MjLedgerRowTest, strictParseRejectsViolationsByClass)
 {
     const std::string digestA = hashOf('1');

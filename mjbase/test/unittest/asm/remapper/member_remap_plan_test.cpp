@@ -8,6 +8,7 @@
 /// 可观察行为）。另补 MappingRemapper（utf8_remapper 去 visitor 重设计）用例。
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -1002,6 +1003,48 @@ TEST(MjAsmRemapperTest, mapsDescriptorsWithoutApplyingClassTree)
     // 池驻留视图稳定性：同一输入重复查询得到同一文本。
     EXPECT_EQ(std::string(plan.mapFieldDescriptor("LOldOwner;")),
               std::string(plan.mapFieldDescriptor("LOldOwner;")));
+}
+
+/// 身份注记消费面：类映射与字段/方法规则的全量枚举（applyRemap 漏斗推导
+/// LedgerIdentityRename 的输入）。无序枚举 → 断言前排序。
+TEST(MjAsmRemapperTest, enumeratesClassMappingsAndMemberRules)
+{
+    MemberRemapPlan plan;
+    EXPECT_TRUE(plan.classMappings().empty());
+    EXPECT_TRUE(plan.fieldRules().empty());
+    EXPECT_TRUE(plan.methodRules().empty());
+
+    plan.mapClass("OldOwner", "NewOwner");
+    plan.mapClass("OldType", "NewType");
+    plan.mapField("OldOwner", "oldField", "LOldType;", "NewOwner", "newField", "LNewType;");
+    plan.mapMethod("OldOwner", "oldMethod", "(LOldType;)V", "NewOwner", "newMethod",
+                   "(LNewType;)V");
+
+    auto mappings = plan.classMappings();
+    ASSERT_EQ(2U, mappings.size());
+    std::vector<std::pair<std::string, std::string>> sorted;
+    for (const auto& [from, to] : mappings) sorted.emplace_back(from, to);
+    std::sort(sorted.begin(), sorted.end());
+    EXPECT_EQ("OldOwner", sorted[0].first);
+    EXPECT_EQ("NewOwner", sorted[0].second);
+    EXPECT_EQ("OldType", sorted[1].first);
+    EXPECT_EQ("NewType", sorted[1].second);
+
+    //规则键/值三段经 pool() 展开（视图寿命 = 计划）。
+    ASSERT_EQ(1U, plan.fieldRules().size());
+    const auto& field = plan.fieldRules().front();
+    EXPECT_EQ("OldOwner", std::string(plan.pool().str(field.oldKey.cls)));
+    EXPECT_EQ("oldField", std::string(plan.pool().str(field.oldKey.name)));
+    EXPECT_EQ("LOldType;", std::string(plan.pool().str(field.oldKey.desc)));
+    EXPECT_EQ("NewOwner", std::string(plan.pool().str(field.newKey.cls)));
+    EXPECT_EQ("newField", std::string(plan.pool().str(field.newKey.name)));
+    EXPECT_EQ("LNewType;", std::string(plan.pool().str(field.newKey.desc)));
+
+    ASSERT_EQ(1U, plan.methodRules().size());
+    const auto& method = plan.methodRules().front();
+    EXPECT_EQ("oldMethod", std::string(plan.pool().str(method.oldKey.name)));
+    EXPECT_EQ("newMethod", std::string(plan.pool().str(method.newKey.name)));
+    EXPECT_EQ("(LNewType;)V", std::string(plan.pool().str(method.newKey.desc)));
 }
 
 // 旧例 3：descriptorCacheFollowsClassMappingUpdates
