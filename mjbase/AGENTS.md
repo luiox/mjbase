@@ -9,7 +9,7 @@ mjbase 是基于 libjbc 的跨类程序分析与变换库。
   指令工程（asm 域）、pass 域。mjbase 不重新实现 libjbc 已有能力，
   也不把全局状态塞回 libjbc。
 
-## 代码风格（对齐仓库根 AGENTS.md）
+## 代码风格
 
 - 命名空间 `mjbase`（子模块 `mjbase::asm_...` 等，见模块目录）。
 - 头文件引用：模块内 `"file.hpp"`；跨模块 `"mjbase/<module>/file.hpp"`
