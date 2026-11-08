@@ -1263,6 +1263,34 @@ TEST(MjAnalysisProducerRegistryTest, BatchScopedImportResolvesOwnershipAcrossBat
                          std::optional<ca::i64>(batch3));
     expectClassOwnership(db, "demo/Gamma", "gamma stays at batch3 after batch4",
                          std::optional<ca::i64>(batch3));
+
+    // batch5 = 类头切片替换（replaceReferencesFromClass）：Alpha 的类头引用行
+    // 换新并落 (2, class_id) 锚——与 ingestClasses 同锚，类事实归属合流翻到
+    // batch5；方法体行未触碰，成员切片归属停在 batch4。
+    const auto batch5Opened =
+        db.openBatch(producerId, DbBatchKind::RefsSliceReplace, S("header slice"));
+    ASSERT_TRUE(batch5Opened.is_ok());
+    const ca::i64 batch5 = batch5Opened.unwrap();
+    {
+        auto alphaClass = db.findClass(S("demo/Alpha"));
+        ASSERT_TRUE(alphaClass.is_ok());
+        auto alphaRow = std::move(alphaClass).unwrap();
+        ASSERT_TRUE(alphaRow.has_value());
+        std::vector<DbReferenceRecord> header;
+        header.push_back(referenceRecord("demo/Alpha", "", "", -1,
+                                         DbReferenceKind::Type, "demo/Gamma", "", ""));
+        ASSERT_TRUE(
+            db.replaceReferencesFromClass(batch5, alphaRow->classId, std::move(header)).is_ok());
+    }
+    ASSERT_TRUE(db.closeBatch(batch5, DbBatchCounts{}).is_ok());
+
+    expectClassOwnership(db, "demo/Alpha", "alpha after batch5 header slice",
+                         std::optional<ca::i64>(batch5));
+    expectClassOwnership(db, "demo/Beta", "beta stays at batch3 after batch5",
+                         std::optional<ca::i64>(batch3));
+    expectSliceOwnership(db, DbMemberKind::Method, "demo/Alpha", "run", "()V",
+                         "alpha.run stays at batch4 after batch5",
+                         std::optional<ca::i64>(batch4));
 }
 
 TEST(MjAnalysisProducerRegistryTest, MaskHitAccountingStaysOutsideBatches)

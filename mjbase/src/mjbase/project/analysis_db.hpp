@@ -1063,6 +1063,24 @@ public:
     ca::Result<ca::usize, AnalysisDbError> replaceReferencesFromMember(
         ca::i64 batchId, ca::i64 sourceMemberId, std::vector<DbReferenceRecord> references);
 
+    /// @brief 原子替换单个类的类头直接引用事实（单事务切片替换）。
+    ///
+    /// 删除 @p sourceClassId 名下全部类头引用行（source_member 为 NULL 的行，
+    /// 即 super/interfaces 等 Type 引用）后按输入序插入 @p references；该类
+    /// 各方法体的引用切片与其他类的行逐行不动。类身份由参数携带，行内
+    /// source 字段照常解析写入，且必须与 @p sourceClassId 指向的类一致、
+    /// source method 为空（带方法源的记录 → `Invalid`，方法体切片归
+    /// `replaceReferencesFromMember` 管）。@p sourceClassId 不存在或记录
+    /// 形状非法 → `Invalid`，旧切片保持不动；空输入 = 清空该类的类头切片。
+    /// 适合类头编辑（改 super/接口表）后的增量替换；整库重建用
+    /// `replaceReferences`。`batchId` 首参挂靠批次：0 = 无批写入；非 0 必须
+    /// 是未收尾的已注册批次（否则 `Invalid`），命中后落 (2, class_id) 作用域
+    /// 行——与 `ingestClasses` 同锚，类事实归属解析两处合流。
+    ///
+    /// @return 写入的引用条数。
+    ca::Result<ca::usize, AnalysisDbError> replaceReferencesFromClass(
+        ca::i64 batchId, ca::i64 sourceClassId, std::vector<DbReferenceRecord> references);
+
     /// @brief 按内部名查类事实；未登记返回 `std::nullopt`。
     ca::Result<std::optional<DbClassInfo>, AnalysisDbError> findClass(
         const ca::str::Utf8StringRef& owner) const;

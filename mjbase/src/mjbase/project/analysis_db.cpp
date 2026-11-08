@@ -4581,6 +4581,99 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceReferencesFromMember(
     return ca::Ok(references.size());
 }
 
+ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceReferencesFromClass(
+    ca::i64 batchId, ca::i64 sourceClassId, std::vector<DbReferenceRecord> references)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+    if (batchId < 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "batch id must not be negative"));
+    }
+    if (auto result = validateReferences(references); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
+
+    // 切片身份先落定：取类内部名，行内 source 字段必须与之一致且不带方法源
+    // （类头切片只含 source_member 为 NULL 的行；方法体切片归
+    // replaceReferencesFromMember，混入即报错）。class-level 的形状约束
+    // （Type kind、insn -1、空描述符）已由 validateReferences 前置把守。
+    auto cls = prepare(
+        impl_->handle, "SELECT internal_name FROM classes WHERE class_id=?1");
+    if (cls.is_err()) return errorOf(std::move(cls));
+    auto clsStatement = std::move(cls).unwrap();
+    if (auto result = bindInt(impl_->handle, clsStatement.raw, 1, sourceClassId);
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasClass = step(impl_->handle, clsStatement.raw);
+    if (hasClass.is_err()) return errorOf(std::move(hasClass));
+    if (!hasClass.unwrap()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "reference source class is not registered: " +
+                                     std::to_string(sourceClassId)));
+    }
+    const std::string ownerClass = textColumn(clsStatement.raw, 0);
+    resetStatement(clsStatement);
+
+    for (const DbReferenceRecord& reference : references) {
+        const bool sameClassHeader = reference.sourceClass.ref() == ownerClass &&
+                                     reference.sourceMethod.is_empty();
+        if (!sameClassHeader) {
+            return ca::Err(makeError(
+                AnalysisDbErrorKind::Invalid,
+                "reference record does not match the replaced class header slice: " +
+                    reference.sourceClass.to_std_string() + "." +
+                    reference.sourceMethod.to_std_string() + "(" +
+                    reference.sourceDescriptor.to_std_string() + ")"));
+        }
+    }
+
+    if (batchId != 0) {
+        // 类作用域锚：与 ingestClasses 同 (2, class_id) 锚——类头切片与类事实
+        // upsert 在归属解析上是同一事实区间，两处写入合流到同一锚。
+        if (auto result = validateOpenBatchForWrite(impl_->handle, batchId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto scopeInsert = prepare(impl_->handle, kScopeRowInsertSql);
+        if (scopeInsert.is_err()) return errorOf(std::move(scopeInsert));
+        auto scopeStatement = std::move(scopeInsert).unwrap();
+        if (auto result = writeScopeRow(impl_->handle, scopeStatement.raw, batchId,
+                                        DbBatchScopeKind::Class, sourceClassId);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+    }
+
+    auto erase = prepare(
+        impl_->handle, "DELETE FROM refs WHERE source_class_id=?1 AND source_member_id IS NULL");
+    if (erase.is_err()) return errorOf(std::move(erase));
+    auto eraseStatement = std::move(erase).unwrap();
+    if (auto result = bindInt(impl_->handle, eraseStatement.raw, 1, sourceClassId);
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto erased = step(impl_->handle, eraseStatement.raw);
+    if (erased.is_err()) return errorOf(std::move(erased));
+
+    if (auto result = applyReferenceBatch(impl_->handle, references); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = txn.commit(); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    return ca::Ok(references.size());
+}
+
 ca::Result<std::optional<DbClassInfo>, AnalysisDbError> AnalysisDb::findClass(
     const ca::str::Utf8StringRef& owner) const
 {
