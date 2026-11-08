@@ -12,7 +12,7 @@
 
 引擎与 schema：单文件 SQLite 库 ``.mjdb``\ （#117 落地），\ ``PRAGMA user_version`` 载 schema 版本（当前 v5），\ ``application_id`` 固定 ASCII "MJDB"，\ ``meta.kind`` 自描述串防把别的 SQLite 库当分析库打开；打开分 ReadWrite（不存在则建库写 schema）与 ReadOnly（必须已存在且已 checkpoint，不创建、不写、不触发分析）；打开期 WAL/SHM 伴随，\ ``save()`` / ``close()`` 做 TRUNCATE checkpoint 收敛回单文件；打开面 PRAGMA 调优（WAL、synchronous=NORMAL、cache_size、temp_store=MEMORY）与 refs 按源类索引见 #128。SQL 只出现在 analysis_db.cpp，公开面是类型化 C++ API，错误统一 ``ca::Result<T, AnalysisDbError>``\ ；单连接非线程安全。
 
-身份与重命名覆盖层：\ ``classes`` / ``members`` 首次登记分配单调 ID，只增不删；重命名只写 ``renames`` 覆盖层（目标用稳定 ID 键控，token 为空或 8 位小写 hex），不改身份、不触发分析；批量入口 ``setRenames`` / ``replaceRenames`` 单事务、先整体校验后执行、任一行失败整批回滚；按 shadow 反查有单条与批量（预编译语句复用）两个变体。
+身份与重命名覆盖层：\ ``classes`` / ``members`` 首次登记分配单调 ID，只增不删；重命名只写 ``renames`` 覆盖层（目标用稳定 ID 键控，token 为空或 8 位小写 hex），不改身份、不触发分析；批量入口 ``setRenames`` / ``replaceRenames`` 单事务、先整体校验后执行、任一行失败整批回滚；按 shadow 反查有单条与批量（预编译语句复用）两个变体。真改名身份迁移 ``migrateIdentities``\ （字节码层改名落盘后的库同步）：单事务批量改写身份登记的名字属性（\ ``classes.internal_name`` / ``members.name``+``descriptor``\ ，连带 ``super_name`` / ``interfaces`` 文本副本），\ ``class_id`` / ``member_id`` 与 ``renames`` 覆盖行零触碰——覆盖层按 ID 键控，真改名后无需任何补丁；未命中规格跳过计skipped，撞名或批内重复目标报 ``Invalid`` 整批回滚；undo/revert 以反向规格再调本入口即对称回滚。
 
 条目身份层（schema v3，#122）：\ ``inputs`` 登记输入容器（path 为身份键），\ ``entries`` 登记 jar 条目（entry_id 单调分配、只增不删，内容锚 = size + sha256）；重导入按 (input_id, path, sha256) 匹配——锚命中复用 entry_id（消失后重现的条目原地复活，id 不漂移），未命中新建 id，本批未出现的既有活跃条目打墓碑不删行；\ ``classes.entry_id`` 记录类字节所属条目。
 

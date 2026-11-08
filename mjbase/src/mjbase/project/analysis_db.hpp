@@ -218,6 +218,31 @@ struct DbRenameRecord
     ca::i64             producerId = 0; ///< 覆盖来源生产者；0 = 匿名写入
 };
 
+/// @brief 真改名身份迁移规格（字节码层改名落盘后的库同步输入）。
+///
+/// 与 `DbRenameRecord`（显示层覆盖）分立：本规格改写身份登记的名字属性
+/// （classes.internal_name / members.name+descriptor），**class_id /
+/// member_id 与 renames 覆盖行全部保持不动**——覆盖层按稳定 ID 键控，
+/// 真改名后一个字都不用改。
+struct DbIdentityRename
+{
+    RenameTargetKind    target     = RenameTargetKind::Class;
+    DbMemberKind        memberKind = DbMemberKind::Field; ///< 仅 target == Member 有效
+    ca::str::Utf8String owner; ///< member：迁移时刻的 owner 内部名（类规格先行迁移后的新名）；class 忽略
+    ca::str::Utf8String name;  ///< class = 旧内部名；member = 旧真名
+    ca::str::Utf8String desc;  ///< member 旧描述符（身份键第三段）；class 忽略
+    ca::str::Utf8String newName;
+    ca::str::Utf8String newDesc; ///< member 新描述符；空 = 保持旧值。class 忽略
+};
+
+/// @brief 身份迁移执行统计。
+struct DbMigrationStats
+{
+    ca::usize migratedClasses = 0; ///< 实际改写名字属性的类行数
+    ca::usize migratedMembers = 0; ///< 实际改写名字/描述符的成员行数
+    ca::usize skipped         = 0; ///< 未命中（库未登记该身份）跳过的规格数
+};
+
 /// @brief 直接引用的目标类别（与指令/class 头的编码事实一一对应）。
 enum class DbReferenceKind : ca::u8
 {
@@ -766,6 +791,25 @@ public:
     /// 写入，重放后新行 producer_id 为 NULL）。
     ca::Result<void, AnalysisDbError> replaceRenames(std::vector<DbRenameRecord> records,
                                                      ca::i64                     producerId = 0);
+
+    /// @brief 真改名身份迁移（单事务批量）：改写身份登记的名字属性，ID 与
+    ///        renames 覆盖行保持不动。
+    ///
+    /// 语义：
+    /// - 处理序 = 规格序；类规格须先行于受影响成员规格（成员规格的 owner
+    ///   填类迁移后的新内部名——`members.class_id` 是外键，类改名对成员行
+    ///   零连带）；
+    /// - 未命中规格（库尚未登记该身份）原样跳过并计入 `skipped`——迁移面
+    ///   与登记面允许失配，不报错；
+    /// - 撞名（newName 已被其它身份登记）→ `Invalid` 整批回滚（先整体
+    ///   校验后执行，任一行失败零写入）；
+    /// - 类迁移连带改写 `classes.super_name` 与 `interfaces.interface_name`
+    ///   的同名文本副本（名字属性的非规范化拷贝）；`refs` 文本分支与其它
+    ///   分析事实留给重分析刷新；
+    /// - `renames` 覆盖行按 (target_kind, target_id) 键控，ID 不动故零触碰
+    ///   ——undo/revert 以反向规格再调本入口即可。
+    ca::Result<DbMigrationStats, AnalysisDbError> migrateIdentities(
+        std::vector<DbIdentityRename> renames);
 
     //-- 条目身份层（inputs / entries，schema v3） --------------------------
 
