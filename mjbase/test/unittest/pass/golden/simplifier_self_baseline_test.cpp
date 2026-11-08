@@ -34,7 +34,7 @@
 #include "mjbase/spi/pass_name_registry.hpp"
 #include "mjbase/spi/pass_pipeline.hpp"
 
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 #include "test_helper.hpp"
 
 using namespace mjbase::test;
@@ -45,17 +45,51 @@ constexpr const char* kSmpLane = "pass_golden/corpus/smp";
 
 // ── 语料一：FixPatternSimplifier 形状（位恒等式 1/8 + 死代码 9 + 保持形）──
 // mNeg      iload_0; ineg; iconst_m1; iadd; ireturn → iload_0; iconst_m1; ixor; ireturn
-// mSelfXor  bipush 7; dup; ixor; ireturn            → iconst_0; ireturn
-// mDeadPair iconst_1; pop; bipush 3; ireturn        → bipush 3; ireturn
+// mSelfXor  ldc 7; dup; ixor; ireturn              → iconst_0; ireturn
+// mDeadPair iconst_1; pop; ldc 3; ireturn          → ldc 3; ireturn
 // mKeep     iload_0; iconst_1; iadd; ireturn        （不命中，保持）
 Bytes fixpatCorpus()
 {
-    FixtureBuilder b("t/HbFixPat");
-    b.addMethod({"mNeg", "(I)I", {0x1a, 0x74, 0x02, 0x60, 0xac}, 0x0009, {}, 2, 1});
-    b.addMethod({"mSelfXor", "(I)I", {0x10, 0x07, 0x59, 0x82, 0xac}, 0x0009, {}, 2, 0});
-    b.addMethod({"mDeadPair", "()I", {0x04, 0x57, 0x10, 0x03, 0xac}, 0x0009, {}, 1, 0});
-    b.addMethod({"mKeep", "(I)I", {0x1a, 0x04, 0x60, 0xac}, 0x0009, {}, 2, 0});
-    return b.assemble();
+    return assembleJasm(R"JASM(.super java/lang/Object
+.class public super t/HbFixPat {
+  .method public static mNeg (I)I {
+    code: {
+      iload 0
+      ineg
+      iconst_m1
+      iadd
+      ireturn
+    }
+  }
+
+  .method public static mSelfXor (I)I {
+    code: {
+      ldc 7
+      dup
+      ixor
+      ireturn
+    }
+  }
+
+  .method public static mDeadPair ()I {
+    code: {
+      iconst_1
+      pop
+      ldc 3
+      ireturn
+    }
+  }
+
+  .method public static mKeep (I)I {
+    code: {
+      iload 0
+      iconst_1
+      iadd
+      ireturn
+    }
+  }
+}
+)JASM");
 }
 
 // ── 语料二：ExpressionSimplifier 形状（恒等式族 + 保持形）──
@@ -67,31 +101,116 @@ Bytes fixpatCorpus()
 // mKeep      iload_0; iconst_2; iadd; ireturn   （不命中，保持）
 Bytes exprCorpus()
 {
-    FixtureBuilder b("t/HbExpr");
-    b.addMethod({"mAddZero", "(I)I", {0x1a, 0x03, 0x60, 0xac}, 0x0009, {}, 2, 1});
-    b.addMethod({"mZeroAnd", "(I)I", {0x1a, 0x03, 0x7e, 0xac}, 0x0009, {}, 2, 1});
-    b.addMethod({"mSelfXor", "(I)I", {0x1a, 0x59, 0x82, 0xac}, 0x0009, {}, 2, 1});
-    b.addMethod({"mShlOne", "(I)I", {0x1a, 0x04, 0x78, 0xac}, 0x0009, {}, 2, 1});
-    b.addMethod({"mDoubleNeg", "(I)I", {0x1a, 0x74, 0x74, 0xac}, 0x0009, {}, 2, 1});
-    b.addMethod({"mKeep", "(I)I", {0x1a, 0x05, 0x60, 0xac}, 0x0009, {}, 2, 0});
-    return b.assemble();
+    return assembleJasm(R"JASM(.super java/lang/Object
+.class public super t/HbExpr {
+  .method public static mAddZero (I)I {
+    code: {
+      iload 0
+      iconst_0
+      iadd
+      ireturn
+    }
+  }
+
+  .method public static mZeroAnd (I)I {
+    code: {
+      iload 0
+      iconst_0
+      iand
+      ireturn
+    }
+  }
+
+  .method public static mSelfXor (I)I {
+    code: {
+      iload 0
+      dup
+      ixor
+      ireturn
+    }
+  }
+
+  .method public static mShlOne (I)I {
+    code: {
+      iload 0
+      iconst_1
+      ishl
+      ireturn
+    }
+  }
+
+  .method public static mDoubleNeg (I)I {
+    code: {
+      iload 0
+      ineg
+      ineg
+      ireturn
+    }
+  }
+
+  .method public static mKeep (I)I {
+    code: {
+      iload 0
+      iconst_2
+      iadd
+      ireturn
+    }
+  }
+}
+)JASM");
 }
 
 // ── 语料三：TypeCastSimplifier 形状（常量生产者 cast 折叠 + 局部保持形）──
-// mI2b       sipush 200; i2b; ireturn   → bipush -56; ireturn
+// mI2b       ldc 200; i2b; ireturn      → ldc -56; ireturn
 // mI2c       iconst_m1; i2c; ireturn    → ldc 65535; ireturn
 // mI2l       iconst_1; i2l; lreturn     → lconst_1; lreturn
-// mI2s       sipush 100; i2s; ireturn   → bipush 100; ireturn
+// mI2s       ldc 100; i2s; ireturn      → ldc 100; ireturn
 // mKeepLocal iload_0; i2l; lreturn      （cast on local，保持）
 Bytes castCorpus()
 {
-    FixtureBuilder b("t/HbCast");
-    b.addMethod({"mI2b", "()I", {0x11, 0x00, 0xc8, 0x91, 0xac}, 0x0009, {}, 1, 0});
-    b.addMethod({"mI2c", "()I", {0x02, 0x92, 0xac}, 0x0009, {}, 1, 0});
-    b.addMethod({"mI2l", "()J", {0x04, 0x85, 0xad}, 0x0009, {}, 2, 0});
-    b.addMethod({"mI2s", "()I", {0x11, 0x00, 0x64, 0x93, 0xac}, 0x0009, {}, 1, 0});
-    b.addMethod({"mKeepLocal", "(I)J", {0x1a, 0x85, 0xad}, 0x0009, {}, 2, 1});
-    return b.assemble();
+    return assembleJasm(R"JASM(.super java/lang/Object
+.class public super t/HbCast {
+  .method public static mI2b ()I {
+    code: {
+      ldc 200
+      i2b
+      ireturn
+    }
+  }
+
+  .method public static mI2c ()I {
+    code: {
+      iconst_m1
+      i2c
+      ireturn
+    }
+  }
+
+  .method public static mI2l ()J {
+    code: {
+      iconst_1
+      i2l
+      lreturn
+    }
+  }
+
+  .method public static mI2s ()I {
+    code: {
+      ldc 100
+      i2s
+      ireturn
+    }
+  }
+
+  .method public static mKeepLocal (I)J {
+    code: {
+      iload 0
+      i2l
+      lreturn
+    }
+  }
+}
+)JASM");
 }
 
 /// 规范形定冻：write(read(x)) 一次落位 + 不动点自检（语料文件是 writer 产物，
