@@ -211,7 +211,8 @@ census 投影：censusClasses/censusMembers/censusContainer 不加 producer 维�
    ca::Result<void, AnalysisDbError> closeBatch(ca::i64 batchId, const DbBatchCounts& counts);
 
 既有写入口的归属化：ingestEntries / ingestClasses / replaceReferences /
-replaceReferencesFromMember 增加首参 batchId；setRenames 族、replaceRenames、
+replaceReferencesFromMember / replaceReferencesFromClass 增加首参 batchId；
+setRenames 族、replaceRenames、
 replaceMaskRules、setMaskTrustLevel 增加尾参 producerId（renames 行级盖章，mask
 配置面归属）。签名一步到位，不保留匿名旧签名：消费方只有导入桥、MCP 出口、
 facade 与测试，面小且全部在本仓或已知适配面；隐式方案（连接绑定「当前生产者」
