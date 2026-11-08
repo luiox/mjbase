@@ -379,7 +379,10 @@ TEST(MjAnalysisDbTest, MigrateClassIdentityKeepsIdAndOverlayIntact)
     implementor.internalName = Utf8String::from_cstr("a/Impl");
     implementor.superName    = Utf8String::from_cstr("a/A");
     implementor.interfaces.push_back(Utf8String::from_cstr("a/A"));
-    ASSERT_TRUE(db.ingestClasses(0, {input, implementor}).is_ok());
+    std::vector<DbClassInput> classes;
+    classes.push_back(std::move(input));
+    classes.push_back(std::move(implementor));
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
 
     ASSERT_TRUE(db.setClassRename(S("a/A"), S("Class_1"), S("deadbeef")).is_ok());
     ASSERT_TRUE(db.setMemberRename(DbMemberKind::Method, S("a/A"), S("run"), S("(La/A;)V"),
@@ -391,7 +394,7 @@ TEST(MjAnalysisDbTest, MigrateClassIdentityKeepsIdAndOverlayIntact)
     spec.target  = RenameTargetKind::Class;
     spec.name    = Utf8String::from_cstr("a/A");
     spec.newName = Utf8String::from_cstr("b/B");
-    migrations.push_back(spec);
+    migrations.push_back(std::move(spec));
     auto migrated = db.migrateIdentities(std::move(migrations));
     ASSERT_TRUE(migrated.is_ok());
     auto stats = std::move(migrated).unwrap();
@@ -431,9 +434,11 @@ TEST(MjAnalysisDbTest, MigrateClassIdentityKeepsIdAndOverlayIntact)
 
     //undo 对称：反向规格迁移回去，overlay 仍原样。
     std::vector<DbIdentityRename> revert;
-    spec.name    = Utf8String::from_cstr("b/B");
-    spec.newName = Utf8String::from_cstr("a/A");
-    revert.push_back(spec);
+    DbIdentityRename             back;
+    back.target  = RenameTargetKind::Class;
+    back.name    = Utf8String::from_cstr("b/B");
+    back.newName = Utf8String::from_cstr("a/A");
+    revert.push_back(std::move(back));
     auto reverted = db.migrateIdentities(std::move(revert));
     ASSERT_TRUE(reverted.is_ok());
     EXPECT_EQ(1U, std::move(reverted).unwrap().migratedClasses);
@@ -462,7 +467,9 @@ TEST(MjAnalysisDbTest, MigrateMemberIdentityKeepsIdAndRewritesDescriptor)
     value.name       = Utf8String::from_cstr("value");
     value.descriptor = Utf8String::from_cstr("La/Gift;");
     input.members.push_back(value);
-    ASSERT_TRUE(db.ingestClasses(0, {input}).is_ok());
+    std::vector<DbClassInput> classes;
+    classes.push_back(std::move(input));
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
 
     ASSERT_TRUE(db.setMemberRename(DbMemberKind::Method, S("a/A"), S("run"), S("(La/Gift;)V"),
                                    S("Method_1"), S("00000001"))
@@ -480,7 +487,7 @@ TEST(MjAnalysisDbTest, MigrateMemberIdentityKeepsIdAndRewritesDescriptor)
     method.desc       = Utf8String::from_cstr("(La/Gift;)V");
     method.newName    = Utf8String::from_cstr("walk");
     method.newDesc    = Utf8String::from_cstr("(La/Present;)V");
-    migrations.push_back(method);
+    migrations.push_back(std::move(method));
     DbIdentityRename field;
     field.target     = RenameTargetKind::Member;
     field.memberKind = DbMemberKind::Field;
@@ -489,7 +496,7 @@ TEST(MjAnalysisDbTest, MigrateMemberIdentityKeepsIdAndRewritesDescriptor)
     field.desc       = Utf8String::from_cstr("La/Gift;");
     field.newName    = Utf8String::from_cstr("payload");
     //newDesc 空 = 保持旧描述符。
-    migrations.push_back(field);
+    migrations.push_back(std::move(field));
     auto migrated = db.migrateIdentities(std::move(migrations));
     ASSERT_TRUE(migrated.is_ok());
     auto stats = std::move(migrated).unwrap();
@@ -521,7 +528,10 @@ TEST(MjAnalysisDbTest, MigrateIdentitiesRejectsCollisionAtomically)
     first.internalName = Utf8String::from_cstr("a/A");
     DbClassInput second;
     second.internalName = Utf8String::from_cstr("b/B");
-    ASSERT_TRUE(db.ingestClasses(0, {first, second}).is_ok());
+    std::vector<DbClassInput> classes;
+    classes.push_back(std::move(first));
+    classes.push_back(std::move(second));
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
     ASSERT_TRUE(db.setClassRename(S("a/A"), S("Class_1"), S("deadbeef")).is_ok());
 
     std::vector<DbIdentityRename> migrations;
@@ -529,7 +539,7 @@ TEST(MjAnalysisDbTest, MigrateIdentitiesRejectsCollisionAtomically)
     spec.target  = RenameTargetKind::Class;
     spec.name    = Utf8String::from_cstr("a/A");
     spec.newName = Utf8String::from_cstr("b/B");
-    migrations.push_back(spec);
+    migrations.push_back(std::move(spec));
     auto failed = db.migrateIdentities(std::move(migrations));
     ASSERT_TRUE(failed.is_err());
     EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(std::move(failed)));
@@ -549,19 +559,21 @@ TEST(MjAnalysisDbTest, MigrateIdentitiesSkipsUnregisteredAndRejectsDuplicates)
 
     DbClassInput input;
     input.internalName = Utf8String::from_cstr("a/A");
-    ASSERT_TRUE(db.ingestClasses(0, {input}).is_ok());
+    std::vector<DbClassInput> classes;
+    classes.push_back(std::move(input));
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
 
     std::vector<DbIdentityRename> migrations;
     DbIdentityRename             absent;
     absent.target  = RenameTargetKind::Class;
     absent.name    = Utf8String::from_cstr("x/X");
     absent.newName = Utf8String::from_cstr("y/Y");
-    migrations.push_back(absent);
+    migrations.push_back(std::move(absent));
     DbIdentityRename present;
     present.target  = RenameTargetKind::Class;
     present.name    = Utf8String::from_cstr("a/A");
     present.newName = Utf8String::from_cstr("a/A2");
-    migrations.push_back(present);
+    migrations.push_back(std::move(present));
     auto migrated = db.migrateIdentities(std::move(migrations));
     ASSERT_TRUE(migrated.is_ok());
     auto stats = std::move(migrated).unwrap();
@@ -577,8 +589,12 @@ TEST(MjAnalysisDbTest, MigrateIdentitiesSkipsUnregisteredAndRejectsDuplicates)
     forward.target  = RenameTargetKind::Class;
     forward.name    = Utf8String::from_cstr("a/A2");
     forward.newName = Utf8String::from_cstr("a/A3");
-    duplicates.push_back(forward);
-    duplicates.push_back(forward);
+    duplicates.push_back(std::move(forward));
+    DbIdentityRename forwardAgain;
+    forwardAgain.target  = RenameTargetKind::Class;
+    forwardAgain.name    = Utf8String::from_cstr("a/A2");
+    forwardAgain.newName = Utf8String::from_cstr("a/A3");
+    duplicates.push_back(std::move(forwardAgain));
     auto rejected = db.migrateIdentities(std::move(duplicates));
     ASSERT_TRUE(rejected.is_err());
     EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(std::move(rejected)));
