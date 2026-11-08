@@ -2978,3 +2978,301 @@ TEST(MjAnalysisDbTest, MethodVersionQueryPlansProbeIndexesWithoutFullScans)
 
     sqlite3_close(raw);
 }
+
+//-- 类文本搜索（searchClassesPaged）------------------------------------------
+
+namespace {
+
+DbEntryInput searchEntry(const std::string& path, char shaSeed)
+{
+    DbEntryInput entry;
+    entry.path =
+        Utf8String::from_data(reinterpret_cast<const ca::u8*>(path.data()), path.size());
+    entry.kind    = Utf8String::from_cstr("class");
+    entry.size    = 64;
+    const std::string sha(64, shaSeed);
+    entry.sha256  = Utf8String::from_data(reinterpret_cast<const ca::u8*>(sha.data()), sha.size());
+    entry.regular = true;
+    return entry;
+}
+
+DbClassInput searchClass(const char* name, ca::i64 entryId)
+{
+    DbClassInput input;
+    input.internalName = Utf8String::from_cstr(name);
+    input.superName    = Utf8String::from_cstr("java/lang/Object");
+    input.access       = 0x0021;
+    input.version      = 52;
+    input.entryId      = entryId;
+    return input;
+}
+
+///活跃条目 path → entry_id（类关联用）。
+std::map<std::string, ca::i64> searchLiveEntryIds(AnalysisDb& db, ca::i64 inputId)
+{
+    std::map<std::string, ca::i64> ids;
+    auto listed = db.listEntries(inputId);
+    EXPECT_TRUE(listed.is_ok());
+    for (const DbEntryInfo& row : std::move(listed).unwrap()) {
+        if (!row.tombstoned) ids[row.path.to_std_string()] = row.entryId;
+    }
+    return ids;
+}
+
+std::vector<std::string> searchRowNames(const DbClassSearchPage& page)
+{
+    std::vector<std::string> names;
+    names.reserve(page.rows.size());
+    for (const DbClassSearchRow& row : page.rows) {
+        names.push_back(row.internalName.to_std_string());
+    }
+    return names;
+}
+
+DbClassSearchQuery searchQuery(const char* needle, DbTextMatchKind match, bool caseSensitive)
+{
+    DbClassSearchQuery query;
+    query.needle       = Utf8String::from_cstr(needle);
+    query.match        = match;
+    query.caseSensitive = caseSensitive;
+    return query;
+}
+
+}   // namespace
+
+///文本面三档 × 折叠/字节敏感、path 双面命中、作用域 AND、LIKE/GLOB 转义。
+TEST(MjAnalysisDbTest, SearchClassesMatchesTextScopesAndWildcards)
+{
+    const auto path = freshDbPath("search_classes_match");
+    auto       db   = openOrDie(path);
+    auto inputId = db.ensureInput(S("lib/app.jar"), refOf(std::string(64, '0')), 4096);
+    ASSERT_TRUE(inputId.is_ok());
+    const ca::i64 jar = inputId.unwrap();
+
+    std::vector<DbEntryInput> entries;
+    entries.push_back(searchEntry("demo/Widget.class", 'a'));
+    entries.push_back(searchEntry("demo/Boxed.class", 'b'));
+    entries.push_back(searchEntry("demo/p_ct.class", 'c'));
+    entries.push_back(searchEntry("demo/axb.class", 'd'));
+    entries.push_back(searchEntry("demo/a%b.class", 'e'));
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(entries)).is_ok());
+    const auto live = searchLiveEntryIds(db, jar);
+
+    std::vector<DbClassInput> classes;
+    classes.push_back(searchClass("demo/Widget", live.at("demo/Widget.class")));
+    classes.push_back(searchClass("demo/Boxed", live.at("demo/Boxed.class")));
+    classes.push_back(searchClass("demo/PctMatch", live.at("demo/p_ct.class")));
+    classes.push_back(searchClass("demo/Axb", live.at("demo/axb.class")));
+    classes.push_back(searchClass("demo/AB", live.at("demo/a%b.class")));
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
+
+    //contains 不敏感：折叠命中（needle 大写/混合同面）。
+    {
+        auto page = db.searchClassesPaged(searchQuery("WID", DbTextMatchKind::Contains, false),
+                                          100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(1U, result.total);
+        ASSERT_EQ(1U, result.rows.size());
+        EXPECT_EQ("demo/Widget", result.rows[0].internalName.to_std_string());
+        EXPECT_EQ("demo/Widget.class", result.rows[0].entryPath.to_std_string());
+    }
+    //contains 字节敏感：大小写不折叠，大写 needle 落空。
+    {
+        auto page = db.searchClassesPaged(searchQuery("WID", DbTextMatchKind::Contains, true),
+                                          100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(0U, std::move(page).unwrap().total);
+    }
+    //path 双面：needle 只在条目 path 出现（internal_name 不含 ".class"）。
+    {
+        auto page = db.searchClassesPaged(
+            searchQuery("widget.class", DbTextMatchKind::Contains, false), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(1U, result.total);
+        ASSERT_EQ(1U, result.rows.size());
+        EXPECT_EQ("demo/Widget", result.rows[0].internalName.to_std_string());
+    }
+    //prefix 不敏感：demo/ 前缀命中全部 demo 类，行序按 (path, name)——path
+    //首段 'B'/'W'（大写）字节序先于小写 'a'/'p'，'%'(0x25) 先于 'x'。
+    {
+        auto page = db.searchClassesPaged(searchQuery("DEMO/", DbTextMatchKind::Prefix, false),
+                                          100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(5U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Boxed", "demo/Widget", "demo/AB",
+                                            "demo/Axb", "demo/PctMatch"}),
+                  searchRowNames(result));
+    }
+    //exact 不敏感 vs 字节敏感。
+    {
+        auto folded = db.searchClassesPaged(
+            searchQuery("demo/boxed", DbTextMatchKind::Exact, false), 100, 0);
+        ASSERT_TRUE(folded.is_ok());
+        EXPECT_EQ(1U, std::move(folded).unwrap().total);
+        auto byteWise = db.searchClassesPaged(
+            searchQuery("demo/Boxed", DbTextMatchKind::Exact, true), 100, 0);
+        ASSERT_TRUE(byteWise.is_ok());
+        EXPECT_EQ(1U, std::move(byteWise).unwrap().total);
+        auto wrongCase = db.searchClassesPaged(
+            searchQuery("demo/boxed", DbTextMatchKind::Exact, true), 100, 0);
+        ASSERT_TRUE(wrongCase.is_ok());
+        EXPECT_EQ(0U, std::move(wrongCase).unwrap().total);
+    }
+    //LIKE 转义：'_' 不吞任意单字符（p_ct 不命中 axb 的 path 面）。
+    {
+        auto page = db.searchClassesPaged(searchQuery("p_ct", DbTextMatchKind::Contains, false),
+                                          100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(1U, result.total);
+        ASSERT_EQ(1U, result.rows.size());
+        EXPECT_EQ("demo/PctMatch", result.rows[0].internalName.to_std_string());
+    }
+    //LIKE 转义：'%' 不当通配（a%b 不命中 axb）。
+    {
+        auto page = db.searchClassesPaged(searchQuery("a%b", DbTextMatchKind::Contains, false),
+                                          100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(1U, result.total);
+        ASSERT_EQ(1U, result.rows.size());
+        EXPECT_EQ("demo/AB", result.rows[0].internalName.to_std_string());
+    }
+    //LIKE 转义：'_' 不当单字符通配（a_b 无字面命中；未转义会吸进 axb）。
+    {
+        auto page = db.searchClassesPaged(searchQuery("a_b", DbTextMatchKind::Contains, false),
+                                          100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(0U, std::move(page).unwrap().total);
+    }
+    //作用域 owner：字节精确（AND 于文本面）。
+    {
+        DbClassSearchQuery query = searchQuery("id", DbTextMatchKind::Contains, false);
+        query.owner = Utf8String::from_cstr("demo/Widget");
+        auto page = db.searchClassesPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(1U, result.total);
+        ASSERT_EQ(1U, result.rows.size());
+        EXPECT_EQ("demo/Widget", result.rows[0].internalName.to_std_string());
+    }
+    {
+        DbClassSearchQuery query = searchQuery("id", DbTextMatchKind::Contains, false);
+        query.owner = Utf8String::from_cstr("demo/widget");   // 大小写不折叠（字节语义）
+        auto page = db.searchClassesPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(0U, std::move(page).unwrap().total);
+    }
+    //作用域 packagePrefix：字节前缀（无 '/' 边界，与工作副本扫描面同语义）。
+    {
+        DbClassSearchQuery query = searchQuery("class", DbTextMatchKind::Contains, false);
+        query.packagePrefix = Utf8String::from_cstr("demo/B");
+        auto page = db.searchClassesPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(1U, result.total);
+        ASSERT_EQ(1U, result.rows.size());
+        EXPECT_EQ("demo/Boxed", result.rows[0].internalName.to_std_string());
+    }
+    //GLOB 元字符进 needle（'[' 字面化不裂查询）。
+    {
+        auto page = db.searchClassesPaged(searchQuery("a[", DbTextMatchKind::Contains, true),
+                                          100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(0U, std::move(page).unwrap().total);
+    }
+}
+
+///可见域（活跃锚跨输入并集、墓碑/无锚出）、空 needle 全量、窗口语义。
+TEST(MjAnalysisDbTest, SearchClassesPagesLiveAnchoredClassesDeterministically)
+{
+    const auto path = freshDbPath("search_classes_page");
+    auto       db   = openOrDie(path);
+    auto first = db.ensureInput(S("lib/app.jar"), refOf(std::string(64, '0')), 4096);
+    ASSERT_TRUE(first.is_ok());
+    const ca::i64 jar = first.unwrap();
+
+    std::vector<DbEntryInput> entries;
+    entries.push_back(searchEntry("demo/Widget.class", 'a'));
+    entries.push_back(searchEntry("demo/Gone.class", 'b'));
+    entries.push_back(searchEntry("dup/Same.class", 'c'));
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(entries)).is_ok());
+    const auto firstLive = searchLiveEntryIds(db, jar);
+    const ca::i64 goneEntry = firstLive.at("demo/Gone.class");
+
+    //墓碑：同输入重导，缺 demo/Gone.class → 该条目入墓碑（类行不删）。
+    std::vector<DbEntryInput> reduced;
+    reduced.push_back(searchEntry("demo/Widget.class", 'a'));
+    reduced.push_back(searchEntry("dup/Same.class", 'c'));
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(reduced)).is_ok());
+    auto live = searchLiveEntryIds(db, jar);
+
+    //第二输入同 path 条目：跨输入并集，同 path 双行按 internal_name 定序。
+    auto second = db.ensureInput(S("lib/dup.jar"), refOf(std::string(64, '1')), 128);
+    ASSERT_TRUE(second.is_ok());
+    const ca::i64 dupJar = second.unwrap();
+    std::vector<DbEntryInput> dupEntries;
+    dupEntries.push_back(searchEntry("dup/Same.class", 'f'));
+    ASSERT_TRUE(db.ingestEntries(0, dupJar, std::move(dupEntries)).is_ok());
+    const auto dupLive = searchLiveEntryIds(db, dupJar);
+
+    std::vector<DbClassInput> classes;
+    classes.push_back(searchClass("demo/Widget", live.at("demo/Widget.class")));
+    classes.push_back(searchClass("demo/Gone", goneEntry));   // 墓碑锚：不在可见域
+    classes.push_back(searchClass("demo/NoAnchor", 0));       // 无锚类：不在可见域
+    classes.push_back(searchClass("dup/Alpha", live.at("dup/Same.class")));
+    classes.push_back(searchClass("dup/Beta", dupLive.at("dup/Same.class")));
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
+
+    //空 needle 全量：(path, internal_name) BINARY 确定序（"demo/…" 的
+    //'e' < "dup/…" 的 'u'）；墓碑锚/无锚类不在面内（悬垂锚经 FK 约束
+    //不可达）。
+    {
+        DbClassSearchQuery query;
+        auto page = db.searchClassesPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(3U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Widget", "dup/Alpha", "dup/Beta"}),
+                  searchRowNames(result));
+        EXPECT_EQ("demo/Widget.class", result.rows[0].entryPath.to_std_string());
+        EXPECT_EQ("dup/Same.class", result.rows[1].entryPath.to_std_string());
+        EXPECT_EQ("dup/Same.class", result.rows[2].entryPath.to_std_string());
+    }
+    //窗口：offset 跳行、limit 截尾；total 恒全量。
+    {
+        DbClassSearchQuery query;
+        auto page = db.searchClassesPaged(query, 1, 1);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(3U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"dup/Alpha"}), searchRowNames(result));
+    }
+    {
+        DbClassSearchQuery query;
+        auto page = db.searchClassesPaged(query, 0, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(3U, result.total);
+        EXPECT_TRUE(result.rows.empty());
+    }
+    {
+        DbClassSearchQuery query;
+        auto page = db.searchClassesPaged(query, 100, 9999);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(3U, result.total);
+        EXPECT_TRUE(result.rows.empty());
+    }
+    //负窗口：Invalid。
+    {
+        DbClassSearchQuery query;
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.searchClassesPaged(query, -1, 0)));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.searchClassesPaged(query, 10, -1)));
+    }
+}
