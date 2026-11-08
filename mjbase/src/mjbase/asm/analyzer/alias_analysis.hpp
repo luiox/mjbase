@@ -13,7 +13,8 @@
 ///   （GETFIELD/CHECKCAST/invoke 结果）经「探测帧注入」补齐——引擎产点钩子
 ///   看不到操作数栈，这是 libjbc DomainEngine 的能力缺口（挂账项）。
 /// - 跨类固定点：Jacobi 全量重算；摘要持调用点绑定 + 惰性展开
-///   （测试钉死）。
+///   （测试钉死）。调用点展开走查按槽位缓存复用——展开结果只依赖
+///   (槽位, 只读快照)，缓存切片与现算逐字节一致。
 /// - Andersen 字节码约束：约束图求解为纯算法件（andersen_points_to）；
 ///   节点身份 = 方法内临时（"method\ninsn:idx"）/形参/this/return/静态槽/
 ///   合并节点。
@@ -343,12 +344,52 @@ public:
     const AliasMethodSummary* resolveBinding(const MemberKey& calleeKey,
                                              ca::usize*       slotIndex) const;
 
+    /// @brief 调用点展开取数（单类事实）：命中缓存直接返回；未命中按调用点
+    ///        同款 visit=[slot] 播种试算——展开结果只依赖 (槽位, 只读快照)，
+    ///        根条目无条件入库；走查途中无环重入分支的中间槽位后序入库
+    ///        （子树无环 ⇒ 与外层 visit 无关），环子树不入中间缓存。
+    ///        事实数超上限不缓存（返回 nullptr，调用点回退现算同输出）。
+    ///        summarizeLinear 调用点热路径消费（自由函数访问，公开面）。
+    const std::vector<AliasMethodSummary::FieldWrite>* cachedFieldExpansion(ca::usize slot) const;
+    const std::vector<AliasMethodSummary::ArrayWrite>* cachedArrayExpansion(ca::usize slot) const;
+    const std::vector<AliasMethodSummary::ContainerWrite>* cachedContainerExpansion(
+        ca::usize slot) const;
+
 private:
     void buildFixedPoint(const std::vector<const struct AliasMethodContext*>& scope,
                          ca::usize                                            roundBound);
     void indexAndersenSummary(const AliasMethodSummary& summary);
     /// 槽状态（fields_/arrayValues_/containerValues_）与另一实例的深比（轮末对账）。
     bool slotStatesDiffer(const AliasAnalysis& other) const;
+
+    /// @brief 单槽展开缓存条目（fresh = 已算出且可直接复用）。
+    template <typename T>
+    struct CachedExpansionFacts
+    {
+        bool           fresh = false;
+        std::vector<T> facts;
+    };
+
+    /// @brief 公开展开面的守卫计数形：展开行为与公开入口逐字节一致，仅对
+    ///        环重入分支计数（供缓存入库判定）。
+    void expandFieldWritesTracked(const AliasMethodSummary&                    summary,
+                                  std::vector<ca::usize>&                      visiting,
+                                  std::vector<AliasMethodSummary::FieldWrite>& out,
+                                  ca::usize&                                   guardHits) const;
+    void expandArrayWritesTracked(const AliasMethodSummary&                    summary,
+                                  std::vector<ca::usize>&                      visiting,
+                                  std::vector<AliasMethodSummary::ArrayWrite>& out,
+                                  ca::usize&                                   guardHits) const;
+    void expandContainerWritesTracked(const AliasMethodSummary&                        summary,
+                                      std::vector<ca::usize>&                          visiting,
+                                      std::vector<AliasMethodSummary::ContainerWrite>& out,
+                                      ca::usize&                                       guardHits) const;
+
+    /// 调用点展开缓存（按 summaries_ 槽位；只读快照期内填充，随快照消亡）。
+    mutable std::vector<CachedExpansionFacts<AliasMethodSummary::FieldWrite>> fieldExpansionCache_;
+    mutable std::vector<CachedExpansionFacts<AliasMethodSummary::ArrayWrite>> arrayExpansionCache_;
+    mutable std::vector<CachedExpansionFacts<AliasMethodSummary::ContainerWrite>>
+        containerExpansionCache_;
 
     /// 摘要键 → 槽位。
     std::unordered_map<MemberKey, ca::usize, MemberKeyHash>    byKey_;
