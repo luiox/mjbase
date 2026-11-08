@@ -1,22 +1,24 @@
-/// EmptyClassRemoverTest / UnusedClassRemoverTest / UnusedFieldRemoverTest /
-/// GlobalUnusedMethodRemoverTest / GlobalUnusedPassContractTest 段（批 A：
-/// 未使用成员清理家族，容器级四件）。夹具经
-/// shared/structural_pass_util.hpp 的 FixtureBuilder；注解 / 签名 / Module /
-/// ModuleMainClass 等属性面经 libjbc DOM 补槽（AttrSlot::makeNew + RawAttr /
-/// AnnotationsAttr）后写回——属性字节受控且不依赖本地语料。
-///
-/// 与形态差（均已在注释逐用例声明）：
-///   - 间接引用保持（MethodHandle / invokedynamic / Class.forName 字符串）的
-///     扫描面属 reference 模块自身用例钉死的范围（reference/global_reachability_
-///     test.cpp 结构元数据用例 + reference_index_test），本文件只移植类注解 /
-///     字段签名两个 DOM 可构造面，间接调用面不在此重复建桩。
-///   - LVT/LVTT keep 判定（方法局部变量注解）在 libjbc 同属
-///     Runtime*TypeAnnotations 属性（在场即 keep），「局部注解行过滤」
-///     等价，由注解 keep 用例覆盖属性族判定路径。
+// EmptyClassRemoverTest / UnusedClassRemoverTest / UnusedFieldRemoverTest /
+// GlobalUnusedMethodRemoverTest / GlobalUnusedPassContractTest 段（批 A：
+// 未使用成员清理家族，容器级四件）。类与方法夹具一律 jasm 文本装配
+//（JvmJasmService），原 structural_pass_util 手拼载体退役；注解 / 签名 /
+// Module / ModuleMainClass 等属性面仍经 libjbc DOM 补槽（AttrSlot::makeNew
+// + RawAttr / AnnotationsAttr）后写回——例外②申报面：基类从 jasm 装配
+// 出发、构造范围限于该属性本身（属性字节受控且不依赖本地语料）。
+//
+// 与形态差（均已在注释逐用例声明）：
+//   - 间接引用保持（MethodHandle / invokedynamic / Class.forName 字符串）的
+//     扫描面属 reference 模块自身用例钉死的范围（reference/global_reachability_
+//     test.cpp 结构元数据用例 + reference_index_test），本文件只移植类注解 /
+//     字段签名两个 DOM 可构造面，间接调用面不在此重复建桩。
+//   - LVT/LVTT keep 判定（方法局部变量注解）在 libjbc 同属
+//     Runtime*TypeAnnotations 属性（在场即 keep），「局部注解行过滤」
+//     等价，由注解 keep 用例覆盖属性族判定路径。
 #include <gtest/gtest.h>
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "jbc/core/class_file.hpp"
@@ -35,56 +37,65 @@
 #include "mjbase/spi/analysis_manager.hpp"
 #include "mjbase/spi/pass_pipeline.hpp"
 #include "mjbase/spi/preserved_analyses.hpp"
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 
 namespace {
 
-constexpr ca::u16 kAccPublic       = 0x0001;
-constexpr ca::u16 kAccPrivate      = 0x0002;
-constexpr ca::u16 kAccProtected    = 0x0004;
-constexpr ca::u16 kAccStatic       = 0x0008;
+// ── 夹具构造（jasm 装配）─────────────────────────────────────────────────
 
-// ── 夹具构造 ─────────────────────────────────────────────────────────────
+/// 类便捷装配：cls 内名（可带 /），super 超类，classMods 形如
+/// "public super"，memberText 为成员声明文本（空即结构空类）。
+Bytes asmClass(const std::string& cls, const std::string& super,
+               std::string_view classMods, std::string_view memberText)
+{
+    const std::string src = ".super " + super + "\n.class " + std::string(classMods)
+        + " " + cls + " {\n" + std::string(memberText) + "}\n";
+    return assembleJasm(src);
+}
+
+/// 单 return 体方法声明文本（mods 形如 "public static"/"private"）。
+std::string simpleMethod(std::string_view mods, std::string_view name,
+                         std::string_view desc)
+{
+    return "  .method " + std::string(mods) + " " + std::string(name) + " "
+         + std::string(desc) + " {\n    code: {\n      return\n    }\n  }\n";
+}
+
+/// 字段声明文本。
+std::string fieldText(std::string_view mods, std::string_view name,
+                      std::string_view desc)
+{
+    return "  .field " + std::string(mods) + " " + std::string(name) + " "
+         + std::string(desc) + "\n";
+}
+
+/// main([Ljava/lang/String;)V：bodyText 为 return 前的指令文本。
+std::string mainMethod(std::string_view bodyText)
+{
+    return "  .method public static main ([Ljava/lang/String;)V {\n    code: {\n"
+         + std::string(bodyText) + "      return\n    }\n  }\n";
+}
 
 /// buildStructureEmptyClass：public 空类。
 Bytes buildEmptyClassBytes(const char* name)
 {
-    FixtureBuilder builder(name);
-    return builder.assemble();
+    return asmClass(name, "java/lang/Object", "public super", "");
 }
 
 /// buildStructureUsedClass：Used.keep()V public static。
 Bytes buildKeepClass()
 {
-    FixtureBuilder builder("Used");
-    FixtureMethod keep;
-    keep.name      = "keep";
-    keep.desc      = "()V";
-    keep.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    keep.maxStack  = 0;
-    keep.maxLocals = 0;
-    keep.code      = bareReturn();
-    builder.addMethod(keep);
-    return builder.assemble();
+    return asmClass("Used", "java/lang/Object", "public super",
+                    simpleMethod("public static", "keep", "()V"));
 }
 
 /// buildStructureAppClass：App.main 调 Used.keep。
 Bytes buildAppCallingUsed()
 {
-    FixtureBuilder builder("App");
-    const ca::u16  mref = builder.methodRef("Used", "keep", "()V");
-    FixtureMethod  main;
-    main.name      = "main";
-    main.desc      = "([Ljava/lang/String;)V";
-    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    main.maxStack  = 0;
-    main.maxLocals = 1;
-    main.code      = invokeStatic(mref);
-    main.code.push_back(0xB1);   // RETURN
-    builder.addMethod(main);
-    return builder.assemble();
+    return asmClass("App", "java/lang/Object", "public super",
+                    mainMethod("      invokestatic Used.keep ()V\n"));
 }
 
 /// buildUnusedClassRemoverFixture：withMain ? App(main→Used.keep)
@@ -108,84 +119,33 @@ void addUnusedClassFixture(mjbase::model::ResourceContainer& container, bool wit
 /// public api 面 + main 使用 live 侧（dead 全部不可达）。
 Bytes buildMemberCleanupClass()
 {
-    FixtureBuilder builder("App");
-    builder.addField({"livePrivate", "I", kAccPrivate | kAccStatic});
-    builder.addField({"deadPrivate", "I", kAccPrivate | kAccStatic});
-    builder.addField({"apiField", "I", kAccPublic | kAccStatic});
-
-    FixtureMethod live;
-    live.name      = "livePrivateMethod";
-    live.desc      = "()V";
-    live.access    = static_cast<ca::u16>(kAccPrivate | kAccStatic);
-    live.maxStack  = 0;
-    live.maxLocals = 0;
-    live.code      = bareReturn();
-    builder.addMethod(live);
-
-    FixtureMethod dead;
-    dead.name      = "deadPrivateMethod";
-    dead.desc      = "()V";
-    dead.access    = static_cast<ca::u16>(kAccPrivate | kAccStatic);
-    dead.maxStack  = 0;
-    dead.maxLocals = 0;
-    dead.code      = bareReturn();
-    builder.addMethod(dead);
-
-    FixtureMethod api;
-    api.name      = "apiMethod";
-    api.desc      = "()V";
-    api.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    api.maxStack  = 0;
-    api.maxLocals = 0;
-    api.code      = bareReturn();
-    builder.addMethod(api);
-
-    FixtureMethod main;
-    main.name      = "main";
-    main.desc      = "([Ljava/lang/String;)V";
-    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    main.maxStack  = 1;
-    main.maxLocals = 1;
-    main.code      = getStaticPop(builder.fieldRef("App", "livePrivate", "I"));
-    appendBytes(main.code, invokeStatic(builder.methodRef("App", "livePrivateMethod", "()V")));
-    main.code.push_back(0xB1);
-    builder.addMethod(main);
-    return builder.assemble();
+    return asmClass("App", "java/lang/Object", "public super",
+                    fieldText("private static", "livePrivate", "I")
+                        + fieldText("private static", "deadPrivate", "I")
+                        + fieldText("public static", "apiField", "I")
+                        + simpleMethod("private static", "livePrivateMethod", "()V")
+                        + simpleMethod("private static", "deadPrivateMethod", "()V")
+                        + simpleMethod("public static", "apiMethod", "()V")
+                        + mainMethod("      getstatic App.livePrivate I\n      pop\n"
+                                     "      invokestatic App.livePrivateMethod ()V\n"));
 }
 
 /// buildVirtualCleanupMethodClass：owner 继承 super，public 实例
 /// run()V。
 Bytes buildRunnerClass(const char* owner, const char* superName)
 {
-    FixtureBuilder builder(owner);
-    builder.setSuper(superName);
-    FixtureMethod run;
-    run.name      = "run";
-    run.desc      = "()V";
-    run.access    = kAccPublic;
-    run.maxStack  = 0;
-    run.maxLocals = 1;
-    run.code      = bareReturn();
-    builder.addMethod(run);
-    return builder.assemble();
+    return asmClass(owner, superName, "public super",
+                    simpleMethod("public", "run", "()V"));
 }
 
 /// buildVirtualCleanupAppClass：main 经 INVOKEVIRTUAL Base.run
 /// （ACONST_NULL receiver）。
 Bytes buildVirtualApp()
 {
-    FixtureBuilder builder("VirtualCleanupApp");
-    const ca::u16  mref = builder.methodRef("VirtualBase", "run", "()V");
-    FixtureMethod  main;
-    main.name      = "main";
-    main.desc      = "([Ljava/lang/String;)V";
-    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    main.maxStack  = 1;
-    main.maxLocals = 1;
     // ACONST_NULL; INVOKEVIRTUAL Base.run; RETURN
-    main.code = {0x01, 0xB6, static_cast<ca::u8>(mref >> 8), static_cast<ca::u8>(mref), 0xB1};
-    builder.addMethod(main);
-    return builder.assemble();
+    return asmClass("VirtualCleanupApp", "java/lang/Object", "public super",
+                    mainMethod("      aconst_null\n"
+                               "      invokevirtual VirtualBase.run ()V\n"));
 }
 
 // ── DOM 补槽（注解 / 签名 / Module 属性面）────────────────────────────────
@@ -277,9 +237,8 @@ Bytes withFieldSignature(const Bytes& base, const char* fieldName, std::string_v
 /// ModuleMainClass=example/Main（Raw 字节受控，结构对齐 JVMS 4.7.25）。
 Bytes buildModuleInfo()
 {
-    FixtureBuilder builder("module-info");
-    const Bytes    base = builder.assemble();
-    auto           cf   = loadDom(base, "module-info");
+    const Bytes base = asmClass("module-info", "java/lang/Object", "public super", "");
+    auto        cf   = loadDom(base, "module-info");
     if (cf == nullptr) return {};
     const ca::u16 serviceUtf8 = static_cast<ca::u16>(cf->cp.addUtf8("example/Service"));
     const ca::u16 implUtf8    = static_cast<ca::u16>(cf->cp.addUtf8("example/Impl"));
@@ -320,40 +279,19 @@ Bytes buildModuleInfo()
 /// 写入面）。方法与字段共用，两 pass 各删各面。
 Bytes buildNonPublicCleanupClass()
 {
-    FixtureBuilder builder("App");
-    builder.addField({"livePrivate", "I", kAccPrivate | kAccStatic});
-    builder.addField({"deadPrivateField", "I", kAccPrivate | kAccStatic});
-    builder.addField({"deadPackageField", "I", kAccStatic});
-    builder.addField({"deadProtectedField", "I", kAccProtected});
-    builder.addField({"apiField", "I", kAccPublic | kAccStatic});
-
-    const auto simpleMethod = [&](const char* name, ca::u16 access) {
-        FixtureMethod m;
-        m.name      = name;
-        m.desc      = "()V";
-        m.access    = access;
-        m.maxStack  = 0;
-        m.maxLocals = 0;
-        m.code      = bareReturn();
-        builder.addMethod(m);
-    };
-    simpleMethod("livePrivateMethod", kAccPrivate | kAccStatic);
-    simpleMethod("deadPackageMethod", kAccStatic);
-    simpleMethod("deadProtectedMethod", static_cast<ca::u16>(kAccProtected | kAccStatic));
-    simpleMethod("apiMethod", kAccPublic | kAccStatic);
-    simpleMethod("deadPrivateMethod", kAccPrivate | kAccStatic);
-
-    FixtureMethod main;
-    main.name      = "main";
-    main.desc      = "([Ljava/lang/String;)V";
-    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    main.maxStack  = 1;
-    main.maxLocals = 1;
-    main.code      = getStaticPop(builder.fieldRef("App", "livePrivate", "I"));
-    appendBytes(main.code, invokeStatic(builder.methodRef("App", "livePrivateMethod", "()V")));
-    main.code.push_back(0xB1);
-    builder.addMethod(main);
-    return builder.assemble();
+    return asmClass("App", "java/lang/Object", "public super",
+                    fieldText("private static", "livePrivate", "I")
+                        + fieldText("private static", "deadPrivateField", "I")
+                        + fieldText("static", "deadPackageField", "I")
+                        + fieldText("protected", "deadProtectedField", "I")
+                        + fieldText("public static", "apiField", "I")
+                        + simpleMethod("private static", "livePrivateMethod", "()V")
+                        + simpleMethod("static", "deadPackageMethod", "()V")
+                        + simpleMethod("protected static", "deadProtectedMethod", "()V")
+                        + simpleMethod("public static", "apiMethod", "()V")
+                        + simpleMethod("private static", "deadPrivateMethod", "()V")
+                        + mainMethod("      getstatic App.livePrivate I\n      pop\n"
+                                     "      invokestatic App.livePrivateMethod ()V\n"));
 }
 
 /// 服务入口 fail-closed 夹具：Main（平凡 main）+ example/SvcImpl（package-private
@@ -361,73 +299,30 @@ Bytes buildNonPublicCleanupClass()
 /// 入根 → 非私有档不得删（否则容器外 ServiceLoader 调用悬垂）。
 Bytes buildServiceEntrypointMain()
 {
-    FixtureBuilder builder("example/Main");
-    FixtureMethod main;
-    main.name      = "main";
-    main.desc      = "([Ljava/lang/String;)V";
-    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    main.maxStack  = 0;
-    main.maxLocals = 1;
-    main.code      = bareReturn();
-    builder.addMethod(main);
-    return builder.assemble();
+    return asmClass("example/Main", "java/lang/Object", "public super", mainMethod(""));
 }
 
 Bytes buildServiceImpl()
 {
-    FixtureBuilder builder("example/SvcImpl");
-    builder.addField({"implState", "I", kAccStatic});
-    FixtureMethod serve;
-    serve.name      = "serve";
-    serve.desc      = "()V";
-    serve.access    = kAccStatic;
-    serve.maxStack  = 0;
-    serve.maxLocals = 0;
-    serve.code      = bareReturn();
-    builder.addMethod(serve);
-    return builder.assemble();
+    return asmClass("example/SvcImpl", "java/lang/Object", "public super",
+                    fieldText("static", "implState", "I")
+                        + simpleMethod("static", "serve", "()V"));
 }
 
 /// 悬垂防护夹具：private caller（可挂注解）引用 package-private 死成员。
 /// fieldFace=true 时引用 deadPackageField，否则调用 callee 方法。
 Bytes buildCallerCalleeClass(bool annotateCaller, bool fieldFace)
 {
-    FixtureBuilder builder("App");
-    if (fieldFace) builder.addField({"deadPackageField", "I", kAccStatic});
+    std::string members;
+    if (fieldFace) members += fieldText("static", "deadPackageField", "I");
+    members += "  .method private static caller ()V {\n    code: {\n";
+    members += fieldFace ? "      getstatic App.deadPackageField I\n      pop\n"
+                         : "      invokestatic App.callee ()V\n";
+    members += "      return\n    }\n  }\n";
+    if (!fieldFace) members += simpleMethod("static", "callee", "()V");
+    members += mainMethod("");
 
-    FixtureMethod caller;
-    caller.name      = "caller";
-    caller.desc      = "()V";
-    caller.access    = static_cast<ca::u16>(kAccPrivate | kAccStatic);
-    caller.maxStack  = 1;
-    caller.maxLocals = 0;
-    caller.code      = fieldFace
-                    ? getStaticPop(builder.fieldRef("App", "deadPackageField", "I"))
-                    : invokeStatic(builder.methodRef("App", "callee", "()V"));
-    caller.code.push_back(0xB1);
-    builder.addMethod(caller);
-
-    if (!fieldFace) {
-        FixtureMethod callee;
-        callee.name      = "callee";
-        callee.desc      = "()V";
-        callee.access    = kAccStatic;
-        callee.maxStack  = 0;
-        callee.maxLocals = 0;
-        callee.code      = bareReturn();
-        builder.addMethod(callee);
-    }
-
-    FixtureMethod main;
-    main.name      = "main";
-    main.desc      = "([Ljava/lang/String;)V";
-    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    main.maxStack  = 0;
-    main.maxLocals = 1;
-    main.code      = bareReturn();
-    builder.addMethod(main);
-
-    const Bytes bytes = builder.assemble();
+    const Bytes bytes = asmClass("App", "java/lang/Object", "public super", members);
     return annotateCaller ? withAnnotation(bytes, "caller", true, "Lsample/Keep;") : bytes;
 }
 
@@ -435,46 +330,17 @@ Bytes buildCallerCalleeClass(bool annotateCaller, bool fieldFace)
 /// factory（App 类可达但不实例化——`<init>` 不经调用边入闭包，必须靠保留面根）。
 Bytes buildConstructorReachClass()
 {
-    FixtureBuilder builder("App");
-
-    FixtureMethod ctor;
-    ctor.name      = "<init>";
-    ctor.desc      = "()V";
-    ctor.access    = kAccPublic;
-    ctor.maxStack  = 0;
-    ctor.maxLocals = 1;
-    ctor.code      = invokeStatic(builder.methodRef("App", "deadFromCtor", "()V"));
-    ctor.code.push_back(0xB1);
-    builder.addMethod(ctor);
-
-    FixtureMethod factory;
-    factory.name      = "factory";
-    factory.desc      = "()V";
-    factory.access    = kAccStatic;
-    factory.maxStack  = 0;
-    factory.maxLocals = 0;
-    factory.code      = bareReturn();
-    builder.addMethod(factory);
-
-    FixtureMethod dead;
-    dead.name      = "deadFromCtor";
-    dead.desc      = "()V";
-    dead.access    = kAccStatic;
-    dead.maxStack  = 0;
-    dead.maxLocals = 0;
-    dead.code      = bareReturn();
-    builder.addMethod(dead);
-
-    FixtureMethod main;
-    main.name      = "main";
-    main.desc      = "([Ljava/lang/String;)V";
-    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    main.maxStack  = 0;
-    main.maxLocals = 1;
-    main.code      = invokeStatic(builder.methodRef("App", "factory", "()V"));
-    main.code.push_back(0xB1);
-    builder.addMethod(main);
-    return builder.assemble();
+    // <init> 补 aload 0 + Object.<init> 超调（例外①申报：原字节形无超调，
+    // <init> 出口的未初始化 this 规则下不可装配；ctor 无条件入根与
+    // deadFromCtor 调用边两面同实）。
+    const std::string ctor =
+        "  .method public <init> ()V {\n    code: {\n"
+        "      aload 0\n      invokespecial java/lang/Object.<init> ()V\n"
+        "      invokestatic App.deadFromCtor ()V\n      return\n    }\n  }\n";
+    return asmClass("App", "java/lang/Object", "public super",
+                    ctor + simpleMethod("static", "factory", "()V")
+                        + simpleMethod("static", "deadFromCtor", "()V")
+                        + mainMethod("      invokestatic App.factory ()V\n"));
 }
 
 // ── 运行面辅助 ───────────────────────────────────────────────────────────
@@ -723,19 +589,13 @@ TEST(MjPassUnusedClassRemoverTest, KeepsMetadataReferencedClasses)
 {
     // IndirectRoot：main 根 + generic 字段（Signature 引 SignatureTarget）+
     // 类注解（引 AnnotationTarget）。
-    FixtureBuilder builder("IndirectRoot");
-    builder.addField({"generic", "Ljava/lang/Object;", kAccPublic | kAccStatic});
-    FixtureMethod main;
-    main.name      = "main";
-    main.desc      = "([Ljava/lang/String;)V";
-    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    main.maxStack  = 0;
-    main.maxLocals = 1;
-    main.code      = bareReturn();
-    builder.addMethod(main);
+    const Bytes indirectRootBase =
+        asmClass("IndirectRoot", "java/lang/Object", "public super",
+                 fieldText("public static", "generic", "Ljava/lang/Object;")
+                     + mainMethod(""));
 
     const Bytes indirectRoot = withAnnotation(
-        withFieldSignature(builder.assemble(), "generic", "LSignatureTarget;"), nullptr, false,
+        withFieldSignature(indirectRootBase, "generic", "LSignatureTarget;"), nullptr, false,
         "LAnnotationTarget;");
     ASSERT_FALSE(indirectRoot.empty());
 
@@ -844,19 +704,13 @@ TEST(MjPassUnusedFieldRemoverTest, MalformedClassFailsClosedWithoutPartialRewrit
 // keep）；无注解的 dead 字段照删。
 TEST(MjPassUnusedFieldRemoverTest, KeepsAnnotatedPrivateField)
 {
-    FixtureBuilder builder("Annotated");
-    builder.addField({"annotatedField", "Ljava/util/List;", kAccPrivate | kAccStatic});
-    builder.addField({"deadField", "I", kAccPrivate | kAccStatic});
-    FixtureMethod main;
-    main.name      = "main";
-    main.desc      = "([Ljava/lang/String;)V";
-    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    main.maxStack  = 0;
-    main.maxLocals = 1;
-    main.code      = bareReturn();
-    builder.addMethod(main);
-    const Bytes patched = withAnnotation(builder.assemble(), "annotatedField", false,
-                                         "Lsample/Keep;");
+    const Bytes patched =
+        withAnnotation(asmClass("Annotated", "java/lang/Object", "public super",
+                                fieldText("private static", "annotatedField",
+                                          "Ljava/util/List;")
+                                    + fieldText("private static", "deadField", "I")
+                                    + mainMethod("")),
+                       "annotatedField", false, "Lsample/Keep;");
     ASSERT_FALSE(patched.empty());
 
     ca::str::Utf8StringArena         arena;
@@ -916,36 +770,12 @@ TEST(MjPassGlobalUnusedMethodRemoverTest, MalformedClassFailsClosedWithoutPartia
 // keep）；无注解的 dead 方法照删。
 TEST(MjPassGlobalUnusedMethodRemoverTest, KeepsAnnotatedPrivateMethod)
 {
-    FixtureBuilder builder("Annotated");
-    FixtureMethod annotated;
-    annotated.name      = "annotatedMethod";
-    annotated.desc      = "()V";
-    annotated.access    = static_cast<ca::u16>(kAccPrivate | kAccStatic);
-    annotated.maxStack  = 0;
-    annotated.maxLocals = 0;
-    annotated.code      = bareReturn();
-    builder.addMethod(annotated);
-
-    FixtureMethod dead;
-    dead.name      = "deadMethod";
-    dead.desc      = "()V";
-    dead.access    = static_cast<ca::u16>(kAccPrivate | kAccStatic);
-    dead.maxStack  = 0;
-    dead.maxLocals = 0;
-    dead.code      = bareReturn();
-    builder.addMethod(dead);
-
-    FixtureMethod main;
-    main.name      = "main";
-    main.desc      = "([Ljava/lang/String;)V";
-    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    main.maxStack  = 0;
-    main.maxLocals = 1;
-    main.code      = bareReturn();
-    builder.addMethod(main);
-
-    const Bytes patched = withAnnotation(builder.assemble(), "annotatedMethod", true,
-                                         "Lsample/Keep;");
+    const Bytes patched =
+        withAnnotation(asmClass("Annotated", "java/lang/Object", "public super",
+                                simpleMethod("private static", "annotatedMethod", "()V")
+                                    + simpleMethod("private static", "deadMethod", "()V")
+                                    + mainMethod("")),
+                       "annotatedMethod", true, "Lsample/Keep;");
     ASSERT_FALSE(patched.empty());
 
     ca::str::Utf8StringArena         arena;
@@ -1022,48 +852,16 @@ std::shared_ptr<const mjbase::reference::KeepRuleSet> parseKeepRules(const char*
 /// 命中）、serialVersionUID 字段（+serialization 命中）、deadPrivate 字段（无）。
 Bytes buildSerializationFixture()
 {
-    FixtureBuilder builder("App");
-    builder.addField({"deadPrivate", "I", kAccPrivate | kAccStatic});
-    builder.addField({"serialVersionUID", "J", kAccPrivate | kAccStatic});
-
-    FixtureMethod dead;
-    dead.name      = "deadPrivateMethod";
-    dead.desc      = "()V";
-    dead.access    = static_cast<ca::u16>(kAccPrivate | kAccStatic);
-    dead.maxStack  = 0;
-    dead.maxLocals = 0;
-    dead.code      = bareReturn();
-    builder.addMethod(dead);
-
-    // 序列化回调：精确描述符（preset +serialization 命中）。
-    FixtureMethod readObject;
-    readObject.name      = "readObject";
-    readObject.desc      = "(Ljava/io/ObjectInputStream;)V";
-    readObject.access    = static_cast<ca::u16>(kAccPrivate);
-    readObject.maxStack  = 1;
-    readObject.maxLocals = 1;
-    readObject.code      = bareReturn();
-    builder.addMethod(readObject);
-
-    // lambda 合成方法（preset +lambda 命中）。
-    FixtureMethod lambda;
-    lambda.name      = "lambda$main$0";
-    lambda.desc      = "()V";
-    lambda.access    = static_cast<ca::u16>(kAccPrivate | kAccStatic);
-    lambda.maxStack  = 0;
-    lambda.maxLocals = 0;
-    lambda.code      = bareReturn();
-    builder.addMethod(lambda);
-
-    FixtureMethod main;
-    main.name      = "main";
-    main.desc      = "([Ljava/lang/String;)V";
-    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    main.maxStack  = 1;
-    main.maxLocals = 1;
-    main.code      = bareReturn();
-    builder.addMethod(main);
-    return builder.assemble();
+    return asmClass("App", "java/lang/Object", "public super",
+                    fieldText("private static", "deadPrivate", "I")
+                        + fieldText("private static", "serialVersionUID", "J")
+                        + simpleMethod("private static", "deadPrivateMethod", "()V")
+                        // 序列化回调：精确描述符（preset +serialization 命中）。
+                        + simpleMethod("private", "readObject",
+                                       "(Ljava/io/ObjectInputStream;)V")
+                        // lambda 合成方法（preset +lambda 命中）。
+                        + simpleMethod("private static", "lambda$main$0", "()V")
+                        + mainMethod(""));
 }
 
 }   // namespace
@@ -1540,46 +1338,17 @@ TEST(MjPassNonPublicTierTest, MemberRuleProtectsNonPublicDeadMembers)
 /// private static deadField I（字段面删除载体）。
 Bytes buildApiFamilyMember()
 {
-    FixtureBuilder builder("app/Api");
-    builder.addField({"deadField", "I", kAccPrivate | kAccStatic});
-    FixtureMethod  live;
-    live.name      = "live";
-    live.desc      = "()V";
-    live.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    live.maxStack  = 0;
-    live.maxLocals = 0;
-    live.code      = bareReturn();
-    builder.addMethod(live);
-    FixtureMethod dead;
-    dead.name      = "dead";
-    dead.desc      = "()V";
-    dead.access    = static_cast<ca::u16>(kAccPrivate | kAccStatic);
-    dead.maxStack  = 0;
-    dead.maxLocals = 0;
-    dead.code      = bareReturn();
-    builder.addMethod(dead);
-    return builder.assemble();
+    return asmClass("app/Api", "java/lang/Object", "public super",
+                    fieldText("private static", "deadField", "I")
+                        + simpleMethod("public static", "live", "()V")
+                        + simpleMethod("private static", "dead", "()V"));
 }
 
 /// app/Main：main 调 app/Api.live()V（可选引用面：withRef=false 时不引用 Api）。
 Bytes buildApiFamilyMain(bool withRef)
 {
-    FixtureBuilder builder("app/Main");
-    FixtureMethod  main;
-    main.name      = "main";
-    main.desc      = "([Ljava/lang/String;)V";
-    main.access    = static_cast<ca::u16>(kAccPublic | kAccStatic);
-    main.maxStack  = 0;
-    main.maxLocals = 1;
-    if (withRef) {
-        main.code = invokeStatic(builder.methodRef("app/Api", "live", "()V"));
-        main.code.push_back(0xB1);
-    }
-    else {
-        main.code = {0xB1};
-    }
-    builder.addMethod(main);
-    return builder.assemble();
+    return asmClass("app/Main", "java/lang/Object", "public super",
+                    mainMethod(withRef ? "      invokestatic app/Api.live ()V\n" : ""));
 }
 
 TEST(MjPassUnusedClassRemoverTest, RemovesMultiReleaseFamilyTogether)
