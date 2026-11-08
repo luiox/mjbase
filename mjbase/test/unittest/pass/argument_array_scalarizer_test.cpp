@@ -1,12 +1,18 @@
 // ArgumentArrayScalarizer（#37 切片 1）：装箱签名 [Ljava/lang/Object; 参数
 // 标量化——被调方取参窗改直接参数槽 + 局部平移、调用方装箱窗拆直接传参、
 // 描述符全局同步；守卫面（实参类型失配/数组逃逸/下标缺口/非窗调用位点/
-// null 实参/重复取参）+ 注册面。夹具经 shared/structural_pass_util.hpp 手拼
-// classfile；断言经会话 promote 后的指令序与符号池描述符完成。
+// null 实参/重复取参）+ 注册面。断言经会话 promote 后的指令序与符号池
+// 描述符完成。
+//
+// 夹具纪律：类与方法一律 jasm 文本装配（JvmJasmService），原
+// structural_pass_util 手拼载体退役。调用方实参生产者指令在改写中保留
+// 原样——原 ldc_w 形装配器发 1 字节 LDC（小池无 2 字节形态），期望值改记
+// Op::LDC；「实参槽类型不可见」拒绝面以 int 实参表达（原字节形 iload_1
+// 挂 ()V 无定义槽，帧不可装配——caller 带 (I)V 形参使 1 槽有定义）。
 #include <gtest/gtest.h>
 
-#include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "jbc/core/opcode.hpp"
@@ -17,32 +23,83 @@
 #include "mjbase/pass/argument_array_scalarizer.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
 
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 
 namespace {
 
-constexpr ca::u16 kAccPublicStatic = 0x0009;
-
-FixtureMethod method(const char* name, const char* desc, Bytes code)
+/// 类便捷装配：cls 类挂 methodsText（若干 `.method` 声明文本）。
+Bytes asmClass(const std::string& cls, std::string_view methodsText)
 {
-    FixtureMethod m;
-    m.name      = name;
-    m.desc      = desc;
-    m.access    = kAccPublicStatic;
-    m.maxStack  = 8;
-    m.maxLocals = 6;
-    m.code      = std::move(code);
-    return m;
+    const std::string src = R"JASM(.super java/lang/Object
+.class public super )JASM" + cls + R"JASM( {
+)JASM" + std::string(methodsText) + R"JASM(}
+)JASM";
+    return assembleJasm(src);
 }
 
-Bytes u16b(ca::u16 v) { return {static_cast<ca::u8>(v >> 8), static_cast<ca::u8>(v)}; }
-
-Bytes cat(Bytes a, Bytes b)
+/// 被调方取参窗文本：receiver（"aload 0"/"aload 1"）; iconst_I; aaload;
+/// checkcast Ti; astore slot。
+std::string windowText(std::string_view receiver, int idx, const std::string& ti,
+                       int slot)
 {
-    a.insert(a.end(), b.begin(), b.end());
-    return a;
+    return "      " + std::string(receiver) + "\n      iconst_" + std::to_string(idx)
+         + "\n      aaload\n      checkcast " + ti + "\n      astore "
+         + std::to_string(slot) + "\n";
+}
+
+/// 被调方：go([Ljava/lang/Object;)V，取参窗两组（元素 0/1 均 checkcast
+/// String）后 astore 到局部 1/2，收尾 RETURN。
+Bytes buildCallee()
+{
+    return asmClass("Svc",
+                    "  .method public static go ([Ljava/lang/Object;)V {\n"
+                    "    code: {\n"
+                        + windowText("aload 0", 0, "java/lang/String", 1)
+                        + windowText("aload 0", 1, "java/lang/String", 2)
+                        + "      return\n    }\n  }\n");
+}
+
+// ── 切片 2 件：被调方单取参窗（元素 0 checkcast Ti）──
+Bytes buildCalleeTi(const std::string& tiInternal)
+{
+    return asmClass("Svc",
+                    "  .method public static go ([Ljava/lang/Object;)V {\n"
+                    "    code: {\n"
+                        + windowText("aload 0", 0, tiInternal, 1)
+                        + "      return\n    }\n  }\n");
+}
+
+/// 单元素装箱窗 caller 方法文本（mod 形如 "public static"；headText 为
+/// receiver 铺垫指令文本，可空；argText 为第 0 元素实参指令文本）。
+std::string caller1Method(std::string_view mod, std::string_view name,
+                          std::string_view desc, std::string_view headText,
+                          std::string_view argText, std::string_view invokeText)
+{
+    std::string s = "  .method " + std::string(mod) + " " + std::string(name) + " "
+                  + std::string(desc) + " {\n    code: {\n";
+    s += std::string(headText);
+    s += "      iconst_1\n      anewarray java/lang/Object\n      dup\n";
+    s += "      " + std::string(argText) + "\n";
+    s += "      iconst_0\n      aastore\n";
+    s += "      " + std::string(invokeText) + "\n      return\n    }\n  }\n";
+    return s;
+}
+
+/// 双元素装箱窗 caller 方法文本（元素 0 = arg0Text，元素 1 = arg1Text）。
+std::string caller2Method(std::string_view mod, std::string_view name,
+                          std::string_view desc, std::string_view arg0Text,
+                          std::string_view arg1Text, std::string_view invokeText)
+{
+    std::string s = "  .method " + std::string(mod) + " " + std::string(name) + " "
+                  + std::string(desc) + " {\n    code: {\n";
+    s += "      iconst_2\n      anewarray java/lang/Object\n      dup\n";
+    s += "      " + std::string(arg0Text) + "\n      iconst_0\n      aastore\n";
+    s += "      dup\n      " + std::string(arg1Text)
+       + "\n      iconst_1\n      aastore\n";
+    s += "      " + std::string(invokeText) + "\n      return\n    }\n  }\n";
+    return s;
 }
 
 /// 读回某方法 promote 后的指令序。
@@ -103,14 +160,15 @@ std::vector<ca::i32> aloadSlots(const Bytes& bytes, const char* methodName)
         auto promoted = jbc::ir::promoteMethod(*session, idx);
         EXPECT_TRUE(promoted.is_ok());
         if (promoted.is_err()) return {};
-        auto              cuRef = std::move(promoted).unwrap();
+        auto                 cuRef = std::move(promoted).unwrap();
         std::vector<ca::i32> out;
         for (const jbc::ir::InsnId id : cuRef->dom.order()) {
             const jbc::ir::Insn* in = cuRef->dom.peek(id);
             if (in == nullptr) continue;
             if (in->op == jbc::core::Op::ALOAD) out.push_back(in->a);
             else if (in->op >= jbc::core::Op::ALOAD_0 && in->op <= jbc::core::Op::ALOAD_3) {
-                out.push_back(static_cast<ca::i32>(in->op) - static_cast<ca::i32>(jbc::core::Op::ALOAD_0));
+                out.push_back(static_cast<ca::i32>(in->op)
+                              - static_cast<ca::i32>(jbc::core::Op::ALOAD_0));
             }
         }
         return out;
@@ -128,84 +186,32 @@ const mjbase::model::ClassResource* classResource(mjbase::model::ResourceContain
 
 mjbase::spi::PreservedAnalyses runPass(mjbase::model::ResourceContainer& container)
 {
-    ca::str::Utf8StringArena           arena;
-    mjbase::spi::GlobalAnalysisManager gam(arena);
+    ca::str::Utf8StringArena               arena;
+    mjbase::spi::GlobalAnalysisManager     gam(arena);
     mjbase::pass::ArgumentArrayScalarizer pass;
     return pass.run(container, gam);
 }
 
-/// 被调方：go([Ljava/lang/Object;)V，取参窗两组（元素 0/1 均 checkcast
-/// String）后 astore 到局部 1/2，收尾 RETURN。
-Bytes buildCallee()
-{
-    FixtureBuilder b("Svc");
-    const ca::u16 strCls = b.cls("java/lang/String");
-    // 元素 0：aload_0; iconst_0; aaload; checkcast String; astore_1
-    Bytes w0 = cat({0x2a, 0x03, 0x32, 0xc0}, cat(u16b(strCls), {0x4c}));
-    // 元素 1：aload_0; iconst_1; aaload; checkcast String; astore_2
-    Bytes w1 = cat({0x2a, 0x04, 0x32, 0xc0}, cat(u16b(strCls), {0x4d}));
-    b.addMethod(method("go", "([Ljava/lang/Object;)V", cat(cat(w0, w1), {0xb1})));
-    return b.assemble();
-}
-
-/// 调用方：装箱窗 [iconst_2; anewarray Object; dup; ldc "x"; iconst_0;
-/// aastore; dup; ldc "y"; iconst_1; aastore; invokestatic go] + RETURN。
-Bytes buildCallerBoxed(FixtureBuilder& b)
-{
-    const ca::u16 objCls = b.cls("java/lang/Object");
-    const ca::u16 mref   = b.methodRef("Svc", "go", "([Ljava/lang/Object;)V");
-    const ca::u16 xStr   = b.strConst("x");
-    const ca::u16 yStr   = b.strConst("y");
-    Bytes code = cat({0x05, 0xbd}, u16b(objCls));                      // iconst_2; anewarray
-    code = cat(code, cat({0x59, 0x13}, cat(u16b(xStr), {0x03, 0x53}))); // dup; ldc_w x; iconst_0; aastore
-    code = cat(code, cat({0x59, 0x13}, cat(u16b(yStr), {0x04, 0x53}))); // dup; ldc_w y; iconst_1; aastore
-    code = cat(code, cat({0xb8}, cat(u16b(mref), {0xb1})));             // invokestatic; return
-    return code;
-}
-
 }   // namespace
-
-// ── 切片 2 件：被调方单取参窗（元素 0 checkcast Ti）──
-Bytes buildCalleeTi(const std::string& tiInternal)
-{
-    FixtureBuilder b("Svc");
-    const ca::u16 tiCls = b.cls(tiInternal);
-    // 元素 0：aload_0; iconst_0; aaload; checkcast Ti; astore_1
-    Bytes w0 = cat({0x2a, 0x03, 0x32, 0xc0}, cat(u16b(tiCls), {0x4c}));
-    b.addMethod(method("go", "([Ljava/lang/Object;)V", cat(w0, {0xb1})));
-    return b.assemble();
-}
-
-/// 单实参装箱窗调用方：[iconst_1; anewarray Object; dup; ARG; iconst_0;
-/// aastore; invokestatic go; RETURN]。
-Bytes buildCaller1(FixtureBuilder& b, const Bytes& arg)
-{
-    const ca::u16 objCls = b.cls("java/lang/Object");
-    const ca::u16 mref   = b.methodRef("Svc", "go", "([Ljava/lang/Object;)V");
-    Bytes code = cat({0x04, 0xbd}, u16b(objCls));
-    code = cat(code, cat({0x59}, arg));
-    code = cat(code, cat({0x03, 0x53}, cat({0xb8}, cat(u16b(mref), {0xb1}))));
-    return code;
-}
 
 // ── 切片 2 正面：ldc Class 常量按常量类对齐 ──
 TEST(ArgumentArrayScalarizerTest, classConstArgScalarized)
 {
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Svc.class", buildCalleeTi("java/lang/Class"));
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 clsConst = b.cls("java/lang/Class");
-        b.addMethod(method("main", "()V", buildCaller1(b, cat({0x13}, u16b(clsConst)))));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    addClassResource(container, "Caller.class",
+                     asmClass("Caller",
+                              caller1Method("public static", "main", "()V", "",
+                                            "ldc Ljava/lang/Class;",
+                                            "invokestatic Svc.go ([Ljava/lang/Object;)V")));
     EXPECT_TRUE(runPass(container).changed());
     const auto* callee = classResource(container, "Svc.class");
     ASSERT_NE(callee, nullptr);
     EXPECT_EQ(methodDesc(callee->get(), "go"), "(Ljava/lang/Class;)V");
-    const std::vector<jbc::core::Op> cops = methodOps(classResource(container, "Caller.class")->get(), "main");
+    const std::vector<jbc::core::Op> cops =
+        methodOps(classResource(container, "Caller.class")->get(), "main");
     ASSERT_EQ(cops.size(), 3u);
-    EXPECT_EQ(cops[0], jbc::core::Op::LDC_W);
+    EXPECT_EQ(cops[0], jbc::core::Op::LDC);   // 小池发 1 字节 LDC，生产者保留
 }
 
 // ── 切片 2 拒绝：Class 常量与 Ti 失配 ──
@@ -213,12 +219,11 @@ TEST(ArgumentArrayScalarizerTest, classConstMismatchRejected)
 {
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Svc.class", buildCalleeTi("java/lang/String"));
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 clsConst = b.cls("java/lang/Object");
-        b.addMethod(method("main", "()V", buildCaller1(b, cat({0x13}, u16b(clsConst)))));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    addClassResource(container, "Caller.class",
+                     asmClass("Caller",
+                              caller1Method("public static", "main", "()V", "",
+                                            "ldc Ljava/lang/Object;",
+                                            "invokestatic Svc.go ([Ljava/lang/Object;)V")));
     EXPECT_FALSE(runPass(container).changed());
     const auto* callee = classResource(container, "Svc.class");
     ASSERT_NE(callee, nullptr);
@@ -230,19 +235,19 @@ TEST(ArgumentArrayScalarizerTest, callerParamPassthroughScalarized)
 {
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Svc.class", buildCalleeTi("java/lang/String"));
-    {
-        FixtureBuilder b("Caller");
-        // static main(Ljava/lang/String;)V：aload_0 是自身入参（槽 0），
-        // 声明型对齐 Ti。
-        b.addMethod(method("main", "(Ljava/lang/String;)V",
-                           buildCaller1(b, cat({0x2a}, {}))));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    // static main(Ljava/lang/String;)V：aload_0 是自身入参（槽 0），
+    // 声明型对齐 Ti。
+    addClassResource(container, "Caller.class",
+                     asmClass("Caller",
+                              caller1Method("public static", "main",
+                                            "(Ljava/lang/String;)V", "", "aload 0",
+                                            "invokestatic Svc.go ([Ljava/lang/Object;)V")));
     EXPECT_TRUE(runPass(container).changed());
     const auto* callee = classResource(container, "Svc.class");
     ASSERT_NE(callee, nullptr);
     EXPECT_EQ(methodDesc(callee->get(), "go"), "(Ljava/lang/String;)V");
-    const std::vector<jbc::core::Op> cops = methodOps(classResource(container, "Caller.class")->get(), "main");
+    const std::vector<jbc::core::Op> cops =
+        methodOps(classResource(container, "Caller.class")->get(), "main");
     ASSERT_EQ(cops.size(), 3u);
     EXPECT_EQ(cops[0], jbc::core::Op::ALOAD_0);
 }
@@ -252,13 +257,14 @@ TEST(ArgumentArrayScalarizerTest, callerParamRestoredRejected)
 {
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Svc.class", buildCalleeTi("java/lang/String"));
-    {
-        FixtureBuilder b("Caller");
-        // 前置 aconst_null; astore_0 覆写入参槽 → aload_0 到达定值非入参。
-        Bytes code = cat({0x01, 0x4b}, buildCaller1(b, cat({0x2a}, {})));
-        b.addMethod(method("main", "(Ljava/lang/String;)V", std::move(code)));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    // 前置 aconst_null; astore_0 覆写入参槽 → aload_0 到达定值非入参。
+    addClassResource(container, "Caller.class",
+                     asmClass("Caller",
+                              caller1Method("public static", "main",
+                                            "(Ljava/lang/String;)V",
+                                            "      aconst_null\n      astore 0\n",
+                                            "aload 0",
+                                            "invokestatic Svc.go ([Ljava/lang/Object;)V")));
     EXPECT_FALSE(runPass(container).changed());
 }
 
@@ -267,13 +273,11 @@ TEST(ArgumentArrayScalarizerTest, thisAliasPassthroughScalarized)
 {
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Svc.class", buildCalleeTi("Caller"));
-    {
-        FixtureBuilder b("Caller");
-        FixtureMethod im = method("run", "()V", buildCaller1(b, cat({0x2a}, {})));
-        im.access = 0x0001;   // 去 static：槽 0 = this，声明型 = 调用方类
-        b.addMethod(std::move(im));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    // 实例 run()V：槽 0 = this，声明型 = 调用方类。
+    addClassResource(container, "Caller.class",
+                     asmClass("Caller",
+                              caller1Method("public", "run", "()V", "", "aload 0",
+                                            "invokestatic Svc.go ([Ljava/lang/Object;)V")));
     EXPECT_TRUE(runPass(container).changed());
     const auto* callee = classResource(container, "Svc.class");
     ASSERT_NE(callee, nullptr);
@@ -285,17 +289,18 @@ TEST(ArgumentArrayScalarizerTest, boxValueOfArgScalarized)
 {
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Svc.class", buildCalleeTi("java/lang/Integer"));
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 vof = b.methodRef("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;");
-        b.addMethod(method("main", "()V", buildCaller1(b, cat({0x08, 0xb8}, u16b(vof)))));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    addClassResource(
+        container, "Caller.class",
+        asmClass("Caller",
+                 caller1Method("public static", "main", "()V", "",
+                               "iconst_5\n      invokestatic java/lang/Integer.valueOf (I)Ljava/lang/Integer;",
+                               "invokestatic Svc.go ([Ljava/lang/Object;)V")));
     EXPECT_TRUE(runPass(container).changed());
     const auto* callee = classResource(container, "Svc.class");
     ASSERT_NE(callee, nullptr);
     EXPECT_EQ(methodDesc(callee->get(), "go"), "(Ljava/lang/Integer;)V");
-    const std::vector<jbc::core::Op> cops = methodOps(classResource(container, "Caller.class")->get(), "main");
+    const std::vector<jbc::core::Op> cops =
+        methodOps(classResource(container, "Caller.class")->get(), "main");
     ASSERT_EQ(cops.size(), 4u);
     EXPECT_EQ(cops[0], jbc::core::Op::ICONST_5);
     EXPECT_EQ(cops[1], jbc::core::Op::INVOKESTATIC);
@@ -306,12 +311,12 @@ TEST(ArgumentArrayScalarizerTest, boxValueOfMismatchRejected)
 {
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Svc.class", buildCalleeTi("java/lang/String"));
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 vof = b.methodRef("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;");
-        b.addMethod(method("main", "()V", buildCaller1(b, cat({0x08, 0xb8}, u16b(vof)))));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    addClassResource(
+        container, "Caller.class",
+        asmClass("Caller",
+                 caller1Method("public static", "main", "()V", "",
+                               "iconst_5\n      invokestatic java/lang/Integer.valueOf (I)Ljava/lang/Integer;",
+                               "invokestatic Svc.go ([Ljava/lang/Object;)V")));
     EXPECT_FALSE(runPass(container).changed());
 }
 
@@ -319,35 +324,28 @@ TEST(ArgumentArrayScalarizerTest, boxValueOfMismatchRejected)
 TEST(ArgumentArrayScalarizerTest, instanceCalleeScalarized)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder b("Svc");
-        const ca::u16 tiCls = b.cls("java/lang/String");
-        // 实例取参窗：aload_1（槽 1 = 首参）; iconst_0; aaload; checkcast; astore_2
-        Bytes w0 = cat({0x2b, 0x03, 0x32, 0xc0}, cat(u16b(tiCls), {0x4d}));
-        FixtureMethod im = method("go", "([Ljava/lang/Object;)V", cat(w0, {0xb1}));
-        im.access = 0x0001;   // 实例：槽 0 = this
-        b.addMethod(std::move(im));
-        addClassResource(container, "Svc.class", b.assemble());
-    }
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 objCls = b.cls("java/lang/Object");
-        const ca::u16 mref   = b.methodRef("Svc", "go", "([Ljava/lang/Object;)V");
-        // aconst_null 作 receiver；装箱窗；invokevirtual
-        Bytes code = cat({0x01, 0x04, 0xbd}, u16b(objCls));
-        code = cat(code, cat({0x59, 0x13}, cat(u16b(b.strConst("z")), {0x03, 0x53})));
-        code = cat(code, cat({0xb6}, cat(u16b(mref), {0xb1})));
-        b.addMethod(method("main", "()V", std::move(code)));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    // 实例取参窗：aload_1（槽 1 = 首参）; iconst_0; aaload; checkcast; astore_2。
+    addClassResource(container, "Svc.class",
+                     asmClass("Svc",
+                              "  .method public go ([Ljava/lang/Object;)V {\n"
+                              "    code: {\n"
+                                  + windowText("aload 1", 0, "java/lang/String", 2)
+                                  + "      return\n    }\n  }\n"));
+    // aconst_null 作 receiver；装箱窗；invokevirtual。
+    addClassResource(container, "Caller.class",
+                     asmClass("Caller",
+                              caller1Method("public static", "main", "()V",
+                                            "      aconst_null\n", "ldc \"z\"",
+                                            "invokevirtual Svc.go ([Ljava/lang/Object;)V")));
     EXPECT_TRUE(runPass(container).changed());
     const auto* callee = classResource(container, "Svc.class");
     ASSERT_NE(callee, nullptr);
     EXPECT_EQ(methodDesc(callee->get(), "go"), "(Ljava/lang/String;)V");
-    const std::vector<jbc::core::Op> cops = methodOps(classResource(container, "Caller.class")->get(), "main");
+    const std::vector<jbc::core::Op> cops =
+        methodOps(classResource(container, "Caller.class")->get(), "main");
     ASSERT_EQ(cops.size(), 4u);
     EXPECT_EQ(cops[0], jbc::core::Op::ACONST_NULL);
-    EXPECT_EQ(cops[1], jbc::core::Op::LDC_W);
+    EXPECT_EQ(cops[1], jbc::core::Op::LDC);
     EXPECT_EQ(cops[2], jbc::core::Op::INVOKEVIRTUAL);
 }
 
@@ -356,11 +354,11 @@ TEST(ArgumentArrayScalarizerTest, fullRoundTripScalarized)
 {
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Svc.class", buildCallee());
-    {
-        FixtureBuilder b("Caller");
-        b.addMethod(method("main", "()V", buildCallerBoxed(b)));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    addClassResource(container, "Caller.class",
+                     asmClass("Caller",
+                              caller2Method("public static", "main", "()V", "ldc \"x\"",
+                                            "ldc \"y\"",
+                                            "invokestatic Svc.go ([Ljava/lang/Object;)V")));
 
     EXPECT_TRUE(runPass(container).changed());
 
@@ -382,8 +380,8 @@ TEST(ArgumentArrayScalarizerTest, fullRoundTripScalarized)
     ASSERT_NE(caller, nullptr);
     const std::vector<jbc::core::Op> cops = methodOps(caller->get(), "main");
     ASSERT_EQ(cops.size(), 4u);
-    EXPECT_EQ(cops[0], jbc::core::Op::LDC_W);
-    EXPECT_EQ(cops[1], jbc::core::Op::LDC_W);
+    EXPECT_EQ(cops[0], jbc::core::Op::LDC);   // ldc_w 原形经装配器发 1 字节 LDC
+    EXPECT_EQ(cops[1], jbc::core::Op::LDC);
     EXPECT_EQ(cops[2], jbc::core::Op::INVOKESTATIC);
     EXPECT_EQ(cops[3], jbc::core::Op::RETURN);
 }
@@ -393,44 +391,33 @@ TEST(ArgumentArrayScalarizerTest, nullArgScalarized)
 {
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Svc.class", buildCallee());
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 objCls = b.cls("java/lang/Object");
-        const ca::u16 mref   = b.methodRef("Svc", "go", "([Ljava/lang/Object;)V");
-        const ca::u16 yStr   = b.strConst("y");
-        // 元素 0 实参 aconst_null、元素 1 实参 ldc "y"。
-        Bytes code = cat({0x05, 0xbd}, u16b(objCls));
-        code = cat(code, cat({0x59, 0x01, 0x03, 0x53}, {0x59, 0x13}));
-        code = cat(code, cat(u16b(yStr), cat({0x04, 0x53}, cat({0xb8}, cat(u16b(mref), {0xb1})))));
-        b.addMethod(method("main", "()V", std::move(code)));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    // 元素 0 实参 aconst_null、元素 1 实参 ldc "y"。
+    addClassResource(container, "Caller.class",
+                     asmClass("Caller",
+                              caller2Method("public static", "main", "()V", "aconst_null",
+                                            "ldc \"y\"",
+                                            "invokestatic Svc.go ([Ljava/lang/Object;)V")));
     EXPECT_TRUE(runPass(container).changed());
     const auto* caller = classResource(container, "Caller.class");
     ASSERT_NE(caller, nullptr);
     const std::vector<jbc::core::Op> cops = methodOps(caller->get(), "main");
     ASSERT_EQ(cops.size(), 4u);
     EXPECT_EQ(cops[0], jbc::core::Op::ACONST_NULL);
-    EXPECT_EQ(cops[1], jbc::core::Op::LDC_W);
+    EXPECT_EQ(cops[1], jbc::core::Op::LDC);
 }
 
-// ── 实参类型失配（ALOAD 实参 vs Ti=String）→ 整族不动 ──
+// ── 实参类型失配（int 实参 vs Ti=String）→ 整族不动 ──
 TEST(ArgumentArrayScalarizerTest, argTypeMismatchAbandoned)
 {
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Svc.class", buildCallee());
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 objCls = b.cls("java/lang/Object");
-        const ca::u16 mref   = b.methodRef("Svc", "go", "([Ljava/lang/Object;)V");
-        const ca::u16 yStr   = b.strConst("y");
-        // 元素 0 实参 aload_1（槽类型不可见，Ti=String 失配）。
-        Bytes code = cat({0x05, 0xbd}, u16b(objCls));
-        code = cat(code, cat({0x59, 0x1b, 0x03, 0x53}, {0x59, 0x13}));
-        code = cat(code, cat(u16b(yStr), cat({0x04, 0x53}, cat({0xb8}, cat(u16b(mref), {0xb1})))));
-        b.addMethod(method("main", "()V", std::move(code)));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    // 元素 0 实参 iload 1（int 槽类型，Ti=String 失配；caller 带 (I)V 形参
+    // 使 1 槽有定义，帧自洽）。
+    addClassResource(container, "Caller.class",
+                     asmClass("Caller",
+                              caller2Method("public static", "main", "(I)V", "iload 1",
+                                            "ldc \"y\"",
+                                            "invokestatic Svc.go ([Ljava/lang/Object;)V")));
     runPass(container);
     const auto* callee = classResource(container, "Svc.class");
     ASSERT_NE(callee, nullptr);
@@ -444,20 +431,19 @@ TEST(ArgumentArrayScalarizerTest, argTypeMismatchAbandoned)
 TEST(ArgumentArrayScalarizerTest, escapeAbandoned)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder b("Svc");
-        const ca::u16 strCls = b.cls("java/lang/String");
-        Bytes w0 = cat({0x2a, 0x03, 0x32, 0xc0}, cat(u16b(strCls), {0x4c}));
-        // arraylength（0xbe）吃掉数组 → 逃逸。
-        b.addMethod(method("go", "([Ljava/lang/Object;)V",
-                           cat(cat({0x2a, 0xbe, 0x57}, w0), {0xb1})));
-        addClassResource(container, "Svc.class", b.assemble());
-    }
-    {
-        FixtureBuilder b("Caller");
-        b.addMethod(method("main", "()V", buildCallerBoxed(b)));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    // arraylength 吃掉数组 → 逃逸。
+    addClassResource(
+        container, "Svc.class",
+        asmClass("Svc",
+                 "  .method public static go ([Ljava/lang/Object;)V {\n"
+                 "    code: {\n      aload 0\n      arraylength\n      pop\n"
+                     + windowText("aload 0", 0, "java/lang/String", 1)
+                     + "      return\n    }\n  }\n"));
+    addClassResource(container, "Caller.class",
+                     asmClass("Caller",
+                              caller2Method("public static", "main", "()V", "ldc \"x\"",
+                                            "ldc \"y\"",
+                                            "invokestatic Svc.go ([Ljava/lang/Object;)V")));
     runPass(container);
     const auto* callee = classResource(container, "Svc.class");
     ASSERT_NE(callee, nullptr);
@@ -468,18 +454,17 @@ TEST(ArgumentArrayScalarizerTest, escapeAbandoned)
 TEST(ArgumentArrayScalarizerTest, gapIndexAbandoned)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder b("Svc");
-        const ca::u16 strCls = b.cls("java/lang/String");
-        Bytes w1 = cat({0x2a, 0x04, 0x32, 0xc0}, cat(u16b(strCls), {0x4c}));
-        b.addMethod(method("go", "([Ljava/lang/Object;)V", cat(w1, {0xb1})));
-        addClassResource(container, "Svc.class", b.assemble());
-    }
-    {
-        FixtureBuilder b("Caller");
-        b.addMethod(method("main", "()V", buildCallerBoxed(b)));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    addClassResource(container, "Svc.class",
+                     asmClass("Svc",
+                              "  .method public static go ([Ljava/lang/Object;)V {\n"
+                              "    code: {\n"
+                                  + windowText("aload 0", 1, "java/lang/String", 1)
+                                  + "      return\n    }\n  }\n"));
+    addClassResource(container, "Caller.class",
+                     asmClass("Caller",
+                              caller2Method("public static", "main", "()V", "ldc \"x\"",
+                                            "ldc \"y\"",
+                                            "invokestatic Svc.go ([Ljava/lang/Object;)V")));
     runPass(container);
     const auto* callee = classResource(container, "Svc.class");
     ASSERT_NE(callee, nullptr);
@@ -491,17 +476,17 @@ TEST(ArgumentArrayScalarizerTest, nonWindowSiteAbandoned)
 {
     mjbase::model::ResourceContainer container;
     addClassResource(container, "Svc.class", buildCallee());
-    {
-        FixtureBuilder b("Caller");
-        b.addMethod(method("main", "()V", buildCallerBoxed(b)));
-        // 第二位点：数组经 astore_1 转手再 aload_1 传参（非规范窗）。
-        const ca::u16 objCls = b.cls("java/lang/Object");
-        const ca::u16 mref   = b.methodRef("Svc", "go", "([Ljava/lang/Object;)V");
-        Bytes code2 = cat({0x05, 0xbd}, cat(u16b(objCls), {0x4c, 0x1b, 0xb8}));
-        code2 = cat(code2, cat(u16b(mref), {0xb1}));
-        b.addMethod(method("other", "()V", std::move(code2)));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    addClassResource(
+        container, "Caller.class",
+        asmClass("Caller",
+                 caller2Method("public static", "main", "()V", "ldc \"x\"", "ldc \"y\"",
+                               "invokestatic Svc.go ([Ljava/lang/Object;)V")
+                     // 第二位点：数组经 astore_1 转手再 aload_1 传参（非规范窗）。
+                     + "  .method public static other ()V {\n    code: {\n"
+                       "      iconst_2\n      anewarray java/lang/Object\n"
+                       "      astore 1\n      aload 1\n"
+                       "      invokestatic Svc.go ([Ljava/lang/Object;)V\n"
+                       "      return\n    }\n  }\n"));
     runPass(container);
     const auto* callee = classResource(container, "Svc.class");
     ASSERT_NE(callee, nullptr);
@@ -512,24 +497,18 @@ TEST(ArgumentArrayScalarizerTest, nonWindowSiteAbandoned)
 TEST(ArgumentArrayScalarizerTest, repeatIndexScalarized)
 {
     mjbase::model::ResourceContainer container;
-    {
-        FixtureBuilder b("Svc");
-        const ca::u16 strCls = b.cls("java/lang/String");
-        Bytes w0 = cat({0x2a, 0x03, 0x32, 0xc0}, cat(u16b(strCls), {0x4c}));
-        b.addMethod(method("go", "([Ljava/lang/Object;)V", cat(cat(w0, w0), {0xb1})));
-        addClassResource(container, "Svc.class", b.assemble());
-    }
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 objCls = b.cls("java/lang/Object");
-        const ca::u16 mref   = b.methodRef("Svc", "go", "([Ljava/lang/Object;)V");
-        const ca::u16 xStr   = b.strConst("x");
-        Bytes code = cat({0x04, 0xbd}, u16b(objCls));                    // iconst_1; anewarray
-        code = cat(code, cat({0x59, 0x13}, cat(u16b(xStr), {0x03, 0x53}))); // dup; ldc_w x; iconst_0; aastore
-        code = cat(code, cat({0xb8}, cat(u16b(mref), {0xb1})));
-        b.addMethod(method("main", "()V", std::move(code)));
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    addClassResource(container, "Svc.class",
+                     asmClass("Svc",
+                              "  .method public static go ([Ljava/lang/Object;)V {\n"
+                              "    code: {\n"
+                                  + windowText("aload 0", 0, "java/lang/String", 1)
+                                  + windowText("aload 0", 0, "java/lang/String", 1)
+                                  + "      return\n    }\n  }\n"));
+    addClassResource(container, "Caller.class",
+                     asmClass("Caller",
+                              caller1Method("public static", "main", "()V", "",
+                                            "ldc \"x\"",
+                                            "invokestatic Svc.go ([Ljava/lang/Object;)V")));
     EXPECT_TRUE(runPass(container).changed());
     const auto* callee = classResource(container, "Svc.class");
     ASSERT_NE(callee, nullptr);
