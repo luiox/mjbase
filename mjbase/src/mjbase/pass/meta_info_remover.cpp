@@ -174,7 +174,7 @@ enum class AnnoFilter : ca::u8
     All,          ///< 全部移除（MetaInfoRemover 面）
     Malformed,    ///< 形状非法（IllegalAnnotationRemover 面）
     Blacklisted,  ///< 形状非法 ∪ 黑名单（SpecificAnnotationRemover 面）
-    Kotlin,       ///< @kotlin/Metadata（KotlinMetadataRemover 类级面）
+    Kotlin,       ///< `@kotlin/Metadata`（KotlinMetadataRemover 类级面）
     Jetbrains,    ///< jetbrains 三注解（KotlinMetadataRemover 成员面）
 };
 

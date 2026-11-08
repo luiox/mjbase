@@ -4,8 +4,9 @@
 
 namespace mjbase::pass {
 
-/// 静态字段默认值内联（legacy StaticFieldDefaultInliner 移植，mbase B 节
-/// 治理版语义：多次 PUTSTATIC 预扫描计数，非单次写整族保守跳过）。
+/// @brief 静态字段默认值内联（legacy StaticFieldDefaultInliner 移植，mbase
+///        B 节治理版语义：多次 PUTSTATIC 预扫描计数，非单次写整族保守
+///        跳过）。
 ///
 /// ## 规则
 ///
@@ -44,7 +45,10 @@ namespace mjbase::pass {
 /// 任一字段内联成功 → none()（类元数据与 clinit 方法体都改）；无 clinit /
 /// 无候选字段 / 无可内联对 → all()。
 ///
-/// 标签：scope:class / action:propagate / stability:opt-in。
+/// @par 标签
+/// - `scope:class`
+/// - `action:propagate`
+/// - `stability:opt-in`（默认链不收，CLI -p 显式挂点）
 class StaticFieldDefaultInliner : public mjbase::spi::ClassPass
 {
 public:
