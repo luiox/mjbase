@@ -2,8 +2,8 @@
 // 负操作数矩阵 + 链识别边界（链长 1 / 类型混用 / 标签守卫）+ 幂等 + PA 纪律。
 //
 // 夹具纪律：类骨架与方法体一律 jasm 文本装配（JvmJasmService）；窄常量
-//（bipush/sipush）装配器按自身口径规范化为 LDC，float/double 经 ldc/ldc2_w
-// 字面直写（本地 FloatDoubleFixture 随字节级 builder 一并退役）。装配器栈
+//（bipush/sipush）装配器按自身口径规范化为 LDC，float/double 经 ldc 字面
+// 直写（canonical 宽常量字面，长整带 L 双精带 D 后缀）（本地 FloatDoubleFixture 随字节级 builder 一并退役）。装配器栈
 // 分析只约束可达代码（JVMS 口径）：验证「栈欠额/类型混用拒绝折叠」的输入
 // 形以 goto 越段死代码表达（死段不进帧分析、pass 的虚拟栈照判失配），字节
 // 语义与原手拼夹具同实。
@@ -221,12 +221,12 @@ std::string fconstText(ca::f32 v)
     return "ldc " + std::to_string(v) + "f";
 }
 
-/// 值 → double 装载指令文本（0.0/1.0 走 DCONST 短形，其余 ldc2_w 字面）。
+/// 值 → double 装载指令文本（0.0/1.0 走 DCONST 短形，其余 ldc 字面）。
 std::string dconstText(ca::f64 v)
 {
     if (v == 0.0) return "dconst_0";
     if (v == 1.0) return "dconst_1";
-    return "ldc2_w " + std::to_string(v);
+    return "ldc " + std::to_string(v) + "D";
 }
 
 }   // namespace
@@ -417,7 +417,7 @@ TEST(ConstantFolderTest, negativeShrSignMatrix)
 TEST(ConstantFolderTest, longSubWrapsAtLongMin)
 {
     const MethodPassRun r =
-        runMethodPass(oneMethod("ldc2_w -9223372036854775808L\nlconst_1\nlsub\nreturn\n"),
+        runMethodPass(oneMethod("ldc -9223372036854775808L\nlconst_1\nlsub\nreturn\n"),
                       mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectLongFold(r, (std::numeric_limits<ca::i64>::max)());
@@ -691,7 +691,7 @@ TEST(ConstantFolderTest, longOpFamilyFolds)
     };
     for (const Case& c : cases) {
         const MethodPassRun r =
-            runMethodPass(oneMethod("ldc2_w " + std::to_string(c.a) + "L\nldc2_w "
+            runMethodPass(oneMethod("ldc " + std::to_string(c.a) + "L\nldc "
                                         + std::to_string(c.b) + "L\n" + c.opText + "\nreturn\n"),
                           mjbase::pass::ConstantFolder{});
         EXPECT_TRUE(r.pa.changed()) << c.name;
@@ -718,7 +718,7 @@ TEST(ConstantFolderTest, longShiftFamilyFolds)
     };
     for (const Case& c : cases) {
         const MethodPassRun r =
-            runMethodPass(oneMethod("ldc2_w " + std::to_string(c.v) + "L\nldc "
+            runMethodPass(oneMethod("ldc " + std::to_string(c.v) + "L\nldc "
                                         + std::to_string(c.d) + "\n" + c.opText + "\nreturn\n"),
                           mjbase::pass::ConstantFolder{});
         EXPECT_TRUE(r.pa.changed());
@@ -755,14 +755,14 @@ TEST(ConstantFolderTest, longChainIntPushNotFollowedByShiftStops)
 // ── long 红线：除 0 与 MIN/-1 保留不折 ──
 TEST(ConstantFolderTest, longDivZeroNotFolded)
 {
-    const Bytes in = oneMethod("ldc2_w 1L\nlconst_0\nldiv\nreturn\n");
+    const Bytes in = oneMethod("ldc 1L\nlconst_0\nldiv\nreturn\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
 TEST(ConstantFolderTest, longDivMinMinusOneNotFolded)
 {
     const Bytes in =
-        oneMethod("ldc2_w -9223372036854775808L\nldc2_w -1L\nldiv\nreturn\n");
+        oneMethod("ldc -9223372036854775808L\nldc -1L\nldiv\nreturn\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
@@ -770,7 +770,7 @@ TEST(ConstantFolderTest, longDivMinMinusOneNotFolded)
 TEST(ConstantFolderTest, longAddWrapsAtLongMax)
 {
     const MethodPassRun r =
-        runMethodPass(oneMethod("ldc2_w 9223372036854775807L\nlconst_1\nladd\nreturn\n"),
+        runMethodPass(oneMethod("ldc 9223372036854775807L\nlconst_1\nladd\nreturn\n"),
                       mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectLongFold(r, (std::numeric_limits<ca::i64>::min)());
@@ -890,7 +890,7 @@ TEST(ConstantFolderTest, doubleZeroDivZeroFoldsToNan)
 // ── double LDC2_W 输入与输出（CP 双槽追加路径）──
 TEST(ConstantFolderTest, doubleLdc2wInputFolds)
 {
-    const MethodPassRun r = runMethodPass(oneMethod("ldc2_w 1.5\nldc2_w 2.5\ndmul\nreturn\n"),
+    const MethodPassRun r = runMethodPass(oneMethod("ldc 1.5\nldc 2.5\ndmul\nreturn\n"),
                                           mjbase::pass::ConstantFolder{});
     EXPECT_TRUE(r.pa.changed());
     expectDoubleBitsFold(r, f64Bits(3.75));

@@ -168,7 +168,7 @@ Bytes rewriteBranchOffset(const Bytes& bytes, ca::u8 op, ca::u16 off)
     return deviated;
 }
 
-/// 把首方法 Code 里第一条 ldc/ldc2_w（op）的 CP 操作数改写为 newIdx。
+/// 把首方法 Code 里第一条 ldc（op）的 CP 操作数改写为 newIdx。
 /// 改写后 expectValidateFail（槽类别错挂/悬垂索引为验证级非法形）。
 Bytes rewriteLdcOperand(const Bytes& bytes, ca::u8 op, ca::u16 newIdx)
 {
@@ -694,14 +694,14 @@ TEST(MjPassIllegalClassFileCleanerTest, KeepsInBoundsJumpUntouched)
 
 // 规则 2b：LDC 族与常量种类不符（LDC2_W 指向 Integer）与悬垂索引（LDC 指向
 // 越界 CP 槽）→ 一律 RETURN 桩替换。
-// 例外①：合法基座 ldc2_w 1L / ldc 7，DOM 单点改写 CP 操作数（Integer 条目
+// 例外①：合法基座 ldc 1L / ldc 7，DOM 单点改写 CP 操作数（Integer 条目
 // / 越界槽 127），前后 validate Ok→Fail 自检内置。
 TEST(MjPassIllegalClassFileCleanerTest, StubsIllegalLdcInstructions)
 {
     // wide：LDC2_W 挂 Integer 条目（cat2 槽挂 cat1 条目）。
     ca::u16 intIdx = 0;
     const Bytes wideBase = mutateClassFile(
-        asmOne("T", "public static", "w", "()V", "      ldc2_w 1L\n      return\n"),
+        asmOne("T", "public static", "w", "()V", "      ldc 1L\n      return\n"),
         "internInt", [&](jbc::core::ClassFile& cf) {
             intIdx = static_cast<ca::u16>(cf.cp.addInteger(7));
         });
