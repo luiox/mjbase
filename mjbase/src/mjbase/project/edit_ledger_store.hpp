@@ -208,16 +208,16 @@ public:
     /// 是否绑定 bundle。
     bool bound() const { return !bundleDir_.is_empty(); }
 
-    /// 是否有未落盘事务。
-    bool hasPending() const { return pendingTxns_ > 0; }
+    /// 是否有未落盘变化（事务或头位）。
+    bool hasPending() const { return pendingTxns_ > 0 || headDirty(); }
 
     /// 当前活动代（0 = 尚无落盘台账）。
     ca::u32 generation() const { return generation_; }
 
     /// @brief flush（设计文档 §3.2，manifest last）：落 overlay sections → 新代
     ///        台账 section → manifest 事务 upsert → 清理事务删除待释放（只删
-    ///        非活动代）→ 释放内存 pending。未绑定 / 无 pending 且无待释放 =
-    ///        no-op。崩溃任一点旧代完整（§3.2/§3.4）；重试同字节幂等。
+    ///        非活动代）→ 释放内存 pending。未绑定 / 无 pending 且头位与落盘
+    ///        态一致 = no-op。崩溃任一点旧代完整（§3.2/§3.4）；重试同字节幂等。
     ca::Result<LedgerFlushReport, ProjectStoreError> flush(const std::string& createdAt);
 
     //-- 压缩 -----------------------------------------------------------------
@@ -249,6 +249,10 @@ private:
     /// 引擎名族 section 的活动代登记与待释放清点（open 期）。
     void reclaimEngineSections(const StoreManifest& manifest);
 
+    /// 头位是否偏离落盘态（undo 后未 flush；仅绑定态有意义——装载/写出面
+    /// 维护 persistedHead_，见 openBundle/flush/compact）。
+    bool headDirty() const { return bound() && head_ != persistedHead_; }
+
     ca::str::Utf8String ledgerSectionName(ca::u32 generation) const;
     ca::str::Utf8String baselineSectionNameOf(ca::u32 generation) const;
 
@@ -258,6 +262,7 @@ private:
     std::optional<LedgerAnchor> anchor_;         ///< 压缩锚（无 = 基线取原始容器）
     std::vector<LedgerTransaction> txns_;        ///< 活动链（txn 升序 = 链序）
     ca::u64                head_ = 0;            ///< 头事务号
+    ca::u64                persistedHead_ = 0;   ///< 落盘态头位（装载/写出面维护）
     ca::u64                nextTxnId_ = 1;       ///< 事务号单调分配
     std::vector<LedgerBookmark> bookmarkOrder_;  ///< 创建序（重名覆盖保持原位）
     std::map<std::string, std::vector<ca::u8>> pendingOverlays_;  ///< ref → after 字节

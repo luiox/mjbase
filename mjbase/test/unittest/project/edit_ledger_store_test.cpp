@@ -436,6 +436,133 @@ TEST(MjLedgerStoreTest, identityAnnotationSurvivesAppendFlushAndReopen)
     EXPECT_TRUE(back.newDesc.is_empty());
 }
 
+/// undo 后头位的持久化契约：undo 作为末动作落盘（flush 全量写行、行集只能
+/// 表达「有哪些事务」），若无独立头指针行，装载取链尾即静默复活 undo。本
+/// 回归钉死：head ≠ 链尾时 flush 落 head 行、重开尊重之，redo 行保留。
+TEST(MjLedgerStoreTest, undoHeadSurvivesFlushAndReopen)
+{
+    const auto  dir      = freshTempDir("mjbase_ledger_store_undo_head.mjt-project");
+    const std::string dirStr = dir.string();
+    ASSERT_FALSE(createBundleSkeleton(refOf(dirStr)).is_err());
+    const auto  baseline = makeBaseline();
+
+    {
+        auto opened = EditLedgerStore::openBundle(refOf(dirStr), refOf(baseline.digest));
+        ASSERT_FALSE(opened.is_err());
+        auto store = std::move(opened).unwrap();
+        ASSERT_FALSE(
+            store.append(makeAppendInput(store.nextTxnId(),
+                                         {{"a.class", false, false, bytesOf("A0"), bytesOf("A1")}}))
+                .is_err());
+        ASSERT_FALSE(
+            store.append(makeAppendInput(store.nextTxnId(),
+                                         {{"c.class", false, true, {}, bytesOf("C1")}}))
+                .is_err());
+        // undo t2：头回 t1，redo 行保留在内存（append 时才放弃）。
+        ASSERT_FALSE(store.moveHead(1).is_err());
+        ASSERT_TRUE(store.hasPending());
+        ASSERT_FALSE(store.flush("2026-10-23T00:00:03Z").is_err());
+    }
+
+    // 重开：头位在 t1 而非链尾 t2；t2 行保留（redo 信息不灭）。
+    auto reopened = EditLedgerStore::openBundle(refOf(dirStr), refOf(baseline.digest));
+    ASSERT_FALSE(reopened.is_err());
+    auto restored = std::move(reopened).unwrap();
+    EXPECT_EQ(1U, restored.headTxn());
+    EXPECT_TRUE(restored.canUndo());
+    EXPECT_EQ(1U, restored.undoDepth());
+    ASSERT_NE(nullptr, restored.transaction(2));
+    EXPECT_EQ(1U, restored.transaction(2)->parent);
+    const auto chain = restored.chainTo(restored.headTxn());
+    EXPECT_EQ(1U, chain.size());
+    EXPECT_EQ(1U, chain.front());
+
+    // 重放头位 = undo 后状态（a.class 已改、c.class 未加）。
+    const auto  stateAtHead = replayTo(restored, restored.headTxn(), baseline.state);
+    EXPECT_EQ(bytesOf("A1"), stateAtHead.at("a.class"));
+    EXPECT_EQ(stateAtHead.end(), stateAtHead.find("c.class"));
+
+    // 头位后追加：放弃 redo 行（对齐内存语义），链自头继续生长。
+    ASSERT_FALSE(
+        restored.append(makeAppendInput(restored.nextTxnId(),
+                                        {{"b.class", false, false, bytesOf("B0"),
+                                          bytesOf("B1")}}))
+            .is_err());
+    EXPECT_EQ(3U, restored.headTxn());
+    EXPECT_EQ(nullptr, restored.transaction(2));
+}
+
+/// undo 到底（head = 基线态）的持久化：头指针行 txn=0 同样落盘并被尊重。
+TEST(MjLedgerStoreTest, undoToBaselineSurvivesFlushAndReopen)
+{
+    const auto  dir      = freshTempDir("mjbase_ledger_store_undo_base.mjt-project");
+    const std::string dirStr = dir.string();
+    ASSERT_FALSE(createBundleSkeleton(refOf(dirStr)).is_err());
+    const auto  baseline = makeBaseline();
+
+    {
+        auto opened = EditLedgerStore::openBundle(refOf(dirStr), refOf(baseline.digest));
+        ASSERT_FALSE(opened.is_err());
+        auto store = std::move(opened).unwrap();
+        ASSERT_FALSE(
+            store.append(makeAppendInput(store.nextTxnId(),
+                                         {{"a.class", false, false, bytesOf("A0"), bytesOf("A1")}}))
+                .is_err());
+        ASSERT_FALSE(store.moveHead(0).is_err());
+        ASSERT_FALSE(store.flush("2026-10-23T00:00:03Z").is_err());
+    }
+
+    auto reopened = EditLedgerStore::openBundle(refOf(dirStr), refOf(baseline.digest));
+    ASSERT_FALSE(reopened.is_err());
+    auto restored = std::move(reopened).unwrap();
+    EXPECT_EQ(0U, restored.headTxn());
+    EXPECT_FALSE(restored.canUndo());
+    EXPECT_EQ(0U, restored.undoDepth());
+    ASSERT_NE(nullptr, restored.transaction(1));   // redo 行保留
+    EXPECT_TRUE(restored.chainTo(restored.headTxn()).empty());
+}
+
+/// undo-only 会话的 flush：无新事务但头位偏离落盘态（hasPending 含头位脏），
+/// flush 仍落新代携带头指针行——跳过即静默复活 undo。
+TEST(MjLedgerStoreTest, undoOnlyFlushPersistsHeadRow)
+{
+    const auto  dir      = freshTempDir("mjbase_ledger_store_undo_only.mjt-project");
+    const std::string dirStr = dir.string();
+    ASSERT_FALSE(createBundleSkeleton(refOf(dirStr)).is_err());
+    const auto  baseline = makeBaseline();
+
+    {
+        auto opened = EditLedgerStore::openBundle(refOf(dirStr), refOf(baseline.digest));
+        ASSERT_FALSE(opened.is_err());
+        auto store = std::move(opened).unwrap();
+        ASSERT_FALSE(
+            store.append(makeAppendInput(store.nextTxnId(),
+                                         {{"a.class", false, false, bytesOf("A0"), bytesOf("A1")}}))
+                .is_err());
+        ASSERT_FALSE(store.flush("2026-10-23T00:00:03Z").is_err());
+
+        // undo-only：无 pending 事务，但头位脏 → flush 必须落新代。
+        ASSERT_FALSE(store.moveHead(0).is_err());
+        EXPECT_TRUE(store.hasPending());
+        auto flushed = store.flush("2026-10-23T00:00:04Z");
+        ASSERT_FALSE(flushed.is_err());
+        EXPECT_TRUE(std::move(flushed).unwrap().flushed);
+        EXPECT_FALSE(store.hasPending());   // 头位已对齐落盘态
+
+        // 对齐后再 flush = no-op（幂等空转）。
+        auto idle = store.flush("2026-10-23T00:00:05Z");
+        ASSERT_FALSE(idle.is_err());
+        EXPECT_FALSE(std::move(idle).unwrap().flushed);
+    }
+
+    auto reopened = EditLedgerStore::openBundle(refOf(dirStr), refOf(baseline.digest));
+    ASSERT_FALSE(reopened.is_err());
+    auto restored = std::move(reopened).unwrap();
+    EXPECT_EQ(0U, restored.headTxn());
+    EXPECT_FALSE(restored.canUndo());
+    ASSERT_NE(nullptr, restored.transaction(1));
+}
+
 TEST(MjLedgerStoreTest, boundStoreExcludesConcurrentOpenAndSurvivesDamagedLedger)
 {
     const auto  dir      = freshTempDir("mjbase_ledger_store_lock.mjt-project");
@@ -698,6 +825,65 @@ TEST(MjLedgerStoreTest, compactionPreservesReplayResultAndLiveBookmarks)
     ContainerMap expected = before4;
     expected["c.class"] = bytesOf("C2");
     EXPECT_EQ(expected, afterReopen);
+}
+
+/// 压缩路径的头指针持久化：undo 后头位落在保留集内部（point < head < 链尾），
+/// 新代台账同样落 head 行；重开头位不变、redo 行保留。
+TEST(MjLedgerStoreTest, compactPreservesUndoHeadAcrossReopen)
+{
+    const auto  dir      = freshTempDir("mjbase_ledger_compact_undo_head.mjt-project");
+    const std::string dirStr = dir.string();
+    ASSERT_FALSE(createBundleSkeleton(refOf(dirStr)).is_err());
+    const auto  baseline = makeBaseline();
+
+    {
+        auto opened = EditLedgerStore::openBundle(refOf(dirStr), refOf(baseline.digest));
+        ASSERT_FALSE(opened.is_err());
+        auto store = std::move(opened).unwrap();
+        ASSERT_FALSE(
+            store.append(makeAppendInput(store.nextTxnId(),
+                                         {{"a.class", false, false, bytesOf("A0"), bytesOf("A1")}}))
+                .is_err());
+        ASSERT_FALSE(
+            store.append(makeAppendInput(store.nextTxnId(),
+                                         {{"b.class", false, false, bytesOf("B0"), bytesOf("B1")}}))
+                .is_err());
+        ASSERT_FALSE(
+            store.append(makeAppendInput(store.nextTxnId(),
+                                         {{"c.class", false, true, {}, bytesOf("C1")}}))
+                .is_err());
+        // undo t3 → 头位 t2；flush 落盘（含 head 行）。
+        ASSERT_FALSE(store.moveHead(2).is_err());
+        ASSERT_FALSE(store.flush("2026-10-23T00:00:10Z").is_err());
+
+        // 手动压缩，undo 深度承诺 1：保留点 = head - 1 = t1（保留集 [t2, t3]，
+        // 头位 t2 落在保留集内部 ≠ 隐含头 t3 → 换代台账必须带 head 行）。
+        const auto  state1 = replayTo(store, 1, baseline.state);
+        LedgerCompactRequest request;
+        request.keepUndoDepth = 1;
+        auto compacted = store.compact(request, mapToCanonical(state1),
+                                       "2026-10-23T00:00:11Z", false);
+        ASSERT_FALSE(compacted.is_err());
+        EXPECT_TRUE(std::move(compacted).unwrap().executed);
+    }
+
+    auto reopened = EditLedgerStore::openBundle(refOf(dirStr), refOf(baseline.digest));
+    ASSERT_FALSE(reopened.is_err());
+    auto restored = std::move(reopened).unwrap();
+    EXPECT_EQ(1U, restored.baseTxn());
+    EXPECT_EQ(2U, restored.headTxn());
+    EXPECT_EQ(1U, restored.undoDepth());
+    ASSERT_NE(nullptr, restored.transaction(3));   // redo 行保留
+    const auto chain = restored.chainTo(restored.headTxn());
+    EXPECT_EQ(1U, chain.size());
+    EXPECT_EQ(2U, chain.front());
+
+    // 重放头位 = undo 后状态：a 已改、b 已改、c 未加（t3 已 undo）。
+    const auto  stateAtHead = replayTo(restored, restored.headTxn(),
+                                       baselineStateOf(restored));
+    EXPECT_EQ(bytesOf("A1"), stateAtHead.at("a.class"));
+    EXPECT_EQ(bytesOf("B1"), stateAtHead.at("b.class"));
+    EXPECT_EQ(stateAtHead.end(), stateAtHead.find("c.class"));
 }
 
 TEST(MjLedgerStoreTest, manualCompactionMayDropOldBookmarksAndListsThem)
