@@ -4,20 +4,26 @@
 ///
 /// 「该稳的稳、该翻的翻」双向钉死：期望表 10 行逐行、表外 3 条（方法自身
 /// 改名/被引用字段改名/native-abstract 恒定）、八项边界按原型口径各一条、
-/// 同方法双算一致 + CP 垃圾注入逼重索引零变化 + 合成语料去重统计。混淆
-/// 形态样本用空格名（21845 字节）合成形态，不引用任何具体工具名。
+/// 同方法双算一致 + CP 重索引零变化 + 合成语料去重统计。混淆形态样本用
+/// 空格名（21845 字节）合成形态，不引用任何具体工具名。
+///
+/// 夹具纪律：方法体一律 jasm 文本装配（semantic_fp_fixture.hpp 版本口径
+/// ——49 帧less 主体 / 61 indy·condy 面）；jasm 不能直达的形（LDC_W 强制
+/// 形、WIDE 前缀窄槽位、invokeinterface count、原始属性载荷、空格名、
+/// 异常表原始 pc 端点、lookupswitch 体、BSM 嵌套动态实参）走 DOM 单点
+/// 偏差载面，逐用例申报。CP 重索引夹具以 spacer 方法前置真实平移语义槽位。
 #include <gtest/gtest.h>
 
-#include <functional>
 #include <map>
 #include <memory>
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "jbc/core/class_file.hpp"
-#include "jbc/core/opcode.hpp"
+#include "jbc/core/constant_pool.hpp"
 #include "jbc/core/reader.hpp"
 
 #include "semantic_fp_fixture.hpp"
@@ -27,13 +33,7 @@
 namespace fp_fix = mjbase::analysis::fp_test_support;
 
 using fp_fix::Bytes;
-using fp_fix::BsmArg;
-using fp_fix::ClassBytesBuilder;
-using fp_fix::CodeEmit;
-using fp_fix::ExcSpec;
-using fp_fix::MethodSpec;
-using fp_fix::RawAttrSpec;
-using jbc::core::Op;
+using jbc::core::CpTag;
 using mjbase::analysis::SemanticFp;
 using mjbase::analysis::SemanticFpError;
 
@@ -101,25 +101,123 @@ SemanticFpError fpErrOf(const Bytes& bytes, std::string_view name)
     return SemanticFpError::Ok;
 }
 
-/// 组装多方法类。
-Bytes assembleClass(std::string_view className, const std::vector<MethodSpec>& methods,
-                    ca::u16 cpPrefixJunk = 0)
+// ── jasm 源面拼接 helper ──
+
+/// 方法块：mods name desc + 可选 exceptions 段 + code 体指令文本。
+std::string method(std::string_view mods, std::string_view name,
+                   std::string_view desc, std::string_view insns,
+                   std::string_view exc = "")
 {
-    ClassBytesBuilder b(className, cpPrefixJunk);
-    return b.assemble(methods);
+    const std::string excSeg = exc.empty()
+        ? std::string()
+        : "    exceptions: {\n" + std::string(exc) + "    },\n";
+    return "  .method " + std::string(mods) + " " + std::string(name) + " "
+         + std::string(desc) + " {\n" + excSeg + "    code: {\n"
+         + std::string(insns) + "    }\n  }\n";
 }
 
-/// 具名方法规格。
-MethodSpec spec(std::string_view name, std::function<void(CodeEmit&)> emit, ca::u16 access = 0x0009)
+/// 抽象方法块（无方法体）。
+std::string abstractMethod(std::string_view mods, std::string_view name,
+                           std::string_view desc)
 {
-    MethodSpec m;
-    m.name   = name;
-    m.access = access;
-    m.emit   = std::move(emit);
-    return m;
+    return "  .method " + std::string(mods) + " " + std::string(name) + " "
+         + std::string(desc) + " { }\n";
 }
+
+/// 类源装配（.super Object + public super 类体；major 缺省帧less 49）。
+Bytes cls(std::string_view name, const std::string& members, ca::i32 major = 49)
+{
+    return fp_fix::asmFp(".super java/lang/Object\n.class public super "
+                             + std::string(name) + " {\n" + members + "}\n",
+                         major);
+}
+
+/// 同上，多方法块拼接形。
+Bytes cls(std::string_view name, std::vector<std::string> members, ca::i32 major = 49)
+{
+    std::string joined;
+    for (const std::string& m : members) {
+        joined += m;
+    }
+    return cls(name, joined, major);
+}
+
+/// invokedynamic 长形指令行（站点名/描述符 + BSM 句柄 + 静态实参对象）。
+std::string indyInsn(std::string_view siteName, std::string_view desc,
+                     std::string_view bsmOwner, std::string_view bsmName,
+                     std::string_view bsmDesc, std::string_view args)
+{
+    return "      invokedynamic " + std::string(siteName) + " " + std::string(desc)
+         + " { invokestatic, " + std::string(bsmOwner) + "." + std::string(bsmName)
+         + ", " + std::string(bsmDesc) + " } { " + std::string(args) + " }\n";
+}
+
+constexpr std::string_view kMeta3Desc =
+    "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
+    "Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;";
+constexpr std::string_view kMeta4HandleDesc =
+    "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
+    "Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodHandle;)"
+    "Ljava/lang/invoke/CallSite;";
+constexpr std::string_view kMeta4StringDesc =
+    "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
+    "Ljava/lang/invoke/MethodType;Ljava/lang/String;)Ljava/lang/invoke/CallSite;";
 
 const std::string kSpaceName(21845, ' ');   // 空格名混淆形态（21845 字节，PoC 同规格）
+
+// ── lookupswitch 方法体字节（例外②：canonical 源语法未实证，经 DOM 写入；
+//    字节为合法 classfile 内容：iconst_1; lookupswitch; pop; return）──
+
+void put8(std::vector<ca::u8>& b, ca::u8 v) { b.push_back(v); }
+
+void put16(std::vector<ca::u8>& b, ca::u16 v)
+{
+    b.push_back(static_cast<ca::u8>(v >> 8));
+    b.push_back(static_cast<ca::u8>(v));
+}
+
+void put32(std::vector<ca::u8>& b, ca::u32 v)
+{
+    b.push_back(static_cast<ca::u8>(v >> 24));
+    b.push_back(static_cast<ca::u8>(v >> 16));
+    b.push_back(static_cast<ca::u8>(v >> 8));
+    b.push_back(static_cast<ca::u8>(v));
+}
+
+/// 构造 iconst_1 + lookupswitch + pop + return 的 code 体：pairs 为
+/// (key, 目标)（'P' = pop 块，'R' = return 块），default 恒指 return 块。
+std::vector<ca::u8> lookupswitchBody(const std::vector<std::pair<ca::i32, char>>& pairs)
+{
+    const ca::usize switchPc     = 1;
+    const ca::usize operandStart = switchPc + 1;
+    const ca::usize pad          = (4 - operandStart % 4) % 4;
+    const ca::usize popPc        = operandStart + pad + 12 + 8 * pairs.size();
+    const ca::usize retPc        = popPc + 1;
+
+    std::vector<ca::u8> code;
+    put8(code, 0x04);   // iconst_1
+    put8(code, 0xAA);   // lookupswitch
+    for (ca::usize i = 0; i < pad; ++i) put8(code, 0);
+    put32(code, static_cast<ca::u32>(retPc - switchPc));   // default → return
+    put32(code, static_cast<ca::u32>(pairs.size()));
+    for (const auto& [key, target] : pairs) {
+        put32(code, static_cast<ca::u32>(key));
+        const ca::usize targetPc = target == 'P' ? popPc : retPc;
+        put32(code, static_cast<ca::u32>(targetPc - switchPc));
+    }
+    put8(code, 0x57);   // pop
+    put8(code, 0xB1);   // return
+    return code;
+}
+
+/// 方法体整体单点替换为 lookupswitch 形（DOM Code 编辑面）。
+Bytes withLookupswitchBody(const Bytes& bytes, std::string_view name,
+                           const std::vector<std::pair<ca::i32, char>>& pairs)
+{
+    auto body = lookupswitchBody(pairs);
+    return fp_fix::editMethodCode(bytes, "lookupswitch-body", name,
+                                  [&](std::vector<ca::u8>& code) { code = body; });
+}
 
 }   // namespace
 
@@ -130,14 +228,14 @@ const std::string kSpaceName(21845, ' ');   // 空格名混淆形态（21845 字
 /// 常量折叠：iconst/bipush/sipush/ldc int 归一为「int 值」token，跨编码不改。
 TEST(MjAnalysisSemanticFpTest, ExpectConstFoldStable)
 {
-    const Bytes bytes = assembleClass("FpConstFold", {
-        spec("c0", [](CodeEmit& e) { e.i32const(5); e.op(Op::POP); e.op(Op::RETURN); }),
-        spec("c1", [](CodeEmit& e) { e.op(Op::BIPUSH); e.u8(5); e.op(Op::POP); e.op(Op::RETURN); }),
-        spec("c2", [](CodeEmit& e) { e.op(Op::SIPUSH); e.u16(5); e.op(Op::POP); e.op(Op::RETURN); }),
-        spec("c3", [](CodeEmit& e) { e.ldcInteger(5); e.op(Op::POP); e.op(Op::RETURN); }),
-        spec("h0", [](CodeEmit& e) { e.op(Op::BIPUSH); e.u8(100); e.op(Op::POP); e.op(Op::RETURN); }),
-        spec("h1", [](CodeEmit& e) { e.op(Op::SIPUSH); e.u16(100); e.op(Op::POP); e.op(Op::RETURN); }),
-        spec("h2", [](CodeEmit& e) { e.ldcInteger(100); e.op(Op::POP); e.op(Op::RETURN); }),
+    const Bytes bytes = cls("FpConstFold", {
+        method("public static", "c0", "()V", "      iconst_5\n      pop\n      return\n"),
+        method("public static", "c1", "()V", "      bipush 5\n      pop\n      return\n"),
+        method("public static", "c2", "()V", "      sipush 5\n      pop\n      return\n"),
+        method("public static", "c3", "()V", "      ldc 5\n      pop\n      return\n"),
+        method("public static", "h0", "()V", "      bipush 100\n      pop\n      return\n"),
+        method("public static", "h1", "()V", "      sipush 100\n      pop\n      return\n"),
+        method("public static", "h2", "()V", "      ldc 100\n      pop\n      return\n"),
     });
 
     EXPECT_EQ(fpOf(bytes, "c0"), fpOf(bytes, "c1"));
@@ -151,29 +249,23 @@ TEST(MjAnalysisSemanticFpTest, ExpectConstFoldStable)
 /// 死代码增删：只看从入口可达的指令，不可达字节不进指纹。
 TEST(MjAnalysisSemanticFpTest, ExpectDeadCodeStable)
 {
-    auto withDead = [](std::string_view name, ca::u32 deadBytes) {
-        return spec(name, [deadBytes](CodeEmit& e) {
-            const std::size_t l = e.newLabel();
-            e.branch(Op::GOTO, l);
-            for (ca::u32 i = 0; i < deadBytes; ++i) {
-                e.u8(0x00);   // 不可达 NOP 填充
-            }
-            e.bindLabel(l);
-            e.op(Op::ICONST_0);
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        });
+    auto withDead = [](std::string_view name, ca::u32 deadNops) {
+        std::string body = "      goto L\n";
+        for (ca::u32 i = 0; i < deadNops; ++i) {
+            body += "      nop\n";   // 不可达 NOP 填充
+        }
+        body += "      L:\n      iconst_0\n      pop\n      return\n";
+        return method("public static", name, "()V", body);
     };
-    auto tailDead = [](std::string_view name, ca::u32 deadBytes) {
-        return spec(name, [deadBytes](CodeEmit& e) {
-            e.op(Op::RETURN);
-            for (ca::u32 i = 0; i < deadBytes; ++i) {
-                e.u8(0x00);
-            }
-        });
+    auto tailDead = [](std::string_view name, ca::u32 deadNops) {
+        std::string body = "      return\n";
+        for (ca::u32 i = 0; i < deadNops; ++i) {
+            body += "      nop\n";
+        }
+        return method("public static", name, "()V", body);
     };
 
-    const Bytes bytes = assembleClass("FpDeadCode", {
+    const Bytes bytes = cls("FpDeadCode", {
         withDead("d0", 0), withDead("d3", 3), withDead("d9", 9),
         tailDead("t0", 0), tailDead("t5", 5),
     });
@@ -187,58 +279,37 @@ TEST(MjAnalysisSemanticFpTest, ExpectDeadCodeStable)
 /// 重排翻指纹（规范序定义的边界，PoC 收口定案）。
 TEST(MjAnalysisSemanticFpTest, ExpectLayoutDriftStableButBlockReorderFlips)
 {
-    auto drift = [](std::string_view name, ca::u32 filler) {
-        return spec(name, [filler](CodeEmit& e) {
-            const std::size_t l = e.newLabel();
-            e.branch(Op::GOTO, l);
-            for (ca::u32 i = 0; i < filler; ++i) {
-                e.u8(0x00);   // 死填充：存活指令相对序不变，pc 全部漂移
-            }
-            e.bindLabel(l);
-            e.op(Op::ICONST_1);
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        });
+    auto drift = [](std::string_view name, ca::u32 fillerNops) {
+        std::string body = "      goto L\n";
+        for (ca::u32 i = 0; i < fillerNops; ++i) {
+            body += "      nop\n";   // 死填充：存活指令相对序不变，pc 全部漂移
+        }
+        body += "      L:\n      iconst_1\n      pop\n      return\n";
+        return method("public static", name, "()V", body);
     };
     // switch 对齐 padding 宽度不同（死填充改变 switch 落点对齐）而 token 同形。
-    auto padded = [](std::string_view name, ca::u32 filler) {
-        return spec(name, [filler](CodeEmit& e) {
-            const std::size_t l1 = e.newLabel();
-            const std::size_t l2 = e.newLabel();
-            const std::size_t ld = e.newLabel();
-            e.branch(Op::GOTO, l1);
-            for (ca::u32 i = 0; i < filler; ++i) {
-                e.u8(0x00);
-            }
-            e.bindLabel(l1);
-            e.op(Op::ICONST_1);
-            e.tableswitch(ld, 5, 6, {l2, ld});
-            e.bindLabel(l2);
-            e.op(Op::POP);
-            e.bindLabel(ld);
-            e.op(Op::RETURN);
-        });
+    auto padded = [](std::string_view name, ca::u32 fillerNops) {
+        std::string body = "      goto L1\n";
+        for (ca::u32 i = 0; i < fillerNops; ++i) {
+            body += "      nop\n";
+        }
+        body += "      L1:\n      iconst_1\n"
+                "      tableswitch { min: 5, max: 6, cases: { L2, Ld }, default: Ld }\n"
+                "      L2:\n      pop\n      Ld:\n      return\n";
+        return method("public static", name, "()V", body);
     };
     // 存活块重排：条件分支的两个都可达的返回块互换落位（真实重排，必翻）。
     // v1: fallthrough 块体 ICONST_1，分支目标块体 ICONST_0；v2 互换。
     auto blockOrder = [](std::string_view name, bool firstBlockFirst) {
-        return spec(name, [firstBlockFirst](CodeEmit& e) {
-            const std::size_t a = e.newLabel();
-            e.op(Op::ICONST_0);
-            e.branch(Op::IFEQ, a);
-            // fallthrough 块（可达）。
-            e.op(firstBlockFirst ? Op::ICONST_1 : Op::ICONST_0);
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-            // 分支目标块（可达）。
-            e.bindLabel(a);
-            e.op(firstBlockFirst ? Op::ICONST_0 : Op::ICONST_1);
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        });
+        std::string body = "      iconst_0\n      ifeq La\n      ";
+        body += firstBlockFirst ? "iconst_1" : "iconst_0";
+        body += "\n      pop\n      return\n      La:\n      ";
+        body += firstBlockFirst ? "iconst_0" : "iconst_1";
+        body += "\n      pop\n      return\n";
+        return method("public static", name, "()V", body);
     };
 
-    const Bytes bytes = assembleClass("FpLayout", {
+    const Bytes bytes = cls("FpLayout", {
         drift("x0", 0), drift("x1", 1), drift("x7", 7),
         padded("p0", 0), padded("p1", 1), padded("p2", 2), padded("p3", 3),
         blockOrder("ba", true), blockOrder("bb", false),
@@ -255,93 +326,76 @@ TEST(MjAnalysisSemanticFpTest, ExpectLayoutDriftStableButBlockReorderFlips)
 /// 重排常量池、重写索引：CP 垃圾前缀逼全部语义槽位平移，指纹零变化。
 TEST(MjAnalysisSemanticFpTest, ExpectCpReindexStable)
 {
-    // 一组把 CP 解引用面全部踩到的方法：ldc 全载荷、字段/方法/接口调用、
-    // 类型指令、indy、condy、switch、wide。
-    std::vector<MethodSpec> methods;
-    auto add = [&methods](std::string_view name, std::function<void(CodeEmit&)> emit) {
-        methods.push_back(spec(name, std::move(emit)));
+    // 一组把 CP 解引用面全部踩到的方法。indy/condy 需 BSM/Dynamic 面 → 61；
+    // 其余（含 wide 超槽位形）49。重索引对：以 spacer 方法前置真实平移
+    // 后续全部语义 CP 槽位（DOM 常量池只追加不可前插，故走源面）。
+
+    // ── 61 对：indy + condy（BSM 表同序，BSM 实参 CP 同步平移）──
+    const std::string spacer61 =
+        method("public static", "zzSpacer", "()J",
+               "      ldc 1L\n      ldc 2L\n      ladd\n      lreturn\n");
+    auto host61 = [&](bool spacer) {
+        std::string members = spacer ? spacer61 : std::string();
+        members += method("public static", "indy", "()V",
+                          indyInsn("apply", "()Ljava/util/function/Function;",
+                                   "FpBsm", "metafactory", kMeta3Desc,
+                                   "()Ljava/util/function/Function;")
+                              + "      pop\n      return\n");
+        members += method("public static", "condy", "()V",
+                          "      ldc { make, Ljava/lang/String;, { invokestatic, "
+                          "FpBsm2.stringFactory, " + std::string(kMeta4StringDesc)
+                          + " }, { \"boot\" } }\n      pop\n      return\n");
+        return cls("FpReindex61", members, 61);
     };
-    add("ldcI", [](CodeEmit& e) { e.ldcInteger(123456); e.op(Op::POP); e.op(Op::RETURN); });
-    add("ldcS", [](CodeEmit& e) { e.ldcString("hello"); e.op(Op::POP); e.op(Op::RETURN); });
-    add("ldcC", [](CodeEmit& e) { e.ldcClass("java/lang/String"); e.op(Op::POP); e.op(Op::RETURN); });
-    add("ldcJ", [](CodeEmit& e) { e.ldcLong(-1); e.op(Op::POP2); e.op(Op::RETURN); });
-    add("ldcMh", [](CodeEmit& e) {
-        e.ldcMethodHandle(6, "FpRefs", "run", "()V");
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    });
-    add("ldcMt", [](CodeEmit& e) { e.ldcMethodType("(I)V"); e.op(Op::POP); e.op(Op::RETURN); });
-    add("field", [](CodeEmit& e) { e.fieldInsn(Op::GETSTATIC, "FpRefs", "fld", "I"); e.op(Op::POP); e.op(Op::RETURN); });
-    add("invoke", [](CodeEmit& e) { e.invoke(Op::INVOKESTATIC, "FpRefs", "run", "()V"); e.op(Op::RETURN); });
-    add("iface", [](CodeEmit& e) { e.invokeInterface("FpIface", "go", "()V", 1); e.op(Op::RETURN); });
-    add("types", [](CodeEmit& e) {
-        e.typeInsn(Op::NEW, "FpRefs");
-        e.op(Op::POP);
-        e.typeInsn(Op::CHECKCAST, "FpIface");
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    });
-    // MULTIANEWARRAY：类名 + 维数操作数手拼。
-    add("marray", [](CodeEmit& e) {
-        e.op(Op::MULTIANEWARRAY);
-        e.u16(e.cls("[[I"));
-        e.u8(2);
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    });
-    add("switchy", [](CodeEmit& e) {
-        const std::size_t ld = e.newLabel();
-        const std::size_t l1 = e.newLabel();
-        e.op(Op::ICONST_1);
-        e.lookupswitch(ld, {{1, l1}, {9, ld}});
-        e.bindLabel(l1);
-        e.op(Op::POP);
-        e.bindLabel(ld);
-        e.op(Op::RETURN);
-    });
-    add("widey", [](CodeEmit& e) {
-        e.varInsnW(Op::ILOAD, 300);
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    });
-    methods.push_back(spec("indy", [](CodeEmit& e) {
-        e.invokedynamic(0, "apply", "()Ljava/util/function/Function;");
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    }));
-    methods.push_back(spec("condy", [](CodeEmit& e) {
-        e.ldcCondy(1, "make", "()Ljava/lang/String;");
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    }));
+    const Bytes plain61   = host61(false);
+    const Bytes junked61  = host61(true);
+    EXPECT_EQ(fpOf(plain61, "indy"), fpOf(junked61, "indy"));
+    EXPECT_EQ(fpOf(plain61, "condy"), fpOf(junked61, "condy"));
 
-    ClassBytesBuilder plain("FpReindex");
-    ClassBytesBuilder shifted("FpReindex", 29);   // 29 个垃圾前缀条目
-    plain.addBootstrapMethod("FpBsm", "metafactory",
-                             "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-                             "Ljava/lang/invoke/MethodType;)"
-                             "Ljava/lang/invoke/CallSite;",
-                             {BsmArg::methodType("()Ljava/util/function/Function;")});
-    shifted.addBootstrapMethod("FpBsm", "metafactory",
-                               "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-                               "Ljava/lang/invoke/MethodType;)"
-                               "Ljava/lang/invoke/CallSite;",
-                               {BsmArg::methodType("()Ljava/util/function/Function;")});
-    shifted.addBootstrapMethod("FpBsm2", "stringFactory",
-                               "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-                               "Ljava/lang/invoke/MethodType;Ljava/lang/String;)"
-                               "Ljava/lang/invoke/CallSite;",
-                               {BsmArg::str("boot")});
-    plain.addBootstrapMethod("FpBsm2", "stringFactory",
-                             "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-                             "Ljava/lang/invoke/MethodType;Ljava/lang/String;)"
-                             "Ljava/lang/invoke/CallSite;",
-                             {BsmArg::str("boot")});
+    // ── 49 对：ldc 全载荷（MethodHandle/MethodType 经 DOM 改锚）、引用面、
+    //    switch、wide 超槽位 ──
+    const std::string spacer49 =
+        method("public static", "zzSpacer", "()V",
+               "      ldc \"fpS1\"\n      ldc \"fpS2\"\n      ldc 2000000\n"
+               "      ldc \"fpS3\"\n      pop\n      pop\n      pop\n      pop\n"
+               "      return\n");
+    std::string members49 = spacer49;
+    members49 += method("public static", "ldcI", "()V", "      ldc 123456\n      pop\n      return\n");
+    members49 += method("public static", "ldcS", "()V", "      ldc \"hello\"\n      pop\n      return\n");
+    members49 += method("public static", "ldcC", "()V", "      ldc Ljava/lang/String;\n      pop\n      return\n");
+    members49 += method("public static", "ldcJ", "()V", "      ldc -1L\n      pop2\n      return\n");
+    members49 += method("public static", "ldcMh", "()V", "      ldc 1\n      pop\n      return\n");
+    members49 += method("public static", "ldcMt", "()V", "      ldc 2\n      pop\n      return\n");
+    members49 += method("public static", "field", "()V", "      getstatic FpRefs.fld I\n      pop\n      return\n");
+    members49 += method("public static", "invoke", "()V", "      invokestatic FpRefs.run ()V\n      return\n");
+    members49 += method("public static", "iface", "()V", "      invokeinterface FpIface.go ()V\n      return\n");
+    members49 += method("public static", "types", "()V",
+                        "      new FpRefs\n      pop\n      checkcast FpIface\n      pop\n      return\n");
+    members49 += method("public static", "marray", "()V", "      multianewarray [[I 2\n      pop\n      return\n");
+    members49 += method("public static", "switchy", "()V",
+                        "      iconst_1\n      pop\n      return\n");   // 体被 DOM 换 lookupswitch 形
+    members49 += method("public static", "widey", "()V", "      iload 300\n      pop\n      return\n");
 
-    const Bytes base   = plain.assemble(methods);
-    const Bytes junked = shifted.assemble(methods);
-    for (const MethodSpec& m : methods) {
-        EXPECT_EQ(fpOf(base, m.name), fpOf(junked, m.name)) << m.name;
+    Bytes plain49 = cls("FpReindex49", members49);
+    const auto mhBuilder = [](jbc::core::ConstantPool& cp) {
+        const ca::u32 clsCp = cp.addClass(cp.addUtf8("FpRefs"));
+        const ca::u32 nat = cp.addNameAndType(cp.addUtf8("run"), cp.addUtf8("()V"));
+        return cp.addMethodHandle(6, cp.addRef(CpTag::Methodref, clsCp, nat));
+    };
+    const auto mtBuilder = [](jbc::core::ConstantPool& cp) {
+        return cp.addMethodType(cp.addUtf8("(I)V"));
+    };
+    Bytes junked49 = cls("FpReindex49", members49);
+    plain49        = fp_fix::pointLdcAt(plain49, "ldcMh", mhBuilder, false);
+    plain49        = fp_fix::pointLdcAt(plain49, "ldcMt", mtBuilder, false);
+    plain49 = withLookupswitchBody(plain49, "switchy", {{1, 'P'}, {9, 'R'}});
+    junked49 = fp_fix::pointLdcAt(junked49, "ldcMh", mhBuilder, false);
+    junked49 = fp_fix::pointLdcAt(junked49, "ldcMt", mtBuilder, false);
+    junked49 = withLookupswitchBody(junked49, "switchy", {{1, 'P'}, {9, 'R'}});
+
+    for (const char* name : {"ldcI", "ldcS", "ldcC", "ldcJ", "ldcMh", "ldcMt", "field",
+                             "invoke", "iface", "types", "marray", "switchy", "widey"}) {
+        EXPECT_EQ(fpOf(plain49, name), fpOf(junked49, name)) << name;
     }
 }
 
@@ -349,47 +403,22 @@ TEST(MjAnalysisSemanticFpTest, ExpectCpReindexStable)
 /// 排除面字节全程不读，指纹不变。
 TEST(MjAnalysisSemanticFpTest, ExpectExcludedAttrsStable)
 {
-    auto plain = [](std::string_view name) {
-        return spec(name, [](CodeEmit& e) { e.op(Op::ICONST_1); e.op(Op::POP); e.op(Op::RETURN); });
-    };
-    // 同体方法挂满排除面属性（载荷字节受控，结构按真实属性形态写）。
-    MethodSpec decorated = plain("m");
-    {
-        Bytes lnt;
-        fp_fix::putU16(lnt, 2);
-        fp_fix::putU32(lnt, 0x00010002u);   // 两行 (start_pc, line) 打包占位
-        fp_fix::putU32(lnt, 0x00030004u);
-        Bytes lvt;
-        fp_fix::putU16(lvt, 1);
-        fp_fix::putU32(lvt, 0x00010002u);
-        fp_fix::putU16(lvt, 7);
-        fp_fix::putU16(lvt, 0);
-        fp_fix::putU16(lvt, 1);
-        Bytes annos;
-        fp_fix::putU16(annos, 1);
-        fp_fix::putU16(annos, 9);
-        fp_fix::putU16(annos, 0);
-        Bytes smt;
-        fp_fix::putU16(smt, 1);
-        fp_fix::putU8(smt, 65);   // same_locals_1_stack_item + delta 1
-        Bytes sig;
-        fp_fix::putU16(sig, 11);
-        Bytes exc;
-        fp_fix::putU16(exc, 1);
-        fp_fix::putU16(exc, 12);
-        decorated.rawAttrs = {RawAttrSpec{"LineNumberTable", lnt},
-                              RawAttrSpec{"LocalVariableTable", lvt},
-                              RawAttrSpec{"RuntimeVisibleAnnotations", annos},
-                              RawAttrSpec{"Signature", sig},
-                              RawAttrSpec{"Exceptions", exc}};
-        decorated.codeAttrs = {RawAttrSpec{"StackMapTable", smt}};
-    }
+    const std::string body = "      iconst_1\n      pop\n      return\n";
+    const Bytes bareBytes = cls("FpExcluded", method("public static", "m", "()V", body));
 
-    const Bytes bareBytes = assembleClass("FpExcluded", {plain("m")});
-
-    ClassBytesBuilder richBuilder("FpExcluded");
-    richBuilder.setClassRawAttrs({RawAttrSpec{"SourceFile", Bytes{'S', 'x'}}});
-    const Bytes richBytes = richBuilder.assemble({decorated});
+    // 同体方法挂满排除面属性（载荷字节受控，结构按真实属性形态写；
+    // 原始属性载荷不经 jasm 注解面——例外② DOM 追加）。
+    Bytes richBytes = cls("FpExcluded", method("public static", "m", "()V", body));
+    richBytes = fp_fix::addMethodRawAttrs(richBytes, "m", {
+        {"LineNumberTable", Bytes{0x00, 0x02, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04}},
+        {"LocalVariableTable", Bytes{0x00, 0x01, 0x00, 0x01, 0x00, 0x02, 0x00, 0x07, 0x00, 0x00, 0x00, 0x01}},
+        {"RuntimeVisibleAnnotations", Bytes{0x00, 0x01, 0x00, 0x09, 0x00, 0x00}},
+        {"Signature", Bytes{0x00, 0x0B}},
+        {"Exceptions", Bytes{0x00, 0x01, 0x00, 0x0C}},
+    });
+    richBytes = fp_fix::addCodeRawAttr(richBytes, "m", "StackMapTable",
+                                       Bytes{0x00, 0x01, 65});
+    richBytes = fp_fix::addClassRawAttr(richBytes, "SourceFile", Bytes{'S', 'x'});
 
     EXPECT_EQ(fpOf(bareBytes, "m"), fpOf(richBytes, "m"));
 }
@@ -397,9 +426,9 @@ TEST(MjAnalysisSemanticFpTest, ExpectExcludedAttrsStable)
 /// 改 opcode（iadd 换 isub）：语义变了指纹必变。
 TEST(MjAnalysisSemanticFpTest, ExpectOpcodeChangeFlips)
 {
-    const Bytes bytes = assembleClass("FpOpcode", {
-        spec("add", [](CodeEmit& e) { e.op(Op::IADD); e.op(Op::RETURN); }),
-        spec("sub", [](CodeEmit& e) { e.op(Op::ISUB); e.op(Op::RETURN); }),
+    const Bytes bytes = cls("FpOpcode", {
+        method("public static", "add", "()V", "      iadd\n      return\n"),
+        method("public static", "sub", "()V", "      isub\n      return\n"),
     });
     EXPECT_NE(fpOf(bytes, "add"), fpOf(bytes, "sub"));
 }
@@ -407,149 +436,86 @@ TEST(MjAnalysisSemanticFpTest, ExpectOpcodeChangeFlips)
 /// 增删异常处理器：异常表参与指纹（增、删、换捕获类型都翻）。
 TEST(MjAnalysisSemanticFpTest, ExpectExceptionHandlerChangeFlips)
 {
-    // 三个方法字节完全同形；差异只在异常表。标签序固定 start=0/end=1/h=2。
-    auto tryBody = [](CodeEmit& e) {
-        const std::size_t start = e.newLabel();
-        const std::size_t end   = e.newLabel();
-        const std::size_t h     = e.newLabel();
-        e.bindLabel(start);
-        e.op(Op::NOP);
-        e.bindLabel(end);
-        e.op(Op::RETURN);
-        e.bindLabel(h);
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    };
-    MethodSpec bare = spec("bare", tryBody);
-    MethodSpec withCatch = spec("withCatch", tryBody);
-    withCatch.exceptions = {ExcSpec{0, 1, 2, "java/lang/Exception"}};
-    MethodSpec withFinally = spec("withFinally", tryBody);
-    withFinally.exceptions = {ExcSpec{0, 1, 2, ""}};
-    MethodSpec withOther = spec("withOther", tryBody);
-    withOther.exceptions = {ExcSpec{0, 1, 2, "java/lang/Throwable"}};
+    // 三个方法字节完全同形；差异只在异常表。标签序固定 start=S/end=E/h=H。
+    const std::string_view body =
+        "      S:\n      nop\n      E:\n      return\n      H:\n      pop\n      return\n";
+    const Bytes bytes = cls("FpExc", {
+        method("public static", "bare", "()V", body),
+        method("public static", "withCatch", "()V", body,
+               "      { S, E, H, java/lang/Exception },\n"),
+        method("public static", "withFinally", "()V", body,
+               "      { S, E, H, * },\n"),
+        method("public static", "withOther", "()V", body,
+               "      { S, E, H, java/lang/Throwable },\n"),
+    });
 
-    const Bytes bytes = assembleClass("FpExc", {bare, withCatch, withFinally, withOther});
-
-    EXPECT_NE(fpOf(bytes, "bare"), fpOf(bytes, "withCatch"));      // 增处理器
+    EXPECT_NE(fpOf(bytes, "bare"), fpOf(bytes, "withCatch"));          // 增处理器
     EXPECT_NE(fpOf(bytes, "withCatch"), fpOf(bytes, "withFinally"));   // catchType 有无
-    EXPECT_NE(fpOf(bytes, "withCatch"), fpOf(bytes, "withOther")); // 捕获类型改
+    EXPECT_NE(fpOf(bytes, "withCatch"), fpOf(bytes, "withOther"));     // 捕获类型改
 }
 
-/// 改访问标志：方法头参与指纹（原始 u16 记录）。
+/// 改访问标志：方法头参与指纹（原始 u16 记录）。SYNTHETIC/BRIDGE/VARARGS
+/// 位经 DOM 单点改写（装配器修饰面不收旗标组合——例外①，改写前自检）。
 TEST(MjAnalysisSemanticFpTest, ExpectAccessFlagChangeFlips)
 {
-    const Bytes bytes = assembleClass("FpAccess", {
-        spec("a1", [](CodeEmit& e) { e.op(Op::RETURN); }, 0x0001),
-        spec("a2", [](CodeEmit& e) { e.op(Op::RETURN); }, 0x0009),
-        spec("a3", [](CodeEmit& e) { e.op(Op::RETURN); }, 0x0001 | 0x1000),   // SYNTHETIC
-        spec("a4", [](CodeEmit& e) { e.op(Op::RETURN); }, 0x0009 | 0x0040),   // BRIDGE
-        spec("a5", [](CodeEmit& e) { e.op(Op::RETURN); }, 0x0009 | 0x0080),   // VARARGS
+    Bytes base = cls("FpAccess", {
+        method("public", "a1", "()V", "      return\n"),
+        method("public static", "a2", "()V", "      return\n"),
+        method("public", "a3", "()V", "      return\n"),
+        method("public static", "a4", "()V", "      return\n"),
+        method("public static", "a5", "()V", "      return\n"),
     });
+    ASSERT_FALSE(base.empty());
+    mjbase::test::expectValidateOk(base);
+    Bytes bytes = fp_fix::setMethodAccess(base, "a3", 0x1000, 0);   // SYNTHETIC
+    bytes      = fp_fix::setMethodAccess(bytes, "a4", 0x0040, 0);   // BRIDGE
+    bytes      = fp_fix::setMethodAccess(bytes, "a5", 0x0080, 0);   // VARARGS
     EXPECT_NE(fpOf(bytes, "a1"), fpOf(bytes, "a2"));
     EXPECT_NE(fpOf(bytes, "a1"), fpOf(bytes, "a3"));
     EXPECT_NE(fpOf(bytes, "a2"), fpOf(bytes, "a4"));
     EXPECT_NE(fpOf(bytes, "a2"), fpOf(bytes, "a5"));
 }
 
-/// 改 indy bootstrap 参数：解引用面参与指纹。
+/// 改 indy bootstrap 参数：解引用面参与指纹。61 装配（BSM 面）；(I)… 形
+/// 站点以 iconst_1 垫出实参保证帧自洽，垫栈不产生站点。
 TEST(MjAnalysisSemanticFpTest, ExpectIndyBsmArgsChangeFlips)
 {
-    ClassBytesBuilder b("FpIndy");
-    const ca::u16 bsmTypeI = b.addBootstrapMethod(
-        "FpBsm", "metafactory",
-        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-        "Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;",
-        {BsmArg::methodType("(I)V")});
-    const ca::u16 bsmTypeJ = b.addBootstrapMethod(
-        "FpBsm", "metafactory",
-        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-        "Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;",
-        {BsmArg::methodType("(J)V")});
-    const ca::u16 bsmStrA = b.addBootstrapMethod(
-        "FpBsm", "stringFactory",
-        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-        "Ljava/lang/invoke/MethodType;Ljava/lang/String;)Ljava/lang/invoke/CallSite;",
-        {BsmArg::str("alpha")});
-    const ca::u16 bsmStrB = b.addBootstrapMethod(
-        "FpBsm", "stringFactory",
-        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-        "Ljava/lang/invoke/MethodType;Ljava/lang/String;)Ljava/lang/invoke/CallSite;",
-        {BsmArg::str("beta")});
-    const ca::u16 bsmH1 = b.addBootstrapMethod(
-        "FpBsm", "handleFactory",
-        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-        "Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodHandle;)"
-        "Ljava/lang/invoke/CallSite;",
-        {BsmArg::handle(6, "FpRefs", "run", "()V")});
-    const ca::u16 bsmH2 = b.addBootstrapMethod(
-        "FpBsm", "handleFactory",
-        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-        "Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodHandle;)"
-        "Ljava/lang/invoke/CallSite;",
-        {BsmArg::handle(6, "FpRefs", "run2", "()V")});
-    const ca::u16 bsmMulti1 = b.addBootstrapMethod(
-        "FpBsm", "multi",
-        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-        "Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;",
-        {BsmArg::integer(1), BsmArg::cls("FpRefs"), BsmArg::str("x")});
-    const ca::u16 bsmMulti2 = b.addBootstrapMethod(
-        "FpBsm", "multi",
-        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-        "Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;",
-        {BsmArg::integer(2), BsmArg::cls("FpRefs"), BsmArg::str("x")});
+    std::string members;
+    // 方法一律 ()V（帧自洽）；站点描述符独立传参（与原字节面一致）。
+    auto add = [&](std::string_view name, std::string_view siteDesc,
+                   std::string_view bsmName, std::string_view bsmDesc,
+                   std::string_view args, const std::string& pad = "") {
+        members += method("public static", name, "()V",
+                          pad + indyInsn("foo", siteDesc, "FpBsm", bsmName, bsmDesc, args)
+                              + "      pop\n      return\n");
+    };
+    // MethodType 实参变（站点形同，BSM 静态参数异）。
+    add("mt1", "(I)Ljava/lang/invoke/MethodHandle;", "metafactory", kMeta3Desc, "(I)V",
+        "      iconst_1\n");
+    add("mt2", "(I)Ljava/lang/invoke/MethodHandle;", "metafactory", kMeta3Desc, "(J)V",
+        "      iconst_1\n");
+    // String 实参变（BSM 同柄不同实参，jasm 长形逐站点自持 BSM）。
+    add("str1", "()Ljava/lang/String;", "stringFactory", kMeta4StringDesc, "\"alpha\"");
+    add("str2", "()Ljava/lang/String;", "stringFactory", kMeta4StringDesc, "\"beta\"");
+    // indy 自身名变（BSM 同 str1，只动站点名 foo→goo）。
+    members += method("public static", "name1", "()V",
+                      indyInsn("foo", "()Ljava/lang/String;", "FpBsm", "stringFactory",
+                               kMeta4StringDesc, "\"alpha\"")
+                          + "      pop\n      return\n");
+    members += method("public static", "name2", "()V",
+                      indyInsn("goo", "()Ljava/lang/String;", "FpBsm", "stringFactory",
+                               kMeta4StringDesc, "\"alpha\"")
+                          + "      pop\n      return\n");
+    // MethodHandle 实参变。
+    add("h1", "()Ljava/lang/invoke/MethodHandle;", "handleFactory", kMeta4HandleDesc,
+        "{ invokestatic, FpRefs.run, ()V }");
+    add("h2", "()Ljava/lang/invoke/MethodHandle;", "handleFactory", kMeta4HandleDesc,
+        "{ invokestatic, FpRefs.run2, ()V }");
+    // 多实参其一变（整数；类常量形 { FpRefs } 为未实证字面，CI 装配为准）。
+    add("multi1", "()Ljava/lang/Object;", "multi", kMeta3Desc, "1, { FpRefs }, \"x\"");
+    add("multi2", "()Ljava/lang/Object;", "multi", kMeta3Desc, "2, { FpRefs }, \"x\"");
 
-    const Bytes bytes = b.assemble({
-        spec("mt1", [bsmTypeI](CodeEmit& e) {
-            e.invokedynamic(bsmTypeI, "foo", "(I)Ljava/lang/invoke/MethodHandle;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("mt2", [bsmTypeJ](CodeEmit& e) {
-            e.invokedynamic(bsmTypeJ, "foo", "(I)Ljava/lang/invoke/MethodHandle;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("str1", [bsmStrA](CodeEmit& e) {
-            e.invokedynamic(bsmStrA, "foo", "()Ljava/lang/String;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("str2", [bsmStrB](CodeEmit& e) {
-            e.invokedynamic(bsmStrB, "foo", "()Ljava/lang/String;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("name1", [bsmStrA](CodeEmit& e) {
-            e.invokedynamic(bsmStrA, "foo", "()Ljava/lang/String;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("name2", [bsmStrA](CodeEmit& e) {
-            e.invokedynamic(bsmStrA, "goo", "()Ljava/lang/String;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("h1", [bsmH1](CodeEmit& e) {
-            e.invokedynamic(bsmH1, "foo", "()Ljava/lang/invoke/MethodHandle;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("h2", [bsmH2](CodeEmit& e) {
-            e.invokedynamic(bsmH2, "foo", "()Ljava/lang/invoke/MethodHandle;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("multi1", [bsmMulti1](CodeEmit& e) {
-            e.invokedynamic(bsmMulti1, "foo", "()Ljava/lang/Object;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("multi2", [bsmMulti2](CodeEmit& e) {
-            e.invokedynamic(bsmMulti2, "foo", "()Ljava/lang/Object;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-    });
+    const Bytes bytes = cls("FpIndy", members, 61);
 
     EXPECT_NE(fpOf(bytes, "mt1"), fpOf(bytes, "mt2"));       // MethodType 实参变
     EXPECT_NE(fpOf(bytes, "str1"), fpOf(bytes, "str2"));     // String 实参变
@@ -561,39 +527,14 @@ TEST(MjAnalysisSemanticFpTest, ExpectIndyBsmArgsChangeFlips)
 /// 被引用的类/方法改名：出口语义就是名字，必翻。
 TEST(MjAnalysisSemanticFpTest, ExpectReferencedNameChangeFlips)
 {
-    const Bytes bytes = assembleClass("FpRefRename", {
-        spec("m1", [](CodeEmit& e) {
-            e.invoke(Op::INVOKESTATIC, "FpRefs", "run", "()V");
-            e.op(Op::RETURN);
-        }),
-        spec("m2", [](CodeEmit& e) {
-            e.invoke(Op::INVOKESTATIC, "FpRefs", "run2", "()V");
-            e.op(Op::RETURN);
-        }),
-        spec("m3", [](CodeEmit& e) {
-            e.invoke(Op::INVOKESTATIC, "FpOther", "run", "()V");
-            e.op(Op::RETURN);
-        }),
-        spec("f1", [](CodeEmit& e) {
-            e.fieldInsn(Op::GETSTATIC, "FpRefs", "fld", "I");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("f2", [](CodeEmit& e) {
-            e.fieldInsn(Op::GETSTATIC, "FpRefs", "fld2", "I");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("t1", [](CodeEmit& e) {
-            e.typeInsn(Op::NEW, "FpRefs");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("t2", [](CodeEmit& e) {
-            e.typeInsn(Op::NEW, "FpRenamed");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
+    const Bytes bytes = cls("FpRefRename", {
+        method("public static", "m1", "()V", "      invokestatic FpRefs.run ()V\n      return\n"),
+        method("public static", "m2", "()V", "      invokestatic FpRefs.run2 ()V\n      return\n"),
+        method("public static", "m3", "()V", "      invokestatic FpOther.run ()V\n      return\n"),
+        method("public static", "f1", "()V", "      getstatic FpRefs.fld I\n      pop\n      return\n"),
+        method("public static", "f2", "()V", "      getstatic FpRefs.fld2 I\n      pop\n      return\n"),
+        method("public static", "t1", "()V", "      new FpRefs\n      pop\n      return\n"),
+        method("public static", "t2", "()V", "      new FpRenamed\n      pop\n      return\n"),
     });
     EXPECT_NE(fpOf(bytes, "m1"), fpOf(bytes, "m2"));   // 被调方法名改
     EXPECT_NE(fpOf(bytes, "m1"), fpOf(bytes, "m3"));   // 被调类名改
@@ -606,67 +547,55 @@ TEST(MjAnalysisSemanticFpTest, ExpectReferencedNameChangeFlips)
 // ============================================================================
 
 /// 方法自身改名不进指纹：空格名混淆形态（21845 字节）同体双方法恒等。
+/// 空格名 jasm 无法从源码构造——占位名装配后 DOM 单点改名（例外②）。
 TEST(MjAnalysisSemanticFpTest, SelfRenameStable)
 {
-    const Bytes a = assembleClass("FpSelfNameA", {spec("plainName", [](CodeEmit& e) {
-        e.ldcString("body");
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    })});
+    const std::string body = "      ldc \"body\"\n      pop\n      return\n";
+    const Bytes a = cls("FpSelfNameA",
+                        method("public static", "plainName", "()V", body));
 
-    ClassBytesBuilder b("FpSelfNameB");
-    MethodSpec m = spec("plainName", [](CodeEmit& e) {
-        e.ldcString("body");
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    });
-    m.name = kSpaceName;
-    const Bytes sp = b.assemble({m});
+    Bytes sp = cls("FpSelfNameB",
+                   method("public static", "placeholderName", "()V", body));
+    ASSERT_FALSE(sp.empty());
+    mjbase::test::expectValidateOk(sp);
+    sp = fp_fix::renameMethod(sp, "placeholderName", kSpaceName);
 
     EXPECT_EQ(fpOf(a, "plainName"), fpOf(sp, kSpaceName));
 }
 
-/// 被引用名字段改名翻引用者（空格名字段名同样参与）。
+/// 被引用名字段改名翻引用者（空格名字段名同样参与；DOM 改锚例外②）。
 TEST(MjAnalysisSemanticFpTest, ReferencedFieldRenameFlips)
 {
     const std::string spaceField(21845, ' ');
-    ClassBytesBuilder b("FpFieldRename");
-    const Bytes bytes = b.assemble({
-        spec("r1", [](CodeEmit& e) {
-            e.fieldInsn(Op::GETSTATIC, "FpRefs", "orig", "I");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("r2", [&spaceField](CodeEmit& e) {
-            e.fieldInsn(Op::GETSTATIC, "FpRefs", spaceField, "I");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
+    const std::string body = "      getstatic FpRefs.orig I\n      pop\n      return\n";
+    Bytes bytes = cls("FpFieldRename", {
+        method("public static", "r1", "()V", body),
+        method("public static", "r2", "()V", body),
     });
+    ASSERT_FALSE(bytes.empty());
+    mjbase::test::expectValidateOk(bytes);
+    bytes = fp_fix::patchMemberRefName(bytes, "r2", 0xB2 /*GETSTATIC*/, spaceField, "I");
+
     EXPECT_NE(fpOf(bytes, "r1"), fpOf(bytes, "r2"));
 }
 
 /// native/abstract 没有方法体：指纹只盖方法头（版本 + 访问标志 + 描述符），
-/// 永远恒定；方法名/类名/Exceptions 不参与。
+/// 永远恒定；方法名/类名/Exceptions 不参与。Exceptions/SourceFile 原始
+/// 载荷经 DOM 追加（例外②）。
 TEST(MjAnalysisSemanticFpTest, NativeAbstractHeaderOnlyStable)
 {
-    MethodSpec abstractNoExc;
-    abstractNoExc.name   = "calc";
-    abstractNoExc.access = 0x0441;   // public abstract
-    abstractNoExc.desc   = "(I)J";
-    MethodSpec abstractRenamed = abstractNoExc;
-    abstractRenamed.name       = "calc0";
-    MethodSpec abstractNoPublic = abstractNoExc;
-    abstractNoPublic.name       = "calc1";
-    abstractNoPublic.access     = 0x0401;   // abstract（去 public）
-    MethodSpec abstractWithExc = abstractNoExc;
-    abstractWithExc.rawAttrs   = {RawAttrSpec{"Exceptions", Bytes{0x00, 0x01, 0x00, 0x63}}};
+    const Bytes aBytes = cls("FpNativeA", {
+        abstractMethod("public abstract", "calc", "(I)J"),
+        abstractMethod("public abstract", "calc0", "(I)J"),
+        abstractMethod("abstract", "calc1", "(I)J"),
+    });
 
-    ClassBytesBuilder a("FpNativeA");
-    const Bytes aBytes = a.assemble({abstractNoExc, abstractRenamed, abstractNoPublic});
-    ClassBytesBuilder b("FpNativeB");
-    b.setClassRawAttrs({RawAttrSpec{"SourceFile", Bytes{'N', 'a'}}});
-    const Bytes bBytes = b.assemble({abstractWithExc});
+    Bytes bBytes = cls("FpNativeB", abstractMethod("public abstract", "calc", "(I)J"));
+    ASSERT_FALSE(bBytes.empty());
+    mjbase::test::expectValidateOk(bBytes);
+    bBytes = fp_fix::addMethodRawAttrs(bBytes, "calc",
+                                       {{"Exceptions", Bytes{0x00, 0x01, 0x00, 0x63}}});
+    bBytes = fp_fix::addClassRawAttr(bBytes, "SourceFile", Bytes{'N', 'a'});
 
     // 同访问标志同描述符：跨类、带不带 Exceptions、不同方法名（身份层的事）
     // 指纹恒定。
@@ -683,84 +612,51 @@ TEST(MjAnalysisSemanticFpTest, NativeAbstractHeaderOnlyStable)
 /// 边界 1：异常表 pc 映射端点语义——覆盖端点映射为「pc 不小于端点的首条
 /// 存活指令」的规范序号（end 不含、越过末尾取存活总数）；handler 必须精确
 /// 落在存活指令上，否则报错拒绝；catchType 0 记空。
+/// 原始 pc 端点 jasm 异常表不收——DOM 单点改写（例外②申报）。
 TEST(MjAnalysisSemanticFpTest, EdgeExcEndpointMapping)
 {
-    // 体形：GOTO L; NOP; NOP(dead); L: NOP; RETURN; H: POP; RETURN。
-    // 标签序：l=0, h=1。code 长度 9；存活 pcs = {0, 5, 6, 7, 8}。
-    auto body = [](CodeEmit& e) {
-        const std::size_t l = e.newLabel();
-        const std::size_t h = e.newLabel();
-        e.branch(Op::GOTO, l);
-        e.u8(0x00);
-        e.u8(0x00);
-        e.bindLabel(l);
-        e.op(Op::NOP);
-        e.op(Op::RETURN);
-        e.bindLabel(h);
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    };
-    auto mk = [&](std::string_view name, ca::u16 start, ca::u16 end) {
-        MethodSpec m = spec(name, body);
-        // start/end 走原始 pc（端点映射语义的测试面），handler 走标签。
-        m.exceptions = {ExcSpec{0, 0, 0, "java/lang/Exception", true}};
-        m.exceptions[0].start   = start;
-        m.exceptions[0].end     = end;
-        m.exceptions[0].handler = 7;   // H: POP 的 pc
-        return m;
-    };
-    const Bytes bytes = assembleClass("FpExcEdge", {
-        mk("v1", 0, 3),    // end=死区首 pc → 首条存活 ≥3 = L（序 1）
-        mk("v2", 0, 1),    // end=GOTO 后 → 首条存活 ≥1 = L（同 v1）
-        mk("v3", 0, 9),    // end 越过末尾（code 长度 9）→ 存活总数
-        mk("v4", 0, 200),  // end 远超末尾 → 存活总数（同 v3）
+    // 体形：GOTO L; NOP; NOP(dead); L: NOP; RETURN; POP; RETURN。
+    // code 长度 9；存活 pcs = {0, 5, 6, 7, 8}；POP 在 pc7。
+    const std::string_view body =
+        "      goto L\n      nop\n      nop\n      L:\n      nop\n      return\n"
+        "      pop\n      return\n";
+    Bytes bytes = cls("FpExcEdge", {
+        method("public static", "v1", "()V", body),
+        method("public static", "v2", "()V", body),
+        method("public static", "v3", "()V", body),
+        method("public static", "v4", "()V", body),
+        method("public static", "liveDeadHandler", "()V", body),
+        method("public static", "badHandler", "()V", body),
     });
+    bytes = fp_fix::setExcEntries(bytes, "v1", {fp_fix::ExcPcSpec{0, 3, 7, "java/lang/Exception"}});
+    bytes = fp_fix::setExcEntries(bytes, "v2", {fp_fix::ExcPcSpec{0, 1, 7, "java/lang/Exception"}});
+    bytes = fp_fix::setExcEntries(bytes, "v3", {fp_fix::ExcPcSpec{0, 9, 7, "java/lang/Exception"}});
+    bytes = fp_fix::setExcEntries(bytes, "v4", {fp_fix::ExcPcSpec{0, 200, 7, "java/lang/Exception"}});
+    // 指向死指令的 handler 合法——处理器入口按可达根处理，直接救活；
+    // 指向指令中部（GOTO 操作数内 pc=1）→ 拒绝，不做静默近似。
+    bytes = fp_fix::setExcEntries(bytes, "liveDeadHandler", {fp_fix::ExcPcSpec{0, 3, 3, "java/lang/Exception"}});
+    bytes = fp_fix::setExcEntries(bytes, "badHandler", {fp_fix::ExcPcSpec{0, 1, 1, "java/lang/Exception"}});
+
     EXPECT_EQ(fpOf(bytes, "v1"), fpOf(bytes, "v2"));
     EXPECT_EQ(fpOf(bytes, "v3"), fpOf(bytes, "v4"));
     EXPECT_NE(fpOf(bytes, "v1"), fpOf(bytes, "v3"));
-
-    // handler 指向指令中部（GOTO 操作数内 pc=1）→ 拒绝，不做静默近似。
-    // 注：指向死指令的 handler 合法——处理器入口按可达根处理，直接救活。
-    MethodSpec liveDeadHandler = spec("liveDeadHandler", body);
-    liveDeadHandler.exceptions = {ExcSpec{0, 3, 3, "java/lang/Exception", true}};
-    const Bytes liveDeadBytes = assembleClass("FpExcEdgeDeadLive", {liveDeadHandler});
-    EXPECT_EQ(fpErrOf(liveDeadBytes, "liveDeadHandler"), SemanticFpError::Ok);
-
-    MethodSpec badHandler = spec("badHandler", body);
-    badHandler.exceptions = {ExcSpec{0, 1, 1, "java/lang/Exception", true}};
-    const Bytes badBytes = assembleClass("FpExcEdgeBad", {badHandler});
-    EXPECT_EQ(fpErrOf(badBytes, "badHandler"), SemanticFpError::BadExcEntry);
+    EXPECT_EQ(fpErrOf(bytes, "liveDeadHandler"), SemanticFpError::Ok);
+    EXPECT_EQ(fpErrOf(bytes, "badHandler"), SemanticFpError::BadExcEntry);
 }
 
 /// 边界 1 补：catchType 0（any/finally）合法且记空串；表项顺序原样保留。
 TEST(MjAnalysisSemanticFpTest, EdgeExcCatchTypeAndOrder)
 {
     // 双处理器体：NOP; RETURN; H1: POP; RETURN; H2: ACONST_NULL; POP; RETURN。
-    auto twoHandlerBody = [](CodeEmit& e) {
-        const std::size_t start = e.newLabel();
-        const std::size_t end   = e.newLabel();
-        const std::size_t h1    = e.newLabel();
-        const std::size_t h2    = e.newLabel();
-        e.bindLabel(start);
-        e.op(Op::NOP);
-        e.bindLabel(end);
-        e.op(Op::RETURN);
-        e.bindLabel(h1);
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-        e.bindLabel(h2);
-        e.op(Op::ACONST_NULL);
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    };
-    MethodSpec anyFirst = spec("anyFirst", twoHandlerBody);
-    anyFirst.exceptions = {ExcSpec{0, 1, 2, ""},
-                           ExcSpec{0, 1, 3, "java/lang/Throwable"}};
-    MethodSpec typedFirst = spec("typedFirst", twoHandlerBody);
-    typedFirst.exceptions = {ExcSpec{0, 1, 3, "java/lang/Throwable"},
-                             ExcSpec{0, 1, 2, ""}};
-
-    const Bytes bytes = assembleClass("FpExcOrder", {anyFirst, typedFirst});
+    const std::string_view body =
+        "      S:\n      nop\n      E:\n      return\n      H1:\n      pop\n"
+        "      return\n      H2:\n      aconst_null\n      pop\n      return\n";
+    const Bytes bytes = cls("FpExcOrder", {
+        method("public static", "anyFirst", "()V", body,
+               "      { S, E, H1, * },\n      { S, E, H2, java/lang/Throwable },\n"),
+        method("public static", "typedFirst", "()V", body,
+               "      { S, E, H2, java/lang/Throwable },\n      { S, E, H1, * },\n"),
+    });
     EXPECT_NE(fpOf(bytes, "anyFirst"), fpOf(bytes, "typedFirst"));
 }
 
@@ -768,16 +664,14 @@ TEST(MjAnalysisSemanticFpTest, EdgeExcCatchTypeAndOrder)
 /// Exceptions/Signature/注解/MethodParameters 全程不读不记。
 TEST(MjAnalysisSemanticFpTest, EdgeHeaderExcludesClassAndExceptions)
 {
-    auto body = [](CodeEmit& e) {
-        e.invoke(Op::INVOKESTATIC, "FpRefs", "run", "()V");
-        e.op(Op::RETURN);
-    };
-    MethodSpec withExc = spec("run", body);
-    withExc.rawAttrs   = {RawAttrSpec{"Exceptions", Bytes{0x00, 0x01, 0x00, 0x63}},
-                        RawAttrSpec{"Signature", Bytes{0x00, 0x09}}};
+    const std::string body = "      invokestatic FpRefs.run ()V\n      return\n";
+    const Bytes a = cls("FpClsA", method("public static", "run", "()V", body));
 
-    const Bytes a = assembleClass("FpClsA", {spec("run", body)});
-    const Bytes b = assembleClass("FpClsB", {withExc});
+    Bytes b = cls("FpClsB", method("public static", "run", "()V", body));
+    b = fp_fix::addMethodRawAttrs(b, "run", {
+        {"Exceptions", Bytes{0x00, 0x01, 0x00, 0x63}},
+        {"Signature", Bytes{0x00, 0x09}},
+    });
     EXPECT_EQ(fpOf(a, "run"), fpOf(b, "run"));
 }
 
@@ -785,24 +679,15 @@ TEST(MjAnalysisSemanticFpTest, EdgeHeaderExcludesClassAndExceptions)
 /// lconst/fconst/dconst 记 plain opcode，ldc 家族记原始位型。
 TEST(MjAnalysisSemanticFpTest, EdgeNonIntConstNotFolded)
 {
-    const Bytes bytes = assembleClass("FpNonInt", {
-        spec("fc1", [](CodeEmit& e) { e.op(Op::FCONST_1); e.op(Op::RETURN); }),
-        spec("fLdc", [](CodeEmit& e) {
-            e.ldcFloatBits(0x3F800000u);   // float 1.0
-            e.op(Op::RETURN);
-        }),
-        spec("fLdc2", [](CodeEmit& e) {
-            e.ldcFloatBits(0x40000000u);   // float 2.0
-            e.op(Op::RETURN);
-        }),
-        spec("lc1", [](CodeEmit& e) { e.op(Op::LCONST_1); e.op(Op::RETURN); }),
-        spec("lLdc", [](CodeEmit& e) { e.ldcLong(1); e.op(Op::RETURN); }),
-        spec("dc1", [](CodeEmit& e) { e.op(Op::DCONST_1); e.op(Op::RETURN); }),
-        spec("dLdc", [](CodeEmit& e) {
-            e.ldcDoubleBits(0x3FF0000000000000ull);   // double 1.0
-            e.op(Op::RETURN);
-        }),
-        spec("fc0", [](CodeEmit& e) { e.op(Op::FCONST_0); e.op(Op::RETURN); }),
+    const Bytes bytes = cls("FpNonInt", {
+        method("public static", "fc1", "()V", "      fconst_1\n      return\n"),
+        method("public static", "fLdc", "()V", "      ldc 1.0F\n      return\n"),
+        method("public static", "fLdc2", "()V", "      ldc 2.0F\n      return\n"),
+        method("public static", "lc1", "()V", "      lconst_1\n      return\n"),
+        method("public static", "lLdc", "()V", "      ldc 1L\n      return\n"),
+        method("public static", "dc1", "()V", "      dconst_1\n      return\n"),
+        method("public static", "dLdc", "()V", "      ldc 1.0D\n      return\n"),
+        method("public static", "fc0", "()V", "      fconst_0\n      return\n"),
     });
     EXPECT_NE(fpOf(bytes, "fc1"), fpOf(bytes, "fLdc"));    // 同值不同编码：翻
     EXPECT_NE(fpOf(bytes, "fLdc"), fpOf(bytes, "fLdc2"));  // 位型不同：翻
@@ -813,32 +698,44 @@ TEST(MjAnalysisSemanticFpTest, EdgeNonIntConstNotFolded)
 
 /// 边界 4：ldc 全载荷解到语义值——ldc/ldc_w 的 opcode 不进流（同载荷同
 /// token）；MethodHandle 解两层到（kind，类，名，描述符）；MethodType 解为
-/// 描述符；Class 解为类名。
+/// 描述符；Class 解为类名。MethodHandle/MethodType 载荷与 LDC_W 强制形
+/// 经 DOM 改锚（例外①申报）。
 TEST(MjAnalysisSemanticFpTest, EdgeLdcFullDeref)
 {
-    const Bytes bytes = assembleClass("FpLdcDeref", {
-        spec("mhLdc", [](CodeEmit& e) {
-            e.ldcMethodHandle(6, "FpRefs", "run", "()V");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("mhLdcW", [](CodeEmit& e) {
-            e.ldcWCp(e.methodHandleCp(6, "FpRefs", "run", "()V"));
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("mhLdc2", [](CodeEmit& e) {
-            e.ldcMethodHandle(6, "FpRefs", "run2", "()V");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("mt1", [](CodeEmit& e) { e.ldcMethodType("(I)V"); e.op(Op::POP); e.op(Op::RETURN); }),
-        spec("mt2", [](CodeEmit& e) { e.ldcMethodType("(J)V"); e.op(Op::POP); e.op(Op::RETURN); }),
-        spec("cls1", [](CodeEmit& e) { e.ldcClass("FpRefs"); e.op(Op::POP); e.op(Op::RETURN); }),
-        spec("cls2", [](CodeEmit& e) { e.ldcClass("FpOther"); e.op(Op::POP); e.op(Op::RETURN); }),
-        spec("s1", [](CodeEmit& e) { e.ldcString("alpha"); e.op(Op::POP); e.op(Op::RETURN); }),
-        spec("s2", [](CodeEmit& e) { e.ldcString("beta"); e.op(Op::POP); e.op(Op::RETURN); }),
-    });
+    std::string members;
+    members += method("public static", "mhLdc", "()V", "      ldc 1\n      pop\n      return\n");
+    members += method("public static", "mhLdcW", "()V", "      ldc 1\n      pop\n      return\n");
+    members += method("public static", "mhLdc2", "()V", "      ldc 1\n      pop\n      return\n");
+    members += method("public static", "mt1", "()V", "      ldc 2\n      pop\n      return\n");
+    members += method("public static", "mt2", "()V", "      ldc 3\n      pop\n      return\n");
+    members += method("public static", "cls1", "()V", "      ldc LFpRefs;\n      pop\n      return\n");
+    members += method("public static", "cls2", "()V", "      ldc LFpOther;\n      pop\n      return\n");
+    members += method("public static", "s1", "()V", "      ldc \"alpha\"\n      pop\n      return\n");
+    members += method("public static", "s2", "()V", "      ldc \"beta\"\n      pop\n      return\n");
+    Bytes bytes = cls("FpLdcDeref", members);
+
+    const auto mhRun = [](jbc::core::ConstantPool& cp) {
+        const ca::u32 owner = cp.addClass(cp.addUtf8("FpRefs"));
+        const ca::u32 nat   = cp.addNameAndType(cp.addUtf8("run"), cp.addUtf8("()V"));
+        return cp.addMethodHandle(6, cp.addRef(CpTag::Methodref, owner, nat));
+    };
+    const auto mhRun2 = [](jbc::core::ConstantPool& cp) {
+        const ca::u32 owner = cp.addClass(cp.addUtf8("FpRefs"));
+        const ca::u32 nat   = cp.addNameAndType(cp.addUtf8("run2"), cp.addUtf8("()V"));
+        return cp.addMethodHandle(6, cp.addRef(CpTag::Methodref, owner, nat));
+    };
+    bytes = fp_fix::pointLdcAt(bytes, "mhLdc", mhRun, false);
+    bytes = fp_fix::pointLdcAt(bytes, "mhLdcW", mhRun, true);   // LDC_W 强制形
+    bytes = fp_fix::pointLdcAt(bytes, "mhLdc2", mhRun2, false);
+    bytes = fp_fix::pointLdcAt(bytes, "mt1",
+                               [](jbc::core::ConstantPool& cp) {
+                                   return cp.addMethodType(cp.addUtf8("(I)V"));
+                               }, false);
+    bytes = fp_fix::pointLdcAt(bytes, "mt2",
+                               [](jbc::core::ConstantPool& cp) {
+                                   return cp.addMethodType(cp.addUtf8("(J)V"));
+                               }, false);
+
     // ldc 与 ldc_w 同载荷同 token（opcode 不进流）。
     EXPECT_EQ(fpOf(bytes, "mhLdc"), fpOf(bytes, "mhLdcW"));
     // MethodHandle 两层解引用：名字变即翻（名字在 NAT，两层跳转之外）。
@@ -849,113 +746,88 @@ TEST(MjAnalysisSemanticFpTest, EdgeLdcFullDeref)
 }
 
 /// 边界 4 补：condy 按 indy 同款记（名、描述符、BSM 句柄、全部静态参数），
-/// 静态参数逐个类型化解引用。
+/// 静态参数逐个类型化解引用。61 装配（Dynamic 面）。
 TEST(MjAnalysisSemanticFpTest, EdgeCondyFullDeref)
 {
-    ClassBytesBuilder b("FpCondy");
-    const ca::u16 bsmA = b.addBootstrapMethod(
-        "FpBsm", "stringFactory",
-        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-        "Ljava/lang/invoke/MethodType;Ljava/lang/String;)Ljava/lang/invoke/CallSite;",
-        {BsmArg::str("alpha")});
-    const ca::u16 bsmB = b.addBootstrapMethod(
-        "FpBsm", "stringFactory",
-        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-        "Ljava/lang/invoke/MethodType;Ljava/lang/String;)Ljava/lang/invoke/CallSite;",
-        {BsmArg::str("beta")});
-    const Bytes bytes = b.assemble({
-        spec("c1", [bsmA](CodeEmit& e) {
-            e.ldcCondy(bsmA, "make", "()Ljava/lang/String;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("c2", [bsmB](CodeEmit& e) {
-            e.ldcCondy(bsmB, "make", "()Ljava/lang/String;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("c3", [bsmA](CodeEmit& e) {
-            e.ldcCondy(bsmA, "make2", "()Ljava/lang/String;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-    });
+    auto condySrc = [](std::string_view dynName, std::string_view arg) {
+        return "      ldc { " + std::string(dynName)
+             + ", Ljava/lang/String;, { invokestatic, FpBsm.stringFactory, "
+             + std::string(kMeta4StringDesc) + " }, { " + std::string(arg)
+             + " } }\n      pop\n      return\n";
+    };
+    const Bytes bytes = cls("FpCondy", {
+        method("public static", "c1", "()V", condySrc("make", "\"alpha\"")),
+        method("public static", "c2", "()V", condySrc("make", "\"beta\"")),
+        method("public static", "c3", "()V", condySrc("make2", "\"alpha\"")),
+    }, 61);
     EXPECT_NE(fpOf(bytes, "c1"), fpOf(bytes, "c2"));   // 静态参数变
     EXPECT_NE(fpOf(bytes, "c1"), fpOf(bytes, "c3"));   // condy 自身名变
 }
 
-/// 边界 5：访问标志不剔除编译器旗标——BRIDGE/SYNTHETIC/VARARGS 原样参与。
+/// 边界 5：访问标志不剔除编译器旗标——BRIDGE/SYNTHETIC/VARARGS 原样参与
+///（DOM 单点位改写，例外①申报）。
 TEST(MjAnalysisSemanticFpTest, EdgeAccessFlagsKeepCompilerBits)
 {
-    const Bytes bytes = assembleClass("FpCompilerBits", {
-        spec("plain", [](CodeEmit& e) { e.op(Op::RETURN); }, 0x0001),
-        spec("synthetic", [](CodeEmit& e) { e.op(Op::RETURN); }, 0x1001),
-        spec("bridge", [](CodeEmit& e) { e.op(Op::RETURN); }, 0x0041),
-        spec("varargs", [](CodeEmit& e) { e.op(Op::RETURN); }, 0x0081),
+    Bytes base = cls("FpCompilerBits", {
+        method("public", "plain", "()V", "      return\n"),
+        method("public", "synthetic", "()V", "      return\n"),
+        method("public", "bridge", "()V", "      return\n"),
+        method("public", "varargs", "()V", "      return\n"),
     });
+    ASSERT_FALSE(base.empty());
+    mjbase::test::expectValidateOk(base);
+    Bytes bytes      = fp_fix::setMethodAccess(base, "synthetic", 0x1000, 0);
+    bytes            = fp_fix::setMethodAccess(bytes, "bridge", 0x0040, 0);
+    bytes            = fp_fix::setMethodAccess(bytes, "varargs", 0x0080, 0);
     EXPECT_NE(fpOf(bytes, "plain"), fpOf(bytes, "synthetic"));
     EXPECT_NE(fpOf(bytes, "plain"), fpOf(bytes, "bridge"));
     EXPECT_NE(fpOf(bytes, "plain"), fpOf(bytes, "varargs"));
 }
 
 /// 边界 6：wide 前缀不单记——wide 与非 wide 同语义同 token；槽位与增量照
-/// 常记实际值。
+/// 常记实际值。窄槽位 WIDE 形装配器不直达——DOM 单点前插（例外①申报）；
+/// 超槽位（>255）形依赖装配器自动宽化。
 TEST(MjAnalysisSemanticFpTest, EdgeWideNotRecorded)
 {
-    const Bytes bytes = assembleClass("FpWide", {
-        spec("loadN", [](CodeEmit& e) { e.varInsn(Op::ILOAD, 1); e.op(Op::POP); e.op(Op::RETURN); }),
-        spec("loadW", [](CodeEmit& e) { e.varInsnW(Op::ILOAD, 1); e.op(Op::POP); e.op(Op::RETURN); }),
-        spec("iincN", [](CodeEmit& e) { e.iincInsn(3, 1); e.op(Op::RETURN); }),
-        spec("iincW", [](CodeEmit& e) { e.iincInsnW(3, 1); e.op(Op::RETURN); }),
-        spec("big300", [](CodeEmit& e) { e.varInsnW(Op::ILOAD, 300); e.op(Op::POP); e.op(Op::RETURN); }),
-        spec("big301", [](CodeEmit& e) { e.varInsnW(Op::ILOAD, 301); e.op(Op::POP); e.op(Op::RETURN); }),
+    Bytes bytes = cls("FpWide", {
+        method("public static", "loadN", "()V", "      iload 1\n      pop\n      return\n"),
+        method("public static", "loadW", "()V", "      iload 1\n      pop\n      return\n"),
+        method("public static", "iincN", "()V", "      iinc 3 1\n      return\n"),
+        method("public static", "iincW", "()V", "      iinc 3 1\n      return\n"),
+        method("public static", "big300", "()V", "      iload 300\n      pop\n      return\n"),
+        method("public static", "big301", "()V", "      iload 301\n      pop\n      return\n"),
     });
+    bytes = fp_fix::widenVarInsn(bytes, "loadW");
+    bytes = fp_fix::widenIinc(bytes, "iincW");
     EXPECT_EQ(fpOf(bytes, "loadN"), fpOf(bytes, "loadW"));
     EXPECT_EQ(fpOf(bytes, "iincN"), fpOf(bytes, "iincW"));
     EXPECT_NE(fpOf(bytes, "big300"), fpOf(bytes, "big301"));
 }
 
 /// 边界 7：BSM 参数解一整层——Class/MethodType/MethodHandle 展开到语义值；
-/// 参数位再嵌 condy/indy 直接报错，不递归。
+/// 参数位再嵌 condy/indy 直接报错，不递归。嵌套动态形 JVMS 禁、装配器
+/// 拒收——占位空实参装配后 DOM 补嵌套 CP 索引（例外①申报：改写前自检 +
+/// fpErrOf 实跑为证）。
 TEST(MjAnalysisSemanticFpTest, EdgeBsmOneLevelDerefNestedErrors)
 {
-    ClassBytesBuilder b("FpBsmNested");
-    const ca::u16 okBsm = b.addBootstrapMethod(
-        "FpBsm", "rich",
-        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-        "Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;",
-        {BsmArg::cls("FpRefs"), BsmArg::methodType("(I)V"),
-         BsmArg::handle(6, "FpRefs", "run", "()V"), BsmArg::integer(7),
-         BsmArg::longVal(1), BsmArg::floatBits(0x3F800000u),
-         BsmArg::doubleBits(0x3FF0000000000000ull), BsmArg::str("x")});
-    const ca::u16 condyBsm = b.addBootstrapMethod(
-        "FpBsm", "nested",
-        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-        "Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;",
-        {BsmArg::condy(0, "c", "I")});
-    const ca::u16 indyBsm = b.addBootstrapMethod(
-        "FpBsm", "nested2",
-        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-        "Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;",
-        {BsmArg::indy(0, "x", "()V")});
+    std::string members;
+    members += method("public static", "ok", "()V",
+                      indyInsn("foo", "()Ljava/lang/Object;", "FpBsm", "rich", kMeta3Desc,
+                               "{ FpRefs }, (I)V, { invokestatic, FpRefs.run, ()V }, 7, 1L, 1.0F, 1.0D, \"x\"")
+                          + "      pop\n      return\n");
+    members += method("public static", "nestedCondy", "()V",
+                      indyInsn("foo", "()Ljava/lang/Object;", "FpBsm", "nested", kMeta3Desc, "")
+                          + "      pop\n      return\n");
+    members += method("public static", "nestedIndy", "()V",
+                      indyInsn("foo", "()Ljava/lang/Object;", "FpBsm", "nested2", kMeta3Desc, "")
+                          + "      pop\n      return\n");
+    Bytes bytes = cls("FpBsmNested", members, 61);
+    ASSERT_FALSE(bytes.empty());
+    mjbase::test::expectValidateOk(bytes);
+    // BSM 表按站点序展开（entries[0]=rich, [1]=nested, [2]=nested2）。
+    bytes = fp_fix::appendBsmNestedDynamic(bytes, 1, "c", "I", false);
+    bytes = fp_fix::appendBsmNestedDynamic(bytes, 2, "x", "()V", true);
 
-    const Bytes bytes = b.assemble({
-        spec("ok", [okBsm](CodeEmit& e) {
-            e.invokedynamic(okBsm, "foo", "()Ljava/lang/Object;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("nestedCondy", [condyBsm](CodeEmit& e) {
-            e.invokedynamic(condyBsm, "foo", "()Ljava/lang/Object;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-        spec("nestedIndy", [indyBsm](CodeEmit& e) {
-            e.invokedynamic(indyBsm, "foo", "()Ljava/lang/Object;");
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-    });
     EXPECT_EQ(fpErrOf(bytes, "ok"), SemanticFpError::Ok);
     EXPECT_EQ(fpErrOf(bytes, "nestedCondy"), SemanticFpError::NestedDynamic);
     EXPECT_EQ(fpErrOf(bytes, "nestedIndy"), SemanticFpError::NestedDynamic);
@@ -963,138 +835,77 @@ TEST(MjAnalysisSemanticFpTest, EdgeBsmOneLevelDerefNestedErrors)
 
 /// 边界 8：switch key 原样进指纹——tableswitch 按 low 重推连续 key 全列，
 /// lookupswitch 逐 case 记原始 key；default 先记、顺序与 class 文件一致。
+/// lookupswitch 体经 DOM 字节写入（例外②申报，合法 classfile 内容）。
 TEST(MjAnalysisSemanticFpTest, EdgeSwitchKeysExact)
 {
-    const Bytes bytes = assembleClass("FpSwitch", {
-        // 四路同形 switch（default + 两目标），差异只在 key 面。
-        spec("ts56", [](CodeEmit& e) {
-            const std::size_t ld = e.newLabel();
-            const std::size_t a = e.newLabel();
-            const std::size_t b = e.newLabel();
-            e.op(Op::ICONST_1);
-            e.tableswitch(ld, 5, 6, {a, b});
-            e.bindLabel(a);
-            e.op(Op::POP);
-            e.bindLabel(b);
-            e.op(Op::POP);
-            e.bindLabel(ld);
-            e.op(Op::RETURN);
-        }),
-        spec("ts67", [](CodeEmit& e) {
-            const std::size_t ld = e.newLabel();
-            const std::size_t a = e.newLabel();
-            const std::size_t b = e.newLabel();
-            e.op(Op::ICONST_1);
-            e.tableswitch(ld, 6, 7, {a, b});
-            e.bindLabel(a);
-            e.op(Op::POP);
-            e.bindLabel(b);
-            e.op(Op::POP);
-            e.bindLabel(ld);
-            e.op(Op::RETURN);
-        }),
-        spec("ls56", [](CodeEmit& e) {
-            const std::size_t ld = e.newLabel();
-            const std::size_t a = e.newLabel();
-            const std::size_t b = e.newLabel();
-            e.op(Op::ICONST_1);
-            e.lookupswitch(ld, {{5, a}, {6, b}});
-            e.bindLabel(a);
-            e.op(Op::POP);
-            e.bindLabel(b);
-            e.op(Op::POP);
-            e.bindLabel(ld);
-            e.op(Op::RETURN);
-        }),
-        spec("ls57", [](CodeEmit& e) {
-            const std::size_t ld = e.newLabel();
-            const std::size_t a = e.newLabel();
-            const std::size_t b = e.newLabel();
-            e.op(Op::ICONST_1);
-            e.lookupswitch(ld, {{5, a}, {7, b}});
-            e.bindLabel(a);
-            e.op(Op::POP);
-            e.bindLabel(b);
-            e.op(Op::POP);
-            e.bindLabel(ld);
-            e.op(Op::RETURN);
-        }),
-        spec("lsSwap", [](CodeEmit& e) {
-            const std::size_t ld = e.newLabel();
-            const std::size_t a = e.newLabel();
-            const std::size_t b = e.newLabel();
-            e.op(Op::ICONST_1);
-            e.lookupswitch(ld, {{6, b}, {5, a}});
-            e.bindLabel(a);
-            e.op(Op::POP);
-            e.bindLabel(b);
-            e.op(Op::POP);
-            e.bindLabel(ld);
-            e.op(Op::RETURN);
-        }),
+    // 四路同形 switch（default + 两目标），差异只在 key 面。
+    auto ts = [](std::string_view name, ca::i32 low) {
+        return method("public static", name, "()V",
+                      "      iconst_1\n      tableswitch { min: " + std::to_string(low)
+                          + ", max: " + std::to_string(low + 1)
+                          + ", cases: { La, Lb }, default: Ld }\n"
+                          "      La:\n      pop\n      Lb:\n      pop\n      Ld:\n      return\n");
+    };
+    Bytes bytes = cls("FpSwitch", {
+        ts("ts56", 5),
+        ts("ts67", 6),
+        method("public static", "ls56", "()V", "      iconst_1\n      pop\n      return\n"),
+        method("public static", "ls57", "()V", "      iconst_1\n      pop\n      return\n"),
+        method("public static", "lsSwap", "()V", "      iconst_1\n      pop\n      return\n"),
     });
+    bytes = withLookupswitchBody(bytes, "ls56", {{1, 'P'}, {9, 'R'}});
+    bytes = withLookupswitchBody(bytes, "ls57", {{1, 'P'}, {7, 'R'}});
+    bytes = withLookupswitchBody(bytes, "lsSwap", {{6, 'R'}, {5, 'P'}});
     EXPECT_NE(fpOf(bytes, "ts56"), fpOf(bytes, "ts67"));    // key 全列平移
     EXPECT_NE(fpOf(bytes, "ls56"), fpOf(bytes, "ls57"));    // 原始 key 变
     EXPECT_NE(fpOf(bytes, "ls56"), fpOf(bytes, "lsSwap"));  // case 顺序原样保留
     EXPECT_NE(fpOf(bytes, "ts56"), fpOf(bytes, "ls56"));    // opcode 精确记录
 }
 
-/// switch 目标按规范序号记录：目标前的死填充漂移 pc 不翻。
+/// switch 目标按规范序号记录：目标前的死填充漂移 pc 不翻（原 lookupswitch
+/// 形以 tableswitch 承载——目标规范序性质 switch 无关）。
 TEST(MjAnalysisSemanticFpTest, EdgeSwitchTargetsCanonical)
 {
-    auto withFiller = [](std::string_view name, ca::u32 filler) {
-        return spec(name, [filler](CodeEmit& e) {
-            const std::size_t l1 = e.newLabel();
-            const std::size_t l2 = e.newLabel();
-            const std::size_t ld = e.newLabel();
-            e.branch(Op::GOTO, l1);
-            for (ca::u32 i = 0; i < filler; ++i) {
-                e.u8(0x00);
-            }
-            e.bindLabel(l1);
-            e.op(Op::ICONST_1);
-            e.lookupswitch(ld, {{1, l2}, {9, ld}});
-            e.bindLabel(l2);
-            e.op(Op::POP);
-            e.bindLabel(ld);
-            e.op(Op::RETURN);
-        });
+    auto withFiller = [](std::string_view name, ca::u32 fillerNops) {
+        std::string body = "      goto L1\n";
+        for (ca::u32 i = 0; i < fillerNops; ++i) {
+            body += "      nop\n";
+        }
+        body += "      L1:\n      iconst_1\n"
+                "      tableswitch { min: 1, max: 2, cases: { L2, Ld }, default: Ld }\n"
+                "      L2:\n      pop\n      Ld:\n      return\n";
+        return method("public static", name, "()V", body);
     };
-    const Bytes bytes = assembleClass("FpSwitchCanon", {
+    const Bytes bytes = cls("FpSwitchCanon", {
         withFiller("w0", 0), withFiller("w5", 5),
     });
     EXPECT_EQ(fpOf(bytes, "w0"), fpOf(bytes, "w5"));
 }
 
-/// invokeinterface 的 count/0 字节可由描述符导出，不进指纹。
+/// invokeinterface 的 count/0 字节可由描述符导出，不进指纹。count=3 形
+/// 装配器不直达——DOM 单点改写（例外①申报）。
 TEST(MjAnalysisSemanticFpTest, EdgeInvokeInterfaceCountNotRecorded)
 {
-    const Bytes bytes = assembleClass("FpIfaceCount", {
-        spec("c1", [](CodeEmit& e) {
-            e.invokeInterface("FpIface", "go", "()V", 1);
-            e.op(Op::RETURN);
-        }),
-        spec("c3", [](CodeEmit& e) {
-            e.invokeInterface("FpIface", "go", "()V", 3);
-            e.op(Op::RETURN);
-        }),
+    const std::string body = "      invokeinterface FpIface.go ()V\n      return\n";
+    Bytes bytes = cls("FpIfaceCount", {
+        method("public static", "c1", "()V", body),
+        method("public static", "c3", "()V", body),
     });
+    bytes = fp_fix::patchIfaceCount(bytes, "c3", 3);
     EXPECT_EQ(fpOf(bytes, "c1"), fpOf(bytes, "c3"));
 }
 
 /// 分支目标落在指令中部：拒绝（BadBranchTarget），不静默近似。
+/// 中部目标装配器不直达——合法基座经 retargetFirstGoto 重锚（例外①申报）。
 TEST(MjAnalysisSemanticFpTest, EdgeMidInstructionTargetRejected)
 {
-    const Bytes bytes = assembleClass("FpMidInsn", {
-        spec("mid", [](CodeEmit& e) {
-            e.op(Op::GOTO);
-            e.u16(2);   // 目标 pc=2：下一条 SIPUSH（pc1 起 3 字节）的中部
-            e.op(Op::SIPUSH);
-            e.u16(0);
-            e.op(Op::POP);
-            e.op(Op::RETURN);
-        }),
-    });
+    const Bytes base = mjbase::test::assembleMethodClass(
+        "mid", "()V", "      goto L0\n      L0:\n      sipush 0\n      pop\n      return\n",
+        "FpMidInsn");
+    ASSERT_FALSE(base.empty());
+    mjbase::test::expectValidateOk(base);
+    const Bytes bytes = mjbase::test::retargetFirstGoto(base, 2);
+    ASSERT_FALSE(bytes.empty());
     EXPECT_EQ(fpErrOf(bytes, "mid"), SemanticFpError::BadBranchTarget);
 }
 
@@ -1102,180 +913,124 @@ TEST(MjAnalysisSemanticFpTest, EdgeMidInstructionTargetRejected)
 // 确定性与唯一性
 // ============================================================================
 
-/// 同一方法双算一致（重解析、重新构建均一致）。
+/// 同一方法双算一致（重解析、重新构建均一致）。indy/tableswitch 面 61
+///（帧自洽），wide 超槽位面 49（帧less）——确定性属性与类装箱无关，逐类
+/// 双算 + 拷贝重解析验收。
 TEST(MjAnalysisSemanticFpTest, DeterminismDoubleCompute)
 {
-    std::vector<MethodSpec> methods;
-    auto add = [&methods](std::string_view name, std::function<void(CodeEmit&)> emit) {
-        methods.push_back(spec(name, std::move(emit)));
-    };
-    add("indy", [](CodeEmit& e) {
-        e.invokedynamic(0, "apply", "()Ljava/util/function/Function;");
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    });
-    add("switchy", [](CodeEmit& e) {
-        const std::size_t ld = e.newLabel();
-        const std::size_t l1 = e.newLabel();
-        e.op(Op::ICONST_1);
-        e.tableswitch(ld, 1, 3, {l1, ld, l1});
-        e.bindLabel(l1);
-        e.op(Op::POP);
-        e.bindLabel(ld);
-        e.op(Op::RETURN);
-    });
-    add("widey", [](CodeEmit& e) {
-        e.varInsnW(Op::ILOAD, 300);
-        e.iincInsnW(300, -5);
-        e.op(Op::POP);
-        e.op(Op::RETURN);
+    const Bytes a = cls("FpDeterminismA", {
+        method("public static", "indy", "()V",
+               indyInsn("apply", "()Ljava/util/function/Function;", "FpBsm",
+                        "metafactory", kMeta3Desc, "()Ljava/util/function/Function;")
+                   + "      pop\n      return\n"),
+        method("public static", "switchy", "()V",
+               "      iconst_1\n"
+               "      tableswitch { min: 1, max: 3, cases: { L1, Ld, L1 }, default: Ld }\n"
+               "      L1:\n      pop\n      Ld:\n      return\n"),
+    }, 61);
+    const Bytes b = cls("FpDeterminismB", {
+        method("public static", "widey", "()V",
+               "      iload 300\n      iinc 300 -5\n      pop\n      return\n"),
     });
 
-    ClassBytesBuilder b("FpDeterminism");
-    b.addBootstrapMethod("FpBsm", "metafactory",
-                         "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-                         "Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;",
-                         {BsmArg::methodType("()Ljava/util/function/Function;")});
-    const Bytes bytes = b.assemble(methods);
-
-    for (const MethodSpec& m : methods) {
-        EXPECT_EQ(fpOf(bytes, m.name), fpOf(bytes, m.name)) << m.name;
+    for (const char* name : {"indy", "switchy"}) {
+        EXPECT_EQ(fpOf(a, name), fpOf(a, name)) << name;
+    }
+    for (const char* name : {"widey"}) {
+        EXPECT_EQ(fpOf(b, name), fpOf(b, name)) << name;
     }
     // 拷贝一份字节重新解析（fresh DOM），指纹仍一致。
-    const Bytes copy = bytes;
-    for (const MethodSpec& m : methods) {
-        EXPECT_EQ(fpOf(bytes, m.name), fpOf(copy, m.name)) << m.name;
+    const Bytes copyA = a;
+    const Bytes copyB = b;
+    for (const char* name : {"indy", "switchy"}) {
+        EXPECT_EQ(fpOf(a, name), fpOf(copyA, name)) << name;
+    }
+    for (const char* name : {"widey"}) {
+        EXPECT_EQ(fpOf(b, name), fpOf(copyB, name)) << name;
     }
 }
 
 /// 唯一性：合成语料去重统计——同体组内恒等、组间与唯一体全不同、零碰撞。
+/// indy 面 61 单独装箱（帧自洽），其余 49——去重统计跨两类合并验收。
 TEST(MjAnalysisSemanticFpTest, CorpusDedupStats)
 {
-    std::vector<MethodSpec> methods;
+    std::vector<std::pair<const Bytes*, std::string>> corpus;
     ca::usize uniqueCount = 0;
-    auto uniq = [&](std::string_view name, std::function<void(CodeEmit&)> emit) {
-        methods.push_back(spec(name, std::move(emit)));
-        ++uniqueCount;
+    auto uniq = [&](const Bytes& bytes, std::string_view name) {
+        corpus.emplace_back(&bytes, std::string(name));
+        if (name[0] == 'u') {
+            ++uniqueCount;   // 唯一体计数（g 组同体方法不入统计，与原口径一致）
+        }
     };
 
-    uniq("u01", [](CodeEmit& e) { e.op(Op::RETURN); });
-    uniq("u02", [](CodeEmit& e) { e.i32const(1); e.op(Op::POP); e.op(Op::RETURN); });
-    uniq("u03", [](CodeEmit& e) { e.i32const(2); e.op(Op::POP); e.op(Op::RETURN); });
-    uniq("u04", [](CodeEmit& e) { e.i32const(77); e.op(Op::POP); e.op(Op::RETURN); });
-    uniq("u05", [](CodeEmit& e) { e.op(Op::ACONST_NULL); e.op(Op::POP); e.op(Op::RETURN); });
-    uniq("u06", [](CodeEmit& e) { e.typeInsn(Op::NEW, "FpA"); e.op(Op::POP); e.op(Op::RETURN); });
-    uniq("u07", [](CodeEmit& e) { e.typeInsn(Op::NEW, "FpB"); e.op(Op::POP); e.op(Op::RETURN); });
-    uniq("u08", [](CodeEmit& e) { e.fieldInsn(Op::GETSTATIC, "FpA", "a", "I"); e.op(Op::POP); e.op(Op::RETURN); });
-    uniq("u09", [](CodeEmit& e) { e.fieldInsn(Op::GETSTATIC, "FpA", "b", "I"); e.op(Op::POP); e.op(Op::RETURN); });
-    uniq("u10", [](CodeEmit& e) { e.invoke(Op::INVOKESTATIC, "FpA", "m", "()V"); e.op(Op::RETURN); });
-    uniq("u11", [](CodeEmit& e) { e.invoke(Op::INVOKESTATIC, "FpA", "n", "()V"); e.op(Op::RETURN); });
-    uniq("u12", [](CodeEmit& e) { e.ldcString("s1"); e.op(Op::POP); e.op(Op::RETURN); });
-    uniq("u13", [](CodeEmit& e) { e.ldcString("s2"); e.op(Op::POP); e.op(Op::RETURN); });
-    uniq("u14", [](CodeEmit& e) { e.op(Op::IADD); e.op(Op::RETURN); });
-    uniq("u15", [](CodeEmit& e) { e.op(Op::ISUB); e.op(Op::RETURN); });
-    uniq("u16", [](CodeEmit& e) {
-        const std::size_t l = e.newLabel();
-        e.op(Op::ICONST_0);
-        e.branch(Op::IFEQ, l);
-        e.op(Op::POP);
-        e.bindLabel(l);
-        e.op(Op::NOP);
-        e.op(Op::RETURN);
+    Bytes b49 = cls("FpCorpus49", {
+        method("public static", "u01", "()V", "      return\n"),
+        method("public static", "u02", "()V", "      iconst_1\n      pop\n      return\n"),
+        method("public static", "u03", "()V", "      iconst_2\n      pop\n      return\n"),
+        method("public static", "u04", "()V", "      ldc 77\n      pop\n      return\n"),
+        method("public static", "u05", "()V", "      aconst_null\n      pop\n      return\n"),
+        method("public static", "u06", "()V", "      new FpA\n      pop\n      return\n"),
+        method("public static", "u07", "()V", "      new FpB\n      pop\n      return\n"),
+        method("public static", "u08", "()V", "      getstatic FpA.a I\n      pop\n      return\n"),
+        method("public static", "u09", "()V", "      getstatic FpA.b I\n      pop\n      return\n"),
+        method("public static", "u10", "()V", "      invokestatic FpA.m ()V\n      return\n"),
+        method("public static", "u11", "()V", "      invokestatic FpA.n ()V\n      return\n"),
+        method("public static", "u12", "()V", "      ldc \"s1\"\n      pop\n      return\n"),
+        method("public static", "u13", "()V", "      ldc \"s2\"\n      pop\n      return\n"),
+        method("public static", "u14", "()V", "      iadd\n      return\n"),
+        method("public static", "u15", "()V", "      isub\n      return\n"),
+        method("public static", "u16", "()V",
+               "      iconst_0\n      ifeq L\n      pop\n      L:\n      nop\n      return\n"),
+        method("public static", "u17", "()V",
+               "      iconst_0\n      ifne L\n      pop\n      L:\n      nop\n      return\n"),
+        method("public static", "u18", "()V",
+               "      tableswitch { min: 1, max: 3, cases: { La, Lb, Lc }, default: Ld }\n"
+               "      La:\n      return\n      Lb:\n      return\n      Lc:\n      return\n"
+               "      Ld:\n      return\n"),
+        method("public static", "u19", "()V", "      pop\n      return\n"),
+        method("public static", "u20", "()V", "      pop\n      return\n"),
+        method("public static", "u21", "()V", "      iload 300\n      pop\n      return\n"),
+        method("public static", "u22", "()V", "      iinc 300 5\n      return\n"),
+        method("public static", "u24", "()V", "      ldc 1\n      pop\n      return\n"),
+        method("public static", "u25", "()V", "      invokeinterface FpIface.go ()V\n      return\n"),
+        method("public static", "u26", "()V", "      multianewarray [[I 2\n      pop\n      return\n"),
+        method("public static", "g1a", "()V", "      dup\n      pop\n      return\n"),
+        method("public static", "g1b", "()V", "      dup\n      pop\n      return\n"),
+        method("public static", "g1c", "()V", "      dup\n      pop\n      return\n"),
+        method("public static", "g2a", "()V", "      iinc 0 1\n      return\n"),
+        method("public static", "g2b", "()V", "      iinc 0 1\n      return\n"),
     });
-    uniq("u17", [](CodeEmit& e) {
-        const std::size_t l = e.newLabel();
-        e.op(Op::ICONST_0);
-        e.branch(Op::IFNE, l);
-        e.op(Op::POP);
-        e.bindLabel(l);
-        e.op(Op::NOP);
-        e.op(Op::RETURN);
-    });
-    uniq("u18", [](CodeEmit& e) {
-        const std::size_t ld = e.newLabel();
-        const std::size_t a = e.newLabel();
-        const std::size_t b = e.newLabel();
-        const std::size_t c = e.newLabel();
-        e.tableswitch(ld, 1, 3, {a, b, c});
-        e.bindLabel(a);
-        e.op(Op::RETURN);
-        e.bindLabel(b);
-        e.op(Op::RETURN);
-        e.bindLabel(c);
-        e.op(Op::RETURN);
-        e.bindLabel(ld);
-        e.op(Op::RETURN);
-    });
-    uniq("u19", [](CodeEmit& e) {
-        const std::size_t ld = e.newLabel();
-        const std::size_t a = e.newLabel();
-        e.lookupswitch(ld, {{1, a}, {9, ld}});
-        e.bindLabel(a);
-        e.op(Op::RETURN);
-        e.bindLabel(ld);
-        e.op(Op::RETURN);
-    });
-    uniq("u20", [](CodeEmit& e) {
-        const std::size_t ld = e.newLabel();
-        const std::size_t a = e.newLabel();
-        e.lookupswitch(ld, {{1, a}, {10, ld}});
-        e.bindLabel(a);
-        e.op(Op::RETURN);
-        e.bindLabel(ld);
-        e.op(Op::RETURN);
-    });
-    uniq("u21", [](CodeEmit& e) {
-        e.varInsnW(Op::ILOAD, 300);
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    });
-    uniq("u22", [](CodeEmit& e) {
-        e.iincInsnW(300, 5);
-        e.op(Op::RETURN);
-    });
-    uniq("u23", [](CodeEmit& e) {
-        e.invokedynamic(0, "apply", "()Ljava/util/function/Function;");
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    });
-    uniq("u24", [](CodeEmit& e) {
-        e.ldcMethodHandle(6, "FpA", "m", "()V");
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    });
-    uniq("u25", [](CodeEmit& e) {
-        e.invokeInterface("FpIface", "go", "()V", 1);
-        e.op(Op::RETURN);
-    });
-    uniq("u26", [](CodeEmit& e) {
-        e.op(Op::MULTIANEWARRAY);
-        e.u16(e.cls("[[I"));
-        e.u8(2);
-        e.op(Op::POP);
-        e.op(Op::RETURN);
-    });
+    // lookupswitch 体（u19/u20）与 MethodHandle ldc（u24）经 DOM 载面落地。
+    b49 = withLookupswitchBody(b49, "u19", {{1, 'P'}, {9, 'R'}});
+    b49 = withLookupswitchBody(b49, "u20", {{1, 'P'}, {10, 'R'}});
+    b49 = fp_fix::pointLdcAt(b49, "u24",
+                             [](jbc::core::ConstantPool& cp) {
+                                 const ca::u32 owner = cp.addClass(cp.addUtf8("FpA"));
+                                 const ca::u32 nat   = cp.addNameAndType(cp.addUtf8("m"),
+                                                                         cp.addUtf8("()V"));
+                                 return cp.addMethodHandle(6, cp.addRef(CpTag::Methodref, owner, nat));
+                             }, false);
 
-    // 同体组：组内同名体异名方法恒等。
-    const auto groupBody1 = [](CodeEmit& e) { e.op(Op::DUP); e.op(Op::POP); e.op(Op::RETURN); };
-    const auto groupBody2 = [](CodeEmit& e) { e.iincInsn(0, 1); e.op(Op::RETURN); };
-    methods.push_back(spec("g1a", groupBody1));
-    methods.push_back(spec("g1b", groupBody1));
-    methods.push_back(spec("g1c", groupBody1));
-    methods.push_back(spec("g2a", groupBody2));
-    methods.push_back(spec("g2b", groupBody2));
+    const Bytes b61 = cls("FpCorpus61", {
+        method("public static", "u23", "()V",
+               indyInsn("apply", "()Ljava/util/function/Function;", "FpBsm",
+                        "metafactory", kMeta3Desc, "()Ljava/util/function/Function;")
+                   + "      pop\n      return\n"),
+    }, 61);
 
-    ClassBytesBuilder b("FpCorpus");
-    b.addBootstrapMethod("FpBsm", "metafactory",
-                         "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
-                         "Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;",
-                         {BsmArg::methodType("()Ljava/util/function/Function;")});
-    const Bytes bytes = b.assemble(methods);
-
-    std::map<std::string_view, SemanticFp> fps;
-    for (const MethodSpec& m : methods) {
-        fps.emplace(m.name, fpOf(bytes, m.name));
+    for (const char* name :
+         {"u01", "u02", "u03", "u04", "u05", "u06", "u07", "u08", "u09", "u10", "u11",
+          "u12", "u13", "u14", "u15", "u16", "u17", "u18", "u19", "u20", "u21", "u22",
+          "u24", "u25", "u26", "g1a", "g1b", "g1c", "g2a", "g2b"}) {
+        uniq(b49, name);
     }
-    ASSERT_EQ(fps.size(), methods.size());
+    uniq(b61, "u23");
+
+    std::map<std::string, SemanticFp> fps;
+    for (const auto& [bytes, name] : corpus) {
+        fps.emplace(name, fpOf(*bytes, name));
+    }
+    ASSERT_EQ(fps.size(), corpus.size());
 
     // 组内恒等。
     EXPECT_EQ(fps.at("g1a"), fps.at("g1b"));
@@ -1286,8 +1041,11 @@ TEST(MjAnalysisSemanticFpTest, CorpusDedupStats)
 
     // 唯一体两两不同（零碰撞）。
     std::set<SemanticFp> distinct;
-    for (ca::usize i = 0; i < methods.size() && methods[i].name[0] == 'u'; ++i) {
-        distinct.insert(fps.at(methods[i].name));
+    for (const auto& [bytes, name] : corpus) {
+        if (name[0] != 'u') {
+            continue;
+        }
+        distinct.insert(fps.at(name));
     }
     EXPECT_EQ(distinct.size(), uniqueCount);
 
@@ -1298,4 +1056,3 @@ TEST(MjAnalysisSemanticFpTest, CorpusDedupStats)
     }
     EXPECT_EQ(all.size(), uniqueCount + 2);
 }
-
