@@ -5,6 +5,7 @@
 #include "jbc/core/reader.hpp"
 #include "mjbase/hierarchy/class_hierarchy.hpp"
 #include "mjbase/jasm/relaxed_verifier.hpp"
+#include "mjbase/jasm/semantic_flag_rules.hpp"
 #include "mjbase/keys.hpp"
 
 #include <exception>
@@ -240,6 +241,17 @@ Result<JvmJasmClass> JvmJasmService::validate(const std::vector<ca::u8>& classBy
             Result<JvmJasmClass> result;
             result.value = JvmJasmClass{std::move(name).unwrap(), classBytes};
             return result;
+        }
+        // JVMS 语义级 flag 门（issue #179）：defineClass 即拒的修饰位组合
+        // 在数据流分析前先行拒收（fail-closed）；Relaxed/Strict 两档共用，
+        // 命中即返回（错误类不必再算帧）。
+        {
+            auto flagDiagnostics = analyzeSemanticFlags(classBytes);
+            if (!flagDiagnostics.empty()) {
+                Result<JvmJasmClass> result;
+                result.diagnostics = std::move(flagDiagnostics);
+                return result;
+            }
         }
         if (context.validationMode == ValidationMode::Relaxed) {
             Result<JvmJasmClass> result;
