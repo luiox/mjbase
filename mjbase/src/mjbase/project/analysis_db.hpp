@@ -70,13 +70,14 @@ namespace mjbase::project {
 ///   is_current=0 的历史行就是审计面。指纹引擎（semanticFp，#152）在
 ///   analysis 层，本层只做版本事实的存储与查询，编辑流接线归上层。
 ///
-/// - 全程序可达闭包（schema v9，#159）：`closure_batches` / `closure_members`
-///   存可达方法成员集这份派生事实——批次元数据行挂既有 producer 注册表
-///   （kind = closure_write），记录输入图指纹（32 字节 SHA-256 + fp_version
-///   算法版本字节）、种子/覆盖度位词表与行数；closure_members 是结果本体
-///   （WITHOUT ROWID 主键即数据）。计算面在 `reachability_closure`（消费本层
-///   读取面与写入面），指纹 = 变更敏感聚合（inputs 投影 + 四表聚合），指纹
-///   不匹配整体重算，不增量修补。
+/// - 全程序可达闭包（schema v9 #159 / v10 #159 后置批）：`closure_batches` /
+///   `closure_members` 存可达方法成员集这份派生事实——批次元数据行挂既有
+///   producer 注册表（kind = closure_write），记录输入图指纹（32 字节
+///   SHA-256 + fp_version 算法版本字节）、精度档（precision：CHA/RTA）、
+///   种子/覆盖度位词表与行数；closure_members 是结果本体（WITHOUT ROWID
+///   主键即数据）。计算面在 `reachability_closure`（消费本层读取面与写入面），
+///   指纹 = 变更敏感聚合（inputs 投影 + 四表聚合），指纹不匹配整体重算，
+///   不增量修补；复用判定 = 指纹 + seed_mask + precision 三匹配。
 ///
 /// - 普查投影层（#121 §5 B4）：census 是库上的只读 SELECT 投影（#39 类
 ///   普查事实面 + 容器形态汇总面；#148 成员普查事实面），不反向定义存储、
@@ -98,10 +99,14 @@ namespace mjbase::project {
 /// @brief 当前 schema 版本（`PRAGMA user_version`）。不识别的版本拒绝打开
 ///        （包括旧版本：不提供自动迁移，旧库由上层显式重建）。
 ///
-/// v9：全程序可达闭包（#159）——新增 closure_batches（闭包批次元数据：
-///        输入图指纹 32B BLOB + fp_version + 种子/覆盖度位词表 + 行数）与
-///        closure_members（可达成员集，(batch_id, member_id) 主键）两表与
-///        batches.kind 新词 closure_write。v8：方法版本指纹层（#132）——新增
+/// v10：可达闭包精度档（#159 后置批）——closure_batches 末位追加 `precision`
+///        列（0 = CHA 全族保守展开，1 = RTA 实例化集合收窄）；复用判定
+///        随之升级为指纹 + seed_mask + precision 三匹配（精度档是计算输入，
+///        同图不同档不得互复用）。v9：全程序可达闭包（#159）——新增
+///        closure_batches（闭包批次元数据：输入图指纹 32B BLOB +
+///        fp_version + 种子/覆盖度位词表 + 行数）与 closure_members
+///        （可达成员集，(batch_id, member_id) 主键）两表与 batches.kind
+///        新词 closure_write。v8：方法版本指纹层（#132）——新增
 ///        method_versions 表（行 = 方法语义指纹版本：32 字节定长 BLOB +
 ///        fp_version 算法版本字节；is_current 当前指针 + (member_id) 部分
 ///        唯一索引，版本历史累积即审计面）。
@@ -120,7 +125,7 @@ namespace mjbase::project {
 ///        `classes.entry_id` 外键。v2：classes 增加 super/access/version，
 ///        新增 interfaces 与 refs 表，members 增加 access。v1 未发布，
 ///        版本号仅用于识别本分支早期的临时库。
-inline constexpr ca::u32 kAnalysisDbSchemaVersion = 9;
+inline constexpr ca::u32 kAnalysisDbSchemaVersion = 10;
 
 /// @brief SQLite 数据库头里的应用标识（ASCII "MJDB"）。
 inline constexpr ca::u32 kAnalysisDbApplicationId = 0x4D4A4442u;
@@ -599,7 +604,9 @@ struct DbClosureBatchRecord
     ca::u32             seedMask      = 0; ///< 种子档位位词表（ClosureSeedMask）
     ca::i64             seedCount     = 0;
     ca::u32             coverageMask  = 0; ///< 覆盖度位词表（ClosureCoverageMask）
-    ca::i64             indyEdgeCount = 0; ///< indy 补充边数（本批口径恒 0）
+    ca::i64             indyEdgeCount = 0; ///< indy 补充边数（coverage bit1 置位时 > 0）
+    /// 精度档（ClosurePrecisionTier 词表：0 = CHA，1 = RTA；schema v10）。
+    ca::u32             precision     = 0;
     std::vector<ca::i64> memberIds;        ///< 可达成员集（升序去重）
 };
 
@@ -614,19 +621,23 @@ struct DbClosureBatchInfo
     ca::i64             seedCount     = 0;
     ca::u32             coverageMask  = 0;
     ca::i64             indyEdgeCount = 0;
+    ca::u32             precision     = 0; ///< 精度档（ClosurePrecisionTier 词表）
     ca::i64             memberCount   = 0;
     ca::str::Utf8String computedAt;       ///< ISO-8601 UTC
 };
 
 /// @brief 闭包图边快照（`closureGraphEdges` 输出）：方法边（id 分支）与
-///        clinit 触发行（id/文本两分支）。
+///        clinit 触发行（id/文本两分支）+ Type 触发行（RTA 实例化证据）。
 ///
 /// 方法边只来自 method 引用的 id 分支行（target_member_id 已登记）；触发行
 /// 携带「源方法 → 目标类」（refs 无 opcode 位，Type/Field/Method 引用一律
 /// 按「可能首触」保守处理，设计稿 §3）；class 级引用行（source_member_id
 /// 为空）不入快照——类头声明不触发 JVM 初始化。文本分支行只保留已登记
-/// owner 类的触发（未登记目标无类节点，不入闭包域）。行序 = ref_id 升序
-///（确定性），同名边可能重复，消费方去重（闭包面 sort+unique）。
+/// owner 类的触发（未登记目标无类节点，不入闭包域）。typeClassTriggers 是
+/// id 分支 Type 引用行的子集（new/checkcast/instanceof/ldc class 全族，
+/// refs 无 opcode 位按可能实例化保守处理）——CHA 闭包不用它，RTA 档取为
+/// 实例化集合证据。行序 = ref_id 升序（确定性），同名边可能重复，消费方
+/// 去重（闭包面 sort+unique）。
 struct DbClosureGraphEdges
 {
     /// (源方法 member_id, 目标方法 member_id)：id 分支 method 引用。
@@ -636,6 +647,9 @@ struct DbClosureGraphEdges
     /// (源方法 member_id, 已登记 owner 类 class_id)：文本分支触发行
     /// （target_class 文本命中 classes.internal_name）。
     std::vector<std::pair<ca::i64, ca::i64>> textBranchClassTriggers;
+    /// (源方法 member_id, 目标类 class_id)：id 分支 Type 引用行（classTriggers
+    /// 的 kind=Type 子集；RTA 档实例化集合证据，schema v10 起提供）。
+    std::vector<std::pair<ca::i64, ca::i64>> typeClassTriggers;
 };
 
 /// @brief 分析数据库连接（单文件、单连接、非线程安全）。
@@ -1136,7 +1150,8 @@ public:
     ca::Result<DbMethodVersionRecordStats, AnalysisDbError> recordMethodVersions(
         std::vector<DbMethodVersionInput> inputs);
 
-    //-- 全程序可达闭包（closure_batches / closure_members，schema v9，#159）----
+    //-- 全程序可达闭包（closure_batches / closure_members，schema v9 #159 /
+    //-- v10 #159 后置批）-------------------------------------------------------------
 
     /// @brief 可达闭包批次落库：按 @p record.producerId 开 closure_write 批 →
     ///        单事务落元数据行 + 成员集 + 类域作用域行（作用域从成员集经
@@ -1144,23 +1159,25 @@ public:
     ///
     /// 三个事务段与既有写入面同纪律：批次是逻辑运行记录，事实段中途失败
     /// 留残批（合法审计状态）。输入校验：producer 未注册、fingerprint 非
-    /// 32 字节、fp_version 为 0、seed_count/indy_edge_count 为负、memberIds
-    /// 非升序去重或含非正 id → `Invalid`（校验先于开批，不产生残批垃圾）；
-    /// 成员 id 未登记 → FK 拒绝（事实段回滚留残批）。只读连接 → `ReadOnly`。
+    /// 32 字节、fp_version 为 0、seed_count/indy_edge_count 为负、precision
+    /// 非 0/1、memberIds 非升序去重或含非正 id → `Invalid`（校验先于开批，
+    /// 不产生残批垃圾）；成员 id 未登记 → FK 拒绝（事实段回滚留残批）。
+    /// 只读连接 → `ReadOnly`。
     ca::Result<DbClosureBatchInfo, AnalysisDbError> storeClosureBatch(
         const DbClosureBatchRecord& record);
 
     /// @brief 全部闭包批次事实，按 batch_id 升序。只读连接可用。
     ca::Result<std::vector<DbClosureBatchInfo>, AnalysisDbError> listClosureBatches() const;
 
-    /// @brief 复用判定：输入图指纹与种子档位都命中的「最新有效批」（batch_id
-    ///        最大且已收尾者；残批跳过——与注册表审计语义一致）。指纹含
-    ///        fp_version 载荷段（设计稿 §5），算法升级后旧指纹自然失配；
-    ///        seed_mask 同匹配——种子档位是计算输入的一部分，同图不同档位的
-    ///        闭包集不可互复用。未命中返回 `std::nullopt`；fingerprint 非
-    ///        32 字节 → `Invalid`。只读连接可用。
+    /// @brief 复用判定：输入图指纹、种子档位与精度档都命中的「最新有效批」
+    ///        （batch_id 最大且已收尾者；残批跳过——与注册表审计语义一致）。
+    ///        指纹含 fp_version 载荷段（设计稿 §5），算法升级后旧指纹自然失配；
+    ///        seed_mask 与 precision 同匹配——种子档位与精度档都是计算输入的
+    ///        一部分，同图不同档位的闭包集不可互复用（schema v10 起三匹配）。
+    ///        未命中返回 `std::nullopt`；fingerprint 非 32 字节 → `Invalid`。
+    ///        只读连接可用。
     ca::Result<std::optional<DbClosureBatchInfo>, AnalysisDbError> freshClosureBatch(
-        const std::vector<ca::u8>& fingerprint, ca::u32 seedMask) const;
+        const std::vector<ca::u8>& fingerprint, ca::u32 seedMask, ca::u32 precision) const;
 
     /// @brief 闭包成员集分页：member_id 升序，只返回第 @p offset 行起的
     ///        @p limit 行。分页契约（窗口语义、参数约束、遍历成本不随窗口

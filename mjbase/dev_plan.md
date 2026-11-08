@@ -947,3 +947,16 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
   实现批全量 unittest 2224 例 2221 绿 3 既有跳过，对基线（2213 例
   2210 绿 3 跳过 @7999684）零新增红。挂账：RTA 精度档（子树收窄、
   实例化集合）后置批；indy 补充边射入（coverage bit1）随后置批。
+- [x] #159 后置批：RTA 精度档 + indy 补充边射入（schema v10）——
+  closure_batches 末位追加 precision 列（0=CHA/1=RTA），复用判定升级
+  指纹 + seed_mask + precision 三匹配；RTA 档实例化集合收窄（可达方法体
+  Type 引用行为证据，refs 无 opcode 按「可能 new」保守；族条目按声明类
+  ∈ 已实例化类型祖先闭包（super 链 + 接口闭包自含）可行化，挂起直连
+  目标 + 已探族回灌两路 fixpoint 补晚到实例化；静态/`<clinit>` 不收窄；
+  种子不供实例化证据；结果不作删除依据铁律对齐 ResolvedCallGraph RTA 档）；
+  indy 展开边经 options 落解成 member_id 对射入（两端须登记，去重后直连
+  不经族展开），coverage bit1 + indy_edge_count 落批；指纹载荷追加计算
+  输入判别段（档位字节 + indy 清单 canonical 序列化，非缺省档才存在——
+  CHA 无射入批载荷与 v9 逐字节一致）。v9→v10 fail-loud 不迁移。
+  申报：设计稿对「实例化证据取 Type 行全族」「种子宿主类不入实例化集」
+  未明写，按现 CHA 保守风格补齐（宁过近似不丢真实执行边）。

@@ -126,6 +126,19 @@ DbReferenceRecord fieldRef(const char* sourceClass, const char* sourceMethod,
     return record;
 }
 
+DbReferenceRecord typeRef(const char* sourceClass, const char* sourceMethod,
+                          const char* sourceDesc, ca::i64 insn, const char* targetClass)
+{
+    DbReferenceRecord record;
+    record.sourceClass      = Utf8String::from_cstr(sourceClass);
+    record.sourceMethod     = Utf8String::from_cstr(sourceMethod);
+    record.sourceDescriptor = Utf8String::from_cstr(sourceDesc);
+    record.insnIndex        = insn;
+    record.kind             = DbReferenceKind::Type;
+    record.targetClass      = Utf8String::from_cstr(targetClass);
+    return record;
+}
+
 /// @brief 已登记方法身份（测试语料全部登记，未命中即测试语料错误）。
 ca::i64 methodId(AnalysisDb& db, const char* owner, const char* name, const char* desc)
 {
@@ -142,6 +155,17 @@ ca::i64 registerReachProducer(AnalysisDb& db)
     DbProducerInput input;
     input.key        = Utf8String::from_cstr("mjbase.reachability.cha");
     input.name       = Utf8String::from_cstr("reachability closure (CHA)");
+    input.trustLevel = DbProducerTrustLevel::Trusted;
+    auto registered  = db.registerProducer(input);
+    EXPECT_TRUE(registered.is_ok());
+    return registered.is_ok() ? registered.unwrap() : 0;
+}
+
+ca::i64 registerRtaProducer(AnalysisDb& db)
+{
+    DbProducerInput input;
+    input.key        = Utf8String::from_cstr("mjbase.reachability.rta");
+    input.name       = Utf8String::from_cstr("reachability closure (RTA)");
     input.trustLevel = DbProducerTrustLevel::Trusted;
     auto registered  = db.registerProducer(input);
     EXPECT_TRUE(registered.is_ok());
@@ -291,7 +315,8 @@ TEST(MjReachabilityClosureTest, VirtualFamilyExpansionIsSupersetOfDirectClosure)
     EXPECT_NE(std::find(members.begin(), members.end(), subVirt), members.end());
     EXPECT_EQ(4u, members.size());
 
-    // 种子档位与覆盖度元数据：显式清单位 + refs direct-only（恒置位）。
+    // 种子档位与覆盖度元数据：显式清单位 + refs direct-only（恒置位）+
+    // CHA 精度档（缺省档，schema v10 precision 列读回 0）。
     auto batches = db.listClosureBatches();
     ASSERT_TRUE(batches.is_ok());
     auto rows = std::move(batches).unwrap();
@@ -301,7 +326,10 @@ TEST(MjReachabilityClosureTest, VirtualFamilyExpansionIsSupersetOfDirectClosure)
     EXPECT_EQ(0, rows[0].indyEdgeCount);
     EXPECT_EQ(4, rows[0].memberCount);
     EXPECT_EQ(1u, rows[0].fpVersion);
+    EXPECT_EQ(0u, rows[0].precision);
     EXPECT_EQ(static_cast<ca::u32>(ClosureSeedMask::Explicit), stats.seedMask);
+    EXPECT_EQ(static_cast<ca::u32>(ClosurePrecisionTier::Cha), stats.precision);
+    EXPECT_EQ(0u, stats.instantiatedClasses);
 }
 
 TEST(MjReachabilityClosureTest, ClinitTriggersWalkSuperChainAndTextBranch)
@@ -523,12 +551,12 @@ TEST(MjReachabilityClosureTest, FingerprintReusesAndInvalidatesOnRefsRewrite)
     auto rows = std::move(batches).unwrap();
     ASSERT_EQ(2u, rows.size());
     EXPECT_NE(rows[0].fingerprint, rows[1].fingerprint);
-    auto fresh = db.freshClosureBatch(std::vector<ca::u8>(rows[1].fingerprint), rows[1].seedMask);
+    auto fresh = db.freshClosureBatch(std::vector<ca::u8>(rows[1].fingerprint), rows[1].seedMask, 0);
     ASSERT_TRUE(fresh.is_ok());
     auto freshRow = std::move(fresh).unwrap();
     ASSERT_TRUE(freshRow.has_value());
     EXPECT_EQ(rows[1].batchId, freshRow->batchId);
-    auto stale = db.freshClosureBatch(std::vector<ca::u8>(rows[0].fingerprint), rows[0].seedMask);
+    auto stale = db.freshClosureBatch(std::vector<ca::u8>(rows[0].fingerprint), rows[0].seedMask, 0);
     ASSERT_TRUE(stale.is_ok());
     auto staleRow = std::move(stale).unwrap();
     ASSERT_TRUE(staleRow.has_value());
@@ -706,8 +734,8 @@ TEST(MjReachabilityClosureTest, PaginationAndMembershipContract)
     EXPECT_EQ(AnalysisDbErrorKind::Invalid,
               takeErrorKind(db.closureMembersPaged(424242, 10, 0)));
     std::vector<ca::u8> shortFp(31, 0x11);
-    EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.freshClosureBatch(shortFp, 0)));
-    auto missing = db.freshClosureBatch(std::vector<ca::u8>(32, 0x22), 0);
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.freshClosureBatch(shortFp, 0, 0)));
+    auto missing = db.freshClosureBatch(std::vector<ca::u8>(32, 0x22), 0, 0);
     ASSERT_TRUE(missing.is_ok());
     EXPECT_FALSE(std::move(missing).unwrap().has_value());
 }
@@ -771,4 +799,317 @@ TEST(MjReachabilityClosureTest, StoreClosureBatchInputValidation)
     ASSERT_TRUE(ghostBatches.is_ok());
     EXPECT_EQ(2u, std::move(ghostBatches).unwrap().size());   // 首批 + 残批
     EXPECT_EQ(1u, closureBatchCount(db));                     // 残批无事实行
+}
+
+TEST(MjReachabilityClosureTest, RtaNarrowsToInstantiatedSubtreeAndIsSubsetOfCha)
+{
+    const auto path = freshDbPath("rta_subset");
+    auto       db   = buildVirtualCorpus(path);
+    const auto producer = registerReachProducer(db);
+
+    const ca::i64 call     = methodId(db, "a/Caller", "call", "()V");
+    const ca::i64 baseVirt = methodId(db, "a/Base", "virtualTarget", "()V");
+    const ca::i64 subVirt  = methodId(db, "a/Sub", "virtualTarget", "()V");
+    const ca::i64 direct   = methodId(db, "a/Base", "directOnly", "()V");
+
+    ReachabilityClosureOptions chaOptions;
+    chaOptions.explicitSeeds.push_back(call);
+    auto chaResult = computeAndStoreReachabilityClosure(db, producer, chaOptions);
+    ASSERT_TRUE(chaResult.is_ok());
+    auto chaStats = std::move(chaResult).unwrap();
+    ASSERT_FALSE(chaStats.reused);
+    EXPECT_EQ(static_cast<ca::u32>(ClosurePrecisionTier::Cha), chaStats.precision);
+    EXPECT_EQ(0u, chaStats.instantiatedClasses);
+    const auto chaMembers = closureMembers(db, chaStats.batchId);
+    ASSERT_EQ(4u, chaMembers.size());
+
+    // RTA 档（同图同种子）：语料零 Type 引用 → 实例化集合为空 → 虚分派目标
+    // 全体收窄，闭包塌缩到种子 + 静态直连目标。真子集关系钉死（RTA ⊊ CHA）。
+    ReachabilityClosureOptions rtaOptions = chaOptions;
+    rtaOptions.precision                  = ClosurePrecisionTier::Rta;
+    auto rtaResult = computeAndStoreReachabilityClosure(db, producer, rtaOptions);
+    ASSERT_TRUE(rtaResult.is_ok());
+    auto rtaStats = std::move(rtaResult).unwrap();
+    EXPECT_FALSE(rtaStats.reused);   // 精度档是计算输入 → 不互串复用
+    EXPECT_NE(chaStats.batchId, rtaStats.batchId);
+    EXPECT_EQ(static_cast<ca::u32>(ClosurePrecisionTier::Rta), rtaStats.precision);
+    EXPECT_EQ(0u, rtaStats.instantiatedClasses);
+    const auto rtaMembers = closureMembers(db, rtaStats.batchId);
+    std::vector<ca::i64> expectedRta = {call, direct};
+    std::sort(expectedRta.begin(), expectedRta.end());
+    EXPECT_EQ(expectedRta, rtaMembers);
+    EXPECT_EQ(std::find(rtaMembers.begin(), rtaMembers.end(), baseVirt), rtaMembers.end());
+    EXPECT_EQ(std::find(rtaMembers.begin(), rtaMembers.end(), subVirt), rtaMembers.end());
+    for (ca::i64 member : rtaMembers) {
+        EXPECT_NE(std::find(chaMembers.begin(), chaMembers.end(), member), chaMembers.end());
+    }
+    EXPECT_LT(rtaMembers.size(), chaMembers.size());
+
+    // 批次行：precision 列读回 0/1 两档；coverage bit0 恒置位、bit1 未置。
+    auto batches = db.listClosureBatches();
+    ASSERT_TRUE(batches.is_ok());
+    auto rows = std::move(batches).unwrap();
+    ASSERT_EQ(2u, rows.size());
+    EXPECT_EQ(0u, rows[0].precision);
+    EXPECT_EQ(1u, rows[1].precision);
+    for (const auto& row : rows) {
+        EXPECT_EQ(static_cast<ca::u32>(ClosureCoverageMask::RefsDirectOnly), row.coverageMask);
+        EXPECT_EQ(0, row.indyEdgeCount);
+    }
+
+    // 补实例化证据（Caller.call 内 new a/Sub 的 Type 引用行）：晚到的实例化
+    // 解除收窄，RTA 闭包回到 CHA 全集（逐成员相等）；refs 重写 → 指纹失配落新批。
+    std::vector<DbReferenceRecord> refs;
+    refs.push_back(methodRef("a/Caller", "call", "()V", 0, "a/Base", "virtualTarget", "()V"));
+    refs.push_back(methodRef("a/Caller", "call", "()V", 1, "a/Base", "directOnly", "()V"));
+    refs.push_back(typeRef("a/Caller", "call", "()V", 2, "a/Sub"));
+    ASSERT_TRUE(db.replaceReferences(0, std::move(refs)).is_ok());
+    auto rta2 = computeAndStoreReachabilityClosure(db, producer, rtaOptions);
+    ASSERT_TRUE(rta2.is_ok());
+    auto rta2Stats = std::move(rta2).unwrap();
+    EXPECT_FALSE(rta2Stats.reused);
+    EXPECT_EQ(1u, rta2Stats.instantiatedClasses);
+    const auto rta2Members = closureMembers(db, rta2Stats.batchId);
+    EXPECT_EQ(4u, rta2Members.size());
+    EXPECT_EQ(chaMembers, rta2Members);
+    EXPECT_NE(std::find(rta2Members.begin(), rta2Members.end(), baseVirt), rta2Members.end());
+    EXPECT_NE(std::find(rta2Members.begin(), rta2Members.end(), subVirt), rta2Members.end());
+}
+
+TEST(MjReachabilityClosureTest, RtaDeferredDispatchFlushesWhenInstantiationArrivesLater)
+{
+    const auto path = freshDbPath("rta_deferred_flush");
+    auto       db   = openOrDie(path);
+    std::vector<DbClassInput> classes;
+    {
+        std::vector<DbMemberInput> mMembers;
+        mMembers.push_back(method("m", "()V", 0x0001));
+        classes.push_back(methodClass("r/M", "", std::move(mMembers)));
+    }
+    {
+        std::vector<DbMemberInput> bMembers;
+        bMembers.push_back(method("t", "()V", 0x0001));
+        classes.push_back(methodClass("r/B", "", std::move(bMembers)));
+    }
+    {
+        std::vector<DbMemberInput> cMembers;
+        cMembers.push_back(method("t", "()V", 0x0001));
+        classes.push_back(methodClass("r/C", "r/B", std::move(cMembers)));
+    }
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
+
+    // 虚调用边先于 Type 引用处理（同一出队轮内边先、触发后）：r/B.t 因实例化
+    // 集合尚空而挂起，Type 引用 r/C 到达后实例化回灌（挂起直连目标 flush +
+    // 已探族回灌）——r/B.t 与覆写 r/C.t 都必须补可达。
+    std::vector<DbReferenceRecord> refs;
+    refs.push_back(methodRef("r/M", "m", "()V", 0, "r/B", "t", "()V"));
+    refs.push_back(typeRef("r/M", "m", "()V", 1, "r/C"));
+    ASSERT_TRUE(db.replaceReferences(0, std::move(refs)).is_ok());
+
+    const auto producer = registerRtaProducer(db);
+    ReachabilityClosureOptions options;
+    options.explicitSeeds.push_back(methodId(db, "r/M", "m", "()V"));
+    options.precision = ClosurePrecisionTier::Rta;
+    auto result = computeAndStoreReachabilityClosure(db, producer, options);
+    ASSERT_TRUE(result.is_ok());
+    auto stats = std::move(result).unwrap();
+    EXPECT_EQ(1u, stats.instantiatedClasses);
+
+    const auto members = closureMembers(db, stats.batchId);
+    const ca::i64 mMethod = methodId(db, "r/M", "m", "()V");
+    const ca::i64 bTarget = methodId(db, "r/B", "t", "()V");
+    const ca::i64 cTarget = methodId(db, "r/C", "t", "()V");
+    std::vector<ca::i64> expected = {mMethod, bTarget, cTarget};
+    std::sort(expected.begin(), expected.end());
+    EXPECT_EQ(expected, members);
+}
+
+TEST(MjReachabilityClosureTest, IndySupplementaryEdgesInjectWithCoverageBit)
+{
+    const auto path = freshDbPath("indy_inject");
+    auto       db   = buildVirtualCorpus(path);
+    {
+        // indy 展开边样例目标：无任何 refs 指向的隐藏方法。
+        std::vector<DbClassInput> extra;
+        std::vector<DbMemberInput> hiddenMembers;
+        hiddenMembers.push_back(method("hid", "()V", 0x0001));
+        extra.push_back(methodClass("a/Hidden", "", std::move(hiddenMembers)));
+        ASSERT_TRUE(db.ingestClasses(0, std::move(extra)).is_ok());
+    }
+    const auto producer = registerReachProducer(db);
+    const ca::i64 call   = methodId(db, "a/Caller", "call", "()V");
+    const ca::i64 hidden = methodId(db, "a/Hidden", "hid", "()V");
+
+    ReachabilityClosureOptions base;
+    base.explicitSeeds.push_back(call);
+    auto plain = computeAndStoreReachabilityClosure(db, producer, base);
+    ASSERT_TRUE(plain.is_ok());
+    auto plainStats = std::move(plain).unwrap();
+    const auto plainMembers = closureMembers(db, plainStats.batchId);
+    ASSERT_EQ(4u, plainMembers.size());
+    EXPECT_EQ(std::find(plainMembers.begin(), plainMembers.end(), hidden), plainMembers.end());
+
+    // indy 补充边射入：隐藏目标直连可达；coverage bit1 置位 + indy_edge_count
+    // 记去重后的边数；指纹判别段使同图无射入批不互串复用。
+    ReachabilityClosureOptions indy = base;
+    indy.indyEdges.emplace_back(call, hidden);
+    auto injected = computeAndStoreReachabilityClosure(db, producer, indy);
+    ASSERT_TRUE(injected.is_ok());
+    auto injectedStats = std::move(injected).unwrap();
+    EXPECT_FALSE(injectedStats.reused);
+    EXPECT_NE(plainStats.batchId, injectedStats.batchId);
+    EXPECT_EQ(1, injectedStats.indyEdgeCount);
+    const auto injectedMembers = closureMembers(db, injectedStats.batchId);
+    EXPECT_EQ(5u, injectedMembers.size());
+    EXPECT_NE(std::find(injectedMembers.begin(), injectedMembers.end(), hidden),
+              injectedMembers.end());
+    auto batches = db.listClosureBatches();
+    ASSERT_TRUE(batches.is_ok());
+    auto rows = std::move(batches).unwrap();
+    ASSERT_EQ(2u, rows.size());
+    EXPECT_EQ(static_cast<ca::u32>(ClosureCoverageMask::RefsDirectOnly), rows[0].coverageMask);
+    EXPECT_EQ(static_cast<ca::u32>(ClosureCoverageMask::RefsDirectOnly) |
+                  static_cast<ca::u32>(ClosureCoverageMask::IndyEdges),
+              rows[1].coverageMask);
+    EXPECT_EQ(1, rows[1].indyEdgeCount);
+
+    // 同射入集重复边清单：canonical 去重后指纹不变 → 命中既有批复用。
+    ReachabilityClosureOptions duplicated = indy;
+    duplicated.indyEdges.emplace_back(call, hidden);
+    auto again = computeAndStoreReachabilityClosure(db, producer, duplicated);
+    ASSERT_TRUE(again.is_ok());
+    auto againStats = std::move(again).unwrap();
+    EXPECT_TRUE(againStats.reused);
+    EXPECT_EQ(injectedStats.batchId, againStats.batchId);
+    EXPECT_EQ(2u, closureBatchCount(db));
+
+    // 端点未登记 → Invalid（校验先于开批，不留批）。
+    ReachabilityClosureOptions ghost = base;
+    ghost.indyEdges.emplace_back(424242, hidden);
+    auto rejected = computeAndStoreReachabilityClosure(db, producer, ghost);
+    ASSERT_TRUE(rejected.is_err());
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid, std::move(rejected).unwrap_err().kind);
+    EXPECT_EQ(2u, closureBatchCount(db));
+}
+
+TEST(MjReachabilityClosureTest, SeedMaskAndPrecisionDoNotCrossReuse)
+{
+    const auto path = freshDbPath("tier_seed_gate");
+    auto       db   = buildVirtualCorpus(path);
+    {
+        // 公共 main 入口：entry_points 档种子。
+        std::vector<DbClassInput> extra;
+        std::vector<DbMemberInput> mainMembers;
+        mainMembers.push_back(method("main", "([Ljava/lang/String;)V", 0x0009));
+        extra.push_back(methodClass("z/Entry", "", std::move(mainMembers), {}, 0x0021));
+        ASSERT_TRUE(db.ingestClasses(0, std::move(extra)).is_ok());
+    }
+    const auto producer = registerReachProducer(db);
+    const ca::i64 call   = methodId(db, "a/Caller", "call", "()V");
+
+    ReachabilityClosureOptions chaExplicit;
+    chaExplicit.explicitSeeds.push_back(call);
+    auto first = computeAndStoreReachabilityClosure(db, producer, chaExplicit);
+    ASSERT_TRUE(first.is_ok());
+    auto firstStats = std::move(first).unwrap();
+    ASSERT_FALSE(firstStats.reused);
+
+    // 同图同档同种子 → 复用；同图同种子换精度档 → 新批（指纹判别段失配 +
+    // precision 列三匹配失效门）；同精度档换种子档位 → 新批（seed_mask 轴）。
+    auto second = computeAndStoreReachabilityClosure(db, producer, chaExplicit);
+    ASSERT_TRUE(second.is_ok());
+    EXPECT_TRUE(std::move(second).unwrap().reused);
+
+    ReachabilityClosureOptions rtaExplicit = chaExplicit;
+    rtaExplicit.precision                  = ClosurePrecisionTier::Rta;
+    auto third = computeAndStoreReachabilityClosure(db, producer, rtaExplicit);
+    ASSERT_TRUE(third.is_ok());
+    auto thirdStats = std::move(third).unwrap();
+    EXPECT_FALSE(thirdStats.reused);
+    EXPECT_NE(firstStats.batchId, thirdStats.batchId);
+
+    auto fourth = computeAndStoreReachabilityClosure(db, producer, rtaExplicit);
+    ASSERT_TRUE(fourth.is_ok());
+    EXPECT_TRUE(std::move(fourth).unwrap().reused);
+
+    ReachabilityClosureOptions rtaEntry;
+    rtaEntry.entryPoints = true;
+    rtaEntry.precision   = ClosurePrecisionTier::Rta;
+    auto fifth = computeAndStoreReachabilityClosure(db, producer, rtaEntry);
+    ASSERT_TRUE(fifth.is_ok());
+    auto fifthStats = std::move(fifth).unwrap();
+    EXPECT_FALSE(fifthStats.reused);
+    EXPECT_NE(thirdStats.batchId, fifthStats.batchId);
+    EXPECT_EQ(3u, closureBatchCount(db));
+
+    // fresh 判定三匹配逐轴钉死：指纹盖图与计算判别段（档位/indy，不盖种子）、
+    // seed_mask 与 precision 各自独立成轴；任一失配即不命中。RTA 档两批共享
+    // 同一图指纹（同图同档），seed_mask 是它们的互斥轴——各命中己批，库里
+    // 未出现过的档位组合（显式 ∪ entry 叠加）不命中任何批。
+    auto batches = db.listClosureBatches();
+    ASSERT_TRUE(batches.is_ok());
+    auto rows = std::move(batches).unwrap();
+    ASSERT_EQ(3u, rows.size());
+    const auto& chaRow = rows[0];
+    const auto& rtaExplicitRow = rows[1];
+    const auto& rtaEntryRow = rows[2];
+    EXPECT_EQ(rtaExplicitRow.fingerprint, rtaEntryRow.fingerprint);
+    EXPECT_NE(chaRow.fingerprint, rtaExplicitRow.fingerprint);
+
+    auto hitCha = db.freshClosureBatch(chaRow.fingerprint, chaRow.seedMask, 0);
+    ASSERT_TRUE(hitCha.is_ok());
+    EXPECT_EQ(chaRow.batchId, std::move(hitCha).unwrap()->batchId);
+    auto missChaTier = db.freshClosureBatch(chaRow.fingerprint, chaRow.seedMask, 1);
+    ASSERT_TRUE(missChaTier.is_ok());
+    EXPECT_FALSE(std::move(missChaTier).unwrap().has_value());
+    auto hitRtaTier = db.freshClosureBatch(rtaExplicitRow.fingerprint, rtaExplicitRow.seedMask, 1);
+    ASSERT_TRUE(hitRtaTier.is_ok());
+    EXPECT_EQ(rtaExplicitRow.batchId, std::move(hitRtaTier).unwrap()->batchId);
+    auto missRtaTier = db.freshClosureBatch(rtaExplicitRow.fingerprint, rtaExplicitRow.seedMask, 0);
+    ASSERT_TRUE(missRtaTier.is_ok());
+    EXPECT_FALSE(std::move(missRtaTier).unwrap().has_value());
+    auto hitRtaEntry = db.freshClosureBatch(rtaExplicitRow.fingerprint, rtaEntryRow.seedMask, 1);
+    ASSERT_TRUE(hitRtaEntry.is_ok());
+    EXPECT_EQ(rtaEntryRow.batchId, std::move(hitRtaEntry).unwrap()->batchId);
+    const ca::u32 unusedMask = rtaExplicitRow.seedMask |
+                               static_cast<ca::u32>(ClosureSeedMask::EntryPoints);
+    auto missSeedMask = db.freshClosureBatch(rtaExplicitRow.fingerprint, unusedMask, 1);
+    ASSERT_TRUE(missSeedMask.is_ok());
+    EXPECT_FALSE(std::move(missSeedMask).unwrap().has_value());
+}
+
+TEST(MjReachabilityClosureTest, CoverageAndPrecisionRoundTripOnStoreFace)
+{
+    const auto path = freshDbPath("coverage_precision_roundtrip");
+    auto       db   = buildVirtualCorpus(path);
+    const auto producer = registerReachProducer(db);
+
+    auto fingerprint = reachabilityClosureFingerprint(db);
+    ASSERT_TRUE(fingerprint.is_ok());
+
+    DbClosureBatchRecord record;
+    record.producerId    = producer;
+    record.fingerprint   = std::move(fingerprint).unwrap();
+    record.seedMask      = static_cast<ca::u32>(ClosureSeedMask::Explicit);
+    record.seedCount     = 1;
+    record.coverageMask  = static_cast<ca::u32>(ClosureCoverageMask::RefsDirectOnly) |
+                          static_cast<ca::u32>(ClosureCoverageMask::IndyEdges);
+    record.indyEdgeCount = 7;
+    record.precision     = static_cast<ca::u32>(ClosurePrecisionTier::Rta);
+    record.memberIds     = {1, 2, 3};
+    auto stored = db.storeClosureBatch(record);
+    ASSERT_TRUE(stored.is_ok());
+    auto row = std::move(stored).unwrap();
+    EXPECT_EQ(record.coverageMask, row.coverageMask);
+    EXPECT_EQ(7, row.indyEdgeCount);
+    EXPECT_EQ(record.precision, row.precision);
+    EXPECT_EQ(1u, row.fpVersion);
+
+    // precision 非 0/1 → Invalid（校验先于开批）。
+    DbClosureBatchRecord badTier = record;
+    badTier.precision            = 2;
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.storeClosureBatch(badTier)));
+    auto batches = db.listBatches(std::nullopt);
+    ASSERT_TRUE(batches.is_ok());
+    EXPECT_EQ(1u, std::move(batches).unwrap().size());
 }
