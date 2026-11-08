@@ -48,7 +48,7 @@
 
 namespace mjbase::pass {
 
-/// 结构级死代码清理 pass（帧可达性证明删除）。
+/// @brief 结构级死代码清理 pass（帧可达性证明删除）。
 class UnreachableInsnRemover : public mjbase::spi::MethodPass
 {
 public:

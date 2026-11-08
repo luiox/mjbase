@@ -49,7 +49,7 @@
 
 namespace mjbase::pass {
 
-/// 无读取槽位的 store 降级 pop/pop2。
+/// @brief 无读取槽位的 store 降级 pop/pop2。
 class PopUnUsedLocalVariables : public mjbase::spi::MethodPass
 {
 public:
