@@ -4656,6 +4656,176 @@ ca::Result<std::vector<DbClassInfo>, AnalysisDbError> AnalysisDb::listClasses() 
     return ca::Ok(std::move(classes));
 }
 
+namespace {
+
+///ASCII 小写折叠（只折 A-Z；与 SQLite LOWER 同口径，消费方扫描面同语义）。
+std::string asciiLower(const std::string& text)
+{
+    std::string folded = text;
+    for (char& c : folded) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return folded;
+}
+
+///LIKE 通配符转义（% _ 与转义符本身），配 ESCAPE '\' 使用。
+std::string likeEscape(const std::string& text)
+{
+    std::string escaped;
+    escaped.reserve(text.size());
+    for (const char c : text) {
+        if (c == '%' || c == '_' || c == '\\') escaped.push_back('\\');
+        escaped.push_back(c);
+    }
+    return escaped;
+}
+
+///GLOB 通配符转义：* ? [ 括号字面化（[*]/[?]/[[]；GLOB 字节敏感恰是
+///caseSensitive 档所需，'%' 与 '_' 在 GLOB 非元字符无需转义）。
+std::string globEscape(const std::string& text)
+{
+    std::string escaped;
+    escaped.reserve(text.size());
+    for (const char c : text) {
+        if (c == '*') escaped.append("[*]");
+        else if (c == '?') escaped.append("[?]");
+        else if (c == '[') escaped.append("[[]");
+        else escaped.push_back(c);
+    }
+    return escaped;
+}
+
+///std::string → Utf8StringRef（绑定参数用；串生命周期归调用方容器）。
+ca::str::Utf8StringRef refOfText(const std::string& text)
+{
+    return ca::str::Utf8StringRef::from_data(
+        reinterpret_cast<const ca::u8*>(text.data()), text.size());
+}
+
+}   // namespace
+
+ca::Result<DbClassSearchPage, AnalysisDbError> AnalysisDb::searchClassesPaged(
+    const DbClassSearchQuery& query, ca::i64 limit, ca::i64 offset) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto result = validatePageWindow(limit, offset); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    //谓词与参数按声明序编号（?1..?n），跨 COUNT 与窗口 SELECT 复用。
+    std::vector<std::string> params;
+    std::string              predicate;
+    const auto addParam = [&params](std::string value) {
+        params.push_back(std::move(value));
+        return "?" + std::to_string(params.size());
+    };
+    const auto addPredicate = [&predicate](std::string fragment) {
+        if (predicate.empty()) predicate = std::move(fragment);
+        else predicate += " AND " + fragment;
+    };
+
+    const std::string needle = query.needle.to_std_string();
+    if (!needle.empty()) {
+        if (query.caseSensitive) {
+            if (query.match == DbTextMatchKind::Exact) {
+                const std::string p = addParam(needle);
+                addPredicate("(c.internal_name = " + p + " OR e.path = " + p + ")");
+            }
+            else {
+                std::string glob = globEscape(needle);
+                glob = query.match == DbTextMatchKind::Contains ? "*" + glob + "*" : glob + "*";
+                const std::string p = addParam(std::move(glob));
+                addPredicate("(c.internal_name GLOB " + p + " OR e.path GLOB " + p + ")");
+            }
+        }
+        else if (query.match == DbTextMatchKind::Exact) {
+            const std::string p = addParam(asciiLower(needle));
+            addPredicate("(LOWER(c.internal_name) = " + p + " OR LOWER(e.path) = " + p + ")");
+        }
+        else {
+            std::string like = likeEscape(asciiLower(needle));
+            like = query.match == DbTextMatchKind::Contains ? "%" + like + "%" : like + "%";
+            const std::string p = addParam(std::move(like));
+            addPredicate("(LOWER(c.internal_name) LIKE " + p + " ESCAPE '\\' OR"
+                         " LOWER(e.path) LIKE " + p + " ESCAPE '\\')");
+        }
+    }
+    if (!query.owner.is_empty()) {
+        const std::string p = addParam(query.owner.to_std_string());
+        addPredicate("c.internal_name = " + p);
+    }
+    if (!query.packagePrefix.is_empty()) {
+        const std::string p =
+            addParam(globEscape(query.packagePrefix.to_std_string()) + "*");
+        addPredicate("c.internal_name GLOB " + p);
+    }
+
+    //可见域：关联活跃条目的类（跨输入并集；墓碑/无锚不在面内）。
+    const std::string from =
+        " FROM classes c JOIN entries e ON e.entry_id = c.entry_id AND e.tombstoned = 0";
+    const std::string where = predicate.empty() ? std::string() : " WHERE " + predicate;
+
+    //全量命中数（窗口外行不进 rows）。
+    DbClassSearchPage page;
+    {
+        const std::string countSql = "SELECT COUNT(*)" + from + where;
+        auto prepared = prepare(impl_->handle, countSql.c_str());
+        if (prepared.is_err()) return errorOf(std::move(prepared));
+        auto statement = std::move(prepared).unwrap();
+        for (ca::usize i = 0; i < params.size(); ++i) {
+            if (auto result = bindText(impl_->handle, statement.raw,
+                                       static_cast<int>(i + 1), refOfText(params[i]));
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) return ca::Ok(std::move(page));
+        page.total = static_cast<ca::u64>(sqlite3_column_int64(statement.raw, 0));
+    }
+
+    //窗口行：(entry path, internal_name) BINARY 升序 = 消费方命中行全序。
+    {
+        const std::string rowsSql = "SELECT c.internal_name, e.path" + from + where +
+                                    " ORDER BY e.path, c.internal_name LIMIT ?" +
+                                    std::to_string(params.size() + 1) + " OFFSET ?" +
+                                    std::to_string(params.size() + 2);
+        auto prepared = prepare(impl_->handle, rowsSql.c_str());
+        if (prepared.is_err()) return errorOf(std::move(prepared));
+        auto statement = std::move(prepared).unwrap();
+        for (ca::usize i = 0; i < params.size(); ++i) {
+            if (auto result = bindText(impl_->handle, statement.raw,
+                                       static_cast<int>(i + 1), refOfText(params[i]));
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw,
+                                  static_cast<int>(params.size() + 1), limit);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw,
+                                  static_cast<int>(params.size() + 2), offset);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        for (;;) {
+            auto hasRow = step(impl_->handle, statement.raw);
+            if (hasRow.is_err()) return errorOf(std::move(hasRow));
+            if (!hasRow.unwrap()) break;
+            DbClassSearchRow row;
+            row.internalName = utf8Column(statement.raw, 0);
+            row.entryPath    = utf8Column(statement.raw, 1);
+            page.rows.push_back(std::move(row));
+        }
+    }
+    return ca::Ok(std::move(page));
+}
+
 ca::Result<std::vector<DbMemberInfo>, AnalysisDbError> AnalysisDb::listMembers(
     const ca::str::Utf8StringRef& owner) const
 {

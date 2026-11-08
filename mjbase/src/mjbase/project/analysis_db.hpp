@@ -290,6 +290,42 @@ struct DbClassInfo
     std::vector<ca::str::Utf8String> interfaces;
 };
 
+/// @brief 类文本搜索的匹配模式（`searchClassesPaged` 文本面）。
+///
+/// SQL 表达的三档；regex 无 SQLite 原生等价，由消费方按同一可见域/行序
+/// 取全量行（大 `limit`）后客户端过滤。不敏感档经 `LOWER` 折叠，SQLite
+/// `LOWER` 只折 ASCII——与消费方工作副本扫描面的 ASCII 折叠口径一致。
+enum class DbTextMatchKind : ca::u8
+{
+    Contains, ///< 子串命中
+    Prefix,   ///< 前缀命中
+    Exact,    ///< 整串相等
+};
+
+/// @brief 类搜索查询（`searchClassesPaged` 入参）。
+struct DbClassSearchQuery
+{
+    ca::str::Utf8String needle;    ///< 匹配串；空 = 不做文本过滤（全量）
+    DbTextMatchKind     match = DbTextMatchKind::Contains;
+    bool                caseSensitive = false; ///< true = 字节敏感（GLOB/= 路径）
+    ca::str::Utf8String owner;    ///< 非空 = internal_name 字节精确等值作用域
+    ca::str::Utf8String packagePrefix; ///< 非空 = internal_name 字节前缀作用域
+};
+
+/// @brief 类搜索行（查询输出）。
+struct DbClassSearchRow
+{
+    ca::str::Utf8String internalName;
+    ca::str::Utf8String entryPath; ///< 关联活跃条目 path（可见域保证有锚，恒非空）
+};
+
+/// @brief 类搜索页（查询输出）：窗口行 + 全量命中数。
+struct DbClassSearchPage
+{
+    std::vector<DbClassSearchRow> rows;
+    ca::u64                       total = 0; ///< 全量命中数（窗口外行不计入 rows）
+};
+
 /// @brief 成员事实（查询输出）。
 struct DbMemberInfo
 {
@@ -1033,6 +1069,18 @@ public:
 
     /// @brief 全部已登记类事实，按 internal_name 升序。
     ca::Result<std::vector<DbClassInfo>, AnalysisDbError> listClasses() const;
+
+    /// @brief 类文本搜索（分页）：可见域 = 关联活跃条目的类（跨输入并集；
+    ///        条目墓碑/无锚类不在面内），文本面 = internal_name 或条目 path
+    ///        双面命中，作用域 `owner`（字节精确）/`packagePrefix`（字节
+    ///        前缀）与文本面 AND。
+    ///
+    /// 行序 (entry path, internal_name) BINARY 升序（确定序）。窗口参数
+    /// 约束与 `allSubclassesPaged` 分页契约相同（limit=0 空页、负值
+    /// `Invalid`、窗口在全量匹配+排序后截取）；另附全量命中数 `total`
+    /// （COUNT 与窗口 SELECT 两条语句，跨页一致以同一事实状态为前提）。
+    ca::Result<DbClassSearchPage, AnalysisDbError> searchClassesPaged(
+        const DbClassSearchQuery& query, ca::i64 limit, ca::i64 offset) const;
 
     /// @brief 类的全部成员，按 (kind, name, descriptor) 升序。
     ca::Result<std::vector<DbMemberInfo>, AnalysisDbError> listMembers(
