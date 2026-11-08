@@ -548,11 +548,11 @@ TEST(MjPassMethodInlinerTest, InlinesVirtualMethodOfFinalClassCrossClass)
     // CU.use(LFC;I)I：aload_1; iload_2; invokevirtual FC.v; ireturn
     addClassResource(container, "FC.class", asmClass("FC", "public final",
         "java/lang/Object", "",
-        {{{"public", "v", "(I)I",
-           "      iload 1\n      iconst_3\n      iadd\n      ireturn\n"}}}));
+        {{"public", "v", "(I)I",
+          "      iload 1\n      iconst_3\n      iadd\n      ireturn\n"}}));
     addClassResource(container, "CU.class", asmDefaultClass("CU",
-        {{{"public static", "use", "(LFC;I)I",
-           "      aload 1\n      iload 2\n      invokevirtual FC.v (I)I\n      ireturn\n"}}}));
+        {{"public static", "use", "(LFC;I)I",
+          "      aload 1\n      iload 2\n      invokevirtual FC.v (I)I\n      ireturn\n"}}));
 
     const auto pa = runInliner(container);
     ASSERT_FALSE(pa.areAllPreserved());
@@ -666,8 +666,8 @@ TEST(MjPassMethodInlinerTest, InlinesProtectedStaticViaSubclass)
                                        "      iconst_1\n      ireturn\n"}}));
     addClassResource(container, "S.class",
                      asmClass("S", "public super", "D", "",
-                              {{{"public static", "m", "()I",
-                                 "      invokestatic D.k ()I\n      ireturn\n"}}}));
+                              {{"public static", "m", "()I",
+                                "      invokestatic D.k ()I\n      ireturn\n"}}));
 
     const auto pa = runInliner(container);
     ASSERT_FALSE(pa.areAllPreserved());
@@ -690,11 +690,11 @@ TEST(MjPassMethodInlinerTest, InlinesPrivateInterfaceMethod)
     addClassResource(container, "PI.class", asmClass("PI", "public interface abstract",
         "java/lang/Object", "",
         {
-            {{"private", "p", "(I)I",
-              "      iload 1\n      iconst_2\n      imul\n      ireturn\n"}},
-            {{"public", "use", "(I)I",
-              "      aload 0\n      iload 1\n      invokeinterface PI.p (I)I\n"
-              "      ireturn\n"}},
+            {"private", "p", "(I)I",
+             "      iload 1\n      iconst_2\n      imul\n      ireturn\n"},
+            {"public", "use", "(I)I",
+             "      aload 0\n      iload 1\n      invokeinterface PI.p (I)I\n"
+             "      ireturn\n"},
         }));
 
     const auto pa = runInliner(container);
@@ -953,10 +953,10 @@ TEST(MjPassMethodInlinerTest, RejectsImpureCalleeFieldWrite)
     addClassResource(container, "W.class", asmClass("W", "public super",
         "java/lang/Object", "  .field public static g I\n",
         {
-            {{"public static", "f", "(I)I",
-              "      iload 0\n      putstatic W.g I\n      iload 0\n      ireturn\n"}},
-            {{"public static", "m", "(I)I",
-              "      iload 0\n      invokestatic W.f (I)I\n      ireturn\n"}},
+            {"public static", "f", "(I)I",
+             "      iload 0\n      putstatic W.g I\n      iload 0\n      ireturn\n"},
+            {"public static", "m", "(I)I",
+             "      iload 0\n      invokestatic W.f (I)I\n      ireturn\n"},
         }));
     expectUntouched(container, "W.class");
 }
@@ -968,10 +968,10 @@ TEST(MjPassMethodInlinerTest, RejectsReadOnlyCalleeFieldRead)
     addClassResource(container, "RD.class", asmClass("RD", "public super",
         "java/lang/Object", "  .field public static g I\n",
         {
-            {{"public static", "f", "()I",
-              "      getstatic RD.g I\n      ireturn\n"}},
-            {{"public static", "m", "()I",
-              "      invokestatic RD.f ()I\n      ireturn\n"}},
+            {"public static", "f", "()I",
+             "      getstatic RD.g I\n      ireturn\n"},
+            {"public static", "m", "()I",
+             "      invokestatic RD.f ()I\n      ireturn\n"},
         }));
     expectUntouched(container, "RD.class");
 }
@@ -1098,9 +1098,9 @@ TEST(MjPassMethodInlinerTest, RejectsVirtualOverridableCallee)
                                        "      iload 1\n      iconst_1\n      iadd\n"
                                        "      ireturn\n"}}));
     addClassResource(container, "OV.class", asmDefaultClass("OV",
-        {{{"public static", "m", "(LVm2;)I",
-           "      aload 1\n      iconst_1\n      invokevirtual Vm2.v (I)I\n"
-           "      ireturn\n"}}}));
+        {{"public static", "m", "(LVm2;)I",
+          "      aload 1\n      iconst_1\n      invokevirtual Vm2.v (I)I\n"
+          "      ireturn\n"}}));
     expectUntouched(container, "OV.class");
 }
 
@@ -1117,8 +1117,8 @@ TEST(MjPassMethodInlinerTest, RejectsVirtualFinalMethodCrossClassBodyWithCall)
              "      invokestatic FD.helper ()I\n      ireturn\n"},
         }));
     addClassResource(container, "FDU.class", asmDefaultClass("FDU",
-        {{{"public static", "m", "(LFD;)I",
-           "      aload 1\n      invokevirtual FD.fin ()I\n      ireturn\n"}}}));
+        {{"public static", "m", "(LFD;)I",
+          "      aload 1\n      invokevirtual FD.fin ()I\n      ireturn\n"}}));
     // FD 内部（helper → fin 同类）可合法自内联；被拒的是跨类站点 FDU.m →
     // FD.fin。站点保留断言只看 FDU 字节。
     expectSiteUntouched(container, "FDU.class");
@@ -1201,11 +1201,11 @@ TEST(MjPassMethodInlinerTest, RejectsImpureLoopCallee)
     addClassResource(container, "IL.class", asmClass("IL", "public super",
         "java/lang/Object", "  .field public static g I\n",
         {
-            {{"public static", "f", "(I)I",
-              "      Lhead:\n      iload 0\n      putstatic IL.g I\n      goto Lhead\n"
-              "      ireturn\n"}},
-            {{"public static", "m", "(I)I",
-              "      iload 0\n      invokestatic IL.f (I)I\n      ireturn\n"}},
+            {"public static", "f", "(I)I",
+             "      Lhead:\n      iload 0\n      putstatic IL.g I\n      goto Lhead\n"
+             "      ireturn\n"},
+            {"public static", "m", "(I)I",
+             "      iload 0\n      invokestatic IL.f (I)I\n      ireturn\n"},
         }));
     expectUntouched(container, "IL.class");
 }
@@ -1242,10 +1242,10 @@ TEST(MjPassMethodInlinerTest, RejectsInterfaceNonPrivateSite)
     // 集合对容器外开放，唯一实现不可证 → 拒收（v2 接口面只收 private）。
     addClassResource(container, "IJ.class", asmClass("IJ", "public interface abstract",
         "java/lang/Object", "",
-        {{{"public", "dm", "()I", "      iconst_1\n      ireturn\n"}}}));
+        {{"public", "dm", "()I", "      iconst_1\n      ireturn\n"}}));
     addClassResource(container, "IJU.class", asmDefaultClass("IJU",
-        {{{"public static", "m", "(LIJ;)I",
-           "      aload 1\n      invokeinterface IJ.dm ()I\n      ireturn\n"}}}));
+        {{"public static", "m", "(LIJ;)I",
+          "      aload 1\n      invokeinterface IJ.dm ()I\n      ireturn\n"}}));
     expectUntouched(container, "IJU.class");
 }
 
