@@ -139,6 +139,7 @@ EmptyClassRemover
 - 判据锚：class 可完整解析且字段方法皆空。
 - 拒绝面：非 class 资源、畸形字节、带成员的类原样；keep 规则命中的类不删（规则只加不减）。
 - 验收门：``unused_member_remover_test``\ （家族套件），外加 golden 对拍（EmptyClassRemover 道，um 语料）与家族 JVM 真跑门 ``unused_member_remover_jvm_test``\ 。
+- 规格篇：家族分层、删除安全不变量与档位口径见 :doc:`unused-member-removal-spec`\ 。
 
 .. _pass-catalog-unused-class-remover:
 
@@ -150,6 +151,7 @@ UnusedClassRemover
 - 拒绝面：任一类名读取失败立即整 pass 放弃（无部分删除）；可达类闭包为空（library jar、无根）整件原样；分析未注册抛 ``logic_error``\ ——配置错误的稳定失败。
 - 验收门：家族套件 + golden 对拍（UnusedClassRemover 道）+ 家族 JVM 真跑门。
 - 链序：删除整类与成员删除两件同一信任级，跨容器入边 fail-closed 由 public 档位与 keep 规则兜底。
+- 规格篇：家族分层、删除安全不变量与档位口径见 :doc:`unused-member-removal-spec`\ 。
 
 .. _pass-catalog-unused-field-remover:
 
@@ -160,6 +162,7 @@ UnusedFieldRemover
 - 判据锚：删除候选 = 容器内声明 ∧ 不在闭包；keep 规则命中的类整类跳过且其声明字段提升为根。
 - 拒绝面：硬底线（构造器、``<clinit>``\ 、keep metadata、native/abstract、资源 keep 根）全档位保留；全部类先完成解析和序列化再一次提交，任一失败保持全部原始 bytes。
 - 验收门：家族套件 + golden 对拍（UnusedFieldRemover 道）+ 家族 JVM 真跑门。
+- 规格篇：家族分层、删除安全不变量与档位口径见 :doc:`unused-member-removal-spec`\ 。
 
 .. _pass-catalog-global-unused-method-remover:
 
@@ -171,6 +174,7 @@ GlobalUnusedMethodRemover
 - 拒绝面：与 UnusedFieldRemover 同口径；可见性档位语义同上。
 - 验收门：家族套件 + golden 对拍（GlobalUnusedMethodRemover 道）+ 家族 JVM 真跑门。
 - 链序：内联族（IdentityWrapperInliner / MethodInliner）头注显式声明壳方法删除延后至本件管线。
+- 规格篇：家族分层、删除安全不变量与档位口径见 :doc:`unused-member-removal-spec`\ 。
 
 .. _pass-catalog-method-call-remover:
 
@@ -259,6 +263,7 @@ GlobalStrPoolOptimizer
 - 拒绝面：任一类资源不可解析整件放弃（普查全量性）；改写方法 lower 或序列化失败整件放弃（两阶段提交）。改写是净栈中性替换，分支目标帧不漂移、无需帧再生。
 - 验收门：``global_str_pool_optimizer_test``\ 。
 - 链序：字符串内容面失效（改写返回 ``none()``\ ）——下游字符串常量假设须在本件之后重查。
+- 规格篇：四件分工、判据逐槽与链序申报见 :doc:`string-constant-spec`\ 。
 
 .. _pass-catalog-static-value-collection:
 
@@ -541,6 +546,7 @@ ConstCharArrayStringFolder
 - 拒绝面：任意别名、逃逸、未覆盖/越界下标、非 ``T_CHAR``\ 数组、非法 surrogate、窗内锚定 incoming 标签——整组不动。
 - 验收门：``const_char_array_string_folder_test``\ ，外加 golden 对拍（ConstCharArrayStringFolder 道）。
 - 链序：与 CharArrToStrSimplifier 互补——那件保留数组语义（改写为 ldc + ``toCharArray``\ ），本件折叠整个构造串。
+- 规格篇：四件分工、判据逐槽与链序申报见 :doc:`string-constant-spec`\ 。
 
 .. _pass-catalog-char-arr-to-str-simplifier:
 
@@ -551,6 +557,7 @@ CharArrToStrSimplifier
 - 判据锚：``ICONST``\ /\ ``NEWARRAY T_CHAR``\ /\ (``DUP; ICONST_j; <常量>; CASTORE``\ ) × len 匹配矩阵；字符按 JVM int→char 截断收进 UTF-16 码元。
 - 拒绝面：编码失败的码元序列整组失配；窗内锚定标签失配（首成员标签随改写迁移）。
 - 验收门：``char_arr_to_str_simplifier_test``\ ，外加 golden 对拍（CharArrToStrSimplifier 道）。
+- 规格篇：四件分工、判据逐槽与链序申报见 :doc:`string-constant-spec`\ 。
 
 .. _pass-catalog-fix-pattern-simplifier:
 
@@ -603,6 +610,7 @@ StringConcatIndirector
 - 判据锚：识别窗逐指令相邻；每 append 实参为自包含纯计算链（反向需值抽取，栈操作/调用/字段/数组/分配不入链）；BSM 条目同形复用、indy CP 条目 intern。
 - 拒绝面：类版本 < 53 拒收；condy 不认领；窗内任何成员锚定存活标签整窗拒收；``<init>(String)``\ 实参须为字符串常量；任一 intern/erase 失败整窗放弃（无半删）。常量不嵌配方（全 ``\u0001``\ 槽位），配方嵌入属后续精化挂账。
 - 验收门：``string_concat_indirector_test``\ + ``string_concat_indirector_jvm_test``\ （JVM 真跑）。
+- 规格篇：四件分工、判据逐槽与链序申报见 :doc:`string-constant-spec`\ 。
 
 .. _pass-catalog-method-propagation:
 
@@ -642,6 +650,7 @@ RefCopyPropagator
 - 拒绝面：生产者白名单外（字段、调用、new、数组读取、dup 变体）一律保留；来源 Unknown/Param、读点不可达、帧数据流失败整件跳过。
 - 验收门：``ref_copy_propagator_test``\ 。
 - 链序：入参来源不可克隆的形态交 StoreLoadRelayEliminator 与冗余存储族收敛。
+- 规格篇：判据逐槽、家族分工与链上演示见 :doc:`variable-folding-spec`\ 。
 
 .. _pass-catalog-intrinsic-folding:
 
@@ -663,6 +672,7 @@ ConsJumpOptimizer
 - 拒绝面：类型失配窗与 ``IF_ACMP``\ 族不入矩阵（旧栈对 Verifier 非法形态也折叠的防御怪癖显式拒绝）；窗口内部边界锚标签拒收（栈消费保护），窗口头标签放行；顺序末尾条件跳删除无承接者保守跳过。
 - 验收门：``cons_jump_optimizer_test``\ 。
 - 链序：常量跳转折叠族首件；「先删尾后改头」事务序不留半折叠态。
+- 规格篇：共享折叠纪律、判据逐槽与 jasm 对照见 :doc:`control-flow-fold-spec`\ 。
 
 .. _pass-catalog-constant-switch-folder:
 
@@ -673,6 +683,7 @@ ConstantSwitchFolder
 - 拒绝面：switch 前置边界锚标签拒收（栈消费保护）、窗口头标签放行；顺序末尾 switch 保守跳过；目标标签解析失败拒收。
 - 验收门：``constant_switch_folder_test``\ 。
 - 链序：常量跳转折叠族第二件；折叠后未选中 case 标签失去引用者，不物化进字节码。
+- 规格篇：共享折叠纪律、判据逐槽与 jasm 对照见 :doc:`control-flow-fold-spec`\ 。
 
 .. _pass-catalog-method-dead-store:
 
@@ -702,6 +713,7 @@ RedundantLoadValEliminator
 - 拒绝面：POP 前置边界锚存活标签跳过该对；跨行号边界的相邻对会消除（行号边界在 CodeDom 不可见，显式保守偏离声明）。
 - 验收门：``redundant_load_val_eliminator_test``\ ，外加 golden 对拍（RedundantLoadValEliminator 道）。
 - 链序：默认链成员；store 降级暴露的死装载由 UselessPopCleaner 后续切片。
+- 规格篇：判据逐槽、家族分工与链上演示见 :doc:`variable-folding-spec`\ 。
 
 .. _pass-catalog-unused-check-cleaner:
 
@@ -743,6 +755,7 @@ DeadLocalStoreRemover
 - 拒绝面：帧数据流失败或到达集合溢出整件跳过；无输入边的 store 只降级不整删。
 - 验收门：``dead_local_store_remover_test``\ 。
 - 链序：与 PopUnUsedLocalVariables 分工——那件判「零读点」、本件判「读点全不可达汇点」且能整删常量链。
+- 规格篇：判据逐槽、家族分工与链上演示见 :doc:`variable-folding-spec`\ 。
 
 .. _pass-catalog-dead-side-effect-free-call-remover:
 
@@ -764,6 +777,7 @@ RedundantStoreEliminater
 - 拒绝面：帧数据流失败或截断整件跳过；iinc 是读改写、天然产生使用边不受牵连。
 - 验收门：``redundant_store_eliminater_test``\ 。
 - 链序：与家族两件分工——PopUnUsedLocalVariables 判「零读点槽」、本件判「单次 store 定义的零使用」（到边粒度，槽内其他定义不受牵连）。
+- 规格篇：判据逐槽、家族分工与链上演示见 :doc:`variable-folding-spec`\ 。
 
 .. _pass-catalog-store-load-relay-eliminator:
 
@@ -774,6 +788,7 @@ StoreLoadRelayEliminator
 - 判据锚：def-use 单使用证明；五族全宽覆盖；删除暴露的新相邻对下一轮继续。
 - 拒绝面：对内任一侧锚定标签整对拒收（reload 位锚入 = 分支跳入时期望弹值在栈）；后续任何读点即额外使用边保守保留（旧栈窗内多对面不健全、不复刻）。
 - 验收门：``store_load_relay_eliminator_test``\ 。
+- 规格篇：判据逐槽、家族分工与链上演示见 :doc:`variable-folding-spec`\ 。
 
 .. _pass-catalog-write-only-array-cleaner:
 
@@ -864,6 +879,7 @@ FlatteningReverser
 - 拒绝面：多 switch、分发块居首、状态槽第二读点、前驱分支锚入分发块区间、案表自引用、迹模拟不定值、帧深等价比对不成立——整方法拒收、不做部分改写。
 - 验收门：``flattening_reverser_test``\ 。
 - 链序：不可达分发块交 UnreachableInsnRemover；状态写死存与中转弹跳交 store→load 转发清理面。
+- 规格篇：共享折叠纪律、判据逐槽与 jasm 对照见 :doc:`control-flow-fold-spec`\ 。
 
 .. _pass-catalog-try-catch-cleanup:
 
@@ -874,6 +890,7 @@ TryCatchCleanup
 - 判据锚：透明重抛须 handler 不被共享、正常流不可达、无重叠表项；NPE 形与自捕抛形有栈深门槛与锚入标签守卫。
 - 拒绝面：域分析失败、JSR/RET、描述符或标签解析不齐——对应规则放弃、保守保留；乱序条目保留（合法类文件允许）；任一不确定整条保留。
 - 验收门：``try_catch_cleanup_test``\ 。
+- 规格篇：规则面逐槽、旧栈偏差申报与 NPE 形对照见 :doc:`try-catch-cleanup-spec`\ 。
 
 .. _pass-catalog-duplicate-catch-merging:
 
@@ -906,6 +923,7 @@ GotoRearranger
 - 拒绝面：含 JSR/RET 方法整体不动；异常表锚定段内或 GOTO 边界拒动；目标非单前驱拒动；段内有段外回边拒动（宁窄勿错）。
 - 验收门：``goto_rearranger_test``\ 。
 - 链序：标签布局族第二件，衔接 RedundantJumpRemover 的邻接形态。
+- 规格篇：共享折叠纪律、判据逐槽与 jasm 对照见 :doc:`control-flow-fold-spec`\ 。
 
 .. _pass-catalog-method-reorder:
 
