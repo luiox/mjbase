@@ -173,7 +173,7 @@ TEST(PassPipelineTest, methodManagerRunsInOrder)
     EXPECT_EQ(mgr.size(), 3u);
 
     MethodAnalysisManager mam(tArena);
-    ScopeFixture          fx(buildClassBytes("T", {{"t", "()V", iconstReturn()}}));
+    ScopeFixture          fx(buildClassBytes("T", {{"t", "()V", iconstReturnText()}}));
     mgr.run(*fx.scope, mam);
     ASSERT_EQ(log.size(), 3u);
     EXPECT_EQ(log[0], "t");
@@ -187,7 +187,7 @@ TEST(PassPipelineTest, emptyManagerPreservesAll)
     MethodPassManager mgr;
     EXPECT_TRUE(mgr.empty());
     MethodAnalysisManager mam(tArena);
-    ScopeFixture          fx(buildClassBytes("T", {{"t", "()V", iconstReturn()}}));
+    ScopeFixture          fx(buildClassBytes("T", {{"t", "()V", iconstReturnText()}}));
     EXPECT_TRUE(mgr.run(*fx.scope, mam).areAllPreserved());
 }
 
@@ -198,7 +198,7 @@ TEST(PassPipelineTest, allReadOnlyPreservesAll)
     mgr.addPass(std::make_unique<ReadOnlyMethodPass>())
         .addPass(std::make_unique<ReadOnlyMethodPass>());
     MethodAnalysisManager mam(tArena);
-    ScopeFixture          fx(buildClassBytes("T", {{"t", "()V", iconstReturn()}}));
+    ScopeFixture          fx(buildClassBytes("T", {{"t", "()V", iconstReturnText()}}));
     EXPECT_TRUE(mgr.run(*fx.scope, mam).areAllPreserved());
 }
 
@@ -210,7 +210,7 @@ TEST(PassPipelineTest, oneModifyingPassClearsAll)
     mgr.addPass(std::make_unique<ReadOnlyMethodPass>())
         .addPass(std::make_unique<RecordingMethodPass>(log));   // none()
     MethodAnalysisManager mam(tArena);
-    ScopeFixture          fx(buildClassBytes("T", {{"t", "()V", iconstReturn()}}));
+    ScopeFixture          fx(buildClassBytes("T", {{"t", "()V", iconstReturnText()}}));
     EXPECT_FALSE(mgr.run(*fx.scope, mam).areAllPreserved());
 }
 
@@ -230,7 +230,7 @@ TEST(PassPipelineTest, passExceptionStopsLaterPasses)
         .addPass(std::make_unique<RecordingMethodPass>(log));
 
     MethodAnalysisManager mam(tArena);
-    ScopeFixture          fx(buildClassBytes("T", {{"t", "()V", iconstReturn()}}));
+    ScopeFixture          fx(buildClassBytes("T", {{"t", "()V", iconstReturnText()}}));
     EXPECT_THROW(mgr.run(*fx.scope, mam), std::runtime_error);
     ASSERT_EQ(log.size(), 1u);
     EXPECT_EQ(log[0], "t");
@@ -243,7 +243,7 @@ TEST(PassPipelineTest, passExceptionInvalidatesChangedMethodAnalyses)
     mgr.addPass(std::make_unique<AddNopThenThrowPass>());
 
     MethodAnalysisManager mam(tArena);
-    ScopeFixture          fx(buildClassBytes("T", {{"t", "()V", bareReturn()}}));
+    ScopeFixture          fx(buildClassBytes("T", {{"t", "()V", bareReturnText()}}));
     mam.registerAnalysis<InsnCountAnalysis>();
 
     ASSERT_EQ(mam.getResult<InsnCountAnalysis>(*fx.scope), 1u);
@@ -266,9 +266,9 @@ TEST(PassPipelineTest, classToMethodAdaptorRunsPerMethod)
     mjbase::KeyPool pool;
     ClassToMethodPassAdaptor adaptor(std::move(mpm), pool);
 
-    auto     session = makeSession(buildClassBytes("T", {{"a", "()V", iconstReturn()},
-                                              {"b", "()V", iconstReturn()},
-                                              {"c", "()V", iconstReturn()}}));
+    auto     session = makeSession(buildClassBytes("T", {{"a", "()V", iconstReturnText()},
+                                              {"b", "()V", iconstReturnText()},
+                                              {"c", "()V", iconstReturnText()}}));
     ClassAnalysisManager cam(tArena);
     MethodAnalysisManager mam(tArena);
     cam.setPinned<MethodAnalysisManagerProxy>(InnerAMProxyResult<MethodAnalysisManager>{&mam});
@@ -284,7 +284,7 @@ TEST(PassPipelineTest, classToMethodAdaptorRejectsMissingProxy)
     mjbase::KeyPool      pool;
     ClassToMethodPassAdaptor adaptor(std::move(mpm), pool);
     auto                 session =
-        makeSession(buildClassBytes("T", {{"t", "()V", iconstReturn()}}));
+        makeSession(buildClassBytes("T", {{"t", "()V", iconstReturnText()}}));
     ClassAnalysisManager cam(tArena);   // 未 pin proxy
 
     EXPECT_THROW(adaptor.run(*session, cam), std::logic_error);
@@ -360,8 +360,8 @@ TEST(PassPipelineTest, methodPassSeesOwnerIdentity)
     ClassToMethodPassAdaptor adaptor(std::move(mpm), pool);
 
     auto session = makeSession(buildClassBytes("com/example/Foo",
-                                               {{"a", "()V", iconstReturn()},
-                                                {"b", "()V", iconstReturn()}}));
+                                               {{"a", "()V", iconstReturnText()},
+                                                {"b", "()V", iconstReturnText()}}));
     ClassAnalysisManager  cam(tArena);
     MethodAnalysisManager mam(tArena);
     cam.setPinned<MethodAnalysisManagerProxy>(InnerAMProxyResult<MethodAnalysisManager>{&mam});
@@ -386,9 +386,9 @@ TEST(PassPipelineTest, perMethodScopeCacheDoesNotAliasAcrossMethods)
     mjbase::KeyPool      pool;
     ClassToMethodPassAdaptor adaptor(std::move(mpm), pool);
 
-    auto     session = makeSession(buildClassBytes("T", {{"a", "()V", iconstReturn()},
-                                              {"b", "()V", iconstReturn()},
-                                              {"c", "()V", iconstReturn()}}));
+    auto     session = makeSession(buildClassBytes("T", {{"a", "()V", iconstReturnText()},
+                                              {"b", "()V", iconstReturnText()},
+                                              {"c", "()V", iconstReturnText()}}));
     ClassAnalysisManager cam(tArena);
     MethodAnalysisManager mam(tArena);
     cam.setPinned<MethodAnalysisManagerProxy>(InnerAMProxyResult<MethodAnalysisManager>{&mam});
@@ -410,9 +410,9 @@ TEST(PassPipelineTest, methodPredicateFiltersBeforePromote)
     ClassToMethodPassAdaptor adaptor(
         std::move(mpm), pool, [](const MethodTarget& t) { return t.name == "b"; });
 
-    auto     session = makeSession(buildClassBytes("T", {{"a", "()V", iconstReturn()},
-                                              {"b", "()V", iconstReturn()},
-                                              {"c", "()V", iconstReturn()}}));
+    auto     session = makeSession(buildClassBytes("T", {{"a", "()V", iconstReturnText()},
+                                              {"b", "()V", iconstReturnText()},
+                                              {"c", "()V", iconstReturnText()}}));
     ClassAnalysisManager cam(tArena);
     MethodAnalysisManager mam(tArena);
     cam.setPinned<MethodAnalysisManagerProxy>(InnerAMProxyResult<MethodAnalysisManager>{&mam});
@@ -432,8 +432,8 @@ TEST(PassPipelineTest, adaptorNestsInClassManager)
     mjbase::KeyPool  pool;
     cpm.addPass(std::make_unique<ClassToMethodPassAdaptor>(std::move(mpm), pool));
 
-    auto session = makeSession(buildClassBytes("T", {{"x", "()V", iconstReturn()},
-                                                     {"y", "()V", iconstReturn()}}));
+    auto session = makeSession(buildClassBytes("T", {{"x", "()V", iconstReturnText()},
+                                                     {"y", "()V", iconstReturnText()}}));
     ClassAnalysisManager  cam(tArena);
     MethodAnalysisManager mam(tArena);
     cam.setPinned<MethodAnalysisManagerProxy>(InnerAMProxyResult<MethodAnalysisManager>{&mam});
