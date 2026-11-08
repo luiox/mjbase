@@ -374,7 +374,7 @@ TEST(MjAnalysisDbTest, MigrateClassIdentityKeepsIdAndOverlayIntact)
     run.kind       = DbMemberKind::Method;
     run.name       = Utf8String::from_cstr("run");
     run.descriptor = Utf8String::from_cstr("(La/A;)V");
-    input.members.push_back(run);
+    input.members.push_back(std::move(run));
     DbClassInput implementor;
     implementor.internalName = Utf8String::from_cstr("a/Impl");
     implementor.superName    = Utf8String::from_cstr("a/A");
@@ -461,12 +461,12 @@ TEST(MjAnalysisDbTest, MigrateMemberIdentityKeepsIdAndRewritesDescriptor)
     run.kind       = DbMemberKind::Method;
     run.name       = Utf8String::from_cstr("run");
     run.descriptor = Utf8String::from_cstr("(La/Gift;)V");
-    input.members.push_back(run);
+    input.members.push_back(std::move(run));
     DbMemberInput value;
     value.kind       = DbMemberKind::Field;
     value.name       = Utf8String::from_cstr("value");
     value.descriptor = Utf8String::from_cstr("La/Gift;");
-    input.members.push_back(value);
+    input.members.push_back(std::move(value));
     std::vector<DbClassInput> classes;
     classes.push_back(std::move(input));
     ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
