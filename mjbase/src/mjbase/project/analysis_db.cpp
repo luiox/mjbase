@@ -1760,13 +1760,15 @@ constexpr const char* kSchemaDdl[] = {
     // 版本历史索引：listMethodVersions 按 method_version_id 升序（单调分配
     // 序 = 记录序）走索引扫描，不排序、不裸扫。
     "CREATE INDEX method_versions_member ON method_versions(member_id, method_version_id)",
-    // 全程序可达闭包（v9，#159）：派生事实 = 可达方法成员集，批次挂既有
-    // producer 注册表（kind=closure_write）。closure_batches 挂批次主键记
-    // 元数据：graph_fingerprint 是闭包输入图指纹（32 字节 SHA-256，载荷见
-    // closureFingerprintPayload；变更敏感聚合口径，非内容寻址），fp_version
-    // 盖闭包算法版本字节（仿 method_versions fp_version 模式，旧行自证版本
-    // 位），seed_mask/coverage_mask 是种子档位与输入覆盖度位词表，
-    // computed_at 与 renames/producers 同为 ISO-8601 UTC 文本。
+    // 全程序可达闭包（v9，#159；v10 增 precision 列，#159 后置批）：派生事实 = 可达
+    // 方法成员集，批次挂既有 producer 注册表（kind=closure_write）。
+    // closure_batches 挂批次主键记元数据：graph_fingerprint 是闭包输入图指纹
+    //（32 字节 SHA-256，载荷见 closureFingerprintPayload；变更敏感聚合口径，
+    // 非内容寻址），fp_version 盖闭包算法版本字节（仿 method_versions
+    // fp_version 模式，旧行自证版本位），seed_mask/coverage_mask 是种子档位
+    // 与输入覆盖度位词表，precision 是闭包精度档（v10：0 = CHA 全族保守展开，
+    // 1 = RTA 实例化集合收窄；复用判定三匹配的档位轴），computed_at 与
+    // renames/producers 同为 ISO-8601 UTC 文本。
     "CREATE TABLE closure_batches("
     "  batch_id          INTEGER PRIMARY KEY REFERENCES batches(batch_id),"
     "  graph_fingerprint BLOB NOT NULL CHECK(length(graph_fingerprint)=32),"
@@ -1776,7 +1778,8 @@ constexpr const char* kSchemaDdl[] = {
     "  coverage_mask     INTEGER NOT NULL DEFAULT 0,"
     "  indy_edge_count   INTEGER NOT NULL DEFAULT 0,"
     "  member_count      INTEGER NOT NULL DEFAULT 0,"
-    "  computed_at       TEXT NOT NULL"
+    "  computed_at       TEXT NOT NULL,"
+    "  precision         INTEGER NOT NULL DEFAULT 0"
     ")",
     // 可达成员集（闭包结果本体）：(batch_id, member_id) 主键即数据（WITHOUT
     // ROWID，行 16B 量级）；删批级联与成员身份级联同既有事实表口径。
@@ -5099,11 +5102,11 @@ ca::Result<DbMethodVersionRecordStats, AnalysisDbError> AnalysisDb::recordMethod
     return ca::Ok(stats);
 }
 
-//-- 全程序可达闭包（closure_batches / closure_members，schema v9，#159）----------
+//-- 全程序可达闭包（closure_batches / closure_members，schema v9 #159 / v10 #159 后置批）
 
 constexpr const char* kClosureBatchSelectSql =
     "SELECT cb.batch_id, cb.graph_fingerprint, cb.fp_version, cb.seed_mask, cb.seed_count, "
-    "cb.coverage_mask, cb.indy_edge_count, cb.member_count, cb.computed_at "
+    "cb.coverage_mask, cb.indy_edge_count, cb.precision, cb.member_count, cb.computed_at "
     "FROM closure_batches cb";
 
 /// @brief 读一行闭包批次事实（三处查询面共用；列序 = kClosureBatchSelectSql）。
@@ -5122,8 +5125,9 @@ DbClosureBatchInfo readClosureBatchRow(sqlite3_stmt* statement)
     row.seedCount     = sqlite3_column_int64(statement, 4);
     row.coverageMask  = static_cast<ca::u32>(sqlite3_column_int64(statement, 5));
     row.indyEdgeCount = sqlite3_column_int64(statement, 6);
-    row.memberCount   = sqlite3_column_int64(statement, 7);
-    row.computedAt    = utf8Column(statement, 8);
+    row.precision     = static_cast<ca::u32>(sqlite3_column_int64(statement, 7));
+    row.memberCount   = sqlite3_column_int64(statement, 8);
+    row.computedAt    = utf8Column(statement, 9);
     return row;
 }
 
@@ -5241,6 +5245,10 @@ ca::Result<DbClosureBatchInfo, AnalysisDbError> AnalysisDb::storeClosureBatch(
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
                                  "closure counts must not be negative"));
     }
+    if (record.precision > 1) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "closure precision must be 0 (CHA) or 1 (RTA)"));
+    }
     for (ca::usize i = 0; i < record.memberIds.size(); ++i) {
         if (record.memberIds[i] <= 0) {
             return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
@@ -5266,8 +5274,8 @@ ca::Result<DbClosureBatchInfo, AnalysisDbError> AnalysisDb::storeClosureBatch(
         auto inserted = prepare(impl_->handle,
                                 "INSERT INTO closure_batches(batch_id, graph_fingerprint, "
                                 "fp_version, seed_mask, seed_count, coverage_mask, "
-                                "indy_edge_count, member_count, computed_at) "
-                                "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)");
+                                "indy_edge_count, member_count, computed_at, precision) "
+                                "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)");
         if (inserted.is_err()) return errorOf(std::move(inserted));
         auto statement = std::move(inserted).unwrap();
         if (auto result = bindInt(impl_->handle, statement.raw, 1, batchId);
@@ -5311,6 +5319,11 @@ ca::Result<DbClosureBatchInfo, AnalysisDbError> AnalysisDb::storeClosureBatch(
         if (auto result =
                 bindText(impl_->handle, statement.raw, 9,
                          ca::str::Utf8StringRef::from_string_view(nowIso8601()));
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw, 10,
+                                  static_cast<ca::i64>(record.precision));
             result.is_err()) {
             return errorOf(std::move(result));
         }
@@ -5405,7 +5418,7 @@ ca::Result<std::vector<DbClosureBatchInfo>, AnalysisDbError> AnalysisDb::listClo
 }
 
 ca::Result<std::optional<DbClosureBatchInfo>, AnalysisDbError> AnalysisDb::freshClosureBatch(
-    const std::vector<ca::u8>& fingerprint, ca::u32 seedMask) const
+    const std::vector<ca::u8>& fingerprint, ca::u32 seedMask, ca::u32 precision) const
 {
     if (!isOpen()) {
         return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
@@ -5418,6 +5431,7 @@ ca::Result<std::optional<DbClosureBatchInfo>, AnalysisDbError> AnalysisDb::fresh
                             (std::string(kClosureBatchSelectSql) +
                              " JOIN batches b ON b.batch_id = cb.batch_id "
                              "WHERE cb.graph_fingerprint=?1 AND cb.seed_mask=?2 "
+                             "AND cb.precision=?3 "
                              "AND b.finished_at != '' "
                              "ORDER BY cb.batch_id DESC LIMIT 1")
                                 .c_str());
@@ -5430,6 +5444,11 @@ ca::Result<std::optional<DbClosureBatchInfo>, AnalysisDbError> AnalysisDb::fresh
     }
     if (auto result = bindInt(impl_->handle, statement.raw, 2,
                               static_cast<ca::i64>(seedMask));
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(impl_->handle, statement.raw, 3,
+                              static_cast<ca::i64>(precision));
         result.is_err()) {
         return errorOf(std::move(result));
     }
@@ -5522,6 +5541,13 @@ ca::Result<DbClosureGraphEdges, AnalysisDbError> AnalysisDb::closureGraphEdges()
         }
         if (idTrigger > 0) edges.classTriggers.emplace_back(source, idTrigger);
         if (textTrigger > 0) edges.textBranchClassTriggers.emplace_back(source, textTrigger);
+        // Type 引用行（new/checkcast/instanceof/ldc class 全族）单列成 RTA 档
+        // 的实例化证据集：Field/Method 行的 owner 类不是实例化证据（读静态
+        // 字段不建实例），实例化集合收窄只认 Type 行（refs 无 opcode 位，
+        // Type 全族按「可能 new」保守处理，设计稿 §3 RTA 口径）。
+        if (refKind == static_cast<ca::i64>(DbReferenceKind::Type) && idTrigger > 0) {
+            edges.typeClassTriggers.emplace_back(source, idTrigger);
+        }
     }
     return ca::Ok(std::move(edges));
 }
