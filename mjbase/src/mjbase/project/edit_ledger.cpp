@@ -256,6 +256,125 @@ ca::Result<LedgerEntry, ProjectStoreError> parseEntry(const ca::json::JsonValue&
     return ca::Ok(std::move(entry));
 }
 
+/// 身份注记元素解析（严格字段集：class = target/name/new_name；member =
+/// target/member_kind/owner/name/desc/new_name + 可选 new_desc。target 决定
+/// 字段集，错型/未知/重复/缺失即拒载——与行级严格口径一致）。
+ca::Result<LedgerIdentityRename, ProjectStoreError> parseIdentityRename(
+    const ca::json::JsonValue& item, ca::usize line)
+{
+    if (!item.is_object()) {
+        return ca::Err(makeRowError(line, "identity element must be an object"));
+    }
+    const ca::json::JsonValue* target    = nullptr;
+    const ca::json::JsonValue* memberKind = nullptr;
+    const ca::json::JsonValue* owner     = nullptr;
+    const ca::json::JsonValue* name      = nullptr;
+    const ca::json::JsonValue* desc      = nullptr;
+    const ca::json::JsonValue* newName   = nullptr;
+    const ca::json::JsonValue* newDesc   = nullptr;
+    for (const auto& [key, member] : item.as_object()) {
+        if (key.equals(refOf("target"))) {
+            if (target != nullptr) {
+                return ca::Err(makeRowError(line, "duplicate identity field: target"));
+            }
+            target = &member;
+        }
+        else if (key.equals(refOf("member_kind"))) {
+            if (memberKind != nullptr) {
+                return ca::Err(makeRowError(line, "duplicate identity field: member_kind"));
+            }
+            memberKind = &member;
+        }
+        else if (key.equals(refOf("owner"))) {
+            if (owner != nullptr) {
+                return ca::Err(makeRowError(line, "duplicate identity field: owner"));
+            }
+            owner = &member;
+        }
+        else if (key.equals(refOf("name"))) {
+            if (name != nullptr) {
+                return ca::Err(makeRowError(line, "duplicate identity field: name"));
+            }
+            name = &member;
+        }
+        else if (key.equals(refOf("desc"))) {
+            if (desc != nullptr) {
+                return ca::Err(makeRowError(line, "duplicate identity field: desc"));
+            }
+            desc = &member;
+        }
+        else if (key.equals(refOf("new_name"))) {
+            if (newName != nullptr) {
+                return ca::Err(makeRowError(line, "duplicate identity field: new_name"));
+            }
+            newName = &member;
+        }
+        else if (key.equals(refOf("new_desc"))) {
+            if (newDesc != nullptr) {
+                return ca::Err(makeRowError(line, "duplicate identity field: new_desc"));
+            }
+            newDesc = &member;
+        }
+        else {
+            return ca::Err(makeRowError(line, "unknown identity field: " + toStd(key)));
+        }
+    }
+    if (target == nullptr || !target->is_string()) {
+        return ca::Err(makeRowError(line, "identity target must be a string"));
+    }
+    LedgerIdentityRename spec;
+    const bool isMember = target->as_string().equals(refOf("member"));
+    if (!isMember && !target->as_string().equals(refOf("class"))) {
+        return ca::Err(makeRowError(line, "identity target must be 'class' or 'member'"));
+    }
+    spec.isMember = isMember;
+    std::string message;
+    if (!isMember) {
+        if (memberKind != nullptr || owner != nullptr || desc != nullptr || newDesc != nullptr) {
+            return ca::Err(makeRowError(
+                line, "class identity element must not carry member-only fields"));
+        }
+        if (!requiredString(name, "identity name", spec.name, line, &message)) {
+            return ca::Err(makeRowError(line, message));
+        }
+        if (!requiredString(newName, "identity new_name", spec.newName, line, &message)) {
+            return ca::Err(makeRowError(line, message));
+        }
+        return ca::Ok(std::move(spec));
+    }
+    if (memberKind == nullptr || !memberKind->is_string()) {
+        return ca::Err(makeRowError(line, "member identity requires member_kind"));
+    }
+    spec.isMethod = memberKind->as_string().equals(refOf("method"));
+    if (!spec.isMethod && !memberKind->as_string().equals(refOf("field"))) {
+        return ca::Err(makeRowError(line, "identity member_kind must be 'field' or 'method'"));
+    }
+    if (!requiredString(owner, "identity owner", spec.owner, line, &message)) {
+        return ca::Err(makeRowError(line, message));
+    }
+    if (!requiredString(name, "identity name", spec.name, line, &message)) {
+        return ca::Err(makeRowError(line, message));
+    }
+    //desc 是身份键第三段但允许空串形态（无描述符规则在 append 方已消解；空 =
+    ///按空描述符匹配，与 DbIdentityRename 的必填校验由消费方把关）。
+    if (desc != nullptr) {
+        if (!desc->is_string()) {
+            return ca::Err(makeRowError(line, "identity desc must be a string"));
+        }
+        spec.desc = copyOf(toStd(desc->as_string()));
+    }
+    if (!requiredString(newName, "identity new_name", spec.newName, line, &message)) {
+        return ca::Err(makeRowError(line, message));
+    }
+    if (newDesc != nullptr) {
+        if (!newDesc->is_string()) {
+            return ca::Err(makeRowError(line, "identity new_desc must be a string"));
+        }
+        spec.newDesc = copyOf(toStd(newDesc->as_string()));
+    }
+    return ca::Ok(std::move(spec));
+}
+
 ca::Result<LedgerRow, ProjectStoreError> parseTypedRow(const ca::json::JsonValue& root,
                                                        const ca::json::JsonValue& rowTag,
                                                        ca::usize                  line)
@@ -270,6 +389,7 @@ ca::Result<LedgerRow, ProjectStoreError> parseTypedRow(const ca::json::JsonValue
         const ca::json::JsonValue* entries    = nullptr;
         const ca::json::JsonValue* producedBy = nullptr;
         const ca::json::JsonValue* createdAt  = nullptr;
+        const ca::json::JsonValue* identity   = nullptr;
         for (const auto& [key, member] : root.as_object()) {
             const ca::json::JsonValue** slot  = nullptr;
             const char*                 known = nullptr;
@@ -301,6 +421,10 @@ ca::Result<LedgerRow, ProjectStoreError> parseTypedRow(const ca::json::JsonValue
             else if (key.equals(refOf("created_at"))) {
                 slot  = &createdAt;
                 known = "created_at";
+            }
+            else if (key.equals(refOf("identity"))) {
+                slot  = &identity;
+                known = "identity";
             }
             else {
                 return ca::Err(makeRowError(line, "unknown txn row field: " + toStd(key)));
@@ -339,6 +463,16 @@ ca::Result<LedgerRow, ProjectStoreError> parseTypedRow(const ca::json::JsonValue
             auto entry = parseEntry(item, line, "");
             if (entry.is_err()) return ca::Err(std::move(entry).unwrap_err());
             txnRow.entries.push_back(std::move(entry).unwrap());
+        }
+        if (identity != nullptr) {
+            if (!identity->is_array()) {
+                return ca::Err(makeRowError(line, "identity must be an array"));
+            }
+            for (const auto& item : identity->as_array()) {
+                auto spec = parseIdentityRename(item, line);
+                if (spec.is_err()) return ca::Err(std::move(spec).unwrap_err());
+                txnRow.identity.push_back(std::move(spec).unwrap());
+            }
         }
         if (!requiredString(producedBy, "produced_by", txnRow.producedBy, line, &message)) {
             return ca::Err(makeRowError(line, message));
@@ -534,6 +668,46 @@ ca::Result<ca::str::Utf8String, ProjectStoreError> serializeRow(const LedgerRow&
         auto entries = ca::json::JsonValue::make_array();
         for (const auto& entry : txn.entries) entries.append(entryJson(entry));
         members.emplace_back(refOf("entries"), std::move(entries));
+        if (!txn.identity.empty()) {
+            auto identityArray = ca::json::JsonValue::make_array();
+            for (const auto& spec : txn.identity) {
+                ca::json::JsonValue::ObjectStorage specMembers;
+                specMembers.emplace_back(
+                    refOf("target"),
+                    ca::json::JsonValue::make_string(
+                        refOf(spec.isMember ? "member" : "class")));
+                if (spec.isMember) {
+                    specMembers.emplace_back(
+                        refOf("member_kind"),
+                        ca::json::JsonValue::make_string(
+                            refOf(spec.isMethod ? "method" : "field")));
+                    specMembers.emplace_back(refOf("owner"),
+                                             ca::json::JsonValue::make_string(spec.owner.ref()));
+                    specMembers.emplace_back(refOf("name"),
+                                             ca::json::JsonValue::make_string(spec.name.ref()));
+                    specMembers.emplace_back(refOf("desc"),
+                                             ca::json::JsonValue::make_string(spec.desc.ref()));
+                    specMembers.emplace_back(
+                        refOf("new_name"),
+                        ca::json::JsonValue::make_string(spec.newName.ref()));
+                    if (!spec.newDesc.is_empty()) {
+                        specMembers.emplace_back(
+                            refOf("new_desc"),
+                            ca::json::JsonValue::make_string(spec.newDesc.ref()));
+                    }
+                }
+                else {
+                    specMembers.emplace_back(refOf("name"),
+                                             ca::json::JsonValue::make_string(spec.name.ref()));
+                    specMembers.emplace_back(
+                        refOf("new_name"),
+                        ca::json::JsonValue::make_string(spec.newName.ref()));
+                }
+                identityArray.append(
+                    ca::json::JsonValue::make_object_from(std::move(specMembers)));
+            }
+            members.emplace_back(refOf("identity"), std::move(identityArray));
+        }
         members.emplace_back(refOf("produced_by"),
                              ca::json::JsonValue::make_string(txn.producedBy.ref()));
         members.emplace_back(refOf("created_at"),

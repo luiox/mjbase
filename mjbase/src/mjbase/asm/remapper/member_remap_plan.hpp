@@ -114,6 +114,18 @@ public:
     /// @brief 无任何类/字段/方法映射时为 true。
     bool empty() const;
 
+    /// @brief 类映射全量枚举（旧名→新名对，池驻留视图；寿命 = 计划）。
+    ///
+    /// 消费面：真改名身份注记（applyRemap 漏斗推导类规格）。枚举序 = 底层
+    /// 哈希桶序（无序）；消费方自行定序。
+    std::vector<std::pair<std::string_view, std::string_view>> classMappings() const;
+
+    /// @brief 字段规则只读枚举（规则键/值视图寿命 = 计划）。
+    const std::vector<FieldRemapRule>& fieldRules() const noexcept { return fieldRules_; }
+
+    /// @brief 方法规则只读枚举（规则键/值视图寿命 = 计划）。
+    const std::vector<MethodRemapRule>& methodRules() const noexcept { return methodRules_; }
+
     /// @brief 计划自有驻留池（调用方经 memberKeyOf 构造 MemberKey 规则键用）。
     KeyPool&       pool() noexcept { return pool_; }
     const KeyPool& pool() const noexcept { return pool_; }

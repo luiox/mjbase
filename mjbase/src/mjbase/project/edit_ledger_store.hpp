@@ -42,6 +42,10 @@ struct LedgerAppendInput
     std::string                       label;      ///< 可空
     std::string                       producedBy; ///< 非空
     std::string                       createdAt;  ///< 非空
+    /// 身份迁移注记（可空；随事务原子落账，undo/redo 消费面见
+    /// LedgerIdentityRename）。引擎不校验其与 entries 的一致性——语义旁车
+    /// 由 append 方负责。
+    std::vector<LedgerIdentityRename> identity;
 };
 
 /// @brief flush 报告。

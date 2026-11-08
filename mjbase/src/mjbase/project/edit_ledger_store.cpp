@@ -519,6 +519,8 @@ ca::Result<LedgerTransaction, ProjectStoreError> EditLedgerStore::append(
     }
     txn.producedBy = copyOf(input.producedBy);
     txn.createdAt  = copyOf(input.createdAt);
+    txn.identity.reserve(input.identity.size());
+    for (const auto& spec : input.identity) txn.identity.push_back(spec.clone());
 
     for (const auto& [ref, payload] : delivered) {
         pendingOverlays_.emplace(ref, payload);

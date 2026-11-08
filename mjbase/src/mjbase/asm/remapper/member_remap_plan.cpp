@@ -442,4 +442,15 @@ bool MemberRemapPlan::empty() const
     return classMappings_.empty() && fieldRules_.empty() && methodRules_.empty();
 }
 
+std::vector<std::pair<std::string_view, std::string_view>> MemberRemapPlan::classMappings()
+    const
+{
+    std::vector<std::pair<std::string_view, std::string_view>> mappings;
+    mappings.reserve(classMappings_.size());
+    for (const auto& [from, to] : classMappings_) {
+        mappings.emplace_back(pool_.str(from), pool_.str(to));
+    }
+    return mappings;
+}
+
 }   // namespace mjbase::asm_remapper
