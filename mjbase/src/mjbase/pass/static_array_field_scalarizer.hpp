@@ -4,10 +4,11 @@
 
 namespace mjbase::pass {
 
-/// 静态数组字段标量化（#39）：private static 的数组字段，分配点唯一、
-/// 长度编译期常数、所有访问都是常量下标窗口且无整体引用时，拆成按访问
-/// 下标命名的 N 个标量字段——分配（newarray/anewarray）与逐元素初始化
-/// 存储、下标计算指令全部消失，读窗口从三条指令缩成一条 getstatic。
+/// @brief 静态数组字段标量化（#39）：private static 的数组字段，分配点唯一、
+///        长度编译期常数、所有访问都是常量下标窗口且无整体引用时，拆成按
+///        访问下标命名的 N 个标量字段——分配（newarray/anewarray）与逐元素
+///        初始化存储、下标计算指令全部消失，读窗口从三条指令缩成一条
+///        getstatic。
 ///
 /// ## 候选与守卫（全部满足才拆，任一失败整字段放弃）
 ///
@@ -65,7 +66,10 @@ namespace mjbase::pass {
 ///
 /// 任一字段拆成功 → none()；无候选 / 全部放弃 → all()。
 ///
-/// 标签：scope:class / action:rewrite / stability:opt-in。
+/// @par 标签
+/// - `scope:class`
+/// - `action:rewrite`
+/// - `stability:opt-in`（默认链不收）
 class StaticArrayFieldScalarizer : public mjbase::spi::ClassPass
 {
 public:

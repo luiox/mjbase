@@ -30,7 +30,7 @@ namespace mjbase::pass {
 ///
 /// @par 标签
 /// - `scope:method`
-/// - `action:simplify`
+/// - `action:fold`
 /// - `stability:opt-in`
 class TypeCastSimplifier : public mjbase::spi::MethodPass
 {

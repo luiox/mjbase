@@ -12,6 +12,7 @@ namespace mjbase::pass {
 /// 悬垂（lowerMethod 报 RelocationBadTarget）。本 pass 只摘 LNT 槽，
 /// 保留 LocalVariableTable/LocalVariableTypeTable、指令载荷、异常表与
 /// StackMapTable；改动经父 Code 槽置脏驱动重编码。无 LNT 时零改动。
+/// 发生摘除返回 none()，否则 all()。
 ///
 /// @par 标签
 /// - `scope:class`

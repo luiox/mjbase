@@ -14,6 +14,7 @@ mjbase 设计规格
 
    analysis-database
    refs-id-design
+   producer-registry-design
    semantic-fp-spec
    library-identification
    member-census-design
@@ -28,6 +29,11 @@ mjbase 设计规格
    cycle-class-scan-spec
    kotlin-metadata-collect-spec
    kotlin-name-restoration-spec
+   variable-folding-spec
+   control-flow-fold-spec
+   try-catch-cleanup-spec
+   string-constant-spec
+   unused-member-removal-spec
    test-fixtures
    pass-contract
    pass-catalog

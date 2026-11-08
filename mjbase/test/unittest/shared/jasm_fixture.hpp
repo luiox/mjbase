@@ -123,6 +123,58 @@ inline void expectValidateFail(const Bytes& bytes)
     EXPECT_FALSE(validated.isOk());
 }
 
+// ---------------------------------------------------------------------------
+// flags 位单点改写（jbc ClassFile DOM 读 → 位改 → 写回字节）。
+//
+// 例外①在 flag 维度的落地：JVMS 语义非法的修饰位组合装配器不设门、可直装
+// （直装会让非法夹具绕过「合法类出发」的前自检），因此一律从装配合法类出发
+// 做单点 flags 位改写，改写前后各一次 validate 自检。读/写失败 ADD_FAILURE
+// 并返回空——夹具机器故障不得以「规约通过」收场。
+// ---------------------------------------------------------------------------
+
+/// @brief 以 DOM 变换改写类字节；变换失败（读/写）报失败并返回空。
+template<typename Mutator>
+Bytes mutateClassFile(const Bytes& bytes, const char* what, Mutator mutator)
+{
+    auto read = jbc::core::readClass(jbc::core::ByteView{bytes.data(), bytes.size()});
+    if (read.is_err()) {
+        ADD_FAILURE() << what << ": 夹具类读失败";
+        return {};
+    }
+    auto parsed = std::move(read).unwrap();   // ReadResult 持 unique_ptr，只能移出
+    mutator(*parsed.file);
+    auto written = jbc::core::writeClass(*parsed.file);
+    if (written.is_err()) {
+        ADD_FAILURE() << what << ": 夹具类写回失败";
+        return {};
+    }
+    return std::move(written).unwrap();
+}
+
+/// @brief 类级 access_flags 单点改写（set ∪ clear）。
+inline Bytes flipClassAccess(const Bytes& bytes, ca::u16 set, ca::u16 clear,
+                             const char* what = "flipClassAccess")
+{
+    return mutateClassFile(bytes, what, [set, clear](jbc::core::ClassFile& cf) {
+        cf.access = static_cast<ca::u16>((cf.access | set) & ~clear);
+    });
+}
+
+/// @brief 成员 access_flags 单点改写（isField 选字段/方法表，index 为物理序）。
+inline Bytes flipMemberAccess(const Bytes& bytes, bool isField, ca::usize index,
+                              ca::u16 set, ca::u16 clear,
+                              const char* what = "flipMemberAccess")
+{
+    return mutateClassFile(
+        bytes, what, [isField, index, set, clear, what](jbc::core::ClassFile& cf) {
+            auto& members = isField ? cf.fields : cf.methods;
+            ASSERT_LT(index, members.size()) << what << ": 成员下标越界";
+            if (index >= members.size()) return;
+            members[index].access
+                = static_cast<ca::u16>((members[index].access | set) & ~clear);
+        });
+}
+
 /// @brief 例外①载面（GOTO 重锚）：把首个 Code 属性里第一条 GOTO（0xa7）
 /// 的转移目标单点改指 targetPc（code 内 pc），返回改写后的类字节。
 ///

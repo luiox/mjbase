@@ -121,7 +121,7 @@
 
 namespace mjbase::pass {
 
-/// 控制流反扁平化 pass：通用引擎 + 可注入形态表。
+/// @brief 控制流反扁平化 pass：通用引擎 + 可注入形态表。
 class FlatteningReverser : public mjbase::spi::MethodPass
 {
 public:
