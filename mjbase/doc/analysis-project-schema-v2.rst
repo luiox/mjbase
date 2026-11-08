@@ -50,7 +50,7 @@ inputs 条目新增可选字段 parent（字符串，引用同文件内另一 in
 2.1 行模型
 ~~~~~~~~~~
 
-edit-ledger section 为 jsonl，每行一个自描述 JSON 对象，行级版本字段 v=1（RFC 风险 1 缓解：行级演进不触清单版本）。三种行类型，字段严格（未知字段、重复字段、类型错、digest 形状错即整段拒载）：
+edit-ledger section 为 jsonl，每行一个自描述 JSON 对象，行级版本字段 v=1（RFC 风险 1 缓解：行级演进不触清单版本）。四种行类型，字段严格（未知字段、重复字段、类型错、digest 形状错即整段拒载）：
 
 事务行（row=txn）：
 
@@ -59,6 +59,12 @@ edit-ledger section 为 jsonl，每行一个自描述 JSON 对象，行级版本
 锚行（row=anchor，压缩产物，见第三节）与书签行（row=bookmark）：
 
 {"v":1,"row":"anchor","txn":5,"baseline":"edit-baseline-3","container":"sha256:…","previous":{"txn":2,"container":"sha256:…"},"compacted_txns":3,"created_at":"…"}{"v":1,"row":"bookmark","name":"sp1","txn":7,"created_at":"…"}
+
+头指针行（row=head，undo 态头位持久化；至多一行）：
+
+{"v":1,"row":"head","txn":6}
+
+头指针行承载「head < 链尾」的 undo 态头位——行集本身只能表达「有哪些事务」，头位若无独立载体，装载只能取链尾，undo 作为末动作落盘后重开即被静默复活。写出层仅在头位 ≠ 隐含头（空段基线/链尾）时落本行：常态台账字节不变，旧读者零感知；携带本行的台账对不认识它的读者 fail-closed（未知行型整段拒载，优于静默复活 undo 的语义裂化）。txn ∈ 0（基线态）｜锚事务（压缩后基线态）｜段内事务。
 
 字段口径：txn ≥ 1 全局单调（被放弃分支的事务号不复用）；parent = 0 表示链根（基线态），否则必须指向同段内存在的事务行；entries 按 uri 字典序；op ∈replace|add|remove；before/after 为 "sha256:"+64hex，add 的 before 与 remove的 after 恒为空串；payload 仅 replace/add 携带，kind 恒 overlay（未知 kind拒载——引擎解不开的载荷不能假装能重放），ref 为 overlay section 名；锚行previous 仅在非首次压缩时携带（补链：新基线 digest → 上一基线 digest → 原始容器登记指纹的追溯链，RFC §6.4「新基线 digest + 被压缩区间记录」）。
 
@@ -71,7 +77,7 @@ identity 元素字段集按 target 严格分流：class = target/name/new_name�
 2.2 活动链与分支
 ~~~~~~~~~~~~~~~~
 
-状态 = 基线容器字节 ⊕ 沿 parent 链重放到头事务。undo = 头指针沿 parent 回退；redo = 头指针前进到被记住的 redo 目标；在历史中段提交新事务时，原尾部分支被放弃（对齐旧实现 commit 清 redo 栈的语义），放弃分支的事务行不落盘、其事务号不复用。落盘的活动链恒为线形：锚行（若有）+ txn 递增的事务行 + 书签行。
+状态 = 基线容器字节 ⊕ 沿 parent 链重放到头事务。undo = 头指针沿 parent 回退；redo = 头指针前进到被记住的 redo 目标；在历史中段提交新事务时，原尾部分支被放弃（对齐旧实现 commit 清 redo 栈的语义），放弃分支的事务行不落盘、其事务号不复用。落盘的活动链恒为线形：锚行（若有）+ txn 递增的事务行 + 头指针行（仅 undo 态，见 2.1）+ 书签行。undo 只动头不删行——被 undo 的事务行随段保留（重放头位不经过它），头位由头指针行承载；头指针行缺席 = 头即链尾。
 
 2.3 条目 digest 链完整性
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -89,7 +95,7 @@ identity 元素字段集按 target 严格分流：class = target/name/new_name�
 3.2 flush 协议（manifest last）
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-pending 状态（未提交事务的 overlay 字节与台账行）驻内存。flush 序：逐条writeSectionBytes 落 overlay section（新名，孤儿安全）→ 新代 edit-ledger-<g+1> 全量写出（活动链 + 书签）→ 一笔 manifest 事务 upsert 全部新 section→ 成功后释放内存 pending。崩溃任一点：清单未换 = 旧代完整，新文件是AfterFirstFlush 档孤儿（既有恢复扫描 + pruneOrphanSections 收敛）；重试同字节幂等。flush 不写基线（锚行跨代引用基线，见 3.1）；待释放清单随本事务一并退役，相交名以重写收场（见 3.4）。
+pending 状态（未提交事务的 overlay 字节与台账行，及偏离落盘态的头位）驻内存。flush 序：逐条writeSectionBytes 落 overlay section（新名，孤儿安全）→ 新代 edit-ledger-<g+1> 全量写出（活动链 + 头指针行（仅 undo 态）+ 书签）→ 一笔 manifest 事务 upsert 全部新 section→ 成功后释放内存 pending。崩溃任一点：清单未换 = 旧代完整，新文件是AfterFirstFlush 档孤儿（既有恢复扫描 + pruneOrphanSections 收敛）；重试同字节幂等。flush 不写基线（锚行跨代引用基线，见 3.1）；待释放清单随本事务一并退役，相交名以重写收场（见 3.4）。
 
 3.3 打开与恢复
 ~~~~~~~~~~~~~~
@@ -104,7 +110,7 @@ pending 状态（未提交事务的 overlay 字节与台账行）驻内存。flu
 四、书签、undo/redo、revert 的台账语义
 --------------------------------------
 
-savepoint = 书签（名字 → 事务号），零字节代价，随 flush 落盘为书签行（跨flush 存活是相对旧克隆实现的声明语义变化，RFC 风险 3 点名）。restore = 反向应用头到书签之间的事务得到候选容器，再走一次普通提交（记一条反向事务，undo窗不受损）。undo/redo = 头指针回退/前进，不记新事务；提交于中段历史时放弃尾分支并清 redo 目标，指向被放弃分支的书签随之失效（旧克隆模型书签不随分支失效，此为换底的声明语义差异，restore 得 NotFound 同形错误）。revert_class =取该 uri 原始字节走普通提交（before=当前 digest，after=原始 digest），台账面表现为「沿链反向归一到基线字节」的新事务；若该 uri 从未被 touch 则空 diff零提交，与旧实现 revision 不动一致。
+savepoint = 书签（名字 → 事务号），零字节代价，随 flush 落盘为书签行（跨flush 存活是相对旧克隆实现的声明语义变化，RFC 风险 3 点名）。restore = 反向应用头到书签之间的事务得到候选容器，再走一次普通提交（记一条反向事务，undo窗不受损）。undo/redo = 头指针回退/前进，不记新事务；头位经头指针行（见 2.1）跨 flush 持久化——undo 态落盘重开不复活；提交于中段历史时放弃尾分支并清 redo 目标，指向被放弃分支的书签随之失效（旧克隆模型书签不随分支失效，此为换底的声明语义差异，restore 得 NotFound 同形错误）。revert_class =取该 uri 原始字节走普通提交（before=当前 digest，after=原始 digest），台账面表现为「沿链反向归一到基线字节」的新事务；若该 uri 从未被 touch 则空 diff零提交，与旧实现 revision 不动一致。
 
 .. _schema-v2-compaction:
 

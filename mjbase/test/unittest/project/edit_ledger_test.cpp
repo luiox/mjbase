@@ -88,6 +88,14 @@ LedgerRow makeAnchorRow(ca::u64 txn)
     return row;
 }
 
+LedgerRow makeHeadRow(ca::u64 txn)
+{
+    LedgerRow row;
+    row.kind     = LedgerRow::Kind::Head;
+    row.head.txn = txn;
+    return row;
+}
+
 /// 行集合装配（LedgerRow move-only，initializer_list 会拷贝，禁止）。
 void addRows(std::vector<LedgerRow>& rows, LedgerRow row) { rows.push_back(std::move(row)); }
 
@@ -496,6 +504,88 @@ TEST(MjLedgerRowTest, sortLedgerRowsPinsAnchorFirstThenTxnThenBookmarks)
     EXPECT_EQ(LedgerRow::Kind::Bookmark, rows[3].kind);
     EXPECT_EQ("alpha", rows[3].bookmark.name.to_std_string());
     EXPECT_EQ("zeta", rows[4].bookmark.name.to_std_string());
+}
+
+/// 头指针行的编解码、链校验与排序位（undo 态持久化格式面）。
+TEST(MjLedgerRowTest, headRowRoundtripsValidatesAndSorts)
+{
+    // 往返：`{"row":"head","txn":N}` 字节级确定性。
+    auto text = serializeLedgerRow(makeHeadRow(7));
+    ASSERT_FALSE(text.is_err());
+    const auto  body = std::move(text).unwrap().to_std_string();
+    EXPECT_EQ("{\"v\":1,\"row\":\"head\",\"txn\":7}", body);
+
+    auto parsed = parseLedgerRow(body, 1);
+    ASSERT_FALSE(parsed.is_err());
+    const auto& back = std::move(parsed).unwrap();
+    ASSERT_EQ(LedgerRow::Kind::Head, back.kind);
+    EXPECT_EQ(7U, back.head.txn);
+    auto rewritten = serializeLedgerRow(back);
+    ASSERT_FALSE(rewritten.is_err());
+    EXPECT_EQ(body, std::move(rewritten).unwrap().to_std_string());
+
+    // 严格解析：未知字段 / 缺 txn / 负 txn / 重复 txn 拒载。
+    EXPECT_NE(std::string::npos, expectRowError("{\"v\":1,\"row\":\"head\",\"txn\":1,\"why\":2}")
+              .find("unknown head row field"));
+    EXPECT_NE(std::string::npos, expectRowError("{\"v\":1,\"row\":\"head\"}")
+              .find("head txn must be an integer"));
+    EXPECT_NE(std::string::npos, expectRowError("{\"v\":1,\"row\":\"head\",\"txn\":-1}")
+              .find("head txn must be an integer"));
+    EXPECT_NE(std::string::npos, expectRowError("{\"v\":1,\"row\":\"head\",\"txn\":1,\"txn\":2}")
+              .find("duplicate head row field"));
+
+    // 链校验：至多一行；txn ∈ {0, 锚事务, 段内事务}；行位与事务行解耦。
+    std::vector<LedgerRow> valid;
+    addRows(valid, makeAnchorRow(4));
+    addRows(valid, makeTxnRow(5, 4));
+    addRows(valid, makeTxnRow(6, 5));
+    addRows(valid, makeHeadRow(5));   // 头位在段内事务（undo 态）
+    addRows(valid, makeBookmarkRow("sp", 5));
+    EXPECT_FALSE(validateLedgerChain(valid).is_err());
+
+    std::vector<LedgerRow> atBase;
+    addRows(atBase, makeTxnRow(5, 0));
+    addRows(atBase, makeHeadRow(0));   // 头位基线态（undo 到底）
+    EXPECT_FALSE(validateLedgerChain(atBase).is_err());
+
+    std::vector<LedgerRow> atAnchor;
+    addRows(atAnchor, makeAnchorRow(4));
+    addRows(atAnchor, makeTxnRow(5, 4));
+    addRows(atAnchor, makeHeadRow(4));   // 头位 = 锚事务（压缩后基线态）
+    EXPECT_FALSE(validateLedgerChain(atAnchor).is_err());
+
+    std::vector<LedgerRow> stray;
+    addRows(stray, makeTxnRow(5, 0));
+    addRows(stray, makeHeadRow(9));   // 段外
+    auto strayError = validateLedgerChain(stray);
+    ASSERT_TRUE(strayError.is_err());
+    EXPECT_NE(std::string::npos,
+              std::move(strayError).unwrap_err().message.to_std_string().find("unknown txn"));
+
+    std::vector<LedgerRow> duplicated;
+    addRows(duplicated, makeTxnRow(5, 0));
+    addRows(duplicated, makeHeadRow(5));
+    addRows(duplicated, makeHeadRow(0));
+    auto duplicatedError = validateLedgerChain(duplicated);
+    ASSERT_TRUE(duplicatedError.is_err());
+    EXPECT_NE(std::string::npos,
+              std::move(duplicatedError).unwrap_err().message.to_std_string().find("duplicate head"));
+
+    // 排序：锚 → 事务升序 → 头指针 → 书签字典序。
+    std::vector<LedgerRow> rows;
+    addRows(rows, makeBookmarkRow("alpha", 6));
+    addRows(rows, makeHeadRow(6));
+    addRows(rows, makeTxnRow(6, 5));
+    addRows(rows, makeAnchorRow(4));
+    addRows(rows, makeTxnRow(5, 4));
+    sortLedgerRows(rows);
+    ASSERT_EQ(5U, rows.size());
+    EXPECT_EQ(LedgerRow::Kind::Anchor, rows[0].kind);
+    EXPECT_EQ(5U, rows[1].transaction.txn);
+    EXPECT_EQ(6U, rows[2].transaction.txn);
+    EXPECT_EQ(LedgerRow::Kind::Head, rows[3].kind);
+    EXPECT_EQ(6U, rows[3].head.txn);
+    EXPECT_EQ(LedgerRow::Kind::Bookmark, rows[4].kind);
 }
 
 TEST(MjLedgerRowTest, canonicalContainerDigestMatchesSectionHashDiscipline)

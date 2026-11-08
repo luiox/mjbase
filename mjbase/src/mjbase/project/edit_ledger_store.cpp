@@ -220,7 +220,14 @@ ca::Result<EditLedgerStore, ProjectStoreError> EditLedgerStore::openBundle(
                 store.bookmarkOrder_.push_back(std::move(row.bookmark));
             }
         }
+        // 头位：无头指针行 = 旧格式/常态（head 即链尾），有则尊重——undo 态
+        // 头位（head < 链尾）自此跨换代持久（段内可解性已在装载校验终检）。
+        std::optional<ca::u64> headRow;
+        for (const auto& row : rows) {
+            if (row.kind == LedgerRow::Kind::Head) headRow = row.head.txn;
+        }
         store.head_ = store.txns_.empty() ? store.baseTxn() : store.txns_.back().txn;
+        if (headRow.has_value()) store.head_ = *headRow;
         store.nextTxnId_ = store.head_ + 1;
         for (const auto& txn : store.txns_) {
             store.nextTxnId_ = std::max(store.nextTxnId_, txn.txn + 1);
@@ -229,6 +236,8 @@ ca::Result<EditLedgerStore, ProjectStoreError> EditLedgerStore::openBundle(
     }
 
     //-- 待释放清点（§3.3）：引擎名族下不被活动代引用的已登记 section ----------
+    // 落盘态头位 = 本次装载解析出的头（无头指针行 = 隐含头）。
+    store.persistedHead_ = store.head_;
     store.reclaimEngineSections(manifest);
 
     return ca::Ok(std::move(store));
@@ -323,6 +332,13 @@ ca::u64 EditLedgerStore::ledgerBytes() const
         row.kind        = LedgerRow::Kind::Transaction;
         row.transaction = txn.clone();
         rows.push_back(std::move(row));
+    }
+    // 头指针行与 flush 同口径（仅 undo 态落行），尺寸估计与写出字节一致。
+    if (head_ != (txns_.empty() ? baseTxn() : txns_.back().txn)) {
+        LedgerRow headRow;
+        headRow.kind     = LedgerRow::Kind::Head;
+        headRow.head.txn = head_;
+        rows.push_back(std::move(headRow));
     }
     for (const auto& bookmark : bookmarkOrder_) {
         LedgerRow row;
@@ -612,7 +628,11 @@ ca::Result<LedgerFlushReport, ProjectStoreError> EditLedgerStore::flush(
 {
     LedgerFlushReport report;
     if (!bound()) return ca::Ok(std::move(report));
-    if (pendingTxns_ == 0 && pendingReleases_.empty()) return ca::Ok(std::move(report));
+    // 头位偏离落盘态（undo 后未 flush）同样要落新代——头指针行是 undo 持久
+    // 化的唯一载体，跳过即静默复活。
+    if (pendingTxns_ == 0 && pendingReleases_.empty() && !headDirty()) {
+        return ca::Ok(std::move(report));
+    }
 
     const ca::u32 nextGeneration = generation_ + 1;
 
@@ -641,6 +661,14 @@ ca::Result<LedgerFlushReport, ProjectStoreError> EditLedgerStore::flush(
         row.kind        = LedgerRow::Kind::Transaction;
         row.transaction = txn.clone();
         rows.push_back(std::move(row));
+    }
+    // 头指针行（仅 undo 态）：head ≠ 隐含头（空段基线/链尾）才落行——常态
+    // 台账字节不变，旧版读者零感知；携带本行的台账对旧版读者 fail-closed。
+    if (head_ != (txns_.empty() ? baseTxn() : txns_.back().txn)) {
+        LedgerRow headRow;
+        headRow.kind     = LedgerRow::Kind::Head;
+        headRow.head.txn = head_;
+        rows.push_back(std::move(headRow));
     }
     for (const auto& bookmark : bookmarkOrder_) {
         LedgerRow row;
@@ -689,8 +717,9 @@ ca::Result<LedgerFlushReport, ProjectStoreError> EditLedgerStore::flush(
         pendingReleases_.push_back(ledgerSectionName(generation_));
     }
     pendingOverlays_.clear();
-    pendingTxns_  = 0;
-    generation_   = nextGeneration;
+    pendingTxns_     = 0;
+    generation_      = nextGeneration;
+    persistedHead_   = head_;
 
     auto cleaned = cleanupSuperseded(&report.released, createdAt);
     if (cleaned.is_err()) return ca::Err(std::move(cleaned).unwrap_err());
@@ -794,6 +823,21 @@ ca::Result<LedgerCompactReport, ProjectStoreError> EditLedgerStore::compact(
         row.transaction = txn.clone();
         rows.push_back(std::move(row));
     }
+    // 头指针行（仅 undo 态）：隐含头按新代口径——保留集空 = 新锚事务 point
+    // （本代基线态），否则保留集链尾；head ≠ 隐含头才落行（与 flush 同纪律，
+    // 常态字节不变）。head ≥ point 由保留点钳制恒成立。
+    const ca::u64 compactImpliedHead = [&] {
+        for (auto it = txns_.rbegin(); it != txns_.rend(); ++it) {
+            if (it->txn > point) return it->txn;
+        }
+        return point;
+    }();
+    if (head_ != compactImpliedHead) {
+        LedgerRow headRow;
+        headRow.kind     = LedgerRow::Kind::Head;
+        headRow.head.txn = head_;
+        rows.push_back(std::move(headRow));
+    }
     //-- 存活书签：自动路径全保留；手动路径按 keepRecentBookmarks 裁剪 ------------
     std::vector<LedgerBookmark> surviving;
     surviving.reserve(bookmarkOrder_.size());
@@ -885,8 +929,9 @@ ca::Result<LedgerCompactReport, ProjectStoreError> EditLedgerStore::compact(
     txns_.erase(std::remove_if(txns_.begin(), txns_.end(),
                                [point](const LedgerTransaction& txn) { return txn.txn <= point; }),
                 txns_.end());
-    bookmarkOrder_ = std::move(surviving);
-    generation_    = nextGeneration;
+    bookmarkOrder_  = std::move(surviving);
+    generation_     = nextGeneration;
+    persistedHead_  = head_;   // 新代已含头指针行（仅 undo 态），落盘态头位对齐
 
     auto cleaned = cleanupSuperseded(&report.released, createdAt);
     if (cleaned.is_err()) return ca::Err(std::move(cleaned).unwrap_err());

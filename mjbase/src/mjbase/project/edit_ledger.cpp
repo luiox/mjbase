@@ -621,8 +621,28 @@ ca::Result<LedgerRow, ProjectStoreError> parseTypedRow(const ca::json::JsonValue
         }
         return ca::Ok(std::move(parsed));
     }
+    if (rowTag.as_string().equals(refOf("head"))) {
+        parsed.kind = LedgerRow::Kind::Head;
+        const ca::json::JsonValue* txn = nullptr;
+        for (const auto& [key, member] : root.as_object()) {
+            if (key.equals(refOf("v")) || key.equals(refOf("row"))) continue;
+            if (key.equals(refOf("txn"))) {
+                if (txn != nullptr) {
+                    return ca::Err(makeRowError(line, "duplicate head row field: txn"));
+                }
+                txn = &member;
+                continue;
+            }
+            return ca::Err(makeRowError(line, "unknown head row field: " + toStd(key)));
+        }
+        if (txn == nullptr || !txn->is_int() || txn->as_int() < 0) {
+            return ca::Err(makeRowError(line, "head txn must be an integer >= 0"));
+        }
+        parsed.head.txn = static_cast<ca::u64>(txn->as_int());
+        return ca::Ok(std::move(parsed));
+    }
     return ca::Err(makeRowError(line, "unknown row type '" + toStd(rowTag.as_string()) +
-                                           "' (expected txn|anchor|bookmark)"));
+                                           "' (expected txn|anchor|bookmark|head)"));
 }
 
 ca::json::JsonValue entryJson(const LedgerEntry& entry)
@@ -753,6 +773,12 @@ ca::Result<ca::str::Utf8String, ProjectStoreError> serializeRow(const LedgerRow&
                              ca::json::JsonValue::make_string(bookmark.createdAt.ref()));
         break;
     }
+    case LedgerRow::Kind::Head: {
+        members.emplace_back(refOf("row"), ca::json::JsonValue::make_string(refOf("head")));
+        members.emplace_back(refOf("txn"),
+                             ca::json::JsonValue::make_int(static_cast<ca::i64>(row.head.txn)));
+        break;
+    }
     }
     ca::json::JsonDocument document;
     document.root() = ca::json::JsonValue::make_object_from(std::move(members));
@@ -864,13 +890,14 @@ void sortLedgerRows(std::vector<LedgerRow>& rows)
             switch (row.kind) {
             case LedgerRow::Kind::Anchor: return 0;
             case LedgerRow::Kind::Transaction: return 1;
-            case LedgerRow::Kind::Bookmark: return 2;
+            case LedgerRow::Kind::Head: return 2;
+            case LedgerRow::Kind::Bookmark: return 3;
             }
-            return 3;
+            return 4;
         };
         if (rank(a) != rank(b)) return rank(a) < rank(b);
         if (rank(a) == 1) return a.transaction.txn < b.transaction.txn;
-        if (rank(a) == 2) return toStd(a.bookmark.name.ref()) < toStd(b.bookmark.name.ref());
+        if (rank(a) == 3) return toStd(a.bookmark.name.ref()) < toStd(b.bookmark.name.ref());
         return false;
     });
 }
@@ -880,6 +907,9 @@ ca::Result<void, ProjectStoreError> validateLedgerChain(const std::vector<Ledger
     std::set<ca::u64> txnIds;
     ca::usize         lineNumber = 0;
     bool              anchorSeen = false;
+    bool              headSeen   = false;
+    ca::u64           headTxn    = 0;
+    ca::usize         headLine   = 0;
     ca::u64           minTxn     = 0;
     for (const auto& row : rows) {
         ++lineNumber;
@@ -889,6 +919,15 @@ ca::Result<void, ProjectStoreError> validateLedgerChain(const std::vector<Ledger
             }
             anchorSeen = true;
             minTxn     = row.anchor.txn;
+            continue;
+        }
+        if (row.kind == LedgerRow::Kind::Head) {
+            if (headSeen) {
+                return ca::Err(makeRowError(lineNumber, "duplicate head row"));
+            }
+            headSeen = true;
+            headTxn  = row.head.txn;
+            headLine = lineNumber;
             continue;
         }
         if (row.kind == LedgerRow::Kind::Transaction) {
@@ -924,6 +963,12 @@ ca::Result<void, ProjectStoreError> validateLedgerChain(const std::vector<Ledger
                                                         "' references unknown txn " +
                                                         std::to_string(row.bookmark.txn)));
         }
+    }
+    // 头位终检（循环后）：行位与事务行解耦，段内成员集齐后一口径校验——
+    // 0（基线态）、锚事务（压缩后基线态）或段内事务。
+    if (headSeen && headTxn != 0 && headTxn != minTxn && txnIds.count(headTxn) == 0) {
+        return ca::Err(makeRowError(headLine,
+                                    "head references unknown txn " + std::to_string(headTxn)));
     }
     return ca::Ok();
 }

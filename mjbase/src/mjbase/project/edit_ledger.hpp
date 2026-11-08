@@ -177,7 +177,19 @@ struct LedgerBookmark
     }
 };
 
-/// @brief 台账行（三型判别联合；同时只有一型有效）。
+/// @brief 头指针行（row=head）：undo 后的头事务号持久化。
+///
+/// 台账行集只能表达「有哪些事务」，undo 态头位（落后于链尾）若无独立
+/// 行承载，装载只能取链尾——undo 作为末动作落盘后重开即被静默复活。写出层
+/// 仅在头位 ≠ 隐含头（链尾/空段基线）时落本行：常态台账字节不变，旧版读者
+/// 零感知；携带本行的台账对旧版读者 fail-closed（未知行型拒载，优于静默
+/// 复活 undo 的语义裂化）。
+struct LedgerHead
+{
+    ca::u64 txn = 0;   ///< 头事务号（0 = 基线态）
+};
+
+/// @brief 台账行（四型判别联合；同时只有一型有效）。
 struct LedgerRow
 {
     enum class Kind : ca::u8
@@ -185,11 +197,13 @@ struct LedgerRow
         Transaction,
         Anchor,
         Bookmark,
+        Head,
     };
     Kind              kind = Kind::Transaction;
     LedgerTransaction transaction;
     LedgerAnchor      anchor;
     LedgerBookmark    bookmark;
+    LedgerHead        head;
 };
 
 /// @brief 严格解析单行台账 JSON（行级字段严格：未知/重复字段、类型错、digest
@@ -210,11 +224,13 @@ ca::Result<ca::str::Utf8String, ProjectStoreError> serializeLedgerRows(
 
 /// @brief 活动链结构校验（装载期）：锚行（若有）必须在行首且 txn 为最小；事务
 ///        parent 必须指向段内更早事务或 0；txn 无重复；书签 txn 必须指向段内
-///        事务。违反即 Section 错（带行定位）。
+///        事务；头指针行至多一行且 txn 为 0、锚事务或段内事务。违反即
+///        Section 错（带行定位）。
 ca::Result<void, ProjectStoreError> validateLedgerChain(const std::vector<LedgerRow>& rows);
 
-/// @brief 段内行集合的确定性排序：锚行恒在行首，事务行按 txn 升序，书签行按
-///        名字典序排其后。装载后的内存序与写出序由此统一。
+/// @brief 段内行集合的确定性排序：锚行恒在行首，事务行按 txn 升序，头指针行
+///        其后（至多一行），书签行按名字典序排最后。装载后的内存序与写出序
+///        由此统一。
 void sortLedgerRows(std::vector<LedgerRow>& rows);
 
 /// @brief overlay section 名（`overlay-<txn>-<seq>`；事务号 + 段内序号）。
