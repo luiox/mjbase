@@ -195,7 +195,7 @@ schema 版本 v8 → v9，fail-loud 版本门纪律延续：\ ``kAnalysisDbSchem
 - 虚分派族含祖先链声明的保守余量（§3）。
 - RTA 精度档的实例化证据是 Type 引用行全族（new/checkcast/instanceof/ldc class 不可分，refs 无 opcode 位）——实例化集合是真 new 目标集的超集，收窄后仍不过近似；反射建实例与 classpath 外实例化（反序列化、SPI、外部代码持内部类型实例回灌）不在证据集内，RTA 闭包在这些点欠近似——铁律：RTA 结果不直接作删除依据，删除判死用 CHA 档或 keep 根面（coverage bit0 自报该覆盖度缺口）。
 - clinit 触发按「可能首触」保守处理（refs 无 opcode 位），宁多收不少收。
-- ReferenceIndex 全容器 build 的规模特征（PoC 实测观察，非本批改动项）：混淆语料 A（4179 类）全容器单次 build 超过 20 分钟未收敛（含 org/objectweb/asm/ClassReader 单类 20.8s 量级的病态大类），20 类/块分块（209 块）index build 累计 611.8 s、分块装载全流程 627.7 s（§7）——闭包批次的重算动线若走「重导入 + 重算」路径，重导入成本由导入桥（分块或增量切片）消化，闭包计算面本身秒级（§7）；该观察同时是 refs kind 分类线与扫描面性能批的输入。
+- ReferenceIndex 全容器 build 的规模特征：PoC 时代观察到的全容器单次 build 超线性（混淆语料 A 4179 类 >20 分钟未收敛，PoC 数字见 §7）已由别名展开走查的槽位级缓存定因修复（扫描面性能批：summarizeLinear 逐调用点现算 callee 三路展开流是 O(N²) 项，缓存后恢复线性）——容器内病态大类的线性解析成本仍在，闭包批次的重算动线若走「重导入 + 重算」路径，重导入成本由导入桥（分块或增量切片）消化，闭包计算面本身秒级（§7）。
 
 9. 不做什么
 -----------

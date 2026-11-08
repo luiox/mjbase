@@ -23,6 +23,10 @@ namespace {
 using jbc::core::Op;
 using jbc::analysis::VKind;
 
+/// 单槽展开缓存条目的事实数上限（超限不入缓存，调用点回退现算）：
+/// 只防病态大摘要的缓存内存膨胀，正常摘要远低于此。
+constexpr ca::usize kExpansionCacheFactsCap = 4096;
+
 // ---------------------------------------------------------------------------
 // 驻留池与哈希
 // ---------------------------------------------------------------------------
@@ -710,15 +714,22 @@ std::optional<AliasMethodSummary> summarizeLinear(const AliasMethodContext& ctx,
                 binding.fwArguments      = arguments;
                 walk.summary.callBindings.push_back(std::move(binding));
 
-                // 展开流以 callee 槽位播种（环上路径每方法至多一次）。
-                std::vector<ca::usize> visiting;
-                ca::usize              calleeSlot = 0;
-                if (previous->resolveBinding(binding.callee, &calleeSlot) != nullptr) {
-                    visiting.push_back(calleeSlot);
+                // 展开流以 callee 槽位播种（环上路径每方法至多一次）。展开结果
+                // 只依赖 (callee 槽位, 只读快照)：槽位级缓存复用（perf 批）——
+                // 缓存未命中/超限时回退现算，输出与现算逐字节一致。
+                ca::usize calleeSlot = 0;
+                const bool slotResolved =
+                    previous->resolveBinding(binding.callee, &calleeSlot) != nullptr;
+                const std::vector<AliasMethodSummary::FieldWrite>* cachedFieldFacts = nullptr;
+                if (slotResolved) cachedFieldFacts = previous->cachedFieldExpansion(calleeSlot);
+                std::vector<AliasMethodSummary::FieldWrite> fallbackFieldWrites;
+                if (cachedFieldFacts == nullptr) {
+                    std::vector<ca::usize> visiting;
+                    if (slotResolved) visiting.push_back(calleeSlot);
+                    previous->expandFieldWrites(*callee, visiting, fallbackFieldWrites);
+                    cachedFieldFacts = &fallbackFieldWrites;
                 }
-                std::vector<AliasMethodSummary::FieldWrite> inlineFieldWrites;
-                previous->expandFieldWrites(*callee, visiting, inlineFieldWrites);
-                for (const auto& write : inlineFieldWrites) {
+                for (const auto& write : *cachedFieldFacts) {
                     const auto actualReceiver = instantiateFact(write.receiver, arguments, receiver);
                     const auto actualValue    = instantiateFact(write.value, arguments, receiver);
                     if (!write.isStatic) {
@@ -737,9 +748,16 @@ std::optional<AliasMethodSummary> summarizeLinear(const AliasMethodContext& ctx,
                         }
                     }
                 }
-                std::vector<AliasMethodSummary::ArrayWrite> inlineArrayWrites;
-                previous->expandArrayWrites(*callee, visiting, inlineArrayWrites);
-                for (const auto& write : inlineArrayWrites) {
+                const std::vector<AliasMethodSummary::ArrayWrite>* cachedArrayFacts = nullptr;
+                if (slotResolved) cachedArrayFacts = previous->cachedArrayExpansion(calleeSlot);
+                std::vector<AliasMethodSummary::ArrayWrite> fallbackArrayWrites;
+                if (cachedArrayFacts == nullptr) {
+                    std::vector<ca::usize> visiting;
+                    if (slotResolved) visiting.push_back(calleeSlot);
+                    previous->expandArrayWrites(*callee, visiting, fallbackArrayWrites);
+                    cachedArrayFacts = &fallbackArrayWrites;
+                }
+                for (const auto& write : *cachedArrayFacts) {
                     const auto actualArray = instantiateFact(write.array, arguments, receiver);
                     const auto actualIndex = instantiateFact(write.index, arguments, receiver);
                     const auto actualValue = instantiateFact(write.value, arguments, receiver);
@@ -751,9 +769,19 @@ std::optional<AliasMethodSummary> summarizeLinear(const AliasMethodContext& ctx,
                                                            : mergeAliasValues(it->second, actualValue);
                     }
                 }
-                std::vector<AliasMethodSummary::ContainerWrite> inlineContainerWrites;
-                previous->expandContainerWrites(*callee, visiting, inlineContainerWrites);
-                for (const auto& write : inlineContainerWrites) {
+                const std::vector<AliasMethodSummary::ContainerWrite>* cachedContainerFacts =
+                    nullptr;
+                if (slotResolved) {
+                    cachedContainerFacts = previous->cachedContainerExpansion(calleeSlot);
+                }
+                std::vector<AliasMethodSummary::ContainerWrite> fallbackContainerWrites;
+                if (cachedContainerFacts == nullptr) {
+                    std::vector<ca::usize> visiting;
+                    if (slotResolved) visiting.push_back(calleeSlot);
+                    previous->expandContainerWrites(*callee, visiting, fallbackContainerWrites);
+                    cachedContainerFacts = &fallbackContainerWrites;
+                }
+                for (const auto& write : *cachedContainerFacts) {
                     const auto actualContainer =
                         instantiateFact(write.container, arguments, receiver);
                     const auto actualKey   = instantiateFact(write.key, arguments, receiver);
@@ -1774,6 +1802,9 @@ void AliasAnalysis::clear()
     convergenceRounds_ = 0;
     expansionSource_   = nullptr;
     suspendAndersenIndexing_ = false;
+    fieldExpansionCache_.clear();
+    arrayExpansionCache_.clear();
+    containerExpansionCache_.clear();
 }
 
 void AliasAnalysis::build(const mjbase::model::ResourceContainer& container)
@@ -1820,6 +1851,15 @@ void AliasAnalysis::expandFieldWrites(const AliasMethodSummary&                 
                                       std::vector<ca::usize>&                      visiting,
                                       std::vector<AliasMethodSummary::FieldWrite>& out) const
 {
+    ca::usize guardHits = 0;
+    expandFieldWritesTracked(summary, visiting, out, guardHits);
+}
+
+void AliasAnalysis::expandFieldWritesTracked(const AliasMethodSummary&                    summary,
+                                            std::vector<ca::usize>&                      visiting,
+                                            std::vector<AliasMethodSummary::FieldWrite>& out,
+                                            ca::usize&                                   guardHits) const
+{
     const AliasAnalysis* source = expansionSource_ != nullptr ? expansionSource_ : this;
     out.insert(out.end(), summary.fieldWrites.begin(), summary.fieldWrites.end());
     for (const auto& binding : summary.callBindings) {
@@ -1828,14 +1868,25 @@ void AliasAnalysis::expandFieldWrites(const AliasMethodSummary&                 
         const AliasMethodSummary* callee = resolveBinding(binding.callee, &slot);
         if (callee == nullptr) continue;
         std::vector<AliasMethodSummary::FieldWrite> inner;
-        if (std::find(visiting.begin(), visiting.end(), slot) != visiting.end()) {
+        bool childCleanForCache = false;
+        if (slot < source->fieldExpansionCache_.size() &&
+            source->fieldExpansionCache_[slot].fresh) {
+            // 缓存切片与现算逐字节一致（同槽位同快照同输入）。
+            inner = source->fieldExpansionCache_[slot].facts;
+        }
+        else if (std::find(visiting.begin(), visiting.end(), slot) != visiting.end()) {
             // 环重入：只贡献 callee 自身事实（按本绑定实例化）。
+            ++guardHits;
             inner.assign(callee->fieldWrites.begin(), callee->fieldWrites.end());
         }
         else {
             visiting.push_back(slot);
-            source->expandFieldWrites(*callee, visiting, inner);
+            ca::usize childGuardHits = 0;
+            source->expandFieldWritesTracked(*callee, visiting, inner, childGuardHits);
             visiting.pop_back();
+            guardHits += childGuardHits;
+            // 子树全程无环重入 ⇒ inner 与外层 visit 无关，后序入库（perf 批）。
+            childCleanForCache = childGuardHits == 0;
         }
         for (const auto& write : inner) {
             out.push_back({write.field,
@@ -1843,12 +1894,49 @@ void AliasAnalysis::expandFieldWrites(const AliasMethodSummary&                 
                            instantiateFact(write.value, binding.fwArguments, binding.fwReceiver),
                            write.isStatic});
         }
+        if (childCleanForCache && inner.size() <= kExpansionCacheFactsCap
+            && slot < source->fieldExpansionCache_.size()) {
+            source->fieldExpansionCache_[slot] =
+                CachedExpansionFacts<AliasMethodSummary::FieldWrite>{true, std::move(inner)};
+        }
     }
+}
+
+const std::vector<AliasMethodSummary::FieldWrite>* AliasAnalysis::cachedFieldExpansion(
+    ca::usize slot) const
+{
+    if (slot >= summaries_.size()) return nullptr;
+    if (fieldExpansionCache_.size() != summaries_.size()) {
+        fieldExpansionCache_.resize(summaries_.size());
+    }
+    CachedExpansionFacts<AliasMethodSummary::FieldWrite>& entry = fieldExpansionCache_[slot];
+    if (entry.fresh) return &entry.facts;
+    // 根条目：visit=[slot] 与调用点播种逐字节同输入，同输入同输出 ⇒ 无条件入库
+    //（超上限条目不入，调用点回退现算）。
+    std::vector<ca::usize> visiting;
+    visiting.push_back(slot);
+    ca::usize guardHits = 0;
+    expandFieldWritesTracked(summaries_[slot], visiting, entry.facts, guardHits);
+    entry.fresh = true;
+    if (entry.facts.size() > kExpansionCacheFactsCap) {
+        entry = CachedExpansionFacts<AliasMethodSummary::FieldWrite>{};
+        return nullptr;
+    }
+    return &entry.facts;
 }
 
 void AliasAnalysis::expandArrayWrites(const AliasMethodSummary&                    summary,
                                       std::vector<ca::usize>&                      visiting,
                                       std::vector<AliasMethodSummary::ArrayWrite>& out) const
+{
+    ca::usize guardHits = 0;
+    expandArrayWritesTracked(summary, visiting, out, guardHits);
+}
+
+void AliasAnalysis::expandArrayWritesTracked(const AliasMethodSummary&                    summary,
+                                            std::vector<ca::usize>&                      visiting,
+                                            std::vector<AliasMethodSummary::ArrayWrite>& out,
+                                            ca::usize&                                   guardHits) const
 {
     const AliasAnalysis* source = expansionSource_ != nullptr ? expansionSource_ : this;
     out.insert(out.end(), summary.arrayWrites.begin(), summary.arrayWrites.end());
@@ -1858,26 +1946,71 @@ void AliasAnalysis::expandArrayWrites(const AliasMethodSummary&                 
         const AliasMethodSummary* callee = resolveBinding(binding.callee, &slot);
         if (callee == nullptr) continue;
         std::vector<AliasMethodSummary::ArrayWrite> inner;
-        if (std::find(visiting.begin(), visiting.end(), slot) != visiting.end()) {
+        bool childCleanForCache = false;
+        if (slot < source->arrayExpansionCache_.size() &&
+            source->arrayExpansionCache_[slot].fresh) {
+            inner = source->arrayExpansionCache_[slot].facts;
+        }
+        else if (std::find(visiting.begin(), visiting.end(), slot) != visiting.end()) {
+            ++guardHits;
             inner.assign(callee->arrayWrites.begin(), callee->arrayWrites.end());
         }
         else {
             visiting.push_back(slot);
-            source->expandArrayWrites(*callee, visiting, inner);
+            ca::usize childGuardHits = 0;
+            source->expandArrayWritesTracked(*callee, visiting, inner, childGuardHits);
             visiting.pop_back();
+            guardHits += childGuardHits;
+            childCleanForCache = childGuardHits == 0;
         }
         for (const auto& write : inner) {
             out.push_back({instantiateFact(write.array, binding.arguments, binding.receiver),
                            instantiateFact(write.index, binding.arguments, binding.receiver),
                            instantiateFact(write.value, binding.arguments, binding.receiver)});
         }
+        if (childCleanForCache && inner.size() <= kExpansionCacheFactsCap
+            && slot < source->arrayExpansionCache_.size()) {
+            source->arrayExpansionCache_[slot] =
+                CachedExpansionFacts<AliasMethodSummary::ArrayWrite>{true, std::move(inner)};
+        }
     }
 }
 
+const std::vector<AliasMethodSummary::ArrayWrite>* AliasAnalysis::cachedArrayExpansion(
+    ca::usize slot) const
+{
+    if (slot >= summaries_.size()) return nullptr;
+    if (arrayExpansionCache_.size() != summaries_.size()) {
+        arrayExpansionCache_.resize(summaries_.size());
+    }
+    CachedExpansionFacts<AliasMethodSummary::ArrayWrite>& entry = arrayExpansionCache_[slot];
+    if (entry.fresh) return &entry.facts;
+    std::vector<ca::usize> visiting;
+    visiting.push_back(slot);
+    ca::usize guardHits = 0;
+    expandArrayWritesTracked(summaries_[slot], visiting, entry.facts, guardHits);
+    entry.fresh = true;
+    if (entry.facts.size() > kExpansionCacheFactsCap) {
+        entry = CachedExpansionFacts<AliasMethodSummary::ArrayWrite>{};
+        return nullptr;
+    }
+    return &entry.facts;
+}
+
 void AliasAnalysis::expandContainerWrites(
-    const AliasMethodSummary&                                    summary,
-    std::vector<ca::usize>&                                      visiting,
-    std::vector<AliasMethodSummary::ContainerWrite>&             out) const
+    const AliasMethodSummary&                        summary,
+    std::vector<ca::usize>&                          visiting,
+    std::vector<AliasMethodSummary::ContainerWrite>& out) const
+{
+    ca::usize guardHits = 0;
+    expandContainerWritesTracked(summary, visiting, out, guardHits);
+}
+
+void AliasAnalysis::expandContainerWritesTracked(
+    const AliasMethodSummary&                        summary,
+    std::vector<ca::usize>&                          visiting,
+    std::vector<AliasMethodSummary::ContainerWrite>& out,
+    ca::usize&                                       guardHits) const
 {
     const AliasAnalysis* source = expansionSource_ != nullptr ? expansionSource_ : this;
     out.insert(out.end(), summary.containerWrites.begin(), summary.containerWrites.end());
@@ -1887,20 +2020,56 @@ void AliasAnalysis::expandContainerWrites(
         const AliasMethodSummary* callee = resolveBinding(binding.callee, &slot);
         if (callee == nullptr) continue;
         std::vector<AliasMethodSummary::ContainerWrite> inner;
-        if (std::find(visiting.begin(), visiting.end(), slot) != visiting.end()) {
+        bool childCleanForCache = false;
+        if (slot < source->containerExpansionCache_.size() &&
+            source->containerExpansionCache_[slot].fresh) {
+            inner = source->containerExpansionCache_[slot].facts;
+        }
+        else if (std::find(visiting.begin(), visiting.end(), slot) != visiting.end()) {
+            ++guardHits;
             inner.assign(callee->containerWrites.begin(), callee->containerWrites.end());
         }
         else {
             visiting.push_back(slot);
-            source->expandContainerWrites(*callee, visiting, inner);
+            ca::usize childGuardHits = 0;
+            source->expandContainerWritesTracked(*callee, visiting, inner, childGuardHits);
             visiting.pop_back();
+            guardHits += childGuardHits;
+            childCleanForCache = childGuardHits == 0;
         }
         for (const auto& write : inner) {
             out.push_back({instantiateFact(write.container, binding.arguments, binding.receiver),
                            instantiateFact(write.key, binding.arguments, binding.receiver),
                            instantiateFact(write.value, binding.arguments, binding.receiver)});
         }
+        if (childCleanForCache && inner.size() <= kExpansionCacheFactsCap
+            && slot < source->containerExpansionCache_.size()) {
+            source->containerExpansionCache_[slot] =
+                CachedExpansionFacts<AliasMethodSummary::ContainerWrite>{true, std::move(inner)};
+        }
     }
+}
+
+const std::vector<AliasMethodSummary::ContainerWrite>* AliasAnalysis::cachedContainerExpansion(
+    ca::usize slot) const
+{
+    if (slot >= summaries_.size()) return nullptr;
+    if (containerExpansionCache_.size() != summaries_.size()) {
+        containerExpansionCache_.resize(summaries_.size());
+    }
+    CachedExpansionFacts<AliasMethodSummary::ContainerWrite>& entry =
+        containerExpansionCache_[slot];
+    if (entry.fresh) return &entry.facts;
+    std::vector<ca::usize> visiting;
+    visiting.push_back(slot);
+    ca::usize guardHits = 0;
+    expandContainerWritesTracked(summaries_[slot], visiting, entry.facts, guardHits);
+    entry.fresh = true;
+    if (entry.facts.size() > kExpansionCacheFactsCap) {
+        entry = CachedExpansionFacts<AliasMethodSummary::ContainerWrite>{};
+        return nullptr;
+    }
+    return &entry.facts;
 }
 
 AliasExpandedFacts AliasAnalysis::expandedFactsOf(std::string_view owner, std::string_view name,

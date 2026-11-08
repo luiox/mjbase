@@ -547,6 +547,23 @@ mjt-deobf 侧尚在 mbase 栈消费的 opt pass 逐件裁决；"结构性吸收"
 
 ## 待办
 
+- [x] **ReferenceIndex 全容器 build 超线性修复（#159 遗留扫描面性能批，
+  2026-11-08）**：混淆语料 A（4179 类）全容器 index build >20min 未收敛的
+  规模观察定因与修复。根因在 ReferenceIndex::build 内嵌的共享别名分析
+  （AliasAnalysis::build 全程序 Jacobi 固定点）：summarizeLinear 对每个
+  容器内调用点现算 callee 三路展开流（expandFieldWrites/expandArrayWrites/
+  expandContainerWrites），走查随容器内调用链深度递归传递——链式容器上
+  每轮 O(N²) 次展开步进（合成链语料消融实证：容器内链 n=1200 alias
+  749.6ms 且倍增比 4.8x，链尾改指容器外目标即回线性 95.5ms，其余不变）。
+  修复：展开结果只依赖 (callee 槽位, 只读快照)——调用点 visit 恒为
+  [calleeSlot] 播种——槽位级展开缓存复用（根条目同输入同输出无条件入库；
+  走查途中无环重入分支的中间槽位后序入库；环子树不入中间缓存；事实数超
+  4096 不缓存回退现算），缓存切片与现算逐字节一致，公开 expand* 语义零
+  改动。合成链语料同口径前后对比：n=1200 alias 749.6→91.2ms、totalBuild
+  827.4→169.6ms，倍增比 4.8x→2.1x（恢复线性）；9600 类链式语料新增
+  ReferenceIndex 全容器 build 性能软门（reference_index_perf_test，60s
+  宽松上界只防数量级劣化，回归到逐调用点现算即二次方档必炸）。
+
 - [x] **2026-10-19 air/sir 出仓定案（morpher 仓内副本退役）**：deobf 工具面 IR
   （AIR 节点指令层 + SIR 沿擎）按归属裁决不入 mjbase 独立仓——本波次以上各
   「AIR/SIR 批」计量均为彼时 morpher 仓内载体的完成记录；代码以
