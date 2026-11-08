@@ -1,6 +1,6 @@
 # mjbase
 
-`mjbase` is a cross-class JVM bytecode analysis and transformation library built on [libjbc](https://github.com/luiox/libjbc): keys (cross-class identity),class/method/field hierarchy, call graphs and reference indexing, instruction engineering (the `asm` domain), mapping and remapping, an AIR/SIR tree IR, and the pass pipeline that drives them.
+`mjbase` is a cross-class JVM bytecode analysis and transformation library built on [libjbc](https://github.com/luiox/libjbc): keys (cross-class identity),class/method/field hierarchy, call graphs and reference indexing, instruction engineering (the `asm` domain), mapping and remapping, and the pass pipeline that drives them.
 
 The split with libjbc is deliberate: **libjbc owns one class / one method**(classfile DOM, CodeDom, CodeEditor, frame and dominator engines) while **mjbase owns cross-class concerns**. mjbase never re-implements what libjbc already provides, and never pushes global state back into libjbc.
 
@@ -14,7 +14,7 @@ xmake f -p windows          # use -p linux on Linux
 xmake build mjbase
 ```
 
-Dependencies come from [luiox-repo](https://github.com/luiox/luiox-repo) and xrepo: libca, libjbc, libjzip, libjstr, libgarena, libjclassfile, libjstd,libjhasm, libjblw, libjbytecode (link-level transitive dependency of the JASM text layer only), zlib.
+Dependencies come from [luiox-repo](https://github.com/luiox/luiox-repo) and xrepo: libca, libjbc, libjzip, libjstr, libgarena, libjclassfile, libjstd, libjhasm, zlib, plus sqlite3 (analysis database storage) and libjdk_finder (test JDK fixtures).
 
 ### Tests
 

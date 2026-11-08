@@ -1,6 +1,6 @@
 # mjbase
 
-`mjbase` 是基于 [libjbc](https://github.com/luiox/libjbc) 的跨类 JVM 字节码分析与变换库：跨类身份（keys）、类/方法/字段层次、调用图与引用索引、指令工程（asm 域）、映射与重映射、AIR/SIR 树 IR，以及驱动它们的 pass 管线。
+`mjbase` 是基于 [libjbc](https://github.com/luiox/libjbc) 的跨类 JVM 字节码分析与变换库：跨类身份（keys）、类/方法/字段层次、调用图与引用索引、指令工程（asm 域）、映射与重映射，以及驱动它们的 pass 管线。
 
 与 libjbc 的分界是刻意的：**libjbc 只管单类/单方法**（classfile DOM、CodeDom、CodeEditor、帧与支配引擎），**mjbase 管跨类**。mjbase 不重新实现 libjbc 已有能力，也不把全局状态塞回 libjbc。
 
@@ -14,7 +14,7 @@ xmake f -p windows          # Linux 用 -p linux
 xmake build mjbase
 ```
 
-依赖来自 [luiox-repo](https://github.com/luiox/luiox-repo) 与 xrepo：libca、libjbc、libjzip、libjstr、libgarena、libjclassfile、libjstd、libjhasm、libjblw、libjbytecode（仅 JASM 文本面的链接层传递依赖）、zlib。
+依赖来自 [luiox-repo](https://github.com/luiox/luiox-repo) 与 xrepo：libca、libjbc、libjzip、libjstr、libgarena、libjclassfile、libjstd、libjhasm、zlib，外加 sqlite3（分析数据库存储）与 libjdk_finder（测试 JDK 夹具）。
 
 ### 测试
 
