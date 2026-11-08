@@ -58,7 +58,9 @@ Bytes asmClass(const std::string& cls, const std::string& super,
 .class )JASM" + std::string(classMods) + " " + cls + R"JASM( {
 )JASM" + std::string(methodsText) + R"JASM(}
 )JASM";
-    return assembleJasm(src);
+    // major 61：改写面受 pass 版本门（<52 不改写）约束，须 52+；61 走装配器
+    // 全帧分析，体面帧自洽。
+    return assembleJasm(src, 61);
 }
 
 /// public m()V（return 体）声明文本（唯一具体目标 / 基类声明）。
@@ -92,7 +94,7 @@ std::string callerMethod(std::string_view receiver, std::string_view inv,
 Bytes uniquePairClass(const std::string& cls)
 {
     return asmClass(cls, "java/lang/Object", "public super",
-                    declM() + callerMethod("aload 0", "invokevirtual " + cls + ".m ()V"));
+                    std::string(declM()) + callerMethod("aload 0", "invokevirtual " + cls + ".m ()V"));
 }
 
 /// 读某方法 Code 属性的指令字节（夹具方法恒有 Code）。
@@ -326,7 +328,7 @@ TEST(MjPassDevirtualizeSingleTargetTest, KeepsNonThisReceiverSites)
     addClassResource(
         container, "Rcv.class",
         asmClass("Rcv", "java/lang/Object", "public super",
-                 declM()
+                 std::string(declM())
                      + "  .method public caller (Ljava/lang/Object;)V {\n"
                        "    code: {\n      aload 1\n      invokevirtual Rcv.m ()V\n"
                        "      return\n    }\n  }\n"));
@@ -340,12 +342,28 @@ TEST(MjPassDevirtualizeSingleTargetTest, KeepsNonThisReceiverSites)
 TEST(MjPassDevirtualizeSingleTargetTest, KeepsAnchoredSites)
 {
     mjbase::model::ResourceContainer container;
-    addClassResource(
-        container, "Anc.class",
-        asmClass("Anc", "java/lang/Object", "public super",
-                 declM()
-                     + callerMethod("aload 0", "invokevirtual Anc.m ()V", "",
-                                    "      { L0, Lb, Lb, * }\n")));
+    // 异常表 start 标签锚在调用点前置边界（原字节面 handler=调用点 pc；
+    // 61 帧分析下 handler 必须独立成块收 Throwable，锚定面由 start 标签
+    // 同样触发 labelsAnchorAt 前置边界守卫——行为契约同实）。
+    const std::string caller =
+        "  .method public caller ()V {\n"
+        "    exceptions: {\n"
+        "      { Ls, Le, H, * },\n"
+        "    },\n"
+        "    code: {\n"
+        "      aload 0\n"
+        "      Ls:\n"
+        "      invokevirtual Anc.m ()V\n"
+        "      Le:\n"
+        "      return\n"
+        "      H:\n"
+        "      pop\n"
+        "      return\n"
+        "    }\n"
+        "  }\n";
+    addClassResource(container, "Anc.class",
+                     asmClass("Anc", "java/lang/Object", "public super",
+                              std::string(declM()) + caller));
 
     const Bytes before = classBytesOf(container, "Anc.class");
     EXPECT_TRUE(runDevirtualize(container).areAllPreserved());
@@ -360,7 +378,7 @@ TEST(MjPassDevirtualizeSingleTargetTest, KeepsBridgeTargetSites)
 {
     mjbase::model::ResourceContainer container;
     const Bytes base = asmClass("Brd", "java/lang/Object", "public super",
-                                declM() + callerMethod("aload 0", "invokevirtual Brd.m ()V"));
+                                std::string(declM()) + callerMethod("aload 0", "invokevirtual Brd.m ()V"));
     expectValidateOk(base);
     // declM 声明在前（物理序 0）：单点翻转 m 的 ACC_BRIDGE。
     const Bytes bridged = flipMemberAccess(base, false, 0, 0x0040, 0, "bridge flag");

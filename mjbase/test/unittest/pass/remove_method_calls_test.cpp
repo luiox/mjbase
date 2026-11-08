@@ -54,7 +54,8 @@ Bytes callerClass(const std::string& cls, std::string_view methodsText)
 .class public super )JASM" + cls + R"JASM( {
 )JASM" + std::string(methodsText) + R"JASM(}
 )JASM";
-    return assembleJasm(src);
+    // major 61：帧面产物（分支体改写走 Strict 帧再生，再生后 SMT 在场）。
+    return assembleJasm(src, 61);
 }
 
 /// 被调用方类：pick()I（返回 1）+ keep()V。调用点删除不得改写它。

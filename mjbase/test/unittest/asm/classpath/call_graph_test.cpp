@@ -60,13 +60,17 @@ const char* invokeMnemonic(Op op)
     }
 }
 
-/// 单条 invoke 指令规格（调用点提取只看 invoke 指令本身）。
+/// 单条 invoke 指令规格（调用点提取只看 invoke 指令本身）。装配期线性栈
+/// 模拟要求欠栈外呼垫清（pre/post 形如 "ldc \"\"\n" / "pop\n"）——垫栈
+/// 不产生调用点。
 struct CallSpec
 {
     Op op = Op::INVOKESTATIC;
     std::string_view owner;
     std::string_view name;
     std::string_view desc;
+    std::string_view pre;
+    std::string_view post;
 };
 
 /// 方法规格：abstract 时无方法体（calls 忽略，出边为空）。
@@ -78,9 +82,9 @@ struct MethodSpec
     bool abstract = false;
 };
 
-/// jasm 装配最小 classfile（帧less 49：public super /
-/// super=java/lang/Object / 无接口无字段无类属性），方法各带一个 Code 属性，
-/// 指令序列 = invokes + return。
+/// jasm 装配最小 classfile（49：免 StackMapTable 帧分析，装配期仍线性栈
+/// 模拟——public super / super=java/lang/Object / 无接口无字段无类属性），
+/// 方法各带一个 Code 属性，指令序列 = invokes（可带垫清段）+ return。
 Bytes makeClass(std::string_view thisClass, const std::vector<MethodSpec>& methods)
 {
     std::string memberText;
@@ -99,6 +103,10 @@ Bytes makeClass(std::string_view thisClass, const std::vector<MethodSpec>& metho
         memberText += m.desc;
         memberText += " {\n    code: {\n";
         for (const CallSpec& c : m.calls) {
+            if (!c.pre.empty()) {
+                memberText += "      ";
+                memberText += c.pre;
+            }
             memberText += "      ";
             memberText += invokeMnemonic(c.op);
             memberText += ' ';
@@ -110,6 +118,10 @@ Bytes makeClass(std::string_view thisClass, const std::vector<MethodSpec>& metho
             memberText += ' ';
             memberText += c.desc;
             memberText += '\n';
+            if (!c.post.empty()) {
+                memberText += "      ";
+                memberText += c.post;
+            }
         }
         memberText += "      return\n    }\n  }\n";
     }
@@ -167,7 +179,7 @@ Bytes pointInvokeOperandAtUtf8(const Bytes& clsBytes)
                     ADD_FAILURE() << "invoke-operand-utf8: Code 槽类型不符";
                     return;
                 }
-                for (usize i = 0; i + 2 < code->code.size(); ++i) {
+                for (ca::usize i = 0; i + 2 < code->code.size(); ++i) {
                     if (code->code[i] != 0xB8) continue;   // INVOKESTATIC
                     code->code[i + 1] = static_cast<ca::u8>(utf8Slot >> 8);
                     code->code[i + 2] = static_cast<ca::u8>(utf8Slot);
@@ -220,7 +232,8 @@ const Bytes& appClassBytes()
 {
     static const Bytes cls = makeClass("App", {{"entry", "()V", {
         {Op::INVOKESTATIC, "Lib", "callee", "()V"},
-        {Op::INVOKESTATIC, "java/lang/Integer", "parseInt", "(Ljava/lang/String;)I"},
+        {Op::INVOKESTATIC, "java/lang/Integer", "parseInt", "(Ljava/lang/String;)I",
+         "ldc \"\"\n", "pop\n"},
     }}});
     return cls;
 }
@@ -314,7 +327,8 @@ TEST(MjAsmClasspathTest, CallSitesResolveInsnInKeptAliveSession)
         EXPECT_EQ(insn->op, Op::INVOKESTATIC);
     }
     EXPECT_EQ(code->dom.peek(out[0].insn)->srcPc, 0u);
-    EXPECT_EQ(code->dom.peek(out[1].insn)->srcPc, 3u);   // invokestatic 各 3 字节
+    // 第二站前有欠栈垫清段（ldc "" 2 字节）：5 = 首站 3 字节 + 垫栈 2 字节。
+    EXPECT_EQ(code->dom.peek(out[1].insn)->srcPc, 5u);
     EXPECT_NE(out[0].insn, out[1].insn);
 
     // 只被引用的类（未喂字节）没有会话。
@@ -395,7 +409,8 @@ struct ChainFixture
 {
     Bytes root = makeClass("Root", {{"entry", "()V", {
         {Op::INVOKESTATIC, "Mid", "step", "()V"},
-        {Op::INVOKESTATIC, "java/lang/Integer", "parseInt", "(Ljava/lang/String;)I"},
+        {Op::INVOKESTATIC, "java/lang/Integer", "parseInt", "(Ljava/lang/String;)I",
+         "ldc \"\"\n", "pop\n"},
     }}});
     Bytes mid =
         makeClass("Mid", {{"step", "()V", {{Op::INVOKESTATIC, "Leaf", "done", "()V"}}}});
@@ -716,7 +731,7 @@ TEST(MjAsmClasspathTest, PromoteFailureFailsBuild)
     const Bytes base = mjbase::test::assembleMethodClass(
         "m", "()V", "      goto L0\n      L0:\n      return\n", "Bad");
     ASSERT_FALSE(base.empty());
-    expectValidateOk(base);
+    mjbase::test::expectValidateOk(base);
     const Bytes broken = mjbase::test::retargetFirstGoto(base, 1);
     ASSERT_FALSE(broken.empty());
 
@@ -742,7 +757,7 @@ TEST(MjAsmClasspathTest, InvokeOperandMismatchFailsBuild)
         {Op::INVOKESTATIC, "X", "whatever", "()V"},
     }}});
     ASSERT_FALSE(base.empty());
-    expectValidateOk(base);
+    mjbase::test::expectValidateOk(base);
     const Bytes bad = pointInvokeOperandAtUtf8(base);
     ASSERT_FALSE(bad.empty());
 

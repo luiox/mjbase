@@ -116,13 +116,18 @@ Bytes asmOne(const std::string& cls, std::string_view mods, std::string_view nam
     return mjbase::test::assembleJasm(src);
 }
 
-/// 壳类工厂：static 壳 w(I)I，体内 iload_0 后转发到 target。
+/// 壳类工厂：static 壳，体内 argsText（默认 iload 0）后转发到 target 再
+/// tailText（默认 ireturn）——实参/返回非 I 形时按槽型与返回族改换装载与
+/// 收口（ref 首参用 aload 0，ref 返回用 areturn）。
 Bytes buildForwarder(const char* self, const char* name, const char* desc,
-                     const char* targetOwner, const char* targetName, const char* targetDesc)
+                     const char* targetOwner, const char* targetName, const char* targetDesc,
+                     std::string_view argsText = "      iload 0\n",
+                     std::string_view tailText = "      ireturn\n")
 {
     const std::string invoke = std::string("      invokestatic ") + targetOwner + "."
-                               + targetName + " " + targetDesc + "\n      ireturn\n";
-    return asmOne(self, "public static", name, desc, "      iload 0\n" + invoke);
+                               + targetName + " " + targetDesc + "\n";
+    return asmOne(self, "public static", name, desc, std::string(argsText) + invoke
+                                                       + std::string(tailText));
 }
 
 }   // namespace
@@ -173,7 +178,7 @@ TEST(MjPassIdentityWrapperInlinerTest, UnwrapsBoxedIntWrapperToVirtual)
                             "()I\n      ireturn\n"));
     addClassResource(container, "Caller.class",
                      buildForwarder("Caller", "m", "(Ljava/lang/Integer;)I", "W", "u",
-                                    "(Ljava/lang/Integer;)I"));
+                                    "(Ljava/lang/Integer;)I", "      aload 0\n"));
 
     EXPECT_TRUE(runInliner(container).changed());
 
@@ -198,7 +203,8 @@ TEST(MjPassIdentityWrapperInlinerTest, RewritesBoxWrapperToValueOf)
                             "(I)Ljava/lang/Integer;\n      areturn\n"));
     addClassResource(container, "Caller.class",
                      buildForwarder("Caller", "m", "(I)Ljava/lang/Integer;", "W", "b",
-                                    "(I)Ljava/lang/Integer;"));
+                                    "(I)Ljava/lang/Integer;", "      iload 0\n",
+                                    "      areturn\n"));
 
     EXPECT_TRUE(runInliner(container).changed());
 
@@ -244,7 +250,8 @@ TEST(MjPassIdentityWrapperInlinerTest, RewritesVirtualForwardToContainerTarget)
                             "      aload 0\n      iload 1\n      invokevirtual T.twice "
                             "(I)I\n      ireturn\n"));
     addClassResource(container, "Caller.class",
-                     buildForwarder("Caller", "m", "(LT;I)I", "W", "v", "(LT;I)I"));
+                     buildForwarder("Caller", "m", "(LT;I)I", "W", "v", "(LT;I)I",
+                                    "      aload 0\n      iload 1\n"));
 
     EXPECT_TRUE(runInliner(container).changed());
 
@@ -274,7 +281,7 @@ TEST(MjPassIdentityWrapperInlinerTest, RewritesInterfaceForwardWithCountByte)
                             "(I)I\n      ireturn\n"));
     addClassResource(container, "Caller.class",
                      buildForwarder("Caller", "m", "(LIface;I)I", "W", "ifv",
-                                    "(LIface;I)I"));
+                                    "(LIface;I)I", "      aload 0\n      iload 1\n"));
 
     EXPECT_TRUE(runInliner(container).changed());
 

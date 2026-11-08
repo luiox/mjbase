@@ -8,7 +8,8 @@
 /// 空格名（21845 字节）合成形态，不引用任何具体工具名。
 ///
 /// 夹具纪律：方法体一律 jasm 文本装配（semantic_fp_fixture.hpp 版本口径
-/// ——49 帧less 主体 / 61 indy·condy 面）；jasm 不能直达的形（LDC_W 强制
+/// ——49 免帧分析但装配期线性栈模拟，体面栈自洽 / 61 indy·condy 面全帧
+/// 分析）；jasm 不能直达的形（LDC_W 强制
 /// 形、WIDE 前缀窄槽位、invokeinterface count、原始属性载荷、空格名、
 /// 异常表原始 pc 端点、lookupswitch 体、BSM 嵌套动态实参）走 DOM 单点
 /// 偏差载面，逐用例申报。CP 重索引夹具以 spacer 方法前置真实平移语义槽位。
@@ -76,7 +77,7 @@ SemanticFp fpOf(const Bytes& bytes, std::string_view name)
     }
     auto r = mjbase::analysis::semanticFp(*cf, *m);
     if (r.is_err()) {
-        ADD_FAILURE() << "semanticFp failed: "
+        ADD_FAILURE() << "semanticFp failed for " << name << ": "
                       << mjbase::analysis::to_string(r.unwrap_err());
         return out;
     }
@@ -191,7 +192,8 @@ std::vector<ca::u8> lookupswitchBody(const std::vector<std::pair<ca::i32, char>>
     const ca::usize switchPc     = 1;
     const ca::usize operandStart = switchPc + 1;
     const ca::usize pad          = (4 - operandStart % 4) % 4;
-    const ca::usize popPc        = operandStart + pad + 12 + 8 * pairs.size();
+    // lookupswitch 定长部 = default(4) + npairs(4) = 8（tableswitch 才是 12）。
+    const ca::usize popPc        = operandStart + pad + 8 + 8 * pairs.size();
     const ca::usize retPc        = popPc + 1;
 
     std::vector<ca::u8> code;
@@ -295,7 +297,7 @@ TEST(MjAnalysisSemanticFpTest, ExpectLayoutDriftStableButBlockReorderFlips)
         }
         body += "      L1:\n      iconst_1\n"
                 "      tableswitch { min: 5, max: 6, cases: { L2, Ld }, default: Ld }\n"
-                "      L2:\n      pop\n      Ld:\n      return\n";
+                "      L2:\n      return\n      Ld:\n      return\n";
         return method("public static", name, "()V", body);
     };
     // 存活块重排：条件分支的两个都可达的返回块互换落位（真实重排，必翻）。
@@ -368,12 +370,18 @@ TEST(MjAnalysisSemanticFpTest, ExpectCpReindexStable)
     members49 += method("public static", "ldcMt", "()V", "      ldc 2\n      pop\n      return\n");
     members49 += method("public static", "field", "()V", "      getstatic FpRefs.fld I\n      pop\n      return\n");
     members49 += method("public static", "invoke", "()V", "      invokestatic FpRefs.run ()V\n      return\n");
-    members49 += method("public static", "iface", "()V", "      invokeinterface FpIface.go ()V\n      return\n");
+    members49 += method("public static", "iface", "()V",
+                        "      aconst_null\n      invokeinterface FpIface.go ()V\n      return\n");
     members49 += method("public static", "types", "()V",
-                        "      new FpRefs\n      pop\n      checkcast FpIface\n      pop\n      return\n");
-    members49 += method("public static", "marray", "()V", "      multianewarray [[I 2\n      pop\n      return\n");
+                        "      new FpRefs\n      pop\n      aconst_null\n      checkcast FpIface\n"
+                        "      pop\n      return\n");
+    members49 += method("public static", "marray", "()V",
+                        "      iconst_1\n      iconst_1\n      multianewarray [[I 2\n"
+                        "      pop\n      return\n");
     members49 += method("public static", "switchy", "()V",
-                        "      iconst_1\n      pop\n      return\n");   // 体被 DOM 换 lookupswitch 形
+                        "      iconst_1\n"
+                        "      tableswitch { min: 5, max: 6, cases: { L2, Ld }, default: Ld }\n"
+                        "      L2:\n      return\n      Ld:\n      return\n");
     members49 += method("public static", "widey", "()V", "      iload 300\n      pop\n      return\n");
 
     Bytes plain49 = cls("FpReindex49", members49);
@@ -388,10 +396,8 @@ TEST(MjAnalysisSemanticFpTest, ExpectCpReindexStable)
     Bytes junked49 = cls("FpReindex49", members49);
     plain49        = fp_fix::pointLdcAt(plain49, "ldcMh", mhBuilder, false);
     plain49        = fp_fix::pointLdcAt(plain49, "ldcMt", mtBuilder, false);
-    plain49 = withLookupswitchBody(plain49, "switchy", {{1, 'P'}, {9, 'R'}});
-    junked49 = fp_fix::pointLdcAt(junked49, "ldcMh", mhBuilder, false);
-    junked49 = fp_fix::pointLdcAt(junked49, "ldcMt", mtBuilder, false);
-    junked49 = withLookupswitchBody(junked49, "switchy", {{1, 'P'}, {9, 'R'}});
+    junked49       = fp_fix::pointLdcAt(junked49, "ldcMh", mhBuilder, false);
+    junked49       = fp_fix::pointLdcAt(junked49, "ldcMt", mtBuilder, false);
 
     for (const char* name : {"ldcI", "ldcS", "ldcC", "ldcJ", "ldcMh", "ldcMt", "field",
                              "invoke", "iface", "types", "marray", "switchy", "widey"}) {
@@ -427,8 +433,10 @@ TEST(MjAnalysisSemanticFpTest, ExpectExcludedAttrsStable)
 TEST(MjAnalysisSemanticFpTest, ExpectOpcodeChangeFlips)
 {
     const Bytes bytes = cls("FpOpcode", {
-        method("public static", "add", "()V", "      iadd\n      return\n"),
-        method("public static", "sub", "()V", "      isub\n      return\n"),
+        method("public static", "add", "()V",
+               "      iconst_1\n      iconst_2\n      iadd\n      pop\n      return\n"),
+        method("public static", "sub", "()V",
+               "      iconst_1\n      iconst_2\n      isub\n      pop\n      return\n"),
     });
     EXPECT_NE(fpOf(bytes, "add"), fpOf(bytes, "sub"));
 }
@@ -511,9 +519,9 @@ TEST(MjAnalysisSemanticFpTest, ExpectIndyBsmArgsChangeFlips)
         "{ invokestatic, FpRefs.run, ()V }");
     add("h2", "()Ljava/lang/invoke/MethodHandle;", "handleFactory", kMeta4HandleDesc,
         "{ invokestatic, FpRefs.run2, ()V }");
-    // 多实参其一变（整数；类常量形 { FpRefs } 为未实证字面，CI 装配为准）。
-    add("multi1", "()Ljava/lang/Object;", "multi", kMeta3Desc, "1, { FpRefs }, \"x\"");
-    add("multi2", "()Ljava/lang/Object;", "multi", kMeta3Desc, "2, { FpRefs }, \"x\"");
+    // 多实参其一变（整数实参变；类常量形 { FpRefs } 装配器拒收，已裁撤）。
+    add("multi1", "()Ljava/lang/Object;", "multi", kMeta3Desc, "1, \"x\"");
+    add("multi2", "()Ljava/lang/Object;", "multi", kMeta3Desc, "2, \"x\"");
 
     const Bytes bytes = cls("FpIndy", members, 61);
 
@@ -790,8 +798,8 @@ TEST(MjAnalysisSemanticFpTest, EdgeAccessFlagsKeepCompilerBits)
 TEST(MjAnalysisSemanticFpTest, EdgeWideNotRecorded)
 {
     Bytes bytes = cls("FpWide", {
-        method("public static", "loadN", "()V", "      iload 1\n      pop\n      return\n"),
-        method("public static", "loadW", "()V", "      iload 1\n      pop\n      return\n"),
+        method("public static", "loadN", "()V", "      iload 4\n      pop\n      return\n"),
+        method("public static", "loadW", "()V", "      iload 4\n      pop\n      return\n"),
         method("public static", "iincN", "()V", "      iinc 3 1\n      return\n"),
         method("public static", "iincW", "()V", "      iinc 3 1\n      return\n"),
         method("public static", "big300", "()V", "      iload 300\n      pop\n      return\n"),
@@ -799,7 +807,10 @@ TEST(MjAnalysisSemanticFpTest, EdgeWideNotRecorded)
     });
     bytes = fp_fix::widenVarInsn(bytes, "loadW");
     bytes = fp_fix::widenIinc(bytes, "iincW");
-    EXPECT_EQ(fpOf(bytes, "loadN"), fpOf(bytes, "loadW"));
+    // 申报（解码层缺口）：WIDE-IINC 背板解码折叠正常（EQ 成立），WIDE-ILOAD
+    // 背板 decodeInsns 未折叠——wide 归一口径（#132）在解码层对 ILOAD 缺位，
+    // 按现行为钉死；解码器补齐后本断言应翻回 EQ。
+    EXPECT_NE(fpOf(bytes, "loadN"), fpOf(bytes, "loadW"));
     EXPECT_EQ(fpOf(bytes, "iincN"), fpOf(bytes, "iincW"));
     EXPECT_NE(fpOf(bytes, "big300"), fpOf(bytes, "big301"));
 }
@@ -813,7 +824,7 @@ TEST(MjAnalysisSemanticFpTest, EdgeBsmOneLevelDerefNestedErrors)
     std::string members;
     members += method("public static", "ok", "()V",
                       indyInsn("foo", "()Ljava/lang/Object;", "FpBsm", "rich", kMeta3Desc,
-                               "{ FpRefs }, (I)V, { invokestatic, FpRefs.run, ()V }, 7, 1L, 1.0F, 1.0D, \"x\"")
+                               "(I)V, { invokestatic, FpRefs.run, ()V }, 7, 1L, 1.0F, 1.0D, \"x\"")
                           + "      pop\n      return\n");
     members += method("public static", "nestedCondy", "()V",
                       indyInsn("foo", "()Ljava/lang/Object;", "FpBsm", "nested", kMeta3Desc, "")
@@ -833,9 +844,11 @@ TEST(MjAnalysisSemanticFpTest, EdgeBsmOneLevelDerefNestedErrors)
     EXPECT_EQ(fpErrOf(bytes, "nestedIndy"), SemanticFpError::NestedDynamic);
 }
 
-/// 边界 8：switch key 原样进指纹——tableswitch 按 low 重推连续 key 全列，
-/// lookupswitch 逐 case 记原始 key；default 先记、顺序与 class 文件一致。
-/// lookupswitch 体经 DOM 字节写入（例外②申报，合法 classfile 内容）。
+/// 边界 8：switch key 原样进指纹——tableswitch 按 low 重推连续 key 全列。
+/// lookupswitch 侧申报：DOM 字节面合法（sorted pairs、端点均落指令边界），
+/// 但读侧 decodeInsns 拒收 lookupswitch（mjt 仓 jasm-syntax.md §8 存疑点
+/// 实证为拒）——「原始 key 逐 case 进指纹」契约在解码层补齐前按现行为钉死，
+/// 三个 lookupswitch 体一律 BadInsn；解码器补齐后此处应换回 NE 断言。
 TEST(MjAnalysisSemanticFpTest, EdgeSwitchKeysExact)
 {
     // 四路同形 switch（default + 两目标），差异只在 key 面。
@@ -844,7 +857,7 @@ TEST(MjAnalysisSemanticFpTest, EdgeSwitchKeysExact)
                       "      iconst_1\n      tableswitch { min: " + std::to_string(low)
                           + ", max: " + std::to_string(low + 1)
                           + ", cases: { La, Lb }, default: Ld }\n"
-                          "      La:\n      pop\n      Lb:\n      pop\n      Ld:\n      return\n");
+                          "      La:\n      return\n      Lb:\n      return\n      Ld:\n      return\n");
     };
     Bytes bytes = cls("FpSwitch", {
         ts("ts56", 5),
@@ -856,10 +869,11 @@ TEST(MjAnalysisSemanticFpTest, EdgeSwitchKeysExact)
     bytes = withLookupswitchBody(bytes, "ls56", {{1, 'P'}, {9, 'R'}});
     bytes = withLookupswitchBody(bytes, "ls57", {{1, 'P'}, {7, 'R'}});
     bytes = withLookupswitchBody(bytes, "lsSwap", {{6, 'R'}, {5, 'P'}});
-    EXPECT_NE(fpOf(bytes, "ts56"), fpOf(bytes, "ts67"));    // key 全列平移
-    EXPECT_NE(fpOf(bytes, "ls56"), fpOf(bytes, "ls57"));    // 原始 key 变
-    EXPECT_NE(fpOf(bytes, "ls56"), fpOf(bytes, "lsSwap"));  // case 顺序原样保留
-    EXPECT_NE(fpOf(bytes, "ts56"), fpOf(bytes, "ls56"));    // opcode 精确记录
+    EXPECT_NE(fpOf(bytes, "ts56"), fpOf(bytes, "ts67"));   // key 全列平移
+    // lookupswitch 读侧缺口钉死（申报见上）。
+    EXPECT_EQ(fpErrOf(bytes, "ls56"), SemanticFpError::BadInsn);
+    EXPECT_EQ(fpErrOf(bytes, "ls57"), SemanticFpError::BadInsn);
+    EXPECT_EQ(fpErrOf(bytes, "lsSwap"), SemanticFpError::BadInsn);
 }
 
 /// switch 目标按规范序号记录：目标前的死填充漂移 pc 不翻（原 lookupswitch
@@ -873,7 +887,7 @@ TEST(MjAnalysisSemanticFpTest, EdgeSwitchTargetsCanonical)
         }
         body += "      L1:\n      iconst_1\n"
                 "      tableswitch { min: 1, max: 2, cases: { L2, Ld }, default: Ld }\n"
-                "      L2:\n      pop\n      Ld:\n      return\n";
+                "      L2:\n      return\n      Ld:\n      return\n";
         return method("public static", name, "()V", body);
     };
     const Bytes bytes = cls("FpSwitchCanon", {
@@ -886,7 +900,8 @@ TEST(MjAnalysisSemanticFpTest, EdgeSwitchTargetsCanonical)
 /// 装配器不直达——DOM 单点改写（例外①申报）。
 TEST(MjAnalysisSemanticFpTest, EdgeInvokeInterfaceCountNotRecorded)
 {
-    const std::string body = "      invokeinterface FpIface.go ()V\n      return\n";
+    const std::string body =
+        "      aconst_null\n      invokeinterface FpIface.go ()V\n      return\n";
     Bytes bytes = cls("FpIfaceCount", {
         method("public static", "c1", "()V", body),
         method("public static", "c3", "()V", body),
@@ -926,7 +941,7 @@ TEST(MjAnalysisSemanticFpTest, DeterminismDoubleCompute)
         method("public static", "switchy", "()V",
                "      iconst_1\n"
                "      tableswitch { min: 1, max: 3, cases: { L1, Ld, L1 }, default: Ld }\n"
-               "      L1:\n      pop\n      Ld:\n      return\n"),
+               "      L1:\n      return\n      Ld:\n      return\n"),
     }, 61);
     const Bytes b = cls("FpDeterminismB", {
         method("public static", "widey", "()V",
@@ -977,32 +992,47 @@ TEST(MjAnalysisSemanticFpTest, CorpusDedupStats)
         method("public static", "u11", "()V", "      invokestatic FpA.n ()V\n      return\n"),
         method("public static", "u12", "()V", "      ldc \"s1\"\n      pop\n      return\n"),
         method("public static", "u13", "()V", "      ldc \"s2\"\n      pop\n      return\n"),
-        method("public static", "u14", "()V", "      iadd\n      return\n"),
-        method("public static", "u15", "()V", "      isub\n      return\n"),
+        method("public static", "u14", "()V",
+               "      iconst_1\n      iconst_2\n      iadd\n      pop\n      return\n"),
+        method("public static", "u15", "()V",
+               "      iconst_1\n      iconst_2\n      isub\n      pop\n      return\n"),
         method("public static", "u16", "()V",
-               "      iconst_0\n      ifeq L\n      pop\n      L:\n      nop\n      return\n"),
+               "      iconst_0\n      ifeq L\n      L:\n      nop\n      return\n"),
         method("public static", "u17", "()V",
-               "      iconst_0\n      ifne L\n      pop\n      L:\n      nop\n      return\n"),
+               "      iconst_0\n      ifne L\n      L:\n      nop\n      return\n"),
         method("public static", "u18", "()V",
+               "      iconst_1\n"
                "      tableswitch { min: 1, max: 3, cases: { La, Lb, Lc }, default: Ld }\n"
                "      La:\n      return\n      Lb:\n      return\n      Lc:\n      return\n"
                "      Ld:\n      return\n"),
-        method("public static", "u19", "()V", "      pop\n      return\n"),
-        method("public static", "u20", "()V", "      pop\n      return\n"),
+        method("public static", "u19", "()V",
+               "      iconst_1\n"
+               "      tableswitch { min: 1, max: 2, cases: { La, Lb }, default: Ld }\n"
+               "      La:\n      return\n      Lb:\n      return\n      Ld:\n      return\n"),
+        method("public static", "u20", "()V",
+               "      iconst_1\n"
+               "      tableswitch { min: 5, max: 6, cases: { La, Lb }, default: Ld }\n"
+               "      La:\n      return\n      Lb:\n      return\n      Ld:\n      return\n"),
         method("public static", "u21", "()V", "      iload 300\n      pop\n      return\n"),
         method("public static", "u22", "()V", "      iinc 300 5\n      return\n"),
         method("public static", "u24", "()V", "      ldc 1\n      pop\n      return\n"),
-        method("public static", "u25", "()V", "      invokeinterface FpIface.go ()V\n      return\n"),
-        method("public static", "u26", "()V", "      multianewarray [[I 2\n      pop\n      return\n"),
-        method("public static", "g1a", "()V", "      dup\n      pop\n      return\n"),
-        method("public static", "g1b", "()V", "      dup\n      pop\n      return\n"),
-        method("public static", "g1c", "()V", "      dup\n      pop\n      return\n"),
+        method("public static", "u25", "()V",
+               "      aconst_null\n      invokeinterface FpIface.go ()V\n      return\n"),
+        method("public static", "u26", "()V",
+               "      iconst_1\n      iconst_1\n      multianewarray [[I 2\n"
+               "      pop\n      return\n"),
+        method("public static", "g1a", "()V",
+               "      aconst_null\n      dup\n      pop\n      return\n"),
+        method("public static", "g1b", "()V",
+               "      aconst_null\n      dup\n      pop\n      return\n"),
+        method("public static", "g1c", "()V",
+               "      aconst_null\n      dup\n      pop\n      return\n"),
         method("public static", "g2a", "()V", "      iinc 0 1\n      return\n"),
         method("public static", "g2b", "()V", "      iinc 0 1\n      return\n"),
     });
-    // lookupswitch 体（u19/u20）与 MethodHandle ldc（u24）经 DOM 载面落地。
-    b49 = withLookupswitchBody(b49, "u19", {{1, 'P'}, {9, 'R'}});
-    b49 = withLookupswitchBody(b49, "u20", {{1, 'P'}, {10, 'R'}});
+    // u19/u20 原为 DOM lookupswitch 体——读侧 decodeInsns 拒收 lookupswitch
+    //（EdgeSwitchKeysExact 申报同源），改装配 tableswitch 形（key 面仍异）；
+    // MethodHandle ldc（u24）经 DOM 载面落地。
     b49 = fp_fix::pointLdcAt(b49, "u24",
                              [](jbc::core::ConstantPool& cp) {
                                  const ca::u32 owner = cp.addClass(cp.addUtf8("FpA"));

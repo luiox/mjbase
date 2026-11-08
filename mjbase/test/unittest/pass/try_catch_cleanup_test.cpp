@@ -129,7 +129,7 @@ TEST(TryCatchCleanupTest, identityWrapperForeignOwnerKept)
 TEST(TryCatchCleanupTest, transparentSharedHandlerEntry1Kept)
 {
     const MethodPassRun r =
-        runMethodPass(asmM("      { L0, L1, L2, * }\n      { L1, L2, L2, * }\n",
+        runMethodPass(asmM("      { L0, L1, L2, * },\n      { L1, L2, L2, * }\n",
                            "      L0:\n      aconst_null\n      athrow\n"
                            "      L1:\n      aconst_null\n      athrow\n"
                            "      L2:\n      athrow\n      return\n"),
@@ -146,7 +146,7 @@ TEST(TryCatchCleanupTest, transparentReachableHandlerKept)
 {
     const MethodPassRun r = runMethodPass(asmM("      { L0, Lh, Lh, * }\n",
                                               "      L0:\n      iconst_0\n"
-                                              "      ifeq Lb\n      athrow\n"
+                                              "      ifeq Lb\n      aconst_null\n      athrow\n"
                                               "      Lb:\n      Lh:\n      athrow\n"
                                               "      return\n"),
                                           mjbase::pass::TryCatchCleanup{});

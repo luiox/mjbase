@@ -7,9 +7,11 @@
 /// BootstrapMethods 面，61 装配（indy_site_inliner_jvm_test 同径）；61 装配期
 /// 做帧分析，原字节夹具的裸 invoke 序列以 aload/iload 垫出实参与接收者，
 /// 垫栈不产生 indy 站点。BSM 静态参数字面形：MethodType 用裸描述符、句柄用
-/// { invokestatic|invokevirtual, Owner.name, desc }、类用 { internalName }、
-/// 字段句柄用 { getfield, Owner.field, desc }（后三者为既有 fixture 未实证
-/// 形，以 CI 装配为准）。
+/// { invokestatic|invokevirtual, Owner.name, desc }、字段句柄用
+/// { getfield, Owner.field, desc }。类字面量形 { internalName } 装配器拒收
+/// （probe 实证："Invalid JVM instruction operand"）——recordToString 的
+/// ObjectMethods 类实参裁撤（例外①申报：族识别键在 BSM 句柄，无断言依赖
+/// 该实参）。
 #include <gtest/gtest.h>
 
 #include <string>
@@ -98,7 +100,7 @@ const Bytes& lambdaHostBytes()
   .method public static recordToString (Lsample/Point;)Ljava/lang/String; {
     code: {
       aload 0
-      invokedynamic toString (Lsample/Point;)Ljava/lang/String; { invokestatic, java/lang/runtime/ObjectMethods.bootstrap, (Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/TypeDescriptor;Ljava/lang/Class;Ljava/lang/String;[Ljava/lang/invoke/MethodHandle;)Ljava/lang/Object; } { { sample/Point }, "x;y", { getfield, sample/Point.x, I }, { getfield, sample/Point.y, I } }
+      invokedynamic toString (Lsample/Point;)Ljava/lang/String; { invokestatic, java/lang/runtime/ObjectMethods.bootstrap, (Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/TypeDescriptor;Ljava/lang/Class;Ljava/lang/String;[Ljava/lang/invoke/MethodHandle;)Ljava/lang/Object; } { "x;y", { getfield, sample/Point.x, I }, { getfield, sample/Point.y, I } }
       areturn
     }
   }

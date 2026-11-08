@@ -29,37 +29,6 @@ ca::str::Utf8StringArena tSanitizeArena;
 
 // ── 字节语料 helper（每条诊断类别的最小触发形态）──
 
-/// 完整 classfile 头（magic/minor/major/cpCount）。
-Bytes header(ca::u16 cpCount)
-{
-    Bytes b;
-    b.push_back(0xCA); b.push_back(0xFE); b.push_back(0xBA); b.push_back(0xBE);
-    b.push_back(0); b.push_back(0);
-    b.push_back(0); b.push_back(0x34);
-    b.push_back(static_cast<ca::u8>(cpCount >> 8));
-    b.push_back(static_cast<ca::u8>(cpCount));
-    return b;
-}
-
-Bytes utf8Entry(std::string_view s)
-{
-    Bytes b;
-    b.push_back(0x01);
-    b.push_back(static_cast<ca::u8>(s.size() >> 8));
-    b.push_back(static_cast<ca::u8>(s.size()));
-    for (const char c : s) b.push_back(static_cast<ca::u8>(c));
-    return b;
-}
-
-Bytes classEntry(ca::u16 nameIdx)
-{
-    Bytes b;
-    b.push_back(0x07);
-    b.push_back(static_cast<ca::u8>(nameIdx >> 8));
-    b.push_back(static_cast<ca::u8>(nameIdx));
-    return b;
-}
-
 // u8 / 字符串落笔与拼接（字节语料写面）。
 void put8(Bytes& b, ca::u8 v) { b.push_back(v); }
 

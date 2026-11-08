@@ -124,7 +124,7 @@ TEST(ExceptionTrampolineInlinerTest, dissolvesStateUpdatingHandler)
 TEST(ExceptionTrampolineInlinerTest, dissolvesChainedTrampolines)
 {
     const MethodPassRun r = runMethodPass(
-        asmM("      { L1, L2, L2, * }\n      { L3, L4, L4, * }\n",
+        asmM("      { L1, L2, L2, * },\n      { L3, L4, L4, * }\n",
              "      L0:\n      iconst_1\n      pop\n      goto L1\n"
              "      L1:\n      aconst_null\n      athrow\n      L2:\n      pop\n"
              "      goto L3\n      L3:\n      aconst_null\n      athrow\n"
@@ -237,7 +237,7 @@ TEST(ExceptionTrampolineInlinerTest, nonZeroEntryStackUntouched)
 // ── 外层交叠 try：首匹配语义不可拆，不碰 ──
 TEST(ExceptionTrampolineInlinerTest, overlappingEnclosingTryUntouched)
 {
-    const Bytes in = asmM("      { L1, L2, L2, * }\n      { Lg, Lend, Lend, * }\n",
+    const Bytes in = asmM("      { L1, L2, L2, * },\n      { Lg, Lend, Lend, * }\n",
                           "      L0:\n      iconst_1\n      pop\n      Lg:\n"
                           "      goto L1\n      L1:\n      aconst_null\n      athrow\n"
                           "      L2:\n      pop\n      Lend:\n      iconst_1\n"
@@ -293,7 +293,7 @@ TEST(ExceptionTrampolineInlinerTest, siblingMethodUntouched)
 // ── 幂等：二轮无匹配，PA=all 且逐字节一致 ──
 TEST(ExceptionTrampolineInlinerTest, idempotentOnSecondRun)
 {
-    const Bytes in = asmM("      { L1, L2, L2, * }\n      { L3, L4, L4, * }\n",
+    const Bytes in = asmM("      { L1, L2, L2, * },\n      { L3, L4, L4, * }\n",
                           "      L0:\n      iconst_1\n      pop\n      goto L1\n"
                           "      L1:\n      aconst_null\n      athrow\n      L2:\n"
                           "      pop\n      goto L3\n      L3:\n      aconst_null\n"

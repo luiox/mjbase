@@ -6,8 +6,9 @@
 /// 夹具纪律：类骨架与 clinit/<init>/读方法体一律 jasm 文本装配
 ///（JvmJasmService）。窄 int 常量（bipush/sipush）装配器按自身口径规范
 /// 化为 LDC——写窗值面经 pass 的 intConstOf ldc-Int 支路同判（语义不变）；
-/// 标量化产出指令面（BIPUSH/PUTSTATIC 序列）由 pass 自身发射，事实断言
-/// 不受夹具载体影响。
+/// 标量化重写只擦数组引用/下标装载并把 xastore 改写为 xPUTSTATIC，值装载
+/// 指令原样保留（canonical 夹具即 canonical 产出），断言按 LDC/PUTSTATIC
+/// 序列落。
 ///
 /// 纪律申报：无例外——本件全部夹具形态均落在装配器可表达域（含
 /// anewarray [I 数组类型操作数与 ldc Class/ldc String 常量面）。
@@ -181,13 +182,13 @@ TEST(MjPassStaticArrayFieldScalarizerTest, ScalarizesConstantTable)
     using jbc::core::Op;
     const auto clinit = methodFacts(*re, "<clinit>");
     ASSERT_EQ(clinit.size(), 7u);
-    EXPECT_EQ(clinit[0].op, Op::BIPUSH);
+    EXPECT_EQ(clinit[0].op, Op::LDC);
     EXPECT_EQ(clinit[1].op, Op::PUTSTATIC);
     EXPECT_EQ(clinit[1].member, "tbl_0");
-    EXPECT_EQ(clinit[2].op, Op::BIPUSH);
+    EXPECT_EQ(clinit[2].op, Op::LDC);
     EXPECT_EQ(clinit[3].op, Op::PUTSTATIC);
     EXPECT_EQ(clinit[3].member, "tbl_1");
-    EXPECT_EQ(clinit[4].op, Op::BIPUSH);
+    EXPECT_EQ(clinit[4].op, Op::LDC);
     EXPECT_EQ(clinit[5].op, Op::PUTSTATIC);
     EXPECT_EQ(clinit[5].member, "tbl_2");
     EXPECT_EQ(clinit[6].op, Op::RETURN);
@@ -572,11 +573,11 @@ TEST(MjPassStaticArrayFieldScalarizerTest, ScalarizesInstanceField)
     // 写窗接收者 aload_0 保持原位（由新 putfield 消费）；分配窗四条全删。
     ASSERT_EQ(ctor.size(), 7u);
     EXPECT_EQ(ctor[0].op, Op::ALOAD_0);
-    EXPECT_EQ(ctor[1].op, Op::BIPUSH);
+    EXPECT_EQ(ctor[1].op, Op::LDC);
     EXPECT_EQ(ctor[2].op, Op::PUTFIELD);
     EXPECT_EQ(ctor[2].member, "tbl_0");
     EXPECT_EQ(ctor[3].op, Op::ALOAD_0);
-    EXPECT_EQ(ctor[4].op, Op::BIPUSH);
+    EXPECT_EQ(ctor[4].op, Op::LDC);
     EXPECT_EQ(ctor[5].op, Op::PUTFIELD);
     EXPECT_EQ(ctor[5].member, "tbl_1");
     EXPECT_EQ(ctor[6].op, Op::RETURN);

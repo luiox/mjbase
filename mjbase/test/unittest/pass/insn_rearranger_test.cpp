@@ -6,9 +6,11 @@
 //
 // 夹具纪律：方法体一律 jasm 文本装配（JvmJasmService），原 FixtureBuilder
 // 手拼载体退役。装配器对 0-3 槽自动发快捷形——泛形（2 字节 xLOAD/xSTORE）
-// 载体改用 ≥4 槽表达，快捷形载体用 1/2 槽（等价面不变）。两处「可达但不
-// 合栈」的畸形链（aconst_null 混入 int 链 / 形状不齐欠栈）以 goto 越段死
-// 代码表达（死段不进帧分析，pass 的结构扫描照判），字节语义同实。
+// 载体改用 ≥4 槽表达，快捷形载体用 1/2 槽（等价面不变）。被载槽一律以实参
+// 形参覆盖（desc 给足 I/J 形参使槽有初始化定义——装配期帧分析拒收未定义
+// 槽的 int 型消费），字节语义同实。两处「可达但不合栈」的畸形链
+// （aconst_null 混入 int 链 / 形状不齐欠栈）以 goto 越段死代码表达（死段
+// 不进帧分析，pass 的结构扫描照判），字节语义同实。
 #include <gtest/gtest.h>
 
 #include <string>
@@ -49,10 +51,10 @@ std::string chunk(std::string_view loadText, std::string_view constText,
 {
     std::string s;
     s.reserve(128);
-    s.append("      ").append(loadText).append('\n');
-    s.append("      ").append(constText).append('\n');
-    s.append("      ").append(op).append('\n');
-    s.append("      ").append(storeText).append('\n');
+    s.append("      ").append(loadText).push_back('\n');
+    s.append("      ").append(constText).push_back('\n');
+    s.append("      ").append(op).push_back('\n');
+    s.append("      ").append(storeText).push_back('\n');
     return s;
 }
 
@@ -64,17 +66,18 @@ TEST(ArithmeticInsnRearrangerTest, chunksRegroupedBySlot)
     // A(slot4 泛形): iload 4; iconst_1; iadd; istore 4
     // B(slot5 泛形): iload 5; iconst_2; iadd; istore 5
     // C(slot4 泛形): iload 4; iconst_1; iadd; istore 4
-    const Bytes in = asmM("t/A", "()I",
+    const Bytes in = asmM("t/A", "(IIIIII)V",
                           chunk("iload 4", "iconst_1", "iadd", "istore 4")
                               + chunk("iload 5", "iconst_2", "iadd", "istore 5")
                               + chunk("iload 4", "iconst_1", "iadd", "istore 4")
-                              + "      ireturn\n");
+                              + "      return\n");
     const MethodPassRun r =
         runMethodPass(in, mjbase::pass::ArithmeticInsnRearranger{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<jbc::core::Op> ops = opsOf(inspect(r.out));
     // 归组后 [A][C][B]：第 2 块是 slot4（ICONST_1），第 3 块是 slot5（ICONST_2）。
-    ASSERT_EQ(ops.size(), 12u);
+    // 块各净零栈（xLOAD..xSTORE 相抵），尾 return 空栈收口（()V）。
+    ASSERT_EQ(ops.size(), 13u);
     EXPECT_EQ(ops[0], jbc::core::Op::ILOAD);
     EXPECT_EQ(ops[4], jbc::core::Op::ILOAD);
     EXPECT_EQ(ops[5], jbc::core::Op::ICONST_1);
@@ -85,10 +88,10 @@ TEST(ArithmeticInsnRearrangerTest, chunksRegroupedBySlot)
 // ── 单块窗口不动（重排需 ≥2 块） ──
 TEST(ArithmeticInsnRearrangerTest, singleChunkKept)
 {
-    const Bytes in = asmM("t/A", "()I",
+    const Bytes in = asmM("t/A", "(II)V",
                           chunk("iload 1", "iconst_1", "iadd", "istore 1")
                               + "      nop\n      nop\n      nop\n      nop\n"
-                              "      ireturn\n");
+                              "      return\n");
     const MethodPassRun r =
         runMethodPass(in, mjbase::pass::ArithmeticInsnRearranger{});
     EXPECT_TRUE(r.pa.areAllPreserved());
@@ -99,7 +102,7 @@ TEST(ArithmeticInsnRearrangerTest, singleChunkKept)
 TEST(ArithmeticInsnRearrangerTest, sameSlotIdentityKept)
 {
     const std::string body = chunk("iload 1", "iconst_1", "iadd", "istore 1");
-    const Bytes in = asmM("t/A", "()I", body + body);
+    const Bytes in = asmM("t/A", "(II)V", body + body + "      return\n");
     const MethodPassRun r =
         runMethodPass(in, mjbase::pass::ArithmeticInsnRearranger{});
     EXPECT_TRUE(r.pa.areAllPreserved());
@@ -111,16 +114,16 @@ TEST(ArithmeticInsnRearrangerTest, shorthandChunksRegroup)
     // A(slot1 快捷): iload_1; iconst_1; iadd; istore_1
     // B(slot2 快捷): iload_2; iconst_2; iadd; istore_2
     // C(slot1 快捷): iload_1; iconst_1; iadd; istore_1
-    const Bytes in = asmM("t/A", "()I",
+    const Bytes in = asmM("t/A", "(III)V",
                           chunk("iload 1", "iconst_1", "iadd", "istore 1")
                               + chunk("iload 2", "iconst_2", "iadd", "istore 2")
                               + chunk("iload 1", "iconst_1", "iadd", "istore 1")
-                              + "      ireturn\n");
+                              + "      return\n");
     const MethodPassRun r =
         runMethodPass(in, mjbase::pass::ArithmeticInsnRearranger{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<jbc::core::Op> ops = opsOf(inspect(r.out));
-    ASSERT_EQ(ops.size(), 12u);
+    ASSERT_EQ(ops.size(), 13u);
     EXPECT_EQ(ops[4], jbc::core::Op::ILOAD_1);
     EXPECT_EQ(ops[5], jbc::core::Op::ICONST_1);
     EXPECT_EQ(ops[8], jbc::core::Op::ILOAD_2);
@@ -132,12 +135,12 @@ TEST(ArithmeticInsnRearrangerTest, windowStartAnchorKept)
 {
     // goto 越过垫步落在窗口起点——GOTO 目标锚在窗口首条，重排会拖走锚点，
     // 拒收。
-    const Bytes in = asmM("t/A", "()I",
+    const Bytes in = asmM("t/A", "(IIIIII)V",
                           "      L0:\n      goto Lw\n      nop\n      nop\n"
                           "      Lw:\n"
                           + chunk("iload 4", "iconst_2", "iadd", "istore 4")
                           + chunk("iload 5", "iconst_1", "iadd", "istore 5")
-                          + "      ireturn\n");
+                          + "      return\n");
     const MethodPassRun r =
         runMethodPass(in, mjbase::pass::ArithmeticInsnRearranger{});
     EXPECT_TRUE(r.pa.areAllPreserved());
@@ -148,11 +151,11 @@ TEST(ArithmeticInsnRearrangerTest, interiorAnchorBreaksWindow)
 {
     // [A(slot4)][B(slot5)] + 异常起点锚在 B 首条（窗口内部边界），窗只剩
     // 单块 → 不动。
-    const Bytes in = asmM("t/A", "()I",
+    const Bytes in = asmM("t/A", "(IIIIII)V",
                           chunk("iload 4", "iconst_2", "iadd", "istore 4")
                               + "      Lb:\n"
                               + chunk("iload 5", "iconst_1", "iadd", "istore 5")
-                              + "      Lr:\n      ireturn\n",
+                              + "      Lr:\n      pop\n      return\n",
                           "      { Lb, Lr, Lr, * }\n");
     const MethodPassRun r =
         runMethodPass(in, mjbase::pass::ArithmeticInsnRearranger{});
@@ -165,16 +168,16 @@ TEST(ArithmeticInsnRearrangerTest, longFamilyRegroup)
     // A(slot0 快捷): lload_0; lconst_1; ladd; lstore_0
     // B(slot4 泛形): lload 4; lconst_0; ladd; lstore 4
     // C(slot0 快捷): lload_0; lconst_1; ladd; lstore_0
-    const Bytes in = asmM("t/A", "()J",
+    const Bytes in = asmM("t/A", "(JJJ)V",
                           chunk("lload_0", "lconst_1", "ladd", "lstore_0")
                               + chunk("lload 4", "lconst_0", "ladd", "lstore 4")
                               + chunk("lload_0", "lconst_1", "ladd", "lstore_0")
-                              + "      lreturn\n");
+                              + "      return\n");
     const MethodPassRun r =
         runMethodPass(in, mjbase::pass::ArithmeticInsnRearranger{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<jbc::core::Op> ops = opsOf(inspect(r.out));
-    ASSERT_EQ(ops.size(), 12u);
+    ASSERT_EQ(ops.size(), 13u);
     // 归组后 [A][C][B]：第 3 块是 slot4 泛形 lload。
     EXPECT_EQ(ops[0], jbc::core::Op::LLOAD_0);
     EXPECT_EQ(ops[1], jbc::core::Op::LCONST_1);
@@ -188,7 +191,7 @@ TEST(ArithmeticInsnRearrangerTest, longFamilyRegroup)
 TEST(CommutativeOperatorReorderTest, constantsMovedToTail)
 {
     // iconst_1; iload 4; iadd; ireturn → iload 4; iconst_1; iadd; ireturn
-    const Bytes in = asmM("t/C", "()I",
+    const Bytes in = asmM("t/C", "(IIIII)I",
                           "      iconst_1\n      iload 4\n      iadd\n      ireturn\n");
     const MethodPassRun r =
         runMethodPass(in, mjbase::pass::CommutativeOperatorReorder{});
@@ -203,7 +206,7 @@ TEST(CommutativeOperatorReorderTest, constantsMovedToTail)
 // ── 常量已在链尾 → 恒等不改写 ──
 TEST(CommutativeOperatorReorderTest, constantsAlreadyTailKept)
 {
-    const Bytes in = asmM("t/C", "()I",
+    const Bytes in = asmM("t/C", "(IIIII)I",
                           "      iload 4\n      iconst_1\n      iadd\n      ireturn\n");
     const MethodPassRun r =
         runMethodPass(in, mjbase::pass::CommutativeOperatorReorder{});
@@ -214,7 +217,7 @@ TEST(CommutativeOperatorReorderTest, constantsAlreadyTailKept)
 TEST(CommutativeOperatorReorderTest, mixedChainConstantsGrouped)
 {
     // iconst_1; iload 4; iconst_2; iadd; iadd; ireturn
-    const Bytes in = asmM("t/C", "()I",
+    const Bytes in = asmM("t/C", "(IIIII)I",
                           "      iconst_1\n      iload 4\n      iconst_2\n"
                           "      iadd\n      iadd\n      ireturn\n");
     const MethodPassRun r =
@@ -232,7 +235,7 @@ TEST(CommutativeOperatorReorderTest, mixedChainConstantsGrouped)
 // ── 非交换律算术不成链 ──
 TEST(CommutativeOperatorReorderTest, nonCommutativeKept)
 {
-    const Bytes in = asmM("t/C", "()I",
+    const Bytes in = asmM("t/C", "(IIIII)I",
                           "      iload 4\n      iconst_1\n      isub\n      ireturn\n");
     const MethodPassRun r =
         runMethodPass(in, mjbase::pass::CommutativeOperatorReorder{});
@@ -243,7 +246,7 @@ TEST(CommutativeOperatorReorderTest, nonCommutativeKept)
 // 可达即帧分析拒收——以 goto 越段死代码表达（pass 结构扫描照判）。
 TEST(CommutativeOperatorReorderTest, foreignOperandKept)
 {
-    const Bytes in = asmM("t/C", "()I",
+    const Bytes in = asmM("t/C", "(IIIII)I",
                           "      L0:\n      goto Lend\n      Ld:\n"
                           "      iload 4\n      aconst_null\n      iadd\n"
                           "      ireturn\n      Lend:\n      iconst_0\n"
@@ -258,7 +261,7 @@ TEST(CommutativeOperatorReorderTest, chainStartAnchorKept)
 {
     // 异常起点锚在链首指令 → 拒收（声明偏离：旧栈列表语义隐式重锚，新栈
     // fail-closed）。
-    const Bytes in = asmM("t/C", "()I",
+    const Bytes in = asmM("t/C", "(IIIII)I",
                           "      L0:\n      iconst_1\n      iload 4\n      iadd\n"
                           "      Lend:\n      ireturn\n",
                           "      { L0, Lend, Lend, * }\n");
@@ -271,7 +274,7 @@ TEST(CommutativeOperatorReorderTest, chainStartAnchorKept)
 TEST(CommutativeOperatorReorderTest, longChainConstantsMoved)
 {
     // lconst_0; lload 4; ladd; lreturn → lload 4; lconst_0; ladd; lreturn
-    const Bytes in = asmM("t/C", "()J",
+    const Bytes in = asmM("t/C", "(JJJ)J",
                           "      lconst_0\n      lload 4\n      ladd\n      lreturn\n");
     const MethodPassRun r =
         runMethodPass(in, mjbase::pass::CommutativeOperatorReorder{});
@@ -286,7 +289,7 @@ TEST(CommutativeOperatorReorderTest, longChainConstantsMoved)
 // 可达即帧分析拒收（第二个 iadd 欠栈）——以 goto 越段死代码表达。
 TEST(CommutativeOperatorReorderTest, malformedShapeKept)
 {
-    const Bytes in = asmM("t/C", "()I",
+    const Bytes in = asmM("t/C", "(IIIII)I",
                           "      L0:\n      goto Lend\n      Ld:\n"
                           "      iconst_1\n      iload 4\n      iadd\n      iadd\n"
                           "      ireturn\n      Lend:\n      iconst_0\n"
@@ -299,11 +302,11 @@ TEST(CommutativeOperatorReorderTest, malformedShapeKept)
 // ── 幂等：重排产物二轮不改写 ──
 TEST(ArithmeticInsnRearrangerTest, idempotent)
 {
-    const Bytes in = asmM("t/A", "()I",
+    const Bytes in = asmM("t/A", "(IIIIII)V",
                           chunk("iload 4", "iconst_1", "iadd", "istore 4")
                               + chunk("iload 5", "iconst_2", "iadd", "istore 5")
                               + chunk("iload 4", "iconst_1", "iadd", "istore 4")
-                              + "      ireturn\n");
+                              + "      return\n");
     const MethodPassRun first =
         runMethodPass(in, mjbase::pass::ArithmeticInsnRearranger{});
     EXPECT_TRUE(first.pa.changed());

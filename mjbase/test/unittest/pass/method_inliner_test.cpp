@@ -159,7 +159,9 @@ Bytes asmClass(const std::string& cls, std::string_view classMods, std::string_v
         src += "    }\n  }\n";
     }
     src += "}\n";
-    return mjbase::test::assembleJasm(src);
+    // major 52：pass 版本门（<50 不改写，SMT 语义 + 帧链全再生）——夹具给
+    // 52 帧面，装配器走全帧分析（体面帧自洽）。
+    return mjbase::test::assembleJasm(src, 52);
 }
 
 /// 类装配便捷形（public super 默认类修饰，超 java/lang/Object，无字段）。
@@ -623,11 +625,12 @@ TEST(MjPassMethodInlinerTest, InlinesNestmatePrivateInstance)
                                                     "      imul\n      ireturn\n"}}),
                                   "NH"));
     // NB：NestHost → NH；m(LNA;I)I：aload_1; iload_2; invokevirtual NA.priv;
-    // ireturn（javac 11+ 跨 nest private 实例调用形态，探针实测。）
+    // ireturn（javac 11+ 跨 nest private 实例调用形态；static (LNA;I)I 槽位
+// 0=NA / 1=I。）
     addClassResource(container, "NB.class",
                      withNestHost(asmDefaultClass("NB",
                                                   {{"public static", "m", "(LNA;I)I",
-                                                    "      aload 1\n      iload 2\n"
+                                                    "      aload 0\n      iload 1\n"
                                                     "      invokevirtual NA.priv (I)I\n"
                                                     "      ireturn\n"}}),
                                   "NH"));
@@ -637,15 +640,15 @@ TEST(MjPassMethodInlinerTest, InlinesNestmatePrivateInstance)
 
     const auto facts = methodFacts(resourceBytes(container, "NB.class"), "m", "(LNA;I)I");
     const std::vector<InsnFact> expect = {
-        {Op::ALOAD_1, 0, {}},
-        {Op::ILOAD_2, 0, {}},
-        {Op::ISTORE, 4, {}},         // base(3) + 被调槽 1
-        {Op::ASTORE, 3, {}},         // base(3) + 被调槽 0（receiver）
-        {Op::ALOAD, 3, {}},          // null 守卫（接收者是任意实参，检查保留）
+        {Op::ALOAD_0, 0, {}},
+        {Op::ILOAD_1, 0, {}},
+        {Op::ISTORE, 3, {}},         // base(2) + 被调槽 1
+        {Op::ASTORE, 2, {}},         // base(2) + 被调槽 0（receiver）
+        {Op::ALOAD, 2, {}},          // null 守卫（接收者是任意实参，检查保留）
         {Op::IFNONNULL, 0, {}},
         {Op::ACONST_NULL, 0, {}},
         {Op::ATHROW, 0, {}},
-        {Op::ILOAD, 4, {}},
+        {Op::ILOAD, 3, {}},          // 克隆体 iload 1 → 槽 3
         {Op::ICONST_2, 0, {}},
         {Op::IMUL, 0, {}},
         {Op::GOTO, 0, {}},
@@ -743,7 +746,7 @@ TEST(MjPassMethodInlinerTest, InlinesLoopCalleeBody)
              "      iload 2\n"
              "      iadd\n"
              "      istore 1\n"
-             "      iinc 2, 1\n"
+             "      iinc 2 1\n"
              "      goto Lhead\n"
              "      Lexit:\n"
              "      iload 1\n"
@@ -787,13 +790,13 @@ TEST(MjPassMethodInlinerTest, InlinesLoopCalleeBody)
 TEST(MjPassMethodInlinerTest, InlinesSwitchCalleeBody)
 {
     ResourceContainer container;
-    // SW2.f(I)I：iload_0; tableswitch(min=1, cases [Lc1, Lc2], default Ld)；
+    // SW2.f(I)I：iload_0; tableswitch(min=1, max=2, cases {Lc1, Lc2}, default Ld)；
     // case 体各自 iconst + goto 汇合；default 直落汇合点 ireturn。
     addClassResource(container, "SW2.class", asmDefaultClass("SW2",
         {
             {"public static", "f", "(I)I",
              "      iload 0\n"
-             "      tableswitch { min: 1, default: Ld, cases: [Lc1, Lc2] }\n"
+             "      tableswitch { min: 1, max: 2, cases: { Lc1, Lc2 }, default: Ld }\n"
              "      Lc1:\n"
              "      iconst_1\n"
              "      goto Lret\n"
@@ -856,6 +859,7 @@ TEST(MjPassMethodInlinerTest, RejectsCalleeOverBudget)
     // B.big(I)I：33 条（nop × 32 + ireturn）
     std::string big;
     for (int i = 0; i < 32; ++i) big += "      nop\n";
+    big += "      iload 0\n";   // 收口栈自洽（装配期线性栈模拟拒裸 ireturn）
     big += "      ireturn\n";
     addClassResource(container, "B.class", asmDefaultClass("B",
         {
@@ -1009,7 +1013,7 @@ TEST(MjPassMethodInlinerTest, RejectsCrossClassPrivate)
     addClassResource(container, "C2.class",
                      asmDefaultClass("C2",
                                      {{"public static", "m", "()I",
-                                       "      aconst_null\n      invokespecial "
+                                       "      aconst_null\n      iconst_0\n      invokespecial "
                                        "H2.priv (I)I\n      ireturn\n"}}));
     expectUntouched(container, "C2.class");
 }
@@ -1075,7 +1079,8 @@ TEST(MjPassMethodInlinerTest, RejectsBranchToMethodEnd)
     const Bytes f = branchToMethodEnd(asmDefaultClass("B2",
         {
             {"public static", "f", "(I)I",
-             "      iload 0\n      ifeq Lret\n      Lret:\n      ireturn\n"},
+             "      iload 0\n      ifeq Lret\n      iconst_1\n      ireturn\n"
+             "      Lret:\n      iconst_0\n      ireturn\n"},
             {"public static", "m", "(I)I",
              "      iload 0\n      invokestatic B2.f (I)I\n      ireturn\n"},
         }),

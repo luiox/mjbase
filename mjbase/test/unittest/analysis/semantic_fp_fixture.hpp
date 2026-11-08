@@ -1,10 +1,11 @@
 /// @file        semantic_fp_fixture.hpp
 /// @brief       semantic_fp 测试共用的 jasm 装配 + DOM 单点偏差载面。
 ///
-/// 指纹夹具纪律：方法体一律 jasm 文本装配（JvmJasmService）。默认帧less 49
-///（shared/jasm_fixture.hpp 版本口径——指纹夹具大量使用欠栈/超槽位形，
-/// 49 装配不跑帧分析）；indy/condy 站点需 BootstrapMethods/Dynamic 面，
-/// 61 装配且体面垫栈自洽（indy_site_inliner_jvm_test 同径）。
+/// 指纹夹具纪律：方法体一律 jasm 文本装配（JvmJasmService）。默认 49
+///（免 StackMapTable 帧分析；装配期仍线性栈模拟求 maxStack——体面必须
+/// 栈自洽，原字节面的欠栈形一律垫栈或改写）；indy/condy 站点需
+/// BootstrapMethods/Dynamic 面，61 装配且体面帧自洽
+///（indy_site_inliner_jvm_test 同径）。
 ///
 /// jasm 不能直达的形走 DOM 单点偏差（mutateClassFile，改写前 expectValidateOk
 /// 自检 + 各用例申报，以被测 semanticFp 实跑为最终证明）：
@@ -14,8 +15,8 @@
 /// - 例外②（jasm 无表达面）：方法级/Code 级/类级原始属性载荷
 ///   （LineNumberTable/LVT/注解/Signature/Exceptions/SMT/SourceFile 占位
 ///   字节）、空格名成员（jasm 标识符无法从源码构造真空格名）、异常表原始
-///   pc 端点（jasm 异常表只收标签）、lookupswitch 方法体（canonical 语法
-///   未实证，经 DOM 字节写入，合法 classfile 内容）。
+///   pc 端点（jasm 异常表只收标签）、lookupswitch 方法体（字节面合法；
+///   读侧 decodeInsns 拒收之缺口在用例内钉死申报）。
 ///
 /// CP 重索引夹具（原 CP 前缀垃圾注入）改为 jasm 源内 spacer 方法：在待测
 /// 方法之前声明引用宽类型/字符串/整数常量的占位方法，把后续全部语义 CP
