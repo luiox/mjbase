@@ -361,6 +361,229 @@ TEST(MjAnalysisDbTest, BatchSetRenamesRollsBackOnTokenConflict)
     EXPECT_FALSE(std::move(missing).unwrap().has_value());
 }
 
+TEST(MjAnalysisDbTest, MigrateClassIdentityKeepsIdAndOverlayIntact)
+{
+    const auto path = freshDbPath("migrate_class");
+    auto       db   = openOrDie(path);
+
+    DbClassInput input;
+    input.internalName = Utf8String::from_cstr("a/A");
+    input.superName    = Utf8String::from_cstr("java/lang/Object");
+    input.interfaces.push_back(Utf8String::from_cstr("a/I"));
+    DbMemberInput run;
+    run.kind       = DbMemberKind::Method;
+    run.name       = Utf8String::from_cstr("run");
+    run.descriptor = Utf8String::from_cstr("(La/A;)V");
+    input.members.push_back(run);
+    DbClassInput implementor;
+    implementor.internalName = Utf8String::from_cstr("a/Impl");
+    implementor.superName    = Utf8String::from_cstr("a/A");
+    implementor.interfaces.push_back(Utf8String::from_cstr("a/A"));
+    ASSERT_TRUE(db.ingestClasses(0, {input, implementor}).is_ok());
+
+    ASSERT_TRUE(db.setClassRename(S("a/A"), S("Class_1"), S("deadbeef")).is_ok());
+    ASSERT_TRUE(db.setMemberRename(DbMemberKind::Method, S("a/A"), S("run"), S("(La/A;)V"),
+                                   S("Method_1"), S("00000001"))
+                    .is_ok());
+
+    std::vector<DbIdentityRename> migrations;
+    DbIdentityRename             spec;
+    spec.target  = RenameTargetKind::Class;
+    spec.name    = Utf8String::from_cstr("a/A");
+    spec.newName = Utf8String::from_cstr("b/B");
+    migrations.push_back(spec);
+    auto migrated = db.migrateIdentities(std::move(migrations));
+    ASSERT_TRUE(migrated.is_ok());
+    auto stats = std::move(migrated).unwrap();
+    EXPECT_EQ(1U, stats.migratedClasses);
+    EXPECT_EQ(0U, stats.migratedMembers);
+    EXPECT_EQ(0U, stats.skipped);
+
+    //覆盖层按稳定 ID 键控：shadow 与 token 原样，查找键换到新内部名。
+    auto overlay = db.findClassRename(S("b/B"));
+    ASSERT_TRUE(overlay.is_ok());
+    auto record = std::move(overlay).unwrap();
+    ASSERT_TRUE(record.has_value());
+    EXPECT_EQ("Class_1", record->shadow.to_std_string());
+    EXPECT_EQ("deadbeef", record->token.to_std_string());
+
+    auto gone = db.findClassRename(S("a/A"));
+    ASSERT_TRUE(gone.is_ok());
+    EXPECT_FALSE(std::move(gone).unwrap().has_value());
+
+    //成员行 class_id 不动：owner 键经 join 走新类名，overlay 原样。
+    auto memberOverlay =
+        db.findMemberRename(DbMemberKind::Method, S("b/B"), S("run"), S("(La/A;)V"));
+    ASSERT_TRUE(memberOverlay.is_ok());
+    auto memberRecord = std::move(memberOverlay).unwrap();
+    ASSERT_TRUE(memberRecord.has_value());
+    EXPECT_EQ("Method_1", memberRecord->shadow.to_std_string());
+    EXPECT_EQ("00000001", memberRecord->token.to_std_string());
+
+    //名字属性的非规范化副本连带：super_name 与 interfaces 跟随新名。
+    auto impl = db.findClass(S("a/Impl"));
+    ASSERT_TRUE(impl.is_ok());
+    auto implInfo = std::move(impl).unwrap();
+    ASSERT_TRUE(implInfo.has_value());
+    EXPECT_EQ("b/B", implInfo->superName.to_std_string());
+    ASSERT_EQ(1U, implInfo->interfaces.size());
+    EXPECT_EQ("b/B", implInfo->interfaces.front().to_std_string());
+
+    //undo 对称：反向规格迁移回去，overlay 仍原样。
+    std::vector<DbIdentityRename> revert;
+    spec.name    = Utf8String::from_cstr("b/B");
+    spec.newName = Utf8String::from_cstr("a/A");
+    revert.push_back(spec);
+    auto reverted = db.migrateIdentities(std::move(revert));
+    ASSERT_TRUE(reverted.is_ok());
+    EXPECT_EQ(1U, std::move(reverted).unwrap().migratedClasses);
+    auto roundTrip = db.findClassRename(S("a/A"));
+    ASSERT_TRUE(roundTrip.is_ok());
+    auto roundTripRecord = std::move(roundTrip).unwrap();
+    ASSERT_TRUE(roundTripRecord.has_value());
+    EXPECT_EQ("Class_1", roundTripRecord->shadow.to_std_string());
+    EXPECT_EQ("deadbeef", roundTripRecord->token.to_std_string());
+}
+
+TEST(MjAnalysisDbTest, MigrateMemberIdentityKeepsIdAndRewritesDescriptor)
+{
+    const auto path = freshDbPath("migrate_member");
+    auto       db   = openOrDie(path);
+
+    DbClassInput input;
+    input.internalName = Utf8String::from_cstr("a/A");
+    DbMemberInput run;
+    run.kind       = DbMemberKind::Method;
+    run.name       = Utf8String::from_cstr("run");
+    run.descriptor = Utf8String::from_cstr("(La/Gift;)V");
+    input.members.push_back(run);
+    DbMemberInput value;
+    value.kind       = DbMemberKind::Field;
+    value.name       = Utf8String::from_cstr("value");
+    value.descriptor = Utf8String::from_cstr("La/Gift;");
+    input.members.push_back(value);
+    ASSERT_TRUE(db.ingestClasses(0, {input}).is_ok());
+
+    ASSERT_TRUE(db.setMemberRename(DbMemberKind::Method, S("a/A"), S("run"), S("(La/Gift;)V"),
+                                   S("Method_1"), S("00000001"))
+                    .is_ok());
+    ASSERT_TRUE(db.setMemberRename(DbMemberKind::Field, S("a/A"), S("value"), S("La/Gift;"),
+                                   S("Field_1"), S("00000002"))
+                    .is_ok());
+
+    std::vector<DbIdentityRename> migrations;
+    DbIdentityRename             method;
+    method.target     = RenameTargetKind::Member;
+    method.memberKind = DbMemberKind::Method;
+    method.owner      = Utf8String::from_cstr("a/A");
+    method.name       = Utf8String::from_cstr("run");
+    method.desc       = Utf8String::from_cstr("(La/Gift;)V");
+    method.newName    = Utf8String::from_cstr("walk");
+    method.newDesc    = Utf8String::from_cstr("(La/Present;)V");
+    migrations.push_back(method);
+    DbIdentityRename field;
+    field.target     = RenameTargetKind::Member;
+    field.memberKind = DbMemberKind::Field;
+    field.owner      = Utf8String::from_cstr("a/A");
+    field.name       = Utf8String::from_cstr("value");
+    field.desc       = Utf8String::from_cstr("La/Gift;");
+    field.newName    = Utf8String::from_cstr("payload");
+    //newDesc 空 = 保持旧描述符。
+    migrations.push_back(field);
+    auto migrated = db.migrateIdentities(std::move(migrations));
+    ASSERT_TRUE(migrated.is_ok());
+    auto stats = std::move(migrated).unwrap();
+    EXPECT_EQ(0U, stats.migratedClasses);
+    EXPECT_EQ(2U, stats.migratedMembers);
+
+    auto methodOverlay =
+        db.findMemberRename(DbMemberKind::Method, S("a/A"), S("walk"), S("(La/Present;)V"));
+    ASSERT_TRUE(methodOverlay.is_ok());
+    auto methodRecord = std::move(methodOverlay).unwrap();
+    ASSERT_TRUE(methodRecord.has_value());
+    EXPECT_EQ("Method_1", methodRecord->shadow.to_std_string());
+    EXPECT_EQ("00000001", methodRecord->token.to_std_string());
+
+    auto fieldOverlay =
+        db.findMemberRename(DbMemberKind::Field, S("a/A"), S("payload"), S("La/Gift;"));
+    ASSERT_TRUE(fieldOverlay.is_ok());
+    auto fieldRecord = std::move(fieldOverlay).unwrap();
+    ASSERT_TRUE(fieldRecord.has_value());
+    EXPECT_EQ("Field_1", fieldRecord->shadow.to_std_string());
+}
+
+TEST(MjAnalysisDbTest, MigrateIdentitiesRejectsCollisionAtomically)
+{
+    const auto path = freshDbPath("migrate_collision");
+    auto       db   = openOrDie(path);
+
+    DbClassInput first;
+    first.internalName = Utf8String::from_cstr("a/A");
+    DbClassInput second;
+    second.internalName = Utf8String::from_cstr("b/B");
+    ASSERT_TRUE(db.ingestClasses(0, {first, second}).is_ok());
+    ASSERT_TRUE(db.setClassRename(S("a/A"), S("Class_1"), S("deadbeef")).is_ok());
+
+    std::vector<DbIdentityRename> migrations;
+    DbIdentityRename             spec;
+    spec.target  = RenameTargetKind::Class;
+    spec.name    = Utf8String::from_cstr("a/A");
+    spec.newName = Utf8String::from_cstr("b/B");
+    migrations.push_back(spec);
+    auto failed = db.migrateIdentities(std::move(migrations));
+    ASSERT_TRUE(failed.is_err());
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(std::move(failed)));
+
+    //整批回滚：旧身份与 overlay 全部原样。
+    auto intact = db.findClassRename(S("a/A"));
+    ASSERT_TRUE(intact.is_ok());
+    auto record = std::move(intact).unwrap();
+    ASSERT_TRUE(record.has_value());
+    EXPECT_EQ("Class_1", record->shadow.to_std_string());
+}
+
+TEST(MjAnalysisDbTest, MigrateIdentitiesSkipsUnregisteredAndRejectsDuplicates)
+{
+    const auto path = freshDbPath("migrate_skip");
+    auto       db   = openOrDie(path);
+
+    DbClassInput input;
+    input.internalName = Utf8String::from_cstr("a/A");
+    ASSERT_TRUE(db.ingestClasses(0, {input}).is_ok());
+
+    std::vector<DbIdentityRename> migrations;
+    DbIdentityRename             absent;
+    absent.target  = RenameTargetKind::Class;
+    absent.name    = Utf8String::from_cstr("x/X");
+    absent.newName = Utf8String::from_cstr("y/Y");
+    migrations.push_back(absent);
+    DbIdentityRename present;
+    present.target  = RenameTargetKind::Class;
+    present.name    = Utf8String::from_cstr("a/A");
+    present.newName = Utf8String::from_cstr("a/A2");
+    migrations.push_back(present);
+    auto migrated = db.migrateIdentities(std::move(migrations));
+    ASSERT_TRUE(migrated.is_ok());
+    auto stats = std::move(migrated).unwrap();
+    EXPECT_EQ(1U, stats.migratedClasses);
+    EXPECT_EQ(1U, stats.skipped);
+
+    auto found = db.findClass(S("a/A2"));
+    ASSERT_TRUE(found.is_ok());
+    EXPECT_TRUE(std::move(found).unwrap().has_value());
+
+    std::vector<DbIdentityRename> duplicates;
+    DbIdentityRename             forward;
+    forward.target  = RenameTargetKind::Class;
+    forward.name    = Utf8String::from_cstr("a/A2");
+    forward.newName = Utf8String::from_cstr("a/A3");
+    duplicates.push_back(forward);
+    duplicates.push_back(forward);
+    auto rejected = db.migrateIdentities(std::move(duplicates));
+    ASSERT_TRUE(rejected.is_err());
+    EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(std::move(rejected)));
+}
+
 TEST(MjAnalysisDbTest, BatchSetRenamesHandlesManyRecords)
 {
     const auto path = freshDbPath("batch_many");

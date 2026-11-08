@@ -2641,6 +2641,209 @@ ca::Result<void, AnalysisDbError> AnalysisDb::replaceRenames(
 
 namespace {
 
+///@brief 身份迁移规格的校验 + 批内重复目标门（同批两规格迁同一身份 → 结果
+///依处理序而变，fail-loud 拒绝；空批放行 = 零操作）。
+ca::Result<void, AnalysisDbError> validateIdentitySet(const std::vector<DbIdentityRename>& renames)
+{
+    std::set<std::string> keys;
+    for (const auto& spec : renames) {
+        if (spec.target == RenameTargetKind::Class) {
+            if (auto result = validateRequiredText(spec.name.ref(), "class internal name");
+                result.is_err()) {
+                return result;
+            }
+            if (auto result = validateRequiredText(spec.newName.ref(), "new class internal name");
+                result.is_err()) {
+                return result;
+            }
+        }
+        else {
+            if (auto result = validateMemberKind(spec.memberKind); result.is_err()) return result;
+            if (auto result = validateRequiredText(spec.owner.ref(), "owner"); result.is_err()) {
+                return result;
+            }
+            if (auto result = validateRequiredText(spec.name.ref(), "member name"); result.is_err()) {
+                return result;
+            }
+            if (auto result = validateRequiredText(spec.desc.ref(), "member descriptor");
+                result.is_err()) {
+                return result;
+            }
+            if (auto result = validateRequiredText(spec.newName.ref(), "new member name");
+                result.is_err()) {
+                return result;
+            }
+        }
+        std::string key = spec.target == RenameTargetKind::Class
+                              ? "c:" + spec.name.to_std_string()
+                              : "m:" + std::to_string(static_cast<ca::i64>(spec.memberKind)) +
+                                    ":" + spec.owner.to_std_string() + ":" +
+                                    spec.name.to_std_string() + ":" + spec.desc.to_std_string();
+        if (!keys.insert(std::move(key)).second) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     "duplicate identity migration target in batch"));
+        }
+    }
+    return ca::Ok();
+}
+
+///@brief 单条 UPDATE 执行体（prepare/bind/step 样板收拢；迁移路径专用）。
+///形参一：SET 位文本；形参二：WHERE 位——id 版按 class_id 定位，text 版按
+///旧文本定位（super_name/interfaces 的非规范化副本改写）。
+ca::Result<void, AnalysisDbError> execUpdateTextId(sqlite3* db, const char* sql,
+                                                   const ca::str::Utf8StringRef& textValue,
+                                                   ca::i64 intValue)
+{
+    auto prepared = prepare(db, sql);
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindText(db, statement.raw, 1, textValue); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindInt(db, statement.raw, 2, intValue); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto done = step(db, statement.raw);
+    if (done.is_err()) return errorOf(std::move(done));
+    return ca::Ok();
+}
+
+ca::Result<void, AnalysisDbError> execUpdateTextText(sqlite3* db, const char* sql,
+                                                     const ca::str::Utf8StringRef& newText,
+                                                     const ca::str::Utf8StringRef& oldText)
+{
+    auto prepared = prepare(db, sql);
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    if (auto result = bindText(db, statement.raw, 1, newText); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    if (auto result = bindText(db, statement.raw, 2, oldText); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto done = step(db, statement.raw);
+    if (done.is_err()) return errorOf(std::move(done));
+    return ca::Ok();
+}
+
+}   // namespace
+
+ca::Result<DbMigrationStats, AnalysisDbError> AnalysisDb::migrateIdentities(
+    std::vector<DbIdentityRename> renames)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+    if (auto result = validateIdentitySet(renames); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
+
+    DbMigrationStats stats;
+    for (const auto& spec : renames) {
+        if (spec.target == RenameTargetKind::Class) {
+            auto oldId = lookupClassId(impl_->handle, spec.name.ref());
+            if (oldId.is_err()) return errorOf(std::move(oldId));
+            if (!oldId.unwrap().has_value()) {
+                ++stats.skipped;
+                continue;
+            }
+            //撞名预检在事务内（BEGIN IMMEDIATE 持写锁），与执行原子；目标
+            //名已登记且非本行 → Invalid 整批回滚。
+            auto occupied = lookupClassId(impl_->handle, spec.newName.ref());
+            if (occupied.is_err()) return errorOf(std::move(occupied));
+            if (occupied.unwrap().has_value() && *occupied.unwrap() != *oldId.unwrap()) {
+                return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                         "target class name already registered: " +
+                                             spec.newName.to_std_string()));
+            }
+            if (auto result = execUpdateTextId(
+                    impl_->handle,
+                    "UPDATE classes SET internal_name=?1 WHERE class_id=?2",
+                    spec.newName.ref(), *oldId.unwrap());
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            //名字属性的非规范化文本副本连带（super_name / interfaces）。
+            if (auto result = execUpdateTextText(
+                    impl_->handle,
+                    "UPDATE classes SET super_name=?1 WHERE super_name=?2",
+                    spec.newName.ref(), spec.name.ref());
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = execUpdateTextText(
+                    impl_->handle,
+                    "UPDATE interfaces SET interface_name=?1 WHERE interface_name=?2",
+                    spec.newName.ref(), spec.name.ref());
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            ++stats.migratedClasses;
+        }
+        else {
+            auto classId = lookupClassId(impl_->handle, spec.owner.ref());
+            if (classId.is_err()) return errorOf(std::move(classId));
+            if (!classId.unwrap().has_value()) {
+                ++stats.skipped;
+                continue;
+            }
+            auto memberId = lookupMemberId(impl_->handle, spec.memberKind, spec.owner.ref(),
+                                           spec.name.ref(), spec.desc.ref());
+            if (memberId.is_err()) return errorOf(std::move(memberId));
+            if (!memberId.unwrap().has_value()) {
+                ++stats.skipped;
+                continue;
+            }
+            const auto newDesc =
+                spec.newDesc.is_empty() ? spec.desc.ref() : spec.newDesc.ref();
+            auto occupied = lookupMemberId(impl_->handle, spec.memberKind, spec.owner.ref(),
+                                           spec.newName.ref(), newDesc);
+            if (occupied.is_err()) return errorOf(std::move(occupied));
+            if (occupied.unwrap().has_value() && *occupied.unwrap() != *memberId.unwrap()) {
+                return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                         "target member identity already registered: " +
+                                             spec.owner.to_std_string() + "." +
+                                             spec.newName.to_std_string()));
+            }
+            {
+                auto prepared = prepare(
+                    impl_->handle,
+                    "UPDATE members SET name=?1, descriptor=?2 WHERE member_id=?3");
+                if (prepared.is_err()) return errorOf(std::move(prepared));
+                auto statement = std::move(prepared).unwrap();
+                if (auto result = bindText(impl_->handle, statement.raw, 1, spec.newName.ref());
+                    result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+                if (auto result = bindText(impl_->handle, statement.raw, 2, newDesc);
+                    result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+                if (auto result =
+                        bindInt(impl_->handle, statement.raw, 3, *memberId.unwrap());
+                    result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+                auto done = step(impl_->handle, statement.raw);
+                if (done.is_err()) return errorOf(std::move(done));
+            }
+            ++stats.migratedMembers;
+        }
+    }
+    if (auto result = txn.commit(); result.is_err()) return errorOf(std::move(result));
+    return ca::Ok(stats);
+}
+
+namespace {
+
 /// @brief 写入口的批次挂靠门（#143 批 3 fail-loud 拒绝面）：batchId 必须
 ///        已注册且未收尾；调用方保证 batchId != 0（0 = 无批写入，不调本门）。
 ///        在调用方事务内执行：BEGIN IMMEDIATE 持写锁后校验与写入原子。
