@@ -14,6 +14,7 @@ mjbase 设计规格
 
    analysis-database
    refs-id-design
+   producer-registry-design
    semantic-fp-spec
    library-identification
    member-census-design
