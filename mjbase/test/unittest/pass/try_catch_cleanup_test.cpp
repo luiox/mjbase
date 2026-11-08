@@ -1,6 +1,15 @@
 // TryCatchCleanup：透明重抛三形状删除（共享/可达/重叠守卫）、恒不抛收口、
 // NPE 形改写（栈深门槛 + 锚入标签守卫）、自捕抛改写、空区间修复删除、
 // 非当前类恒等包装保守不认。
+//
+// 夹具纪律：方法体一律 jasm 文本装配（JvmJasmService），原 FixtureBuilder
+// 手拼载体退役。异常表为 jasm 原生面（exceptions: 段），无例外申报。原字节
+// 级夹具的两处「标签锚进操作数中部」技巧形按语义合法重表达：
+// - 透明 handler 正常可达：ifeq 直接以分支锚 handler 首（双标签同址
+//   Lb/Lh——分支目标与 handler 锚同指令，普通流帧与 handler 入栈帧各自
+//   独立成根）；
+// - NPE 形 foreign-label 守卫：athrow 上双标签同址（分支锚 + start+1 位），
+//   分支载荷与直落路径同形（aconst_null）保帧一致。
 #include <gtest/gtest.h>
 
 #include <string_view>
@@ -12,29 +21,30 @@
 #include "mjbase/spi/pass_name_registry.hpp"
 
 #include "method_pass_test_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 using jbc::core::Op;
 
 namespace {
 
-void put16(Bytes& b, ca::u16 v)
+/// 方法级夹具便捷形：t/C 单 public static m()V（exceptions 段 + code 体文本；
+/// 异常条目类型写描述符形 L...;，全捕获 *）。extra 为附加方法声明文本
+///（identity wrap 载体用）。
+Bytes asmM(std::string_view excText, std::string_view codeBody,
+           std::string_view extra = "")
 {
-    b.push_back(static_cast<ca::u8>(v >> 8));
-    b.push_back(static_cast<ca::u8>(v & 0xff));
-}
-
-void putSipush(Bytes& b, ca::i16 v) { put16(b, static_cast<ca::u16>(v)); }
-
-void putInvoke(Bytes& b, ca::u8 op, ca::u16 cp)
-{
-    b.push_back(op);
-    put16(b, cp);
-}
-
-ExcSpec exc(ca::u16 start, ca::u16 end, ca::u16 handler, ca::u16 catchCp = 0)
-{
-    return ExcSpec{start, end, handler, catchCp};
+    const std::string src = R"JASM(.super java/lang/Object
+.class public super t/C {
+  .method public static m ()V {
+    exceptions: {
+)JASM" + std::string(excText) + R"JASM(    },
+    code: {
+)JASM" + std::string(codeBody) + R"JASM(    }
+  }
+)JASM" + std::string(extra) + R"JASM(}
+)JASM";
+    return assembleJasm(src);
 }
 
 std::vector<Op> opsOfOut(const MethodPassRun& r)
@@ -47,12 +57,11 @@ std::vector<Op> opsOfOut(const MethodPassRun& r)
 // ── 透明重抛（直接 athrow）→ 条目删除 ──
 TEST(TryCatchCleanupTest, transparentDirectAthrowRemoved)
 {
-    FixtureBuilder b("t/C");
-    Bytes code = {0x01, 0xbf,   // ACONST_NULL ATHROW（保护区）
-                  0xbf,         // handler@2: ATHROW（透明）
-                  0xb1};        // RETURN
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {exc(0, 2, 2)}});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::TryCatchCleanup{});
+    const MethodPassRun r = runMethodPass(asmM("      { L0, L1, L1, * }\n",
+                                              "      L0:\n      aconst_null\n"
+                                              "      athrow\n      L1:\n      athrow\n"
+                                              "      return\n"),
+                                          mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r.pa.changed());
     const Inspection ins = inspect(r.out);
     EXPECT_TRUE(ins.cu->exc.empty());
@@ -61,12 +70,12 @@ TEST(TryCatchCleanupTest, transparentDirectAthrowRemoved)
 // ── 透明重抛（同槽 astore/aload）→ 条目删除 ──
 TEST(TryCatchCleanupTest, transparentAstoreAloadRemoved)
 {
-    FixtureBuilder b("t/C");
-    Bytes code = {0x01, 0xbf,   // ACONST_NULL ATHROW
-                  0x4b, 0x2a, 0xbf,   // handler@2: ASTORE_0 ALOAD_0 ATHROW
-                  0xb1};
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {exc(0, 2, 2)}, 2});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::TryCatchCleanup{});
+    const MethodPassRun r = runMethodPass(asmM("      { L0, L1, L1, * }\n",
+                                              "      L0:\n      aconst_null\n"
+                                              "      athrow\n      L1:\n      astore 0\n"
+                                              "      aload 0\n      athrow\n"
+                                              "      return\n"),
+                                          mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r.pa.changed());
     const Inspection ins = inspect(r.out);
     EXPECT_TRUE(ins.cu->exc.empty());
@@ -75,17 +84,20 @@ TEST(TryCatchCleanupTest, transparentAstoreAloadRemoved)
 // ── 透明重抛（当前类恒等静态包装）→ 条目删除 ──
 TEST(TryCatchCleanupTest, transparentIdentityWrapperRemoved)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 wrap = b.methodRef("t/C", "wrap",
-                                     "(Ljava/lang/Throwable;)Ljava/lang/Throwable;");
-    Bytes code = {0x01, 0xbf};   // ACONST_NULL ATHROW
-    putInvoke(code, 0xb8, wrap); // handler@2: INVOKESTATIC t/C.wrap
-    code.push_back(0xbf);        // ATHROW
-    code.push_back(0xb1);
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {exc(0, 2, 2)}});
-    b.addMethod({"wrap", "(Ljava/lang/Throwable;)Ljava/lang/Throwable;",
-                 Bytes{0x2a, 0xb0}, 0x0009});   // public static; aload_0; areturn
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::TryCatchCleanup{});
+    const MethodPassRun r = runMethodPass(
+        asmM("      { L0, L1, L1, * }\n",
+             "      L0:\n      aconst_null\n      athrow\n      L1:\n"
+             "      invokestatic t/C.wrap (Ljava/lang/Throwable;)Ljava/lang/Throwable;\n"
+             "      athrow\n      return\n",
+             R"JASM(
+  .method public static wrap (Ljava/lang/Throwable;)Ljava/lang/Throwable; {
+    code: {
+      aload 0
+      areturn
+    }
+  }
+)JASM"),
+        mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r.pa.changed());
     const Inspection ins = inspect(r.out);
     EXPECT_TRUE(ins.cu->exc.empty());
@@ -94,17 +106,20 @@ TEST(TryCatchCleanupTest, transparentIdentityWrapperRemoved)
 // ── 非当前类 owner 的包装调用：保守不认 → 保留 ──
 TEST(TryCatchCleanupTest, identityWrapperForeignOwnerKept)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 wrap = b.methodRef("other/C", "wrap",
-                                     "(Ljava/lang/Throwable;)Ljava/lang/Throwable;");
-    Bytes code = {0x01, 0xbf};
-    putInvoke(code, 0xb8, wrap);
-    code.push_back(0xbf);
-    code.push_back(0xb1);
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {exc(0, 2, 2)}});
-    b.addMethod({"wrap", "(Ljava/lang/Throwable;)Ljava/lang/Throwable;",
-                 Bytes{0x2a, 0xb0}});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::TryCatchCleanup{});
+    const MethodPassRun r = runMethodPass(
+        asmM("      { L0, L1, L1, * }\n",
+             "      L0:\n      aconst_null\n      athrow\n      L1:\n"
+             "      invokestatic other/C.wrap (Ljava/lang/Throwable;)Ljava/lang/Throwable;\n"
+             "      athrow\n      return\n",
+             R"JASM(
+  .method wrap (Ljava/lang/Throwable;)Ljava/lang/Throwable; {
+    code: {
+      aload 0
+      areturn
+    }
+  }
+)JASM"),
+        mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     const Inspection ins = inspect(r.out);
     EXPECT_EQ(ins.cu->exc.size(), 1u);
@@ -113,32 +128,28 @@ TEST(TryCatchCleanupTest, identityWrapperForeignOwnerKept)
 // ── handler 被两条目共享 → 透明面拒收（条目1 保留；条目2 保护区为死代码，被恒不抛面删） ──
 TEST(TryCatchCleanupTest, transparentSharedHandlerEntry1Kept)
 {
-    FixtureBuilder b("t/C");
-    Bytes code = {0x01, 0xbf,   // ACONST_NULL ATHROW（条目1 保护区）
-                  0x01, 0xbf,   // ACONST_NULL ATHROW（条目2 保护区）
-                  0xbf,         // handler@4: ATHROW（共享）
-                  0xb1};
-    b.addMethod({"m", "()V", std::move(code), 0x0009,
-                 {exc(0, 2, 4), exc(2, 4, 4)}});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::TryCatchCleanup{});
+    const MethodPassRun r =
+        runMethodPass(asmM("      { L0, L1, L2, * }\n      { L1, L2, L2, * }\n",
+                           "      L0:\n      aconst_null\n      athrow\n"
+                           "      L1:\n      aconst_null\n      athrow\n"
+                           "      L2:\n      athrow\n      return\n"),
+                      mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r.pa.changed());
     const Inspection ins = inspect(r.out);
     EXPECT_EQ(ins.cu->exc.size(), 1u);   // 条目1（共享）保留
 }
 
 // ── handler 正常流可达 → 透明面拒收 ──
+// 合法重表达：ifeq 分支锚 handler 首（Lb 与 handler 锚 Lh 双标签同址，
+// 分支与 handler 入帧各自独立成根），normalReach 面与原字节技巧形同实。
 TEST(TryCatchCleanupTest, transparentReachableHandlerKept)
 {
-    FixtureBuilder b("t/C");
-    Bytes code;
-    code.push_back(0x03);   // ICONST_0（pc0）
-    code.push_back(0x99);   // IFEQ → pc5（pc1，3B）
-    putSipush(code, 4);
-    code.push_back(0xbf);   // ATHROW（pc4，保护区内）
-    code.push_back(0xbf);   // handler@5: ATHROW（IFEQ 跳入 = 正常可达）
-    code.push_back(0xb1);
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {exc(0, 5, 5)}});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::TryCatchCleanup{});
+    const MethodPassRun r = runMethodPass(asmM("      { L0, Lh, Lh, * }\n",
+                                              "      L0:\n      iconst_0\n"
+                                              "      ifeq Lb\n      athrow\n"
+                                              "      Lb:\n      Lh:\n      athrow\n"
+                                              "      return\n"),
+                                          mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     const Inspection ins = inspect(r.out);
     EXPECT_EQ(ins.cu->exc.size(), 1u);
@@ -147,12 +158,11 @@ TEST(TryCatchCleanupTest, transparentReachableHandlerKept)
 // ── 恒不抛段收口：区间内无可达可抛指令 → 条目删除 ──
 TEST(TryCatchCleanupTest, impossibleCatchRemoved)
 {
-    FixtureBuilder b("t/C");
-    Bytes code = {0x03, 0x04,   // ICONST_0 ICONST_1（均不抛）
-                  0x57,         // handler@2: POP
-                  0xb1};
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {exc(0, 2, 2)}});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::TryCatchCleanup{});
+    const MethodPassRun r = runMethodPass(asmM("      { L0, L1, L1, * }\n",
+                                              "      L0:\n      iconst_0\n"
+                                              "      iconst_1\n      L1:\n      pop\n"
+                                              "      return\n"),
+                                          mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r.pa.changed());
     const Inspection ins = inspect(r.out);
     EXPECT_TRUE(ins.cu->exc.empty());
@@ -161,12 +171,11 @@ TEST(TryCatchCleanupTest, impossibleCatchRemoved)
 // ── 区间内含可达可抛指令（ATHROW）→ 保留 ──
 TEST(TryCatchCleanupTest, impossibleCatchWithThrowKept)
 {
-    FixtureBuilder b("t/C");
-    Bytes code = {0x03, 0xbf,   // ICONST_0 ATHROW
-                  0x57,         // handler@2: POP
-                  0xb1};
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {exc(0, 2, 2)}});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::TryCatchCleanup{});
+    const MethodPassRun r = runMethodPass(asmM("      { L0, L1, L1, * }\n",
+                                              "      L0:\n      iconst_0\n"
+                                              "      athrow\n      L1:\n      pop\n"
+                                              "      return\n"),
+                                          mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     const Inspection ins = inspect(r.out);
     EXPECT_EQ(ins.cu->exc.size(), 1u);
@@ -175,19 +184,15 @@ TEST(TryCatchCleanupTest, impossibleCatchWithThrowKept)
 // ── NPE 形：aconst_null;athrow + pop;goto handler → aconst_null 改 goto 续点 ──
 TEST(TryCatchCleanupTest, npeShapeRewritten)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 npe = b.cls("java/lang/NullPointerException");
-    Bytes code = {0x01, 0xbf,   // ACONST_NULL ATHROW（保护区 pc0-1）
-                  0x57,         // handler@2: POP
-                  0xa7, 0x00, 0x03,   // GOTO → pc6（handler 跳续点）
-                  0xb1,         // RETURN（pc4）
-                  0x03,         // ICONST_0（pc5）
-                  0xb1};        // RETURN（pc6，续点锚）
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {exc(0, 2, 2, npe)}});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::TryCatchCleanup{});
+    const MethodPassRun r = runMethodPass(asmM("      { L0, L1, L1, Ljava/lang/NullPointerException; }\n",
+                                              "      L0:\n      aconst_null\n"
+                                              "      athrow\n      L1:\n      pop\n"
+                                              "      goto Lcont\n      Lcont:\n"
+                                              "      iconst_0\n      return\n"),
+                                          mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOfOut(r);
-    ASSERT_EQ(ops.size(), 6u);   // athrow 已删
+    ASSERT_EQ(ops.size(), 5u);   // aconst_null+athrow → 单 GOTO
     EXPECT_EQ(ops[0], Op::GOTO); // aconst_null → goto 续点
     const Inspection ins = inspect(r.out);
     EXPECT_TRUE(ins.cu->exc.empty());
@@ -196,43 +201,29 @@ TEST(TryCatchCleanupTest, npeShapeRewritten)
 // ── NPE 形 + 保护区入口栈积压（depth≠0）→ 拒收 ──
 TEST(TryCatchCleanupTest, npeShapeJunkStackKept)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 npe = b.cls("java/lang/NullPointerException");
-    Bytes code = {0x11};
-    putSipush(code, 3);          // SIPUSH 3（pc0，积压）
-    code.push_back(0x01);        // ACONST_NULL（pc3）
-    code.push_back(0xbf);        // ATHROW（pc4）
-    code.push_back(0x57);        // handler@5: POP
-    code.push_back(0xa7);        // GOTO → pc9（pc6）
-    putSipush(code, 3);
-    code.push_back(0xb1);        // RETURN（pc9... 见下）
-    code.push_back(0x03);
-    code.push_back(0xb1);
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {exc(3, 5, 5, npe)}, 2});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::TryCatchCleanup{});
+    const MethodPassRun r =
+        runMethodPass(asmM("      { L1, L2, L2, Ljava/lang/NullPointerException; }\n",
+                           "      L0:\n      sipush 3\n      L1:\n      aconst_null\n"
+                           "      athrow\n      L2:\n      pop\n      goto Lcont\n"
+                           "      Lcont:\n      return\n"),
+                      mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     const Inspection ins = inspect(r.out);
     EXPECT_EQ(ins.cu->exc.size(), 1u);
 }
 
 // ── NPE 形 + athrow 被分支锚入 → 拒收 ──
+// 合法重表达：athrow 上双标签同址（Lx 分支锚 + Lthrow 锚），分支载荷与直落
+// 路径同形（aconst_null）保帧一致——foreign-label 守卫面同实。
 TEST(TryCatchCleanupTest, npeShapeForeignLabelKept)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 npe = b.cls("java/lang/NullPointerException");
-    Bytes code;
-    code.push_back(0xa7);        // GOTO → pc4（athrow，锚入）
-    putSipush(code, 4);
-    code.push_back(0x01);        // ACONST_NULL（pc3）
-    code.push_back(0xbf);        // ATHROW（pc4，锚点）
-    code.push_back(0x57);        // handler@5: POP
-    code.push_back(0xa7);        // GOTO → pc9
-    putSipush(code, 4);
-    code.push_back(0xb1);
-    code.push_back(0x03);
-    code.push_back(0xb1);
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {exc(3, 5, 5, npe)}});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::TryCatchCleanup{});
+    const MethodPassRun r =
+        runMethodPass(asmM("      { Lp, L2, L2, Ljava/lang/NullPointerException; }\n",
+                           "      L0:\n      aconst_null\n      goto Lx\n"
+                           "      Lp:\n      aconst_null\n      Lx:\n      Lthrow:\n"
+                           "      athrow\n      L2:\n      pop\n      goto Lcont\n"
+                           "      Lcont:\n      return\n"),
+                      mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     const Inspection ins = inspect(r.out);
     EXPECT_EQ(ins.cu->exc.size(), 1u);
@@ -241,25 +232,15 @@ TEST(TryCatchCleanupTest, npeShapeForeignLabelKept)
 // ── 自捕抛：new E;dup;invokespecial;athrow 被自身 handler 接住 → athrow 改 goto handler ──
 TEST(TryCatchCleanupTest, selfCaughtThrowRewritten)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 clsE = b.cls("t/E");
-    const ca::u16 init = b.methodRef("t/E", "<init>", "()V");
-    Bytes code;
-    putInvoke(code, 0xbb, clsE);   // NEW t/E（pc0）
-    code.push_back(0x59);          // DUP（pc3）
-    putInvoke(code, 0xb7, init);   // INVOKESPECIAL <init>（pc4）
-    code.push_back(0xbf);          // ATHROW（pc7）
-    code.push_back(0x57);          // handler@8: POP
-    code.push_back(0xa7);          // GOTO → pc12
-    putSipush(code, 3);
-    code.push_back(0xb1);          // RETURN
-    code.push_back(0x03);
-    code.push_back(0xb1);          // RETURN
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {exc(0, 8, 8, clsE)}, 2});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::TryCatchCleanup{});
+    const MethodPassRun r = runMethodPass(asmM("      { L0, L1, L1, Lt/E; }\n",
+                                              "      L0:\n      new t/E\n      dup\n"
+                                              "      invokespecial t/E.<init> ()V\n"
+                                              "      athrow\n      L1:\n      pop\n"
+                                              "      return\n"),
+                                          mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r.pa.changed());
     const std::vector<Op> ops = opsOfOut(r);
-    ASSERT_EQ(ops.size(), 9u);
+    ASSERT_EQ(ops.size(), 6u);
     EXPECT_EQ(ops[0], Op::NEW);
     EXPECT_EQ(ops[1], Op::DUP);
     EXPECT_EQ(ops[2], Op::INVOKESPECIAL);
@@ -271,23 +252,12 @@ TEST(TryCatchCleanupTest, selfCaughtThrowRewritten)
 // ── 自捕抛 + athrow 处栈深 2 → 拒收 ──
 TEST(TryCatchCleanupTest, selfCaughtDeepStackKept)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16 clsE = b.cls("t/E");
-    const ca::u16 init = b.methodRef("t/E", "<init>", "()V");
-    Bytes code = {0x11};
-    putSipush(code, 9);            // SIPUSH 9（积压）
-    putInvoke(code, 0xbb, clsE);   // NEW（pc3）
-    code.push_back(0x59);          // DUP
-    putInvoke(code, 0xb7, init);
-    code.push_back(0xbf);          // ATHROW（栈深 2）
-    code.push_back(0x57);          // handler: POP
-    code.push_back(0xa7);
-    putSipush(code, 3);
-    code.push_back(0xb1);
-    code.push_back(0x03);
-    code.push_back(0xb1);
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {exc(3, 11, 11, clsE)}, 2});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::TryCatchCleanup{});
+    const MethodPassRun r =
+        runMethodPass(asmM("      { L1, L2, L2, Lt/E; }\n",
+                           "      L0:\n      sipush 9\n      L1:\n      new t/E\n"
+                           "      dup\n      invokespecial t/E.<init> ()V\n"
+                           "      athrow\n      L2:\n      pop\n      return\n"),
+                      mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r.pa.areAllPreserved());
     const Inspection ins = inspect(r.out);
     EXPECT_EQ(ins.cu->exc.size(), 1u);
@@ -296,10 +266,10 @@ TEST(TryCatchCleanupTest, selfCaughtDeepStackKept)
 // ── 空区间条目修复性删除 ──
 TEST(TryCatchCleanupTest, emptyRangeRemoved)
 {
-    FixtureBuilder b("t/C");
-    Bytes code = {0x03, 0xb1};   // ICONST_0 RETURN
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {exc(0, 0, 0)}});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::TryCatchCleanup{});
+    const MethodPassRun r = runMethodPass(asmM("      { L0, L0, L0, * }\n",
+                                              "      L0:\n      iconst_0\n"
+                                              "      return\n"),
+                                          mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r.pa.changed());
     const Inspection ins = inspect(r.out);
     EXPECT_TRUE(ins.cu->exc.empty());
@@ -308,11 +278,10 @@ TEST(TryCatchCleanupTest, emptyRangeRemoved)
 // ── 幂等 ──
 TEST(TryCatchCleanupTest, idempotent)
 {
-    FixtureBuilder b("t/C");
-    Bytes code = {0x01, 0xbf, 0xbf, 0xb1};
-    b.addMethod({"m", "()V", std::move(code), 0x0009, {exc(0, 2, 2)}});
-    const Bytes          bytes = b.assemble();
-    const MethodPassRun  r     = runMethodPass(bytes, mjbase::pass::TryCatchCleanup{});
+    const Bytes bytes = asmM("      { L0, L1, L1, * }\n",
+                             "      L0:\n      aconst_null\n      athrow\n"
+                             "      L1:\n      athrow\n      return\n");
+    const MethodPassRun r = runMethodPass(bytes, mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r.pa.changed());
     const MethodPassRun r2 = runMethodPass(r.out, mjbase::pass::TryCatchCleanup{});
     EXPECT_TRUE(r2.pa.areAllPreserved());

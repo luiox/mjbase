@@ -877,7 +877,7 @@ TEST(MjPassMethodInlinerTest, RejectsCalleeWithExceptionTable)
   .method public static f ()I {
     exceptions: {
       { L0, L2, L2, * }
-    }
+    },
     code: {
       L0:
       nop

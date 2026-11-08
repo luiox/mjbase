@@ -355,7 +355,7 @@ TEST(MjPassIllegalClassFileCleanerTest, PrunesJunkExceptionTableEntries)
   .method public static t ()V {
     exceptions: {
       { L0, L1, L1, * }
-    }
+    },
     code: {
       L0:
       nop
