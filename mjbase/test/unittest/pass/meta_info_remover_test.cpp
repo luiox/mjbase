@@ -1,10 +1,22 @@
-/// meta 元数据清理家族（批 B 类级骨架组 13 件）单测：移植自
+/// meta 元数据清理家族（类级骨架组 13 件）单测：移植自
 /// mbase meta 段用例，并按新契约补齐
 /// 载体特有面——三层属性槽摘除/槽内过滤的落盘位置、access 标志位双面同步、
-/// Code 嵌套属性表的有界破例面（家族头注）、条件 PA。注解族载荷按 JVMS
-/// 4.7.16-4.7.21 手拼（本夹具只用空键值对的简单形态）。
+/// Code 嵌套属性表的有界破例面（家族头注）、条件 PA。
+///
+/// 夹具纪律：类骨架（类头/字段/方法/code 体）一律 jasm 文本装配（major 49
+/// 帧less 口径，与退役的字节级 FixtureBuilder 夹具同实；本家族所需 access
+/// 位全部在装配器修饰词表内）。纪律例外②申报：类/成员属性（注解表、
+/// TypeAnnotations、Signature、SourceFile/SourceDebugExtension、Record、
+/// MethodParameters、ConstantValue、AnnotationDefault、未知杂槽与 legacy
+/// 载荷形）jasm 无指令面——从装配合法骨架出发，经 readClass→CP 物化→
+/// AttrSlot 挂 Raw 新槽→writeClass 产出夹具字节（与会话解码路径同源；
+/// Code 嵌套槽同面，经 decodeCode 挂体后向 CodeAttr::attrs 追加）。属性
+/// 载荷为二进制正形（JVMS 4.7.16-4.7.30），putU16 拼装属属性载荷构建而非
+/// 类构造。唯一 access 杂位：类级 0x0040 位词表无修饰词
+///（IllegalAccessRemover 用例），附着面单点 OR（extraClassAccess）。
 #include <gtest/gtest.h>
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <set>
@@ -23,7 +35,7 @@
 #include "mjbase/pass/meta_info_remover.hpp"
 #include "mjbase/spi/analysis_manager.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 
@@ -40,164 +52,385 @@ using jbc::core::RawAttr;
 using jbc::core::RecordAttr;
 using jbc::core::TypeAnnotationsAttr;
 
-// ── 载荷拼装（CP 索引经 builder 先行物化）──
+// ── 属性载荷构造（例外②附着面；CP 索引在附着时物化）──
+
+/// 属性规格：槽名 + 载荷构建器（构建器在附着时对目标 ClassFile 的 CP
+/// 物化索引——CP 索引由 addUtf8/addInteger 去重确定，与会话侧一致）。
+struct AttrSpec
+{
+    std::string                      name;
+    std::function<Bytes(ClassFile&)> build;
+};
+
+/// 字面载荷槽（SourceDebugExtension/未知杂槽/legacy 布局/畸形载荷——字节
+/// 即权威形）。
+AttrSpec rawAttr(std::string name, Bytes raw)
+{
+    return AttrSpec{std::move(name), [raw](ClassFile&) { return raw; }};
+}
+
+/// CP Utf8 去重物化（findUtf8 命中既有池返回原索引，miss 才追加——同一
+/// desc 多次物化不会产生重复条目；行载荷逐字节断言与 typed 面原样重编码
+/// 要求同 desc 同索引）。
+ca::u32 internUtf8(ClassFile& cf, std::string_view s)
+{
+    const ca::u32 found = cf.cp.findUtf8(s);
+    return found != 0 ? found : cf.cp.addUtf8(s);
+}
+
+/// SourceFile：u2 源文件名 CP。
+AttrSpec sourceFileAttr(std::string name)
+{
+    return AttrSpec{"SourceFile", [name](ClassFile& cf) {
+        Bytes p;
+        putU16(p, internUtf8(cf, name));
+        return p;
+    }};
+}
+
+/// Signature：u2 签名串 CP。
+AttrSpec signatureAttr(std::string sig)
+{
+    return AttrSpec{"Signature", [sig](ClassFile& cf) {
+        Bytes p;
+        putU16(p, internUtf8(cf, sig));
+        return p;
+    }};
+}
 
 /// 注解表（Runtime{Visible,Invisible}Annotations）：u2 条数 + {u2 类型描述符
 /// CP, u2 键值对数=0}*。
-Bytes annoTable(FixtureBuilder& b, std::initializer_list<const char*> descs)
+AttrSpec annoAttr(std::string slotName, std::vector<std::string> descs)
 {
-    Bytes out;
-    putU16(out, static_cast<ca::u16>(descs.size()));
-    for (const char* d : descs) {
-        putU16(out, b.utf8(d));
-        putU16(out, 0);
-    }
-    return out;
+    return AttrSpec{std::move(slotName), [descs](ClassFile& cf) {
+        Bytes p;
+        putU16(p, static_cast<ca::u16>(descs.size()));
+        for (const std::string& d : descs) {
+            putU16(p, internUtf8(cf, d));
+            putU16(p, 0);
+        }
+        return p;
+    }};
 }
 
 /// type annotation 表（Runtime{Visible,Invisible}TypeAnnotations）：u2 条数 +
 /// {u1 target_type, 空 target_info, u1 路径长=0, u2 描述符 CP, u2 键值对=0}*。
 /// 空 target_info 仅对 0x13/0x14/0x15 形态成立——本夹具只用这三类（含挂在
 /// Code 嵌套槽的合成形态：libjbc 按条目自身 target_type 解码，不验挂载点）。
-Bytes typeAnnoTable(FixtureBuilder& b, ca::u8 targetType, std::initializer_list<const char*> descs)
+AttrSpec typeAnnoAttr(std::string slotName, ca::u8 targetType,
+                      std::vector<std::string> descs)
 {
-    Bytes out;
-    putU16(out, static_cast<ca::u16>(descs.size()));
-    for (const char* d : descs) {
-        putU8(out, targetType);
-        putU8(out, 0);
-        putU16(out, b.utf8(d));
-        putU16(out, 0);
-    }
-    return out;
-}
-
-/// 参数注解（Runtime{Visible,Invisible}ParameterAnnotations）：u2 参数数=1 +
-/// u2 注解数 + 注解表（简单形态）。
-Bytes paramAnnoTable(FixtureBuilder& b, std::initializer_list<const char*> descs)
-{
-    Bytes out;
-    putU16(out, 1);
-    putU16(out, static_cast<ca::u16>(descs.size()));
-    for (const char* d : descs) {
-        putU16(out, b.utf8(d));
-        putU16(out, 0);
-    }
-    return out;
-}
-
-/// 参数注解行载荷（JVMS 4.7.20 正形：u1 参数数 + {u2 注解数 + 条目}*），
-/// 行内容为已拼好的注解条目字节。
-Bytes paramAnnoRawRows(std::vector<std::vector<Bytes>> rows)
-{
-    Bytes out;
-    putU8(out, static_cast<ca::u8>(rows.size()));
-    for (const std::vector<Bytes>& row : rows) {
-        putU16(out, static_cast<ca::u16>(row.size()));
-        for (const Bytes& e : row) appendBytes(out, e);
-    }
-    return out;
-}
-
-/// 参数注解行载荷（正形 u1 参数数），行内容为描述符列表（零键值对条目）。
-Bytes paramAnnoRows(FixtureBuilder& b, std::vector<std::vector<const char*>> rows)
-{
-    std::vector<std::vector<Bytes>> entries;
-    entries.reserve(rows.size());
-    for (const std::vector<const char*>& row : rows) {
-        std::vector<Bytes> rowEntries;
-        rowEntries.reserve(row.size());
-        for (const char* d : row) {
-            Bytes e;
-            putU16(e, b.utf8(d));
-            putU16(e, 0);
-            rowEntries.push_back(std::move(e));
+    return AttrSpec{std::move(slotName), [targetType, descs](ClassFile& cf) {
+        Bytes p;
+        putU16(p, static_cast<ca::u16>(descs.size()));
+        for (const std::string& d : descs) {
+            putU8(p, targetType);
+            putU8(p, 0);
+            putU16(p, internUtf8(cf, d));
+            putU16(p, 0);
         }
-        entries.push_back(std::move(rowEntries));
-    }
-    return paramAnnoRawRows(std::move(entries));
+        return p;
+    }};
+}
+
+/// 参数注解 legacy 形（u2 参数数=1 + u2 注解数 + 注解表）：仅整槽摘除面
+/// 用（载荷形状与摘除判定无关）。
+AttrSpec paramAnnoTableAttr(std::string slotName, std::vector<std::string> descs)
+{
+    return AttrSpec{std::move(slotName), [descs](ClassFile& cf) {
+        Bytes p;
+        putU16(p, 1);
+        putU16(p, static_cast<ca::u16>(descs.size()));
+        for (const std::string& d : descs) {
+            putU16(p, internUtf8(cf, d));
+            putU16(p, 0);
+        }
+        return p;
+    }};
+}
+
+/// 注解条目构建器（行载荷的条目单元，构建时对 CP 物化）。
+using EntryBuilder = std::function<Bytes(ClassFile&)>;
+
+/// 平条目：type + 0 键值对。
+EntryBuilder simpleAnnoEntry(std::string desc)
+{
+    return [desc](ClassFile& cf) {
+        Bytes e;
+        putU16(e, internUtf8(cf, desc));
+        putU16(e, 0);
+        return e;
+    };
 }
 
 /// 带嵌套载荷的注解条目：type + 1 键值对（'[ 数组 → '@ 嵌套注解）——参数
 /// 注解条目测量器的递归面（条目随顶层描述符整体摘除）。
-Bytes nestedAnnoEntry(FixtureBuilder& b, const char* desc, const char* nestedDesc)
+EntryBuilder nestedAnnoEntry(std::string desc, std::string nestedDesc)
 {
-    Bytes out;
-    putU16(out, b.utf8(desc));
-    putU16(out, 1);                    // 键值对数
-    putU16(out, b.utf8("value"));      // 元素名
-    putU8(out, '[');                   // 数组
-    putU16(out, 1);                    // 数组元素数
-    putU8(out, '@');                   // 嵌套注解
-    putU16(out, b.utf8(nestedDesc));
-    putU16(out, 0);                    // 嵌套注解键值对数
-    return out;
+    return [desc, nestedDesc](ClassFile& cf) {
+        Bytes e;
+        putU16(e, internUtf8(cf, desc));
+        putU16(e, 1);                    // 键值对数
+        putU16(e, internUtf8(cf, "value"));
+        putU8(e, '[');                   // 数组
+        putU16(e, 1);                    // 数组元素数
+        putU8(e, '@');                   // 嵌套注解
+        putU16(e, internUtf8(cf, nestedDesc));
+        putU16(e, 0);                    // 嵌套注解键值对数
+        return e;
+    };
 }
 
-/// Record 组件规格：名/描述符 + 嵌套属性槽。
+/// 参数注解行载荷（JVMS 4.7.20 正形：u1 参数数 + {u2 注解数 + 条目}*）。
+AttrSpec paramAnnoRowsAttr(std::string slotName,
+                           std::vector<std::vector<EntryBuilder>> rows)
+{
+    return AttrSpec{std::move(slotName), [rows](ClassFile& cf) {
+        Bytes p;
+        putU8(p, static_cast<ca::u8>(rows.size()));
+        for (const std::vector<EntryBuilder>& row : rows) {
+            putU16(p, static_cast<ca::u16>(row.size()));
+            for (const EntryBuilder& e : row) appendBytes(p, e(cf));
+        }
+        return p;
+    }};
+}
+
+/// 平描述符行的正形参数注解（条目全部 0 键值对）。
+AttrSpec paramAnnoFlatRowsAttr(std::string slotName,
+                               std::vector<std::vector<std::string>> rows)
+{
+    std::vector<std::vector<EntryBuilder>> builders;
+    builders.reserve(rows.size());
+    for (std::vector<std::string>& row : rows) {
+        std::vector<EntryBuilder> rowBuilders;
+        rowBuilders.reserve(row.size());
+        for (std::string& d : row) rowBuilders.push_back(simpleAnnoEntry(std::move(d)));
+        builders.push_back(std::move(rowBuilders));
+    }
+    return paramAnnoRowsAttr(std::move(slotName), std::move(builders));
+}
+
+/// Record 组件规格：名/描述符 + 嵌套属性规格。
 struct RecordCompSpec
 {
-    std::string_view         name;
-    std::string_view         desc;
-    std::vector<FixtureAttr> attrs;
+    std::string           name;
+    std::string           desc;
+    std::vector<AttrSpec> attrs;
 };
 
-/// Record 属性载荷（JVMS 4.7.30）：u2 组件数 + {u2 名 CP, u2 描述符 CP,
-/// u2 属性数 + 嵌套属性槽}*（组件嵌套属性槽在手拼夹具内前置物化名字 CP）。
-Bytes recordAttrPayload(FixtureBuilder& b, std::vector<RecordCompSpec> comps)
+/// Record 属性（JVMS 4.7.30）：u2 组件数 + {u2 名 CP, u2 描述符 CP,
+/// u2 属性数 + 嵌套属性槽}*。
+AttrSpec recordAttr(std::vector<RecordCompSpec> comps)
 {
-    Bytes out;
-    putU16(out, static_cast<ca::u16>(comps.size()));
-    for (const RecordCompSpec& c : comps) {
-        putU16(out, b.utf8(c.name));
-        putU16(out, b.utf8(c.desc));
-        putU16(out, static_cast<ca::u16>(c.attrs.size()));
-        for (const FixtureAttr& a : c.attrs) {
-            putU16(out, b.utf8(a.name));
-            putU32(out, static_cast<ca::u32>(a.payload.size()));
-            appendBytes(out, a.payload);
+    return AttrSpec{"Record", [comps](ClassFile& cf) {
+        Bytes p;
+        putU16(p, static_cast<ca::u16>(comps.size()));
+        for (const RecordCompSpec& c : comps) {
+            putU16(p, internUtf8(cf, c.name));
+            putU16(p, internUtf8(cf, c.desc));
+            putU16(p, static_cast<ca::u16>(c.attrs.size()));
+            for (const AttrSpec& a : c.attrs) {
+                putU16(p, internUtf8(cf, a.name));
+                const Bytes payload = a.build(cf);
+                putU32(p, static_cast<ca::u32>(payload.size()));
+                appendBytes(p, payload);
+            }
         }
-    }
-    return out;
+        return p;
+    }};
 }
 
 /// MethodParameters：u1 参数数（JVMS 4.7.24 parameters_count）+
 /// {u2 名字 CP, u2 access}*。
-Bytes methodParameters(FixtureBuilder&                     b,
-                       std::initializer_list<std::pair<const char*, ca::u16>> params)
+AttrSpec methodParametersAttr(std::vector<std::pair<std::string, ca::u16>> params)
 {
-    Bytes out;
-    putU8(out, static_cast<ca::u8>(params.size()));
-    for (const auto& [n, acc] : params) {
-        putU16(out, b.utf8(n));
-        putU16(out, acc);
-    }
-    return out;
-}
-
-/// Signature：u2 签名串 CP。
-Bytes signaturePayload(FixtureBuilder& b, const char* sig)
-{
-    Bytes out;
-    putU16(out, b.utf8(sig));
-    return out;
-}
-
-/// SourceFile：u2 源文件名 CP。
-Bytes sourceFilePayload(FixtureBuilder& b, const char* name)
-{
-    Bytes out;
-    putU16(out, b.utf8(name));
-    return out;
+    return AttrSpec{"MethodParameters", [params](ClassFile& cf) {
+        Bytes p;
+        putU8(p, static_cast<ca::u8>(params.size()));
+        for (const auto& [n, acc] : params) {
+            putU16(p, internUtf8(cf, n));
+            putU16(p, acc);
+        }
+        return p;
+    }};
 }
 
 /// AnnotationDefault：element_value（'B' 常量形态：tag + u2 Integer CP）。
-Bytes annotationDefaultPayload(FixtureBuilder& b, ca::i32 v)
+AttrSpec annotationDefaultAttr(ca::i32 v)
 {
-    Bytes out;
-    putU8(out, 'B');
-    putU16(out, b.intConst(v));
+    return AttrSpec{"AnnotationDefault", [v](ClassFile& cf) {
+        Bytes p;
+        putU8(p, 'B');
+        putU16(p, cf.cp.addInteger(v));
+        return p;
+    }};
+}
+
+/// ConstantValue：u2 Integer CP。
+AttrSpec constValueAttr(ca::i32 v)
+{
+    return AttrSpec{"ConstantValue", [v](ClassFile& cf) {
+        Bytes p;
+        putU16(p, cf.cp.addInteger(v));
+        return p;
+    }};
+}
+
+/// legacy MethodParameters 载荷（旧栈 writer 字节形：u1 count + {u2 name,
+/// u2 acc}*，与 JVMS 4.7.24 同形）：名字 CP 指针以池内真实 Utf8 承载
+///（原 0x0021 不透明字面值的同语义落点；断言只钉 count 位与 access 位）。
+AttrSpec legacyParamLayoutAttr()
+{
+    return AttrSpec{"MethodParameters", [](ClassFile& cf) {
+        const ca::u16 nameCp = static_cast<ca::u16>(internUtf8(cf, "p0"));
+        return Bytes{0x01,
+                     static_cast<ca::u8>(nameCp >> 8),
+                     static_cast<ca::u8>(nameCp),
+                     0x80, 0x11};
+    }};
+}
+
+// ── 类骨架装配 + 附着面 ──
+
+/// 方法 code 体便捷文本。
+constexpr std::string_view kReturn    = "return\n";
+constexpr std::string_view kNopReturn = "nop\nreturn\n";
+
+/// access 位 → jasm 修饰词序（与装配器词表同源：0x20 类=super/方法=
+/// synchronized，0x40/0x80 方法=bridge/varargs、字段=volatile/transient；
+/// 类 0x40 无词表修饰词——extraClassAccess 单点 OR 承载）。
+std::string accessModifiers(ca::u16 acc, int kind)   // 0=class 1=method 2=field
+{
+    std::string out;
+    const auto add = [&](std::string_view w, ca::u16 bit) {
+        if ((acc & bit) != 0) {
+            out += w;
+            out += ' ';
+        }
+    };
+    add("public", 0x0001);
+    add("private", 0x0002);
+    add("protected", 0x0004);
+    add("static", 0x0008);
+    add("final", 0x0010);
+    if (kind == 0) add("super", 0x0020);
+    if (kind == 1) add("synchronized", 0x0020);
+    if (kind == 1) add("bridge", 0x0040);
+    if (kind == 2) add("volatile", 0x0040);
+    if (kind == 1) add("varargs", 0x0080);
+    if (kind == 2) add("transient", 0x0080);
+    add("native", 0x0100);
+    add("interface", 0x0200);
+    add("abstract", 0x0400);
+    add("strict", 0x0800);
+    add("synthetic", 0x1000);
+    add("annotation", 0x2000);
+    add("enum", 0x4000);
     return out;
+}
+
+struct FieldSpec
+{
+    std::string_view      name;
+    std::string_view      desc;
+    ca::u16               access = 0x0009;
+    std::vector<AttrSpec> attrs;
+};
+
+struct MethodSpec
+{
+    std::string_view      name;
+    std::string_view      desc;
+    std::string_view      body;   // code 体文本（不含外壳）
+    ca::u16               access  = 0x0009;
+    std::vector<AttrSpec> attrs;  // 方法级（Code 外）
+    std::vector<AttrSpec> codeAttrs;   // Code 嵌套
+};
+
+/// 例外②附着：向属性表挂 Raw 新槽（载荷构建时对 CP 物化）。
+void attachAttrs(ClassFile& cf, std::vector<AttrSlot>& attrs,
+                 const std::vector<AttrSpec>& specs)
+{
+    for (const AttrSpec& a : specs) {
+        attrs.push_back(AttrSlot::makeNew(internUtf8(cf, a.name),
+                                          std::make_unique<RawAttr>(a.build(cf))));
+    }
+}
+
+/// 例外②附着（Code 嵌套）：decodeCode 挂体后向 CodeAttr::attrs 追加
+///（decode→改→write 的既有路径，既有嵌套槽原样保留）。
+void attachCodeAttrs(ClassFile& cf, MemberInfo& m, const std::vector<AttrSpec>& specs)
+{
+    for (AttrSlot& slot : m.attrs) {
+        if (cf.utf8(slot.nameCp) != "Code") continue;
+        const auto d = cf.decodeCode(m);
+        EXPECT_TRUE(d.is_ok());
+        if (d.is_err()) return;
+        CodeAttr* code = d.unwrap();
+        for (const AttrSpec& a : specs) {
+            code->attrs.push_back(AttrSlot::makeNew(internUtf8(cf, a.name),
+                                                    std::make_unique<RawAttr>(a.build(cf))));
+        }
+        return;
+    }
+    ADD_FAILURE() << "attachCodeAttrs: 方法无 Code 槽";
+}
+
+/// 家族夹具：类骨架 jasm 装配（major 49 帧less）+ 例外②属性附着。
+/// classAccess 只传词表可表达位；extraClassAccess 为附着面单点 OR（类
+/// 0x0040 杂位）。
+Bytes familyFixture(ca::u16 classAccess, ca::u16 extraClassAccess,
+                    std::vector<AttrSpec> classAttrs, std::vector<FieldSpec> fields,
+                    std::vector<MethodSpec> methods)
+{
+    std::string src = R"JASM(.super java/lang/Object
+.class )JASM" + accessModifiers(classAccess, 0) + "T {\n";
+    for (const FieldSpec& f : fields) {
+        src += "  .field " + accessModifiers(f.access, 2) + std::string(f.name) + " "
+               + std::string(f.desc) + "\n";
+    }
+    for (const MethodSpec& m : methods) {
+        src += "  .method " + accessModifiers(m.access, 1) + std::string(m.name) + " "
+               + std::string(m.desc) + R"JASM( {
+    code: {
+)JASM" + std::string(m.body) + R"JASM(    }
+  }
+)JASM";
+    }
+    src += "}\n";
+    const Bytes assembled = assembleJasm(src);
+    if (assembled.empty()) return {};
+
+    auto read = jbc::core::readClass(jbc::core::ByteView(assembled));
+    EXPECT_TRUE(read.is_ok());
+    if (read.is_err()) return {};
+    jbc::core::ReadResult rr = std::move(read).unwrap();
+    ClassFile&        cf     = *rr.file;
+    cf.access |= extraClassAccess;
+
+    attachAttrs(cf, cf.attrs, classAttrs);
+    EXPECT_EQ(cf.fields.size(), fields.size());
+    if (cf.fields.size() == fields.size()) {
+        for (std::size_t i = 0; i < fields.size(); ++i) {
+            EXPECT_EQ(cf.utf8(cf.fields[i].nameCp), fields[i].name);
+            attachAttrs(cf, cf.fields[i].attrs, fields[i].attrs);
+        }
+    }
+    EXPECT_EQ(cf.methods.size(), methods.size());
+    if (cf.methods.size() == methods.size()) {
+        for (std::size_t i = 0; i < methods.size(); ++i) {
+            EXPECT_EQ(cf.utf8(cf.methods[i].nameCp), methods[i].name);
+            attachAttrs(cf, cf.methods[i].attrs, methods[i].attrs);
+            if (!methods[i].codeAttrs.empty()) {
+                attachCodeAttrs(cf, cf.methods[i], methods[i].codeAttrs);
+            }
+        }
+    }
+
+    auto written = jbc::core::writeClass(cf);
+    EXPECT_TRUE(written.is_ok());
+    return written.is_ok() ? std::move(written).unwrap() : Bytes{};
 }
 
 // ── 断言辅助 ──
@@ -309,13 +542,23 @@ std::optional<std::vector<ca::u8>> slotPayloadBytes(ClassFile& cf, std::vector<A
     return std::nullopt;
 }
 
-/// 组会话（按值收 builder，CP 物化在 assemble 内完成）。
-std::shared_ptr<jbc::ir::ClassSession> makeSession(FixtureBuilder builder)
+/// CP 内指定 Utf8 的索引（夹具载荷先行物化，必在；会话侧 CP 与夹具侧
+/// 同源——pass 不动 CP）。
+ca::u16 utf8IndexOf(ClassFile& cf, std::string_view s)
 {
-    const Bytes bytes  = builder.assemble();
-    auto        result = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
+    for (ca::u32 i = 1; i < cf.cp.size(); ++i) {
+        if (cf.cp.isUtf8(i) && cf.utf8(i) == s) return static_cast<ca::u16>(i);
+    }
+    ADD_FAILURE() << "Utf8 缺席: " << s;
+    return 0;
+}
+
+/// 组会话（按字节开组）。
+std::shared_ptr<jbc::ir::ClassSession> makeSession(const Bytes& bytes)
+{
+    auto result = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
     EXPECT_TRUE(result.is_ok());
-    return std::move(result).unwrap();
+    return result.is_ok() ? std::move(result).unwrap() : nullptr;
 }
 
 }   // namespace
@@ -324,26 +567,32 @@ std::shared_ptr<jbc::ir::ClassSession> makeSession(FixtureBuilder builder)
 
 TEST(MjPassMetaInfoRemoverTest, StripsListedMetaAcrossThreeLevels)
 {
-    FixtureBuilder builder("T");
-    builder.addClassAttr({"SourceFile", sourceFilePayload(builder, "T.java")});
-    builder.addClassAttr({"SourceDebugExtension", Bytes{'a', 'b', 'c'}});
-    builder.addClassAttr({"RuntimeVisibleAnnotations", annoTable(builder, {"LFoo/Keep;"})});
-    builder.addClassAttr(
-        {"RuntimeVisibleTypeAnnotations", typeAnnoTable(builder, 0x13, {"LFoo/Keep;"})});
-    builder.addField({"fin", "I", 0x0019,
-                      {{"RuntimeVisibleAnnotations", annoTable(builder, {"LFoo/Keep;"})}}});
-    builder.addMethod({"m", "()V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"RuntimeVisibleAnnotations", annoTable(builder, {"LFoo/Keep;"})},
-                        {"RuntimeVisibleParameterAnnotations", paramAnnoTable(builder, {"LFoo/Keep;"})},
-                        {"RuntimeInvisibleParameterAnnotations", paramAnnoTable(builder, {"LFoo/Keep;"})},
-                        {"MethodParameters", methodParameters(builder, {{"p0", 0x0010}})},
-                        {"AnnotationDefault", annotationDefaultPayload(builder, 7)}}});
-    builder.addMethod({"debug", "()V", nopReturn(), 0x0009, {}, 1, 1, {},
-                       {{"LineNumberTable", Bytes{0x00, 0x01, 0x00, 0x00, 0x00, 0x2A}},
-                        {"LocalVariableTable", Bytes{0x00, 0x00}},
-                        {"RuntimeVisibleTypeAnnotations",
-                         typeAnnoTable(builder, 0x13, {"LFoo/Keep;"})}}});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x0021, 0,
+        {
+            sourceFileAttr("T.java"),
+            rawAttr("SourceDebugExtension", Bytes{'a', 'b', 'c'}),
+            annoAttr("RuntimeVisibleAnnotations", {"LFoo/Keep;"}),
+            typeAnnoAttr("RuntimeVisibleTypeAnnotations", 0x13, {"LFoo/Keep;"}),
+        },
+        {
+            {"fin", "I", 0x0019, {annoAttr("RuntimeVisibleAnnotations", {"LFoo/Keep;"})}},
+        },
+        {
+            {"m", "()V", kReturn, 0x0009,
+             {annoAttr("RuntimeVisibleAnnotations", {"LFoo/Keep;"}),
+              paramAnnoTableAttr("RuntimeVisibleParameterAnnotations", {"LFoo/Keep;"}),
+              paramAnnoTableAttr("RuntimeInvisibleParameterAnnotations", {"LFoo/Keep;"}),
+              methodParametersAttr({{"p0", 0x0010}}),
+              annotationDefaultAttr(7)},
+             {}},
+            {"debug", "()V", kNopReturn, 0x0009, {},
+             {rawAttr("LineNumberTable", Bytes{0x00, 0x01, 0x00, 0x00, 0x00, 0x2A}),
+              rawAttr("LocalVariableTable", Bytes{0x00, 0x00}),
+              typeAnnoAttr("RuntimeVisibleTypeAnnotations", 0x13, {"LFoo/Keep;"})}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena          arena;
     mjbase::spi::ClassAnalysisManager cam(arena);
@@ -361,30 +610,31 @@ TEST(MjPassMetaInfoRemoverTest, StripsListedMetaAcrossThreeLevels)
         EXPECT_EQ(names.count("Code"), 1u) << "Code 必须存活";
         EXPECT_EQ(names.size(), 1u) << "方法级 meta 槽应全数摘除";
     }
-    // Code 嵌套：debug 方法的 LNT/LVT/嵌套 TA 整表消失，Code 本体存活。
+    // Code 嵌套：debug 方法的 LNT/LVT/嵌套 TA 整表消失，Code 本体存活
+    //（nop;return，装配器真值 maxStack=0）。
     CodeAttr* debugCode = decodeCodeAttr(cf, cf.methods[1]);
     ASSERT_NE(debugCode, nullptr);
     EXPECT_TRUE(debugCode->attrs.empty());
     EXPECT_EQ(debugCode->code.size(), 2u);   // NOP; RETURN 原样
-    EXPECT_EQ(debugCode->maxStack, 1u);
+    EXPECT_EQ(debugCode->maxStack, 0u);
 }
 
 TEST(MjPassMetaInfoRemoverTest, KeepsSignatureConstantValueAndUnknownAttrs)
 {
-    FixtureBuilder builder("T");
-    builder.addClassAttr({"Signature", signaturePayload(builder, "Ljava/lang/List<Ljava/lang/String;>;")});
-    builder.addClassAttr({"NotAStandardAttr", Bytes{0x01, 0x02}});
-    builder.addField(
-        {"cv", "I", 0x0009,
-         {{"ConstantValue", [&builder] {
-              Bytes p;
-              putU16(p, builder.intConst(42));
-              return p;
-          }()},
-          {"Signature", signaturePayload(builder, "I")}}});
-    builder.addMethod({"m", "(I)V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"Signature", signaturePayload(builder, "(I)V")}}});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x0021, 0,
+        {
+            signatureAttr("Ljava/lang/List<Ljava/lang/String;>;"),
+            rawAttr("NotAStandardAttr", Bytes{0x01, 0x02}),
+        },
+        {
+            {"cv", "I", 0x0009, {constValueAttr(42), signatureAttr("I")}},
+        },
+        {
+            {"m", "(I)V", kReturn, 0x0009, {signatureAttr("(I)V)")}, {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena          arena;
     mjbase::spi::ClassAnalysisManager cam(arena);
@@ -400,9 +650,9 @@ TEST(MjPassMetaInfoRemoverTest, KeepsSignatureConstantValueAndUnknownAttrs)
 
 TEST(MjPassMetaInfoRemoverTest, CleanClassIsByteIdentical)
 {
-    FixtureBuilder builder("T");
-    builder.addMethod({"m", "()V", bareReturn()});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(0x0021, 0, {}, {}, {{"m", "()V", kReturn, 0x0009, {}, {}}});
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
     auto beforeResult = jbc::core::writeClass(session->backing());
     ASSERT_TRUE(beforeResult.is_ok());
     const Bytes before = std::move(beforeResult).unwrap();
@@ -423,18 +673,24 @@ TEST(MjPassMetaInfoRemoverTest, CleanClassIsByteIdentical)
 
 TEST(MjPassMetaInfoRemoverTest, ClearsRecordComponentAnnotationSlots)
 {
-    FixtureBuilder builder("T");
-    builder.addClassAttr({"Record", recordAttrPayload(builder,
+    const Bytes in = familyFixture(
+        0x0021, 0,
         {
-            {"x", "I",
-             {{"RuntimeVisibleAnnotations", annoTable(builder, {"LFoo/Keep;"})},
-              {"RuntimeVisibleTypeAnnotations", typeAnnoTable(builder, 0x13, {"LFoo/Keep;"})},
-              {"Signature", signaturePayload(builder, "I")}}},
-            {"y", "Ljava/lang/String;",
-             {{"Signature", signaturePayload(builder, "Ljava/lang/String;")}}},
-        })});
-    builder.addMethod({"m", "()V", bareReturn()});
-    auto session = makeSession(builder);
+            recordAttr({
+                {"x", "I",
+                 {annoAttr("RuntimeVisibleAnnotations", {"LFoo/Keep;"}),
+                  typeAnnoAttr("RuntimeVisibleTypeAnnotations", 0x13, {"LFoo/Keep;"}),
+                  signatureAttr("I")}},
+                {"y", "Ljava/lang/String;",
+                 {signatureAttr("Ljava/lang/String;")}},
+            }),
+        },
+        {},
+        {
+            {"m", "()V", kReturn, 0x0009, {}, {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena          arena;
     mjbase::spi::ClassAnalysisManager cam(arena);
@@ -462,15 +718,21 @@ TEST(MjPassMetaInfoRemoverTest, ClearsRecordComponentAnnotationSlots)
 TEST(MjPassMetaInfoRemoverTest, RecordWithoutComponentAnnotationsUntouched)
 {
     // 组件只有 Signature（清空面零命中）→ 零改动，copy-through 字节恒等
-    // （decode 不置脏，不触发 Record 重编码）。
-    FixtureBuilder builder("T");
-    builder.addClassAttr({"Record", recordAttrPayload(builder,
+    //（decode 不置脏，不触发 Record 重编码）。
+    const Bytes in = familyFixture(
+        0x0021, 0,
         {
-            {"x", "I", {{"Signature", signaturePayload(builder, "I")}}},
-            {"y", "Ljava/lang/String;", {}},
-        })});
-    builder.addMethod({"m", "()V", bareReturn()});
-    auto session = makeSession(builder);
+            recordAttr({
+                {"x", "I", {signatureAttr("I")}},
+                {"y", "Ljava/lang/String;", {}},
+            }),
+        },
+        {},
+        {
+            {"m", "()V", kReturn, 0x0009, {}, {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
     auto beforeResult = jbc::core::writeClass(session->backing());
     ASSERT_TRUE(beforeResult.is_ok());
     const Bytes before = std::move(beforeResult).unwrap();
@@ -489,11 +751,19 @@ TEST(MjPassMetaInfoRemoverTest, RecordComponentAnnotationsOutsideFaceUntouched)
 {
     // opt-in 面外：清空面只归 MetaInfoRemover——KotlinMetadataRemover 对
     // record 组件嵌套注解零触碰。
-    FixtureBuilder builder("T");
-    builder.addClassAttr({"Record", recordAttrPayload(builder,
-        {{"x", "I", {{"RuntimeVisibleAnnotations", annoTable(builder, {"LFoo/Keep;"})}}}})});
-    builder.addMethod({"m", "()V", bareReturn()});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x0021, 0,
+        {
+            recordAttr({
+                {"x", "I", {annoAttr("RuntimeVisibleAnnotations", {"LFoo/Keep;"})}},
+            }),
+        },
+        {},
+        {
+            {"m", "()V", kReturn, 0x0009, {}, {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
     auto beforeResult = jbc::core::writeClass(session->backing());
     ASSERT_TRUE(beforeResult.is_ok());
     const Bytes before = std::move(beforeResult).unwrap();
@@ -512,11 +782,16 @@ TEST(MjPassMetaInfoRemoverTest, RecordComponentAnnotationsOutsideFaceUntouched)
 
 TEST(MjPassFinalRemoverTest, ClearsFieldFinalTwoSided)
 {
-    FixtureBuilder builder("T");
-    builder.addField({"fin", "I", 0x0019});   // public static final
-    builder.addField({"plain", "I", 0x0009});
-    builder.addMethod({"m", "()V", bareReturn()});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(0x0021, 0, {},
+                                   {
+                                       {"fin", "I", 0x0019, {}},    // public static final
+                                       {"plain", "I", 0x0009, {}},
+                                   },
+                                   {
+                                       {"m", "()V", kReturn, 0x0009, {}, {}},
+                                   });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena          arena;
     mjbase::spi::ClassAnalysisManager cam(arena);
@@ -539,13 +814,18 @@ TEST(MjPassFinalRemoverTest, ClearsFieldFinalTwoSided)
 
 TEST(MjPassSyntheticBridgeRemoverTest, ClearsSyntheticAndBridgeBits)
 {
-    FixtureBuilder builder("T");
-    builder.setClassAccess(0x1021);   // public super synthetic
-    builder.addMethod({"br", "()V", bareReturn(), 0x1041});   // public bridge synthetic
-    builder.addMethod({"plain", "()V", bareReturn(), 0x0009});
-    builder.addField({"syn", "I", 0x1019});   // public static final synthetic
-    builder.addField({"plain", "I", 0x0009});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x1021, 0, {},   // public super synthetic
+        {
+            {"syn", "I", 0x1019, {}},   // public static final synthetic
+            {"plain", "I", 0x0009, {}},
+        },
+        {
+            {"br", "()V", kReturn, 0x1041, {}, {}},   // public bridge synthetic
+            {"plain", "()V", kReturn, 0x0009, {}, {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena          arena;
     mjbase::spi::ClassAnalysisManager cam(arena);
@@ -570,24 +850,32 @@ TEST(MjPassSyntheticBridgeRemoverTest, ClearsSyntheticAndBridgeBits)
 
 TEST(MjPassKotlinMetadataRemoverTest, ClassVisibleOnlyAndJetbrainsAtMembers)
 {
-    FixtureBuilder builder("T");
-    builder.addClassAttr(
-        {"RuntimeVisibleAnnotations",
-         annoTable(builder, {"Lkotlin/Metadata;", "Lcom/app/Keep;"})});
-    builder.addClassAttr(
-        {"RuntimeInvisibleAnnotations", annoTable(builder, {"Lkotlin/Metadata;"})});
-    builder.addMethod({"m1", "()V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"RuntimeVisibleAnnotations",
-                         annoTable(builder, {"Lorg/jetbrains/annotations/NotNull;"})}}});
-    builder.addMethod({"m2", "()V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"RuntimeInvisibleAnnotations",
-                         annoTable(builder, {"Lorg/jetbrains/annotations/Nullable;"})}}});
-    builder.addMethod({"m3", "()V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"RuntimeVisibleAnnotations", annoTable(builder, {"Lkotlin/Metadata;"})}}});
-    builder.addField({"f", "I", 0x0009,
-                      {{"RuntimeVisibleAnnotations",
-                        annoTable(builder, {"Lorg/jetbrains/annotations/JvmName;"})}}});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x0021, 0,
+        {
+            annoAttr("RuntimeVisibleAnnotations", {"Lkotlin/Metadata;", "Lcom/app/Keep;"}),
+            annoAttr("RuntimeInvisibleAnnotations", {"Lkotlin/Metadata;"}),
+        },
+        {
+            {"f", "I", 0x0009,
+             {annoAttr("RuntimeVisibleAnnotations",
+                       {"Lorg/jetbrains/annotations/JvmName;"})}},
+        },
+        {
+            {"m1", "()V", kReturn, 0x0009,
+             {annoAttr("RuntimeVisibleAnnotations",
+                       {"Lorg/jetbrains/annotations/NotNull;"})},
+             {}},
+            {"m2", "()V", kReturn, 0x0009,
+             {annoAttr("RuntimeInvisibleAnnotations",
+                       {"Lorg/jetbrains/annotations/Nullable;"})},
+             {}},
+            {"m3", "()V", kReturn, 0x0009,
+             {annoAttr("RuntimeVisibleAnnotations", {"Lkotlin/Metadata;"})},
+             {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena          arena;
     mjbase::spi::ClassAnalysisManager cam(arena);
@@ -628,13 +916,20 @@ TEST(MjPassKotlinMetadataRemoverTest, ClassVisibleOnlyAndJetbrainsAtMembers)
 
 TEST(MjPassSignatureRemoverTest, StripsAllThreeLevels)
 {
-    FixtureBuilder builder("T");
-    builder.addClassAttr({"Signature", signaturePayload(builder, "Ljava/lang/List<Ljava/lang/String;>;")});
-    builder.addClassAttr({"SourceFile", sourceFilePayload(builder, "T.java")});
-    builder.addField({"f", "I", 0x0009, {{"Signature", signaturePayload(builder, "I")}}});
-    builder.addMethod({"m", "(I)V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"Signature", signaturePayload(builder, "(I)V")}}});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x0021, 0,
+        {
+            signatureAttr("Ljava/lang/List<Ljava/lang/String;>;"),
+            sourceFileAttr("T.java"),
+        },
+        {
+            {"f", "I", 0x0009, {signatureAttr("I")}},
+        },
+        {
+            {"m", "(I)V", kReturn, 0x0009, {signatureAttr("(I)V)")}, {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena          arena;
     mjbase::spi::ClassAnalysisManager cam(arena);
@@ -649,11 +944,17 @@ TEST(MjPassSignatureRemoverTest, StripsAllThreeLevels)
 
 TEST(MjPassSourceInfoRemoverTest, StripsAndConditionalPa)
 {
-    FixtureBuilder builder("T");
-    builder.addClassAttr({"SourceFile", sourceFilePayload(builder, "T.java")});
-    builder.addClassAttr({"SourceDebugExtension", Bytes{'s', 'm', 'a', 'p'}});
-    builder.addMethod({"m", "()V", bareReturn()});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(0x0021, 0,
+                                   {
+                                       sourceFileAttr("T.java"),
+                                       rawAttr("SourceDebugExtension", Bytes{'s', 'm', 'a', 'p'}),
+                                   },
+                                   {},
+                                   {
+                                       {"m", "()V", kReturn, 0x0009, {}, {}},
+                                   });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena          arena;
     mjbase::spi::ClassAnalysisManager cam(arena);
@@ -662,9 +963,10 @@ TEST(MjPassSourceInfoRemoverTest, StripsAndConditionalPa)
     EXPECT_TRUE(attrNames(session->backing(), session->backing().attrs).empty());
 
     // 干净类：零改动 → all()。
-    FixtureBuilder clean("C");
-    clean.addMethod({"m", "()V", bareReturn()});
-    auto cleanSession = makeSession(clean);
+    const Bytes cleanIn =
+        familyFixture(0x0021, 0, {}, {}, {{"m", "()V", kReturn, 0x0009, {}, {}}});
+    auto cleanSession = makeSession(cleanIn);
+    ASSERT_NE(cleanSession, nullptr);
     EXPECT_TRUE(pass.run(*cleanSession, cam).areAllPreserved());
 }
 
@@ -672,17 +974,24 @@ TEST(MjPassSourceInfoRemoverTest, StripsAndConditionalPa)
 
 TEST(MjPassIllegalAnnotationRemoverTest, FiltersMalformedEntriesKeepsValid)
 {
-    FixtureBuilder builder("T");
-    // 混槽：合法幸存、非法（码点 ≤ 3）删除。
-    builder.addClassAttr({"RuntimeVisibleAnnotations",
-                          annoTable(builder, {"Lgood/Anno;", "-"})});
-    // 纯非法槽：整槽消失（不以 L 开头）。
-    builder.addField({"f", "I", 0x0009,
-                      {{"RuntimeVisibleAnnotations", annoTable(builder, {"Xbad/Anno;"})}}});
-    // 方法 invisible 槽同面（不以 ; 结尾）。
-    builder.addMethod({"m", "()V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"RuntimeInvisibleAnnotations", annoTable(builder, {"Lbad/Anno"})}}});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x0021, 0,
+        {
+            // 混槽：合法幸存、非法（码点 ≤ 3）删除。
+            annoAttr("RuntimeVisibleAnnotations", {"Lgood/Anno;", "-"}),
+        },
+        {
+            // 纯非法槽：整槽消失（不以 L 开头）。
+            {"f", "I", 0x0009, {annoAttr("RuntimeVisibleAnnotations", {"Xbad/Anno;"})}},
+        },
+        {
+            // 方法 invisible 槽同面（不以 ; 结尾）。
+            {"m", "()V", kReturn, 0x0009,
+             {annoAttr("RuntimeInvisibleAnnotations", {"Lbad/Anno"})},
+             {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena             arena;
     mjbase::spi::ClassAnalysisManager    cam(arena);
@@ -706,18 +1015,22 @@ TEST(MjPassIllegalAnnotationRemoverTest, FiltersMalformedEntriesKeepsValid)
 
 TEST(MjPassIllegalSignatureRemoverTest, RemovesParserRejectedKeepsValid)
 {
-    FixtureBuilder builder("T");
-    builder.addClassAttr({"Signature",
-                          signaturePayload(builder, "<T:Ljava/lang/Object;>Ljava/lang/Object;")});
-    builder.addField({"bad", "I", 0x0009, {{"Signature", signaturePayload(builder, "-")}}});
-    builder.addField({"good", "Ljava/util/List;", 0x0009,
-                      {{"Signature",
-                        signaturePayload(builder, "Ljava/util/List<Ljava/lang/String;>;")}}});
-    builder.addMethod({"bad", "(I)V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"Signature", signaturePayload(builder, "-")}}});
-    builder.addMethod({"good", "()V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"Signature", signaturePayload(builder, "()V")}}});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x0021, 0,
+        {
+            signatureAttr("<T:Ljava/lang/Object;>Ljava/lang/Object;"),
+        },
+        {
+            {"bad", "I", 0x0009, {signatureAttr("-")}},
+            {"good", "Ljava/util/List;", 0x0009,
+             {signatureAttr("Ljava/util/List<Ljava/lang/String;>;")}},
+        },
+        {
+            {"bad", "(I)V", kReturn, 0x0009, {signatureAttr("-")}, {}},
+            {"good", "()V", kReturn, 0x0009, {signatureAttr("()V")}, {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena             arena;
     mjbase::spi::ClassAnalysisManager    cam(arena);
@@ -745,14 +1058,19 @@ TEST(MjPassIllegalSignatureRemoverTest, RemovesParserRejectedKeepsValid)
 
 TEST(MjPassIllegalTypeAnnotationRemoverTest, CoversMemberAndCodeNestedSlots)
 {
-    FixtureBuilder builder("T");
-    // 混槽：合法幸存、非法（描述符 "-"）删除；target 0x13 = 字段类型。
-    builder.addClassAttr(
-        {"RuntimeVisibleTypeAnnotations", typeAnnoTable(builder, 0x13, {"Lgood/Anno;", "-"})});
-    builder.addMethod({"m", "()V", nopReturn(), 0x0009, {}, 1, 1, {},
-                       {{"RuntimeVisibleTypeAnnotations",
-                         typeAnnoTable(builder, 0x13, {"-"})}}});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x0021, 0,
+        {
+            // 混槽：合法幸存、非法（描述符 "-"）删除；target 0x13 = 字段类型。
+            typeAnnoAttr("RuntimeVisibleTypeAnnotations", 0x13, {"Lgood/Anno;", "-"}),
+        },
+        {},
+        {
+            {"m", "()V", kNopReturn, 0x0009, {},
+             {typeAnnoAttr("RuntimeVisibleTypeAnnotations", 0x13, {"-"})}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena                  arena;
     mjbase::spi::ClassAnalysisManager         cam(arena);
@@ -773,7 +1091,7 @@ TEST(MjPassIllegalTypeAnnotationRemoverTest, CoversMemberAndCodeNestedSlots)
 
     MemberInfo* m = findMember(cf, cf.methods, "m");
     ASSERT_NE(m, nullptr);
-    CodeAttr* code = decodeCodeAttr(cf, const_cast<MemberInfo&>(*m));
+    CodeAttr* code = decodeCodeAttr(cf, *m);
     ASSERT_NE(code, nullptr);
     bool nestedTaSurvived = false;
     for (AttrSlot& slot : code->attrs) {
@@ -786,11 +1104,18 @@ TEST(MjPassIllegalTypeAnnotationRemoverTest, CoversMemberAndCodeNestedSlots)
 
 TEST(MjPassIllegalSourceInfoRemoverTest, LegalKeptIllegalStripped)
 {
-    FixtureBuilder builder("T");
-    builder.addClassAttr({"SourceFile", sourceFilePayload(builder, "1-evil.txt")});
-    builder.addClassAttr({"SourceDebugExtension", Bytes{'G', 'o', 'o', 'd', '.', 'j', 'a', 'v', 'a'}});
-    builder.addMethod({"m", "()V", bareReturn()});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(0x0021, 0,
+                                   {
+                                       sourceFileAttr("1-evil.txt"),
+                                       rawAttr("SourceDebugExtension",
+                                               Bytes{'G', 'o', 'o', 'd', '.', 'j', 'a', 'v', 'a'}),
+                                   },
+                                   {},
+                                   {
+                                       {"m", "()V", kReturn, 0x0009, {}, {}},
+                                   });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena               arena;
     mjbase::spi::ClassAnalysisManager      cam(arena);
@@ -802,10 +1127,16 @@ TEST(MjPassIllegalSourceInfoRemoverTest, LegalKeptIllegalStripped)
         << "合法 SourceDebug 保留，非法 SourceFile 摘除";
 
     // 双合法：零改动 → all()。
-    FixtureBuilder legal("L");
-    legal.addClassAttr({"SourceFile", sourceFilePayload(legal, "Legal1.java")});
-    legal.addMethod({"m", "()V", bareReturn()});
-    auto legalSession = makeSession(legal);
+    const Bytes legalIn = familyFixture(0x0021, 0,
+                                        {
+                                            sourceFileAttr("Legal1.java"),
+                                        },
+                                        {},
+                                        {
+                                            {"m", "()V", kReturn, 0x0009, {}, {}},
+                                        });
+    auto legalSession = makeSession(legalIn);
+    ASSERT_NE(legalSession, nullptr);
     EXPECT_TRUE(pass.run(*legalSession, cam).areAllPreserved());
 }
 
@@ -813,20 +1144,22 @@ TEST(MjPassIllegalSourceInfoRemoverTest, LegalKeptIllegalStripped)
 
 TEST(MjPassUnknownAttributeCleanerTest, RemovesUnknownKeepsStandardAndCode)
 {
-    FixtureBuilder builder("T");
-    builder.addClassAttr({"SourceFile", sourceFilePayload(builder, "T.java")});
-    builder.addClassAttr({"ObfMark", Bytes{0xAA, 0xBB}});
-    builder.addField({"cv", "I", 0x0009,
-                      {{"ConstantValue", [&builder] {
-                           Bytes p;
-                           putU16(p, builder.intConst(5));
-                           return p;
-                       }()},
-                       {"ObfMark", Bytes{0x01}}}});
-    builder.addMethod({"m", "()V", nopReturn(), 0x0009, {}, 1, 1,
-                       {{"ObfMark", Bytes{0x02}}},
-                       {{"UnknownNested", Bytes{0x03}}}});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x0021, 0,
+        {
+            sourceFileAttr("T.java"),
+            rawAttr("ObfMark", Bytes{0xAA, 0xBB}),
+        },
+        {
+            {"cv", "I", 0x0009, {constValueAttr(5), rawAttr("ObfMark", Bytes{0x01})}},
+        },
+        {
+            {"m", "()V", kNopReturn, 0x0009,
+             {rawAttr("ObfMark", Bytes{0x02})},
+             {rawAttr("UnknownNested", Bytes{0x03})}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena            arena;
     mjbase::spi::ClassAnalysisManager   cam(arena);
@@ -849,19 +1182,24 @@ TEST(MjPassUnknownAttributeCleanerTest, RemovesUnknownKeepsStandardAndCode)
 
 TEST(MjPassIllegalAccessRemoverTest, MasksPerKindTwoSidedAndParamPayload)
 {
-    FixtureBuilder builder("T");
-    builder.setClassAccess(0x0069);   // public super static volatile
-    builder.addMethod({"mi", "()V", bareReturn(), 0x0201});   // public interface
-    builder.addMethod({"ms", "()V", bareReturn(), 0x0021});   // public synchronized(合法别名)
-    builder.addMethod(
-        {"mp", "()V", bareReturn(), 0x0009, {}, 1, 1,
-         {{"MethodParameters",
-           methodParameters(builder,
-                            {{"p0", 0x0010}, {"p1", 0x0001}, {"p2", 0x8000}})}}});
-    builder.addField({"fe", "I", 0x4002});    // private enum（类非 enum → 清）
-    builder.addField({"fn", "I", 0x0108});    // static native → 清 native
-    builder.addField({"ft", "I", 0x0088});    // static transient（合法，保留）
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x0029, 0x0040,   // public static super + 杂位 0x40（词表无修饰词，附着面 OR）
+        {},
+        {
+            {"fe", "I", 0x4002, {}},    // private enum（类非 enum → 清）
+            {"fn", "I", 0x0108, {}},    // static native → 清 native
+            {"ft", "I", 0x0088, {}},    // static transient（合法，保留）
+        },
+        {
+            {"mi", "()V", kReturn, 0x0201, {}, {}},   // public interface
+            {"ms", "()V", kReturn, 0x0021, {}, {}},   // public synchronized(合法别名)
+            {"mp", "()V", kReturn, 0x0009,
+             {methodParametersAttr(
+                 {{"p0", 0x0010}, {"p1", 0x0001}, {"p2", 0x8000}})},
+             {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena          arena;
     mjbase::spi::ClassAnalysisManager cam(arena);
@@ -914,14 +1252,18 @@ TEST(MjPassIllegalAccessRemoverTest, MasksPerKindTwoSidedAndParamPayload)
 
 TEST(MjPassIllegalAccessRemoverTest, LegacyU1CountParameterLayoutMasked)
 {
-    FixtureBuilder builder("T");
     // 旧栈 writer 字节形（u1 count + {u2 name, u2 acc}*，与 JVMS 4.7.24 同
-    // 形；名字 CP 指针 0x0021 为不透明字面值）：0.4.18 typed 面解码命中，
-    // 行模型清位后重编码须逐字节恒同。
-    builder.addMethod({"mp", "()V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"MethodParameters", Bytes{0x01, 0x00, 0x21, 0x80, 0x11}}}});
-    builder.addMethod({"m", "()V", bareReturn()});
-    auto session = makeSession(builder);
+    // 形；名字 CP 指针以池内真实 Utf8 承载，不透明字面语义不变）：0.4.18
+    // typed 面解码命中，行模型清位后重编码须逐字节恒同。
+    const Bytes in = familyFixture(
+        0x0021, 0, {},
+        {},
+        {
+            {"mp", "()V", kReturn, 0x0009, {legacyParamLayoutAttr()}, {}},
+            {"m", "()V", kReturn, 0x0009, {}, {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena          arena;
     mjbase::spi::ClassAnalysisManager cam(arena);
@@ -947,11 +1289,16 @@ TEST(MjPassIllegalAccessRemoverTest, LegacyU1CountParameterLayoutMasked)
 
 TEST(MjPassIllegalAccessRemoverTest, EnumClassKeepsFieldEnumBits)
 {
-    FixtureBuilder builder("T");
-    builder.setClassAccess(0x4031);   // public final super enum
-    builder.addField({"E1", "Lfoo/Color;", 0x4019});   // public static final enum
-    builder.addMethod({"m", "()V", bareReturn()});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x4031, 0, {},   // public final super enum（词表全覆盖）
+        {
+            {"E1", "Lfoo/Color;", 0x4019, {}},   // public static final enum
+        },
+        {
+            {"m", "()V", kReturn, 0x0009, {}, {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena          arena;
     mjbase::spi::ClassAnalysisManager cam(arena);
@@ -966,16 +1313,25 @@ TEST(MjPassIllegalAccessRemoverTest, EnumClassKeepsFieldEnumBits)
 
 TEST(MjPassSpecificAnnotationRemoverTest, BlacklistAndMalformedFiltered)
 {
-    FixtureBuilder builder("T");
-    builder.addClassAttr({"RuntimeVisibleAnnotations",
-                          annoTable(builder, {"Ltech/origincloud/Mapping;", "Lcom/app/Keep;"})});
-    builder.addMethod({"m", "()V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"RuntimeInvisibleAnnotations",
-                         annoTable(builder, {"Lorg/jetbrains/annotations/Nullable;", "-"})}}});
-    builder.addField({"f", "I", 0x0009,
-                      {{"RuntimeInvisibleAnnotations",
-                        annoTable(builder, {"Ljvavx/annotation/NotNull;"})}}});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x0021, 0,
+        {
+            annoAttr("RuntimeVisibleAnnotations",
+                     {"Ltech/origincloud/Mapping;", "Lcom/app/Keep;"}),
+        },
+        {
+            {"f", "I", 0x0009,
+             {annoAttr("RuntimeInvisibleAnnotations",
+                       {"Ljvavx/annotation/NotNull;"})}},
+        },
+        {
+            {"m", "()V", kReturn, 0x0009,
+             {annoAttr("RuntimeInvisibleAnnotations",
+                       {"Lorg/jetbrains/annotations/Nullable;", "-"})},
+             {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena                arena;
     mjbase::spi::ClassAnalysisManager       cam(arena);
@@ -999,13 +1355,17 @@ TEST(MjPassSpecificAnnotationRemoverTest, BlacklistAndMalformedFiltered)
 
 TEST(MjPassSpecificAnnotationRemoverTest, ParameterAnnotationEntriesFilteredSlotKept)
 {
-    FixtureBuilder builder("T");
-    builder.addMethod({"m", "(I)V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"RuntimeVisibleParameterAnnotations",
-                         paramAnnoRows(builder,
-                                       {{"Ltech/origincloud/Mapping;", "Lcom/app/Keep;"},
-                                        {"Lcom/app/Keep;"}})}}});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x0021, 0, {}, {},
+        {
+            {"m", "(I)V", kReturn, 0x0009,
+             {paramAnnoFlatRowsAttr("RuntimeVisibleParameterAnnotations",
+                                    {{"Ltech/origincloud/Mapping;", "Lcom/app/Keep;"},
+                                     {"Lcom/app/Keep;"}})},
+             {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena                arena;
     mjbase::spi::ClassAnalysisManager       cam(arena);
@@ -1018,7 +1378,7 @@ TEST(MjPassSpecificAnnotationRemoverTest, ParameterAnnotationEntriesFilteredSlot
         cf, cf.methods[0].attrs, "RuntimeVisibleParameterAnnotations");
     ASSERT_TRUE(raw.has_value());
     // 重建载荷逐字节断言：u1 参数数=2；行 0 摘黑名单留幸存；行 1 原样。
-    const ca::u16 keep = builder.utf8("Lcom/app/Keep;");
+    const ca::u16 keep = utf8IndexOf(cf, "Lcom/app/Keep;");
     const Bytes   expected = {
         0x02,
         0x00, 0x01,
@@ -1031,17 +1391,19 @@ TEST(MjPassSpecificAnnotationRemoverTest, ParameterAnnotationEntriesFilteredSlot
 
 TEST(MjPassSpecificAnnotationRemoverTest, ParameterAnnotationNestedEntryRemovedWhole)
 {
-    FixtureBuilder builder("T");
     // 黑名单条目带 '[' 数组 + '@ 嵌套注解载荷——条目随顶层描述符整体摘除，
     // 嵌套形状测量不误切字节。
-    Bytes entry0 = nestedAnnoEntry(builder, "Ltech/origincloud/Mapping;", "Lfoo/Nested;");
-    Bytes entry1;
-    putU16(entry1, builder.utf8("Lcom/app/Keep;"));
-    putU16(entry1, 0);
-    builder.addMethod({"m", "(I)V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"RuntimeInvisibleParameterAnnotations",
-                         paramAnnoRawRows({{std::move(entry0), std::move(entry1)}})}}});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x0021, 0, {}, {},
+        {
+            {"m", "(I)V", kReturn, 0x0009,
+             {paramAnnoRowsAttr("RuntimeInvisibleParameterAnnotations",
+                                {{nestedAnnoEntry("Ltech/origincloud/Mapping;", "Lfoo/Nested;"),
+                                  simpleAnnoEntry("Lcom/app/Keep;")}})},
+             {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena                arena;
     mjbase::spi::ClassAnalysisManager       cam(arena);
@@ -1052,7 +1414,7 @@ TEST(MjPassSpecificAnnotationRemoverTest, ParameterAnnotationNestedEntryRemovedW
     const std::optional<std::vector<ca::u8>> raw = slotPayloadBytes(
         cf, cf.methods[0].attrs, "RuntimeInvisibleParameterAnnotations");
     ASSERT_TRUE(raw.has_value());
-    const ca::u16 keep     = builder.utf8("Lcom/app/Keep;");
+    const ca::u16 keep     = utf8IndexOf(cf, "Lcom/app/Keep;");
     const Bytes   expected = {
         0x01, 0x00, 0x01,
         static_cast<ca::u8>(keep >> 8), static_cast<ca::u8>(keep), 0x00, 0x00,
@@ -1062,15 +1424,22 @@ TEST(MjPassSpecificAnnotationRemoverTest, ParameterAnnotationNestedEntryRemovedW
 
 TEST(MjPassSpecificAnnotationRemoverTest, ParameterAnnotationSlotDroppedWhenAllEmptied)
 {
-    FixtureBuilder builder("T");
-    // 全条目命中（黑名单 + 空行）→ 槽摘除；幸存槽照常保留。
-    builder.addMethod({"m", "(I)V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"RuntimeVisibleParameterAnnotations",
-                         paramAnnoRows(builder, {{"Ljvavx/annotation/NotNull;"}, {}})}}});
-    builder.addMethod({"keep", "(I)V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"RuntimeVisibleParameterAnnotations",
-                         paramAnnoRows(builder, {{"Lcom/app/Keep;"}})}}});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x0021, 0, {}, {},
+        {
+            // 全条目命中（黑名单 + 空行）→ 槽摘除。
+            {"m", "(I)V", kReturn, 0x0009,
+             {paramAnnoFlatRowsAttr("RuntimeVisibleParameterAnnotations",
+                                    {{"Ljvavx/annotation/NotNull;"}, {}})},
+             {}},
+            // 幸存槽照常保留。
+            {"keep", "(I)V", kReturn, 0x0009,
+             {paramAnnoFlatRowsAttr("RuntimeVisibleParameterAnnotations",
+                                    {{"Lcom/app/Keep;"}})},
+             {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
 
     ca::str::Utf8StringArena                arena;
     mjbase::spi::ClassAnalysisManager       cam(arena);
@@ -1090,16 +1459,23 @@ TEST(MjPassSpecificAnnotationRemoverTest, ParameterAnnotationSlotDroppedWhenAllE
 
 TEST(MjPassSpecificAnnotationRemoverTest, NonTargetAndMalformedParameterAnnotationsUntouched)
 {
-    FixtureBuilder builder("T");
-    // 非目标注解（谓词零命中）+ 畸形载荷（条目截尾：typeCp 后缺键值对表）
-    // → fail-closed，全类零改动字节恒等。
-    builder.addMethod({"m", "(I)V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"RuntimeVisibleParameterAnnotations",
-                         paramAnnoRows(builder, {{"Lcom/app/Keep;"}})}}});
-    builder.addMethod({"bad", "(I)V", bareReturn(), 0x0009, {}, 1, 1,
-                       {{"RuntimeInvisibleParameterAnnotations",
-                         Bytes{0x01, 0x00, 0x01, 0x12, 0x34}}}});
-    auto session = makeSession(builder);
+    const Bytes in = familyFixture(
+        0x0021, 0, {}, {},
+        {
+            // 非目标注解（谓词零命中）。
+            {"m", "(I)V", kReturn, 0x0009,
+             {paramAnnoFlatRowsAttr("RuntimeVisibleParameterAnnotations",
+                                    {{"Lcom/app/Keep;"}})},
+             {}},
+            // 畸形载荷（条目截尾：typeCp 后缺键值对表）→ fail-closed，
+            // 全类零改动字节恒等。
+            {"bad", "(I)V", kReturn, 0x0009,
+             {rawAttr("RuntimeInvisibleParameterAnnotations",
+                      Bytes{0x01, 0x00, 0x01, 0x12, 0x34})},
+             {}},
+        });
+    auto session = makeSession(in);
+    ASSERT_NE(session, nullptr);
     auto beforeResult = jbc::core::writeClass(session->backing());
     ASSERT_TRUE(beforeResult.is_ok());
     const Bytes before = std::move(beforeResult).unwrap();
