@@ -35,6 +35,25 @@ enum class ValidationMode : ca::u8
     Off,
 };
 
+/// @brief StackMapTable 处置档（issue #190）。
+///
+/// - Regenerate（默认）：汇编时数据流重算帧并生成 StackMapTable（现状语义）。
+///   帧重算撞上坏帧面（混淆产物 Bottom 槽等）时汇编如实失败。
+/// - PreserveOriginal：保留原 class 的 StackMapTable 字节，汇编面跳过帧生成，
+///   事务替换前逐方法校验 pc 对齐后原样挂回。仅 ResourceJasmService::assemble
+///   消费本档——JvmJasmService 纯文本汇编无原帧可保留（调用面收不到原字节），
+///   传本档等同 Regenerate，不做静默承诺。
+///
+/// 边界申报：本档豁免的是帧序列化，不是数据流分析。帧重算失败但字节码
+/// 分析干净的类（jsr/ret 子程序槽持 ReturnAddress 等）是本档的目标面；
+/// 字节码本身数据流不干净的类（类型冲突、栈深不符——jhasm Strict 拒绝
+/// 一律硬失败，与目标版本和本档无关）两档同败。
+enum class FrameMode : ca::u8
+{
+    Regenerate,
+    PreserveOriginal,
+};
+
 /// @brief 产生诊断的稳定服务阶段。
 ///
 /// 编辑门与重建管线的区分供上层归因：同一份候选字节可能被两道门各自

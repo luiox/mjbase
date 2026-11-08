@@ -1,14 +1,19 @@
 #include "resource_jasm_service.hpp"
 
 #include "classfile_utf8.hpp"
+#include "jbc/core/attribute.hpp"
 #include "jbc/core/reader.hpp"
+#include "jbc/core/writer.hpp"
 #include "libca/core/tag_cast.hpp"
 #include "mjbase/hierarchy/class_hierarchy.hpp"
 #include "mjbase/keys.hpp"
 
 #include <exception>
 #include <iterator>
+#include <map>
 #include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -66,6 +71,161 @@ void appendDiagnostics(std::vector<Diagnostic>& target, std::vector<Diagnostic> 
     target.insert(target.end(),
                   std::make_move_iterator(source.begin()),
                   std::make_move_iterator(source.end()));
+}
+
+// ── 保留原帧档（issue #190）──────────────────────────────────────────────
+
+/// @brief 原 class 单方法的帧保留素材。
+struct PreservedMethodFrames final
+{
+    /// @brief 原 code[] 字节——候选 pc 对齐的判等依据（唯一比较面）。
+    ///
+    /// 刻意只比 code[]：异常表/max_stack/max_locals/嵌套 LNT 的改动不移动
+    /// 指令 pc，原帧对指令流的描述仍然成立。
+    std::vector<ca::u8> code;
+    /// @brief 原 StackMapTable 内容字节（span 原样副本，不解码不规范化——
+    /// 结构化解码对坏帧类可能丢失 unnamed slot 等形态）。
+    std::vector<ca::u8> stackMapTable;
+    bool hasStackMapTable = false;
+    /// @brief 原 Code 属性可解码（false 时无法做 pc 对齐判等，fail-closed）。
+    bool codeReadable = false;
+};
+
+/// @brief 原 class 的逐方法帧素材与版本（回填用）。
+struct PreservedClassFrames final
+{
+    std::map<std::string, PreservedMethodFrames> methods;   ///< 键 "name:desc"。
+    ca::u16 classMajor = 0;
+    ca::u16 classMinor = 0;
+};
+
+/// @brief 从原 class 字节提取逐方法帧素材。
+///
+/// readClass 默认保留源字节副本：StackMapTable 槽的 span 指向模型内部字节，
+/// 立即复制后与原 buffer 生命周期解耦。抽象/native 方法（无 Code）不参与。
+ca::core::Result<PreservedClassFrames, std::string>
+extractPreservedFrames(const std::vector<ca::u8>& bytes)
+{
+    auto read = jbc::core::readClass(jbc::core::ByteView(bytes));
+    if (read.is_err())
+        return Err(std::string("invalid class bytes: ") + jbc::core::to_string(read.unwrap_err()));
+    auto                      parsed = std::move(read).unwrap();
+    jbc::core::ClassFile&     file   = *parsed.file;
+    PreservedClassFrames      out;
+    out.classMajor = file.major;
+    out.classMinor = file.minor;
+    for (auto& method : file.methods) {
+        const std::string key = std::string(file.nameOf(method)) + ':' +
+                                std::string(file.descOf(method));
+        jbc::core::AttrSlot* codeSlot = nullptr;
+        for (auto& slot : method.attrs) {
+            if (file.utf8(slot.nameCp) == "Code") {
+                codeSlot = &slot;
+                break;
+            }
+        }
+        if (codeSlot == nullptr) continue;   // 抽象/native：无帧参与
+        PreservedMethodFrames entry;
+        auto decoded = file.decodeAttr(*codeSlot);
+        if (decoded.is_err()) {
+            out.methods.emplace(std::move(key), std::move(entry));   // codeReadable=false
+            continue;
+        }
+        auto* code  = static_cast<jbc::core::CodeAttr*>(decoded.unwrap());
+        entry.codeReadable = true;
+        entry.code         = code->code;
+        for (const auto& nested : code->attrs) {
+            if (file.utf8(nested.nameCp) != "StackMapTable") continue;
+            const auto raw = file.source().spanOrEmpty(nested.data);
+            entry.stackMapTable.assign(raw.data(), raw.data() + raw.size());
+            entry.hasStackMapTable = true;
+            break;
+        }
+        out.methods.emplace(std::move(key), std::move(entry));
+    }
+    return Ok(std::move(out));
+}
+
+/// @brief 候选字节回填原类版本并逐方法挂回原 StackMapTable。
+///
+/// 成功返回落盘字节；Err 携带逐条边界申报（每方法一条，点名方法）。
+/// 挂回面：新 AttrSlot（RawAttr 原样副本，State::New）入 Code 嵌套属性表，
+/// 槽置 Modified 触发重编码——Decoded 态写回走源 span copy，改动会静默丢失。
+ca::core::Result<std::vector<ca::u8>, std::vector<std::string>>
+applyPreservedFrames(const std::vector<ca::u8>& candidate, const PreservedClassFrames& original)
+{
+    auto read = jbc::core::readClass(jbc::core::ByteView(candidate));
+    if (read.is_err()) {
+        return Err(std::vector<std::string>{
+            std::string("assembled candidate bytes unreadable: ") +
+            jbc::core::to_string(read.unwrap_err())});
+    }
+    auto                  parsed = std::move(read).unwrap();
+    jbc::core::ClassFile& file   = *parsed.file;
+
+    // 汇编面为跳过帧生成以 v49 装配（见 assemble 内注释），此处回填原类版本。
+    file.major = original.classMajor;
+    file.minor = original.classMinor;
+
+    std::vector<std::string> errors;
+    for (auto& method : file.methods) {
+        const std::string key = std::string(file.nameOf(method)) + ':' +
+                                std::string(file.descOf(method));
+        jbc::core::AttrSlot* codeSlot = nullptr;
+        for (auto& slot : method.attrs) {
+            if (file.utf8(slot.nameCp) == "Code") {
+                codeSlot = &slot;
+                break;
+            }
+        }
+        if (codeSlot == nullptr) continue;
+        auto decoded = file.decodeAttr(*codeSlot);
+        if (decoded.is_err()) {
+            errors.push_back("method " + key + ": assembled code attribute unreadable");
+            continue;
+        }
+        auto* code    = static_cast<jbc::core::CodeAttr*>(decoded.unwrap());
+        const auto it = original.methods.find(key);
+        if (it == original.methods.end()) {
+            // 候选新方法体：无原帧可保留；v50+ 缺帧对分支方法是不可加载产物，
+            // fail-closed 拒绝（线性方法同理拒收——不做逐方法分支分析，保守申报）。
+            if (original.classMajor >= 50)
+                errors.push_back("method " + key +
+                                 ": new method body has no original StackMapTable to preserve"
+                                 " (use FrameMode::Regenerate)");
+            continue;
+        }
+        const PreservedMethodFrames& src = it->second;
+        if (!src.codeReadable) {
+            errors.push_back("method " + key +
+                             ": original code attribute unreadable, cannot verify pc alignment");
+            continue;
+        }
+        if (code->code != src.code) {
+            // 指令面改动：原帧的 pc 描述失效，保留即产坏类——如实申报边界。
+            if (src.hasStackMapTable)
+                errors.push_back("method " + key +
+                                 ": instructions changed, the original StackMapTable no longer"
+                                 " applies (use FrameMode::Regenerate)");
+            continue;   // 原本无帧：无可失效面，放行
+        }
+        if (!src.hasStackMapTable) continue;
+        auto nameCp = file.cp.findUtf8("StackMapTable");
+        if (nameCp == 0) nameCp = file.cp.addUtf8("StackMapTable");
+        // 槽推进 Modified：嵌入原帧后重编码是唯一出路（Decoded 态写回走源
+        // span copy，嵌入会静默丢失）。
+        static_cast<void>(codeSlot->mutate());
+        code->attrs.push_back(jbc::core::AttrSlot::makeNew(
+            nameCp, std::make_unique<jbc::core::RawAttr>(src.stackMapTable)));
+    }
+    if (!errors.empty()) return Err(std::move(errors));
+
+    auto written = jbc::core::writeClass(file);
+    if (written.is_err())
+        return Err(std::vector<std::string>{
+            std::string("preserved-frames write-back failed: ") +
+            jbc::core::to_string(written.unwrap_err())});
+    return Ok(std::move(written).unwrap());
 }
 
 // 复制容器中全部 Class 资源，目标 URI 的字节换成候选字节——事务预览的工作区。
@@ -133,7 +293,8 @@ Result<JvmJasmDisassembly> ResourceJasmService::disassemble(const std::string& u
 Result<JvmJasmClass> ResourceJasmService::assemble(const std::string&      uri,
                                                    ca::str::Utf16StringRef sourceName,
                                                    ca::str::Utf16StringRef source,
-                                                   JvmJasmContext          context)
+                                                   JvmJasmContext          context,
+                                                   FrameMode               frameMode)
 {
     model::IResource* rawResource = container_->getResource(uri);
     if (!ca::core::tag_cast::isa<model::ClassResource>(rawResource))
@@ -148,11 +309,29 @@ Result<JvmJasmClass> ResourceJasmService::assemble(const std::string&      uri,
         // 重写保持原类版本：Jasm 文本无版本指令，context 是唯一版本通道，
         // 缺省 61 会把旧版本类静默抬高、改变产物最低 JVM 要求。原字节不可
         // 解析时保留缺省——jasm 是坏类修复通道，不因读不出版本而拒绝。
-        auto original = jbc::core::readClass(jbc::core::ByteView(resource->get()));
-        if (original.is_ok()) {
+        auto original          = jbc::core::readClass(jbc::core::ByteView(resource->get()));
+        const bool originalReadable = original.is_ok();
+
+        if (originalReadable) {
             auto originalClass        = std::move(original).unwrap();
             context.classMajorVersion = static_cast<ca::i32>(originalClass.file->major);
             context.classMinorVersion = static_cast<ca::i32>(originalClass.file->minor);
+        }
+
+        // 保留原帧档素材提取。原字节不可解析时走不到这里——readInternalName
+        // 用同一 readClass 已先行拒绝；此处 re-read 只为素材提取自足（原字节
+        // 副本随版本通道的 ReadResult 消亡）。
+        std::optional<PreservedClassFrames> preserved;
+        if (frameMode == FrameMode::PreserveOriginal) {
+            auto extracted = extractPreservedFrames(resource->get());
+            if (extracted.is_err()) return resourceError<JvmJasmClass>(extracted.unwrap_err());
+            preserved = std::move(extracted).unwrap();
+            // jhasm 0.3.3 汇编面唯一版本杠杆：cf.major >= 50 是 StackMapTable
+            // 生成的唯一闸（engine.compute 数据流不读版本、仍运行——数据流本身
+            // 失败的类两档同败，属申报边界）。以 v49 装配跳过帧生成，产物版本
+            // 在 applyPreservedFrames 回填原类版本。文本汇编面（JvmJasmService）
+            // 不消费 FrameMode：本 lever 只在持有原字节的本服务落地。
+            context.classMajorVersion = 49;
         }
 
         // 当前容器的层次图（每次调用即时重建，无跨调用缓存）。
@@ -180,6 +359,23 @@ Result<JvmJasmClass> ResourceJasmService::assemble(const std::string&      uri,
         if (!compiled.isOk()) return compiled;
         if (compiled.value->internalName != expectedName)
             return resourceError<JvmJasmClass>("Class name changed between compilation passes");
+
+        // 保留原帧档：候选字节回填原类版本 + 逐方法挂回原 StackMapTable。
+        // 边界申报（指令面改动/新方法体）逐条落 Error 诊断，事务不落改动。
+        if (preserved) {
+            auto grafted = applyPreservedFrames(compiled.value->bytes, *preserved);
+            if (grafted.is_err()) {
+                Result<JvmJasmClass> result;
+                for (const auto& error : grafted.unwrap_err()) {
+                    result.diagnostics.push_back(
+                        {DiagnosticSeverity::Error, DiagnosticStage::Assemble, utf16(error),
+                         std::nullopt});
+                }
+                appendDiagnostics(result.diagnostics, std::move(compiled.diagnostics));
+                return result;
+            }
+            compiled.value->bytes = std::move(grafted).unwrap();
+        }
 
         auto validated = jasm_.validate(compiled.value->bytes, context);
         if (!validated.isOk()) {
