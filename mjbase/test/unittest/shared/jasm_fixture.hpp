@@ -20,8 +20,13 @@
 #include <string>
 #include <string_view>
 
+#include "libca/core/tag_cast.hpp"
 #include "libca/str/utf16_string.hpp"
 #include "libca/str/utf8_string.hpp"
+
+#include "jbc/core/class_file.hpp"
+#include "jbc/core/reader.hpp"
+#include "jbc/core/writer.hpp"
 
 #include "mjbase/jasm/jvm_jasm_service.hpp"
 
@@ -116,6 +121,50 @@ inline void expectValidateFail(const Bytes& bytes)
     mjbase::jasm::JvmJasmService service;
     const auto validated = service.validate(bytes);
     EXPECT_FALSE(validated.isOk());
+}
+
+/// @brief 例外①载面（GOTO 重锚）：把首个 Code 属性里第一条 GOTO（0xa7）
+/// 的转移目标单点改指 targetPc（code 内 pc），返回改写后的类字节。
+///
+/// 用于装配器栈分析拒收的「分支落点欠栈」锚定形态：先装配合法基座（死段
+/// 自环 goto，死段不受栈分析约束），再经本面把目标改指欠栈指令。调用方按
+/// 纪律做改写前 expectValidateOk 自检、申报注记，并以 pass 实跑为最终证明。
+inline Bytes retargetFirstGoto(const Bytes& clsBytes, ca::u16 targetPc)
+{
+    auto read = jbc::core::readClass(jbc::core::ByteView(clsBytes));
+    EXPECT_TRUE(read.is_ok());
+    if (read.is_err()) return {};
+    jbc::core::ReadResult rr = std::move(read).unwrap();
+    jbc::core::ClassFile& cf = *rr.file;
+    for (jbc::core::MemberInfo& m : cf.methods) {
+        for (jbc::core::AttrSlot& slot : m.attrs) {
+            if (!cf.cp.utf8Equals(slot.nameCp, "Code")) continue;
+            if (!slot.decoded() && cf.decodeAttr(slot).is_err()) {
+                ADD_FAILURE() << "retargetFirstGoto: Code 解码失败";
+                return {};
+            }
+            auto* code = ca::core::tag_cast::cast<jbc::core::CodeAttr>(slot.mutate());
+            if (code == nullptr) {
+                ADD_FAILURE() << "retargetFirstGoto: Code 槽类型不符";
+                return {};
+            }
+            for (ca::u32 pc = 0; pc + 2 < code->code.size(); ++pc) {
+                if (code->code[pc] != 0xa7) continue;   // GOTO
+                const ca::i32 off =
+                    static_cast<ca::i32>(targetPc) - static_cast<ca::i32>(pc);
+                code->code[pc + 1] = static_cast<ca::u8>(static_cast<ca::u16>(off) >> 8);
+                code->code[pc + 2] = static_cast<ca::u8>(off);
+                auto written = jbc::core::writeClass(cf);
+                EXPECT_TRUE(written.is_ok());
+                if (written.is_err()) return {};
+                return std::move(written).unwrap();
+            }
+            ADD_FAILURE() << "retargetFirstGoto: 未找到 GOTO";
+            return {};
+        }
+    }
+    ADD_FAILURE() << "retargetFirstGoto: 无 Code 属性";
+    return {};
 }
 
 }   // namespace mjbase::test

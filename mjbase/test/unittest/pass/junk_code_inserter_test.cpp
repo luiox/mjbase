@@ -131,7 +131,7 @@ TEST(JunkCodeInserterTest, resolverWiredPipelineRegeneratesSmt)
     mjbase::spi::PassPipelineOptions options;
     options.typeResolver = &typeResolver;
 
-    // A1 验收走 52 帧面（原 FixtureBuilder 为 V1_8 无 SMT；jasm ≥50 档自带
+    // A1 验收走 52 帧面（字节级夹具时代为 V1_8 无 SMT；jasm ≥50 档自带
     // SMT，resolver 注入后的再生面同向覆盖）。
     const MethodPassRun r =
         runMethodPassOpts(paddedMethod(52), options, mjbase::pass::JunkCodeInserter{});

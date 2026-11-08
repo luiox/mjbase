@@ -13,52 +13,45 @@
 #include "mjbase/spi/pass_name_registry.hpp"
 
 #include "method_pass_test_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::test;
 using jbc::core::Op;
 
 namespace {
 
-/// DUP; ICONST_j; BIPUSH c; CASTORE（一个 store 拍）。
-Bytes storeByte(ca::u8 idx, ca::u8 value)
+/// DUP; ICONST_j; <element 拍>; CASTORE（一个 store 拍；element 拍为指令
+/// 文本，装配器按自身口径落地窄常量形态）。
+std::string storeByte(ca::u8 idx, std::string_view elementInsn)
 {
-    return {0x59, static_cast<ca::u8>(0x03 + idx), 0x10, value, 0x55};
+    static constexpr const char* kIconst[4] = {"iconst_0", "iconst_1", "iconst_2",
+                                               "iconst_3"};
+    return std::string("dup\n") + kIconst[idx] + "\n" + std::string(elementInsn)
+           + "\ncastore\n";
 }
 
-/// DUP; ICONST_j; SIPUSH c; CASTORE（SIPUSH 版 store 拍）。
-Bytes storeSipush(ca::u8 idx, ca::u16 value)
+/// count 拍 + NEWARRAY T_CHAR + stores...; ARETURN 的 m()[C 方法容器
+///（jasm 文本装配）。
+Bytes arrMethod(std::string_view countInsn, std::vector<std::string> stores)
 {
-    return {0x59,
-            static_cast<ca::u8>(0x03 + idx),
-            0x11,
-            static_cast<ca::u8>(value >> 8),
-            static_cast<ca::u8>(value),
-            0x55};
-}
-
-/// count 指令字节; NEWARRAY T_CHAR; stores...; ARETURN 的方法容器。
-Bytes arrMethod(Bytes count, std::vector<Bytes> stores)
-{
-    FixtureBuilder b("t/C");
-    Bytes          code = std::move(count);
-    appendBytes(code, {0xbc, 0x05});   // NEWARRAY T_CHAR
-    for (Bytes& s : stores) appendBytes(code, std::move(s));
-    code.push_back(0xb0);   // ARETURN
-    b.addMethod({"m", "()[C", std::move(code), 0x0009, {}, 2, 1});
-    return b.assemble();
+    std::string body(countInsn);
+    body += "\nnewarray char\n";
+    for (const std::string& s : stores) body += s;
+    body += "areturn\n";
+    return assembleMethodClass("m", "()[C", std::move(body));
 }
 
 }   // namespace
 
-// ── 全 BIPUSH 的 ASCII 内容：3 拍改写为 LDC + toCharArray ──
+// ── 常量元素的 ASCII 内容：3 拍改写为 LDC + toCharArray ──
 TEST(CharArrToStrSimplifierTest, asciiContentRewritten)
 {
-    std::vector<Bytes> stores;
-    stores.push_back(storeByte(0, 'a'));
-    stores.push_back(storeByte(1, 'b'));
-    stores.push_back(storeByte(2, 'c'));
-    const MethodPassRun r = runMethodPass(
-        arrMethod({0x06}, std::move(stores)), mjbase::pass::CharArrToStrSimplifier{});
+    std::vector<std::string> stores;
+    stores.push_back(storeByte(0, "bipush 97"));   // 'a'（窄常量装配按规范化落地）
+    stores.push_back(storeByte(1, "bipush 98"));   // 'b'
+    stores.push_back(storeByte(2, "bipush 99"));   // 'c'
+    const Bytes in = arrMethod("iconst_3", std::move(stores));
+    const MethodPassRun r = runMethodPass(in, mjbase::pass::CharArrToStrSimplifier{});
 
     EXPECT_TRUE(r.pa.changed());
     const Inspection      ins = inspect(r.out);
@@ -71,19 +64,15 @@ TEST(CharArrToStrSimplifierTest, asciiContentRewritten)
     EXPECT_EQ(ldcStringOf(ins, ldc), "abc");
 }
 
-// ── LDC(Int) 计数臂 + UTF-16 内容（SIPUSH U+4E2D）跨 MUTF-8 编码 ──
+// ── LDC(Int) 计数臂 + UTF-16 内容（U+4E2D）跨 MUTF-8 编码 ──
 TEST(CharArrToStrSimplifierTest, utf16ContentEncodesToMutf8)
 {
-    FixtureBuilder b("t/C");
-    const ca::u16  three = b.intConst(3);
-    Bytes          code  = {0x13, static_cast<ca::u8>(three >> 8), static_cast<ca::u8>(three)};
-    appendBytes(code, {0xbc, 0x05});   // NEWARRAY T_CHAR
-    appendBytes(code, storeByte(0, 'A'));
-    appendBytes(code, storeSipush(1, 0x4E2D));   // '中'
-    appendBytes(code, storeByte(2, 'B'));
-    code.push_back(0xb0);
-    b.addMethod({"m", "()[C", std::move(code), 0x0009, {}, 2});
-    const MethodPassRun r = runMethodPass(b.assemble(), mjbase::pass::CharArrToStrSimplifier{});
+    std::vector<std::string> stores;
+    stores.push_back(storeByte(0, "bipush 65"));       // 'A'
+    stores.push_back(storeByte(1, "sipush 20013"));    // '中'
+    stores.push_back(storeByte(2, "bipush 66"));       // 'B'
+    const Bytes in = arrMethod("ldc 3", std::move(stores));
+    const MethodPassRun r = runMethodPass(in, mjbase::pass::CharArrToStrSimplifier{});
 
     EXPECT_TRUE(r.pa.changed());
     const Inspection ins = inspect(r.out);
@@ -99,22 +88,22 @@ TEST(CharArrToStrSimplifierTest, countMismatchStaysUntouched)
 {
     // 计数 5，只有 2 拍（不足的组失配；其余起点也构不成合法组——任何
     // ICONST_0 的下一个指令都不是 NEWARRAY）。
-    std::vector<Bytes> stores;
-    stores.push_back(storeByte(0, 'a'));
-    stores.push_back(storeByte(1, 'b'));
-    const Bytes         in = arrMethod({0x08}, std::move(stores));
+    std::vector<std::string> stores;
+    stores.push_back(storeByte(0, "bipush 97"));
+    stores.push_back(storeByte(1, "bipush 98"));
+    const Bytes         in = arrMethod("iconst_5", std::move(stores));
     const MethodPassRun r  = runMethodPass(in, mjbase::pass::CharArrToStrSimplifier{});
 
     EXPECT_TRUE(r.pa.areAllPreserved());
     EXPECT_EQ(r.out, in);
 }
 
-// ── 元素常量非字符写法（POP 折叠面之外）: ALOAD 进 store 拍 → 不改写 ──
+// ── 元素非字符常量写法（POP 折叠面之外）: GETSTATIC 进 store 拍 → 不改写 ──
 TEST(CharArrToStrSimplifierTest, nonConstantElementBlocksRewrite)
 {
-    std::vector<Bytes> stores;
-    stores.push_back({0x59, 0x03, 0x2a, 0x55});   // DUP; ICONST_0; ALOAD_0; CASTORE
-    const Bytes         in = arrMethod({0x04}, std::move(stores));
+    std::vector<std::string> stores;
+    stores.push_back(storeByte(0, "getstatic t/X.f I"));   // 非常量 int 拍
+    const Bytes         in = arrMethod("iconst_1", std::move(stores));
     const MethodPassRun r  = runMethodPass(in, mjbase::pass::CharArrToStrSimplifier{});
 
     EXPECT_TRUE(r.pa.areAllPreserved());

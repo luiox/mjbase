@@ -126,7 +126,8 @@ Bytes withConstantValueInt42(const Bytes& assembled, const std::string& fieldNam
     const ca::u32 nameCp = cf.cp.addUtf8("ConstantValue");
     const ca::u32 valCp  = cf.cp.addInteger(42);
     Bytes         payload;
-    putU16(payload, static_cast<ca::u16>(valCp));
+    payload.push_back(static_cast<ca::u8>(valCp >> 8));   // u2 CP 索引载荷
+    payload.push_back(static_cast<ca::u8>(valCp));
     bool hit = false;
     for (jbc::core::MemberInfo& f : cf.fields) {
         if (cf.nameOf(f) != fieldName) continue;

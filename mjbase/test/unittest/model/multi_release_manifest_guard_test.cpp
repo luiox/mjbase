@@ -17,7 +17,7 @@
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_helper.hpp"
 #include "mjbase/model/resource_model.hpp"
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using namespace mjbase::model;
 using namespace mjbase::test;
@@ -26,15 +26,16 @@ namespace {
 
 Bytes minimalClass(const std::string& internalName)
 {
-    FixtureBuilder builder(internalName);
-    FixtureMethod  t;
-    t.name       = "t";
-    t.desc       = "()V";
-    t.maxLocals  = 0;
-    t.maxStack   = 0;
-    t.code       = bareReturn();
-    builder.addMethod(t);
-    return builder.assemble();
+    return assembleJasm(R"JASM(
+.super java/lang/Object
+.class public super )JASM" + internalName + R"JASM( {
+  .method public static t ()V {
+    code: {
+      return
+    }
+  }
+}
+)JASM");
 }
 
 void addVersionedClass(ResourceContainer& container, const char* uri, const char* internalName)
