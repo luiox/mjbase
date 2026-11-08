@@ -2,8 +2,10 @@
 /// @brief       恒等包装不动点内联：容器级多类用例（链压缩 / 装拆箱 / 虚与
 ///              接口转发 / 环与形态门 / 访问门 / 幂等）。
 ///
-/// 载体是 ResourceContainer + 手工字节夹具（FixtureBuilder）；语义断言走
-/// 「改写 → writeClass → 重读会话 → 指令序列事实」roundtrip 口径。
+/// 夹具纪律：类骨架与方法体一律 jasm 文本装配（JvmJasmService）；语义断言
+/// 走「改写 → writeClass → 重读会话 → 指令序列事实」roundtrip 口径。
+/// 装配器申报面：Caller.m()V 壳读未播种槽 0（原字节夹具同形）为装配器
+/// 放行面（与 static_field_default_inliner 批内申报同源）。
 
 #include <gtest/gtest.h>
 
@@ -25,7 +27,7 @@
 #include "mjbase/pass/identity_wrapper_inliner.hpp"
 #include "mjbase/spi/analysis_manager.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
-#include "shared/structural_pass_util.hpp"
+#include "shared/jasm_fixture.hpp"
 
 namespace {
 
@@ -33,9 +35,6 @@ using jbc::core::Op;
 using mjbase::model::ClassResource;
 using mjbase::model::ResourceContainer;
 using mjbase::test::Bytes;
-using mjbase::test::FixtureBuilder;
-using mjbase::test::putU16;
-using mjbase::test::putU8;
 
 void addClassResource(ResourceContainer& container, const std::string& uri, const Bytes& bytes)
 {
@@ -101,20 +100,29 @@ std::vector<InsnFact> methodFacts(const Bytes& bytes, std::string_view name,
     return facts;
 }
 
-/// 壳类工厂：static 壳 w/w(JI) 等，体内按描述符装载后转发到 target。
+/// 单方法类装配便捷形（public super 骨架，超 java/lang/Object）。
+Bytes asmOne(const std::string& cls, std::string_view mods, std::string_view name,
+             std::string_view desc, std::string_view body)
+{
+    const std::string src = R"JASM(.super java/lang/Object
+.class public super )JASM" + cls + R"JASM( {
+  .method )JASM" + std::string(mods) + " " + std::string(name) + " " + std::string(desc)
+        + R"JASM( {
+    code: {
+)JASM" + std::string(body) + R"JASM(    }
+  }
+}
+)JASM";
+    return mjbase::test::assembleJasm(src);
+}
+
+/// 壳类工厂：static 壳 w(I)I，体内 iload_0 后转发到 target。
 Bytes buildForwarder(const char* self, const char* name, const char* desc,
                      const char* targetOwner, const char* targetName, const char* targetDesc)
 {
-    FixtureBuilder b(self);
-    const ca::u16 ref = b.methodRef(targetOwner, targetName, targetDesc);
-    Bytes code;
-    // 装载序按 (JI)J 以外的常见形态由调用方保证；本工厂只服务单 int/单引用参。
-    (void)desc;
-    putU8(code, 0x1A);   // iload_0
-    putU8(code, 0xB8); putU16(code, ref);
-    putU8(code, 0xAC);   // ireturn
-    b.addMethod({name, desc, std::move(code), 0x0009, {}, 1, 1});
-    return b.assemble();
+    const std::string invoke = std::string("      invokestatic ") + targetOwner + "."
+                               + targetName + " " + targetDesc + "\n      ireturn\n";
+    return asmOne(self, "public static", name, desc, "      iload 0\n" + invoke);
 }
 
 }   // namespace
@@ -124,32 +132,17 @@ Bytes buildForwarder(const char* self, const char* name, const char* desc,
 TEST(MjPassIdentityWrapperInlinerTest, CompressesStaticForwardChain)
 {
     ResourceContainer container;
-    // T.real(I)I
-    {
-        FixtureBuilder b("T");
-        const ca::u16 ref = b.methodRef("T", "real", "(I)I");
-        Bytes code;
-        putU8(code, 0x1A); putU8(code, 0x04); putU8(code, 0x60); putU8(code, 0xAC);
-        b.addMethod({"real", "(I)I", std::move(code), 0x0009, {}, 2, 1});
-        addClassResource(container, "T.class", b.assemble());
-    }
-    // W2.w → T.real
+    // T.real(I)I：iload_0; iconst_1; iadd; ireturn
+    addClassResource(container, "T.class",
+                     asmOne("T", "public static", "real", "(I)I",
+                            "      iload 0\n      iconst_1\n      iadd\n      ireturn\n"));
+    // W2.w → T.real；W1.w → W2.w；Caller.m → W1.w
     addClassResource(container, "W2.class",
                      buildForwarder("W2", "w", "(I)I", "T", "real", "(I)I"));
-    // W1.w → W2.w
     addClassResource(container, "W1.class",
                      buildForwarder("W1", "w", "(I)I", "W2", "w", "(I)I"));
-    // Caller.m → W1.w
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 ref = b.methodRef("W1", "w", "(I)I");
-        Bytes code;
-        putU8(code, 0x1A);
-        putU8(code, 0xB8); putU16(code, ref);
-        putU8(code, 0xAC);
-        b.addMethod({"m", "(I)I", std::move(code), 0x0009, {}, 1, 1});
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    addClassResource(container, "Caller.class",
+                     buildForwarder("Caller", "m", "(I)I", "W1", "w", "(I)I"));
     const Bytes w2Before = resourceBytes(container, "W2.class");
 
     EXPECT_TRUE(runInliner(container).changed());
@@ -173,26 +166,14 @@ TEST(MjPassIdentityWrapperInlinerTest, CompressesStaticForwardChain)
 TEST(MjPassIdentityWrapperInlinerTest, UnwrapsBoxedIntWrapperToVirtual)
 {
     ResourceContainer container;
-    {
-        FixtureBuilder b("W");
-        const ca::u16 intValue = b.methodRef("java/lang/Integer", "intValue", "()I");
-        Bytes code;
-        putU8(code, 0x2A);                                   // aload_0
-        putU8(code, 0xB6); putU16(code, intValue);           // invokevirtual intValue
-        putU8(code, 0xAC);
-        b.addMethod({"u", "(Ljava/lang/Integer;)I", std::move(code), 0x0009, {}, 1, 1});
-        addClassResource(container, "W.class", b.assemble());
-    }
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 ref = b.methodRef("W", "u", "(Ljava/lang/Integer;)I");
-        Bytes code;
-        putU8(code, 0x2A);
-        putU8(code, 0xB8); putU16(code, ref);
-        putU8(code, 0xAC);
-        b.addMethod({"m", "(Ljava/lang/Integer;)I", std::move(code), 0x0009, {}, 1, 1});
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    // W.u(Ljava/lang/Integer;)I：aload_0; invokevirtual intValue; ireturn
+    addClassResource(container, "W.class",
+                     asmOne("W", "public static", "u", "(Ljava/lang/Integer;)I",
+                            "      aload 0\n      invokevirtual java/lang/Integer.intValue "
+                            "()I\n      ireturn\n"));
+    addClassResource(container, "Caller.class",
+                     buildForwarder("Caller", "m", "(Ljava/lang/Integer;)I", "W", "u",
+                                    "(Ljava/lang/Integer;)I"));
 
     EXPECT_TRUE(runInliner(container).changed());
 
@@ -210,26 +191,14 @@ TEST(MjPassIdentityWrapperInlinerTest, UnwrapsBoxedIntWrapperToVirtual)
 TEST(MjPassIdentityWrapperInlinerTest, RewritesBoxWrapperToValueOf)
 {
     ResourceContainer container;
-    {
-        FixtureBuilder b("W");
-        const ca::u16 valueOf = b.methodRef("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;");
-        Bytes code;
-        putU8(code, 0x1A);
-        putU8(code, 0xB8); putU16(code, valueOf);
-        putU8(code, 0xB0);   // areturn
-        b.addMethod({"b", "(I)Ljava/lang/Integer;", std::move(code), 0x0009, {}, 1, 1});
-        addClassResource(container, "W.class", b.assemble());
-    }
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 ref = b.methodRef("W", "b", "(I)Ljava/lang/Integer;");
-        Bytes code;
-        putU8(code, 0x1A);
-        putU8(code, 0xB8); putU16(code, ref);
-        putU8(code, 0xB0);
-        b.addMethod({"m", "(I)Ljava/lang/Integer;", std::move(code), 0x0009, {}, 1, 1});
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    // W.b(I)Ljava/lang/Integer;：iload_0; invokestatic valueOf; areturn
+    addClassResource(container, "W.class",
+                     asmOne("W", "public static", "b", "(I)Ljava/lang/Integer;",
+                            "      iload 0\n      invokestatic java/lang/Integer.valueOf "
+                            "(I)Ljava/lang/Integer;\n      areturn\n"));
+    addClassResource(container, "Caller.class",
+                     buildForwarder("Caller", "m", "(I)Ljava/lang/Integer;", "W", "b",
+                                    "(I)Ljava/lang/Integer;"));
 
     EXPECT_TRUE(runInliner(container).changed());
 
@@ -246,40 +215,36 @@ TEST(MjPassIdentityWrapperInlinerTest, RewritesBoxWrapperToValueOf)
 TEST(MjPassIdentityWrapperInlinerTest, RewritesVirtualForwardToContainerTarget)
 {
     ResourceContainer container;
+    // T：<init>（super 构造）+ twice(I)I（iload_1 ×2 + iadd）
     {
-        FixtureBuilder b("T");
-        const ca::u16 init = b.methodRef("java/lang/Object", "<init>", "()V");
-        Bytes ctor;
-        putU8(ctor, 0x2A);
-        putU8(ctor, 0xB7); putU16(ctor, init);   // invokespecial
-        putU8(ctor, 0xB1);
-        b.addMethod({"<init>", "()V", std::move(ctor), 0x0001, {}, 1, 1});
-        Bytes twice;
-        putU8(twice, 0x1B); putU8(twice, 0x1B);   // iload_1; iload_1
-        putU8(twice, 0x60); putU8(twice, 0xAC);
-        b.addMethod({"twice", "(I)I", std::move(twice), 0x0001, {}, 2, 2});
-        addClassResource(container, "T.class", b.assemble());
+        const std::string src = R"JASM(.super java/lang/Object
+.class public super T {
+  .method public <init> ()V {
+    code: {
+      aload 0
+      invokespecial java/lang/Object.<init> ()V
+      return
     }
-    {
-        FixtureBuilder b("W");
-        const ca::u16 ref = b.methodRef("T", "twice", "(I)I");
-        Bytes code;
-        putU8(code, 0x2A); putU8(code, 0x1B);
-        putU8(code, 0xB6); putU16(code, ref);
-        putU8(code, 0xAC);
-        b.addMethod({"v", "(LT;I)I", std::move(code), 0x0009, {}, 2, 2});
-        addClassResource(container, "W.class", b.assemble());
+  }
+  .method public twice (I)I {
+    code: {
+      iload 1
+      iload 1
+      iadd
+      ireturn
     }
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 ref = b.methodRef("W", "v", "(LT;I)I");
-        Bytes code;
-        putU8(code, 0x2A); putU8(code, 0x1B);
-        putU8(code, 0xB8); putU16(code, ref);
-        putU8(code, 0xAC);
-        b.addMethod({"m", "(LT;I)I", std::move(code), 0x0009, {}, 2, 2});
-        addClassResource(container, "Caller.class", b.assemble());
+  }
+}
+)JASM";
+        addClassResource(container, "T.class", mjbase::test::assembleJasm(src));
     }
+    // W.v(LT;I)I：aload_0; iload_1; invokevirtual T.twice; ireturn
+    addClassResource(container, "W.class",
+                     asmOne("W", "public static", "v", "(LT;I)I",
+                            "      aload 0\n      iload 1\n      invokevirtual T.twice "
+                            "(I)I\n      ireturn\n"));
+    addClassResource(container, "Caller.class",
+                     buildForwarder("Caller", "m", "(LT;I)I", "W", "v", "(LT;I)I"));
 
     EXPECT_TRUE(runInliner(container).changed());
 
@@ -297,34 +262,19 @@ TEST(MjPassIdentityWrapperInlinerTest, RewritesVirtualForwardToContainerTarget)
 TEST(MjPassIdentityWrapperInlinerTest, RewritesInterfaceForwardWithCountByte)
 {
     ResourceContainer container;
-    {
-        FixtureBuilder b("Iface");
-        b.setClassAccess(0x0601);   // public | interface | abstract
-        Bytes twice;
-        putU8(twice, 0x03); putU8(twice, 0xAC);   // 具体占位体（声明面用）
-        b.addMethod({"twice", "(I)I", std::move(twice), 0x0001, {}, 1, 1});
-        addClassResource(container, "Iface.class", b.assemble());
-    }
-    {
-        FixtureBuilder b("W");
-        const ca::u16 ref = b.interfaceMethodRef("Iface", "twice", "(I)I");
-        Bytes code;
-        putU8(code, 0x2A); putU8(code, 0x1B);
-        putU8(code, 0xB9); putU16(code, ref); putU8(code, 0x02); putU8(code, 0x00);
-        putU8(code, 0xAC);
-        b.addMethod({"ifv", "(LIface;I)I", std::move(code), 0x0009, {}, 2, 2});
-        addClassResource(container, "W.class", b.assemble());
-    }
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 ref = b.methodRef("W", "ifv", "(LIface;I)I");
-        Bytes code;
-        putU8(code, 0x2A); putU8(code, 0x1B);
-        putU8(code, 0xB8); putU16(code, ref);
-        putU8(code, 0xAC);
-        b.addMethod({"m", "(LIface;I)I", std::move(code), 0x0009, {}, 2, 2});
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    // Iface 接口：twice(I)I public 具体占位体（声明面用）
+    addClassResource(container, "Iface.class",
+                     asmOne("Iface", "public", "twice", "(I)I",
+                            "      iconst_0\n      ireturn\n"));
+    // W.ifv(LIface;I)I：aload_0; iload_1; invokeinterface Iface.twice; ireturn
+    //（count 由装配器按 desc 自动发：接收者(1) + int 实参(1) = 2。）
+    addClassResource(container, "W.class",
+                     asmOne("W", "public static", "ifv", "(LIface;I)I",
+                            "      aload 0\n      iload 1\n      invokeinterface Iface.twice "
+                            "(I)I\n      ireturn\n"));
+    addClassResource(container, "Caller.class",
+                     buildForwarder("Caller", "m", "(LIface;I)I", "W", "ifv",
+                                    "(LIface;I)I"));
 
     EXPECT_TRUE(runInliner(container).changed());
 
@@ -366,16 +316,8 @@ TEST(MjPassIdentityWrapperInlinerTest, SkipsMutualRecursionCycle)
                      buildForwarder("CA", "a", "(I)I", "CB", "b", "(I)I"));
     addClassResource(container, "CB.class",
                      buildForwarder("CB", "b", "(I)I", "CA", "a", "(I)I"));
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 ref = b.methodRef("CA", "a", "(I)I");
-        Bytes code;
-        putU8(code, 0x1A);
-        putU8(code, 0xB8); putU16(code, ref);
-        putU8(code, 0xAC);
-        b.addMethod({"m", "(I)I", std::move(code), 0x0009, {}, 1, 1});
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    addClassResource(container, "Caller.class",
+                     buildForwarder("Caller", "m", "(I)I", "CA", "a", "(I)I"));
     const Bytes callerBefore = resourceBytes(container, "Caller.class");
 
     EXPECT_FALSE(runInliner(container).changed());
@@ -386,53 +328,85 @@ TEST(MjPassIdentityWrapperInlinerTest, SkipsNonWrapperShapes)
 {
     ResourceContainer container;
     {
-        FixtureBuilder b("T");
-        Bytes real;
-        putU8(real, 0x1A); putU8(real, 0x04); putU8(real, 0x60); putU8(real, 0xAC);
-        b.addMethod({"real", "(I)I", std::move(real), 0x0009, {}, 2, 1});
-        Bytes addM;
-        putU8(addM, 0x1A); putU8(addM, 0x1B); putU8(addM, 0x60); putU8(addM, 0xAC);
-        b.addMethod({"add", "(II)I", std::move(addM), 0x0009, {}, 2, 2});
-        addClassResource(container, "T.class", b.assemble());
-
-        FixtureBuilder ws("WS");
-        const ca::u16 fReal = ws.methodRef("T", "real", "(I)I");
-        const ca::u16 fAdd  = ws.methodRef("T", "add", "(II)I");
-        Bytes extra;   // 多一条算术：非恒等壳
-        putU8(extra, 0x1A); putU8(extra, 0x04); putU8(extra, 0x60);
-        putU8(extra, 0xB8); putU16(extra, fReal);
-        putU8(extra, 0xAC);
-        ws.addMethod({"extra", "(I)I", std::move(extra), 0x0009, {}, 2, 1});
-        Bytes swapped;   // 装载乱序
-        putU8(swapped, 0x1B); putU8(swapped, 0x1A);
-        putU8(swapped, 0xB8); putU16(swapped, fAdd);
-        putU8(swapped, 0xAC);
-        ws.addMethod({"swapped", "(II)I", std::move(swapped), 0x0009, {}, 2, 2});
-        Bytes synced;   // synchronized：monitor 是可观测行为
-        putU8(synced, 0x1A);
-        putU8(synced, 0xB8); putU16(synced, fReal);
-        putU8(synced, 0xAC);
-        ws.addMethod({"synced", "(I)I", std::move(synced), 0x0029, {}, 1, 1});
-        addClassResource(container, "WS.class", ws.assemble());
+        // T.real：iload_0; iconst_1; iadd；T.add：iload_0; iload_1; iadd
+        const std::string src = R"JASM(.super java/lang/Object
+.class public super T {
+  .method public static real (I)I {
+    code: {
+      iload 0
+      iconst_1
+      iadd
+      ireturn
+    }
+  }
+  .method public static add (II)I {
+    code: {
+      iload 0
+      iload 1
+      iadd
+      ireturn
+    }
+  }
+}
+)JASM";
+        addClassResource(container, "T.class", mjbase::test::assembleJasm(src));
     }
     {
-        FixtureBuilder b("Caller");
-        const ca::u16 rExtra  = b.methodRef("WS", "extra", "(I)I");
-        const ca::u16 rSwap   = b.methodRef("WS", "swapped", "(II)I");
-        const ca::u16 rSynced = b.methodRef("WS", "synced", "(I)I");
-        Bytes code;
-        putU8(code, 0x1A);
-        putU8(code, 0xB8); putU16(code, rExtra);
-        putU8(code, 0x57);   // pop
-        putU8(code, 0x1A); putU8(code, 0x04);
-        putU8(code, 0xB8); putU16(code, rSwap);
-        putU8(code, 0x57);
-        putU8(code, 0x1A);
-        putU8(code, 0xB8); putU16(code, rSynced);
-        putU8(code, 0x57);
-        putU8(code, 0xB1);
-        b.addMethod({"m", "()V", std::move(code), 0x0009, {}, 2, 1});
-        addClassResource(container, "Caller.class", b.assemble());
+        // WS 三壳变体：多一条算术（非恒等壳）/装载乱序/synchronized（monitor
+        // 是可观测行为）
+        const std::string src = R"JASM(.super java/lang/Object
+.class public super WS {
+  .method public static extra (I)I {
+    code: {
+      iload 0
+      iconst_1
+      iadd
+      invokestatic T.real (I)I
+      ireturn
+    }
+  }
+  .method public static swapped (II)I {
+    code: {
+      iload 1
+      iload 0
+      invokestatic T.add (II)I
+      ireturn
+    }
+  }
+  .method public static synchronized synced (I)I {
+    code: {
+      iload 0
+      invokestatic T.real (I)I
+      ireturn
+    }
+  }
+}
+)JASM";
+        addClassResource(container, "WS.class", mjbase::test::assembleJasm(src));
+    }
+    {
+        // Caller.m()V：三站点各 invokestatic + pop 收口（壳读未播种槽 0，
+        // 装配器放行面）
+        const std::string src = R"JASM(.super java/lang/Object
+.class public super Caller {
+  .method public static m ()V {
+    code: {
+      iload 0
+      invokestatic WS.extra (I)I
+      pop
+      iload 0
+      iconst_1
+      invokestatic WS.swapped (II)I
+      pop
+      iload 0
+      invokestatic WS.synced (I)I
+      pop
+      return
+    }
+  }
+}
+)JASM";
+        addClassResource(container, "Caller.class", mjbase::test::assembleJasm(src));
     }
     const Bytes callerBefore = resourceBytes(container, "Caller.class");
 
@@ -445,38 +419,19 @@ TEST(MjPassIdentityWrapperInlinerTest, SkipsNonWrapperShapes)
 TEST(MjPassIdentityWrapperInlinerTest, AdvancesSlotsForCategory2Params)
 {
     ResourceContainer container;
-    {
-        FixtureBuilder b("T");
-        const ca::u16 ref = b.methodRef("T", "m", "(JI)J");
-        Bytes code;
-        putU8(code, 0x1E);   // lload_0
-        putU8(code, 0x1C);   // iload_2
-        putU8(code, 0xAD);   // lreturn
-        b.addMethod({"m", "(JI)J", std::move(code), 0x0009, {}, 2, 4});
-        addClassResource(container, "T.class", b.assemble());
-    }
-    {
-        FixtureBuilder b("W");
-        const ca::u16 ref = b.methodRef("T", "m", "(JI)J");
-        Bytes code;
-        putU8(code, 0x1E);
-        putU8(code, 0x1C);
-        putU8(code, 0xB8); putU16(code, ref);
-        putU8(code, 0xAD);
-        b.addMethod({"w", "(JI)J", std::move(code), 0x0009, {}, 2, 4});
-        addClassResource(container, "W.class", b.assemble());
-    }
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 ref = b.methodRef("W", "w", "(JI)J");
-        Bytes code;
-        putU8(code, 0x1E);
-        putU8(code, 0x1C);
-        putU8(code, 0xB8); putU16(code, ref);
-        putU8(code, 0xAD);
-        b.addMethod({"m", "(JI)J", std::move(code), 0x0009, {}, 2, 4});
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    // T.m(JI)J：lload_0; iload_2; lreturn
+    addClassResource(container, "T.class",
+                     asmOne("T", "public static", "m", "(JI)J",
+                            "      lload 0\n      iload 2\n      lreturn\n"));
+    // W.w(JI)J：同形转发
+    addClassResource(container, "W.class",
+                     asmOne("W", "public static", "w", "(JI)J",
+                            "      lload 0\n      iload 2\n      invokestatic T.m (JI)J\n"
+                            "      lreturn\n"));
+    addClassResource(container, "Caller.class",
+                     asmOne("Caller", "public static", "m", "(JI)J",
+                            "      lload 0\n      iload 2\n      invokestatic W.w (JI)J\n"
+                            "      lreturn\n"));
 
     EXPECT_TRUE(runInliner(container).changed());
 
@@ -494,25 +449,14 @@ TEST(MjPassIdentityWrapperInlinerTest, AdvancesSlotsForCategory2Params)
 TEST(MjPassIdentityWrapperInlinerTest, SkipsPrivateTargetInAnotherClass)
 {
     ResourceContainer container;
-    {
-        FixtureBuilder b("P");
-        Bytes code;
-        putU8(code, 0x1A); putU8(code, 0xAC);
-        b.addMethod({"secret", "(I)I", std::move(code), 0x000A, {}, 1, 1});
-        addClassResource(container, "P.class", b.assemble());
-    }
+    // P.secret(I)I private static：iload_0; ireturn
+    addClassResource(container, "P.class",
+                     asmOne("P", "private static", "secret", "(I)I",
+                            "      iload 0\n      ireturn\n"));
     addClassResource(container, "W.class",
                      buildForwarder("W", "w", "(I)I", "P", "secret", "(I)I"));
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 ref = b.methodRef("W", "w", "(I)I");
-        Bytes code;
-        putU8(code, 0x1A);
-        putU8(code, 0xB8); putU16(code, ref);
-        putU8(code, 0xAC);
-        b.addMethod({"m", "(I)I", std::move(code), 0x0009, {}, 1, 1});
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    addClassResource(container, "Caller.class",
+                     buildForwarder("Caller", "m", "(I)I", "W", "w", "(I)I"));
     const Bytes callerBefore = resourceBytes(container, "Caller.class");
 
     EXPECT_FALSE(runInliner(container).changed());
@@ -522,24 +466,32 @@ TEST(MjPassIdentityWrapperInlinerTest, SkipsPrivateTargetInAnotherClass)
 TEST(MjPassIdentityWrapperInlinerTest, AllowsPrivateTargetInsideCallerClass)
 {
     ResourceContainer container;
-    {
-        FixtureBuilder b("C");
-        const ca::u16 secretRef = b.methodRef("C", "secret", "(I)I");
-        Bytes secret;
-        putU8(secret, 0x1A); putU8(secret, 0xAC);
-        b.addMethod({"secret", "(I)I", std::move(secret), 0x000A, {}, 1, 1});
-        Bytes w;
-        putU8(w, 0x1A);
-        putU8(w, 0xB8); putU16(w, secretRef);
-        putU8(w, 0xAC);
-        b.addMethod({"w", "(I)I", std::move(w), 0x0009, {}, 1, 1});
-        Bytes m;
-        putU8(m, 0x1A);
-        putU8(m, 0xB8); putU16(m, b.methodRef("C", "w", "(I)I"));
-        putU8(m, 0xAC);
-        b.addMethod({"m", "(I)I", std::move(m), 0x0009, {}, 1, 1});
-        addClassResource(container, "C.class", b.assemble());
+    // C：secret private static + w public static（转发）+ m public static
+    const std::string src = R"JASM(.super java/lang/Object
+.class public super C {
+  .method private static secret (I)I {
+    code: {
+      iload 0
+      ireturn
     }
+  }
+  .method public static w (I)I {
+    code: {
+      iload 0
+      invokestatic C.secret (I)I
+      ireturn
+    }
+  }
+  .method public static m (I)I {
+    code: {
+      iload 0
+      invokestatic C.w (I)I
+      ireturn
+    }
+  }
+}
+)JASM";
+    addClassResource(container, "C.class", mjbase::test::assembleJasm(src));
 
     EXPECT_TRUE(runInliner(container).changed());
 
@@ -552,25 +504,14 @@ TEST(MjPassIdentityWrapperInlinerTest, AllowsPrivateTargetInsideCallerClass)
 TEST(MjPassIdentityWrapperInlinerTest, SkipsPackagePrivateTargetAcrossPackages)
 {
     ResourceContainer container;
-    {
-        FixtureBuilder b("a/P");
-        Bytes code;
-        putU8(code, 0x1A); putU8(code, 0xAC);
-        b.addMethod({"pkg", "(I)I", std::move(code), 0x0008, {}, 1, 1});
-        addClassResource(container, "a/P.class", b.assemble());
-    }
+    // a/P.pkg(I)I 包私有 static（跨包不可证）
+    addClassResource(container, "a/P.class",
+                     asmOne("a/P", "static", "pkg", "(I)I",
+                            "      iload 0\n      ireturn\n"));
     addClassResource(container, "W.class",
                      buildForwarder("W", "w", "(I)I", "a/P", "pkg", "(I)I"));
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 ref = b.methodRef("W", "w", "(I)I");
-        Bytes code;
-        putU8(code, 0x1A);
-        putU8(code, 0xB8); putU16(code, ref);
-        putU8(code, 0xAC);
-        b.addMethod({"m", "(I)I", std::move(code), 0x0009, {}, 1, 1});
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    addClassResource(container, "Caller.class",
+                     buildForwarder("Caller", "m", "(I)I", "W", "w", "(I)I"));
     const Bytes callerBefore = resourceBytes(container, "Caller.class");
 
     EXPECT_FALSE(runInliner(container).changed());
@@ -582,23 +523,11 @@ TEST(MjPassIdentityWrapperInlinerTest, AllowsPackagePrivateTargetInSamePackage)
     ResourceContainer container;
     addClassResource(container, "a/W.class",
                      buildForwarder("a/W", "w", "(I)I", "a/P", "pkg", "(I)I"));
-    {
-        FixtureBuilder b("a/P");
-        Bytes code;
-        putU8(code, 0x1A); putU8(code, 0xAC);
-        b.addMethod({"pkg", "(I)I", std::move(code), 0x0008, {}, 1, 1});
-        addClassResource(container, "a/P.class", b.assemble());
-    }
-    {
-        FixtureBuilder b("a/Caller");
-        const ca::u16 ref = b.methodRef("a/W", "w", "(I)I");
-        Bytes code;
-        putU8(code, 0x1A);
-        putU8(code, 0xB8); putU16(code, ref);
-        putU8(code, 0xAC);
-        b.addMethod({"m", "(I)I", std::move(code), 0x0009, {}, 1, 1});
-        addClassResource(container, "a/Caller.class", b.assemble());
-    }
+    addClassResource(container, "a/P.class",
+                     asmOne("a/P", "static", "pkg", "(I)I",
+                            "      iload 0\n      ireturn\n"));
+    addClassResource(container, "a/Caller.class",
+                     buildForwarder("a/Caller", "m", "(I)I", "a/W", "w", "(I)I"));
 
     EXPECT_TRUE(runInliner(container).changed());
 
@@ -612,25 +541,14 @@ TEST(MjPassIdentityWrapperInlinerTest, AllowsPackagePrivateTargetInSamePackage)
 TEST(MjPassIdentityWrapperInlinerTest, IdempotentOnSecondRun)
 {
     ResourceContainer container;
-    {
-        FixtureBuilder b("T");
-        Bytes code;
-        putU8(code, 0x1A); putU8(code, 0x04); putU8(code, 0x60); putU8(code, 0xAC);
-        b.addMethod({"real", "(I)I", std::move(code), 0x0009, {}, 2, 1});
-        addClassResource(container, "T.class", b.assemble());
-    }
+    // T.real(I)I：iload_0; iconst_1; iadd; ireturn
+    addClassResource(container, "T.class",
+                     asmOne("T", "public static", "real", "(I)I",
+                            "      iload 0\n      iconst_1\n      iadd\n      ireturn\n"));
     addClassResource(container, "W.class",
                      buildForwarder("W", "w", "(I)I", "T", "real", "(I)I"));
-    {
-        FixtureBuilder b("Caller");
-        const ca::u16 ref = b.methodRef("W", "w", "(I)I");
-        Bytes code;
-        putU8(code, 0x1A);
-        putU8(code, 0xB8); putU16(code, ref);
-        putU8(code, 0xAC);
-        b.addMethod({"m", "(I)I", std::move(code), 0x0009, {}, 1, 1});
-        addClassResource(container, "Caller.class", b.assemble());
-    }
+    addClassResource(container, "Caller.class",
+                     buildForwarder("Caller", "m", "(I)I", "W", "w", "(I)I"));
 
     EXPECT_TRUE(runInliner(container).changed());
     const Bytes caller1 = resourceBytes(container, "Caller.class");
@@ -644,13 +562,9 @@ TEST(MjPassIdentityWrapperInlinerTest, IdempotentOnSecondRun)
 TEST(MjPassIdentityWrapperInlinerTest, LeavesWrapperFreeContainerUntouched)
 {
     ResourceContainer container;
-    {
-        FixtureBuilder b("T");
-        Bytes code;
-        putU8(code, 0x1A); putU8(code, 0x04); putU8(code, 0x60); putU8(code, 0xAC);
-        b.addMethod({"real", "(I)I", std::move(code), 0x0009, {}, 2, 1});
-        addClassResource(container, "T.class", b.assemble());
-    }
+    addClassResource(container, "T.class",
+                     asmOne("T", "public static", "real", "(I)I",
+                            "      iload 0\n      iconst_1\n      iadd\n      ireturn\n"));
     const Bytes before = resourceBytes(container, "T.class");
 
     EXPECT_FALSE(runInliner(container).changed());
