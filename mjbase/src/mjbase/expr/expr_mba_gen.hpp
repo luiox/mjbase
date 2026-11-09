@@ -1,11 +1,12 @@
 #pragma once
 
 #include <functional>
-#include <string>
 #include <vector>
 
 #include "expr_node.hpp"
 #include "expr_match.hpp"
+
+#include "libca/str/utf8_string.hpp"
 
 namespace mjbase::expr {
 
@@ -46,7 +47,7 @@ struct MBAConfig
 
 struct MBAIdentity
 {
-    std::string                                      name;
+    ca::str::Utf8String                              name;
     IdentityGroup                                    group;
     std::function<ExprRef(ExprRef x, MBAState& rng)> transform;
 };

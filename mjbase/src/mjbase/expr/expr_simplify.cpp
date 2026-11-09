@@ -10,10 +10,18 @@ namespace mjbase::expr {
 
 namespace {
 
+/// 规则/捕获名视图 → 绑定表与规则表 key（Utf8String 无异构查找；
+/// 名字来源为内部字面量（ASCII 域），字节保真收进）。
+ca::str::Utf8String ruleName(std::string_view name)
+{
+    return ca::str::Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(name.data()), name.size());
+}
+
 class ConstantFoldPass : public SimplifyPass
 {
 public:
-    std::string name() const override { return "constant-fold"; }
+    ca::str::Utf8String name() const override { return ca::str::Utf8String::from_cstr("constant-fold"); }
 
     ExprRef apply(ExprRef expr) const override
     {
@@ -78,7 +86,7 @@ public:
         : rules_(std::move(rules))
     {}
 
-    std::string name() const override { return "identity-simplify"; }
+    ca::str::Utf8String name() const override { return ca::str::Utf8String::from_cstr("identity-simplify"); }
 
     ExprRef apply(ExprRef expr) const override { return rewrite(expr, rules_, 5, 128); }
 
@@ -94,12 +102,12 @@ static std::vector<PrioritizedRule> buildRulesForGroup(IdentityGroup target)
 {
     std::vector<PrioritizedRule> rules;
 
-    auto add = [&](RulePriority prio,
-                   std::string  name,
-                   Pattern      lhs,
+    auto add = [&](RulePriority    prio,
+                   std::string_view name,
+                   Pattern          lhs,
                    std::function<ExprRef(const MatchBindings&)>
                        rhs) {
-        rules.push_back({prio, {std::move(lhs), std::move(rhs), std::move(name)}});
+        rules.push_back({prio, {std::move(lhs), std::move(rhs), ruleName(name)}});
     };
 
     auto cap  = [](const char* n) { return Pattern::Capture(n); };
@@ -108,8 +116,8 @@ static std::vector<PrioritizedRule> buildRulesForGroup(IdentityGroup target)
     auto bop  = [](BinOpKind o, auto l, auto r) { return Pattern::BinOp(o, l, r); };
     auto uop  = [](UnaryOpKind o, auto c) { return Pattern::UnaryOp(o, c); };
 
-    auto get = [](const MatchBindings& b, const char* n) -> ExprRef {
-        auto it = b.find(n);
+    auto get = [](const MatchBindings& b, std::string_view n) -> ExprRef {
+        auto it = b.find(ruleName(n));
         return it != b.end() ? it->second : nullptr;
     };
 
@@ -225,7 +233,7 @@ static std::vector<PrioritizedRule> buildRulesForGroup(IdentityGroup target)
 
         // x + x → x * 2
         add(1, "x+x->x*2", bop(BinOpKind::Add, cap("x"), cap("x")), [](const MatchBindings& b) {
-            return exprMul(b.at("x"), exprConst(2));
+            return exprMul(b.at(ruleName("x")), exprConst(2));
         });
 
         // x ^ x → 0
@@ -245,11 +253,11 @@ static std::vector<PrioritizedRule> buildRulesForGroup(IdentityGroup target)
 
         // x * 2 → x << 1  (normalize for MBA reverse matching)
         add(1, "x*2->x<<1", bop(BinOpKind::Mul, cap("x"), cnst(2)), [](const MatchBindings& b) {
-            return exprShl(b.at("x"), exprConst(1));
+            return exprShl(b.at(ruleName("x")), exprConst(1));
         });
         // 2 * x → x << 1
         add(1, "2*x->x<<1", bop(BinOpKind::Mul, cnst(2), cap("x")), [](const MatchBindings& b) {
-            return exprShl(b.at("x"), exprConst(1));
+            return exprShl(b.at(ruleName("x")), exprConst(1));
         });
 
         // ── MBA reverse identities (priority 2) ──
@@ -260,14 +268,14 @@ static std::vector<PrioritizedRule> buildRulesForGroup(IdentityGroup target)
             bop(BinOpKind::Add,
                 bop(BinOpKind::Xor, cap("x"), cap("y")),
                 bop(BinOpKind::Mul, bop(BinOpKind::And, cap("x"), cap("y")), cnst(2))),
-            [](const MatchBindings& b) { return exprAdd(b.at("x"), b.at("y")); });
+            [](const MatchBindings& b) { return exprAdd(b.at(ruleName("x")), b.at(ruleName("y"))); });
         // 2 * (x & y) + (x ^ y) → x + y
         add(2,
             "2*(x&y)+(x^y)->x+y",
             bop(BinOpKind::Add,
                 bop(BinOpKind::Mul, cnst(2), bop(BinOpKind::And, cap("x"), cap("y"))),
                 bop(BinOpKind::Xor, cap("x"), cap("y"))),
-            [](const MatchBindings& b) { return exprAdd(b.at("x"), b.at("y")); });
+            [](const MatchBindings& b) { return exprAdd(b.at(ruleName("x")), b.at(ruleName("y"))); });
 
         // (x ^ y) + ((x & y) << 1) → x + y
         // Pattern: add(xor(x,y), shl(and(x,y), const(1)))
@@ -276,7 +284,7 @@ static std::vector<PrioritizedRule> buildRulesForGroup(IdentityGroup target)
             bop(BinOpKind::Add,
                 bop(BinOpKind::Xor, cap("x"), cap("y")),
                 bop(BinOpKind::Shl, bop(BinOpKind::And, cap("x"), cap("y")), cnst(1))),
-            [](const MatchBindings& b) { return exprAdd(b.at("x"), b.at("y")); });
+            [](const MatchBindings& b) { return exprAdd(b.at(ruleName("x")), b.at(ruleName("y"))); });
 
         // (x & y) + (x | y) → x + y
         add(2,
@@ -284,7 +292,7 @@ static std::vector<PrioritizedRule> buildRulesForGroup(IdentityGroup target)
             bop(BinOpKind::Add,
                 bop(BinOpKind::And, cap("x"), cap("y")),
                 bop(BinOpKind::Or, cap("x"), cap("y"))),
-            [](const MatchBindings& b) { return exprAdd(b.at("x"), b.at("y")); });
+            [](const MatchBindings& b) { return exprAdd(b.at(ruleName("x")), b.at(ruleName("y"))); });
 
         // (x & y) | (x & ~y) → x
         add(2,
@@ -298,10 +306,10 @@ static std::vector<PrioritizedRule> buildRulesForGroup(IdentityGroup target)
 
         // x ^ -1 → ~x
         add(2, "x^-1->~x", bop(BinOpKind::Xor, cap("x"), cnst(-1)), [](const MatchBindings& b) {
-            return exprNot(b.at("x"));
+            return exprNot(b.at(ruleName("x")));
         });
         add(2, "-1^x->~x", bop(BinOpKind::Xor, cnst(-1), cap("x")), [](const MatchBindings& b) {
-            return exprNot(b.at("x"));
+            return exprNot(b.at(ruleName("x")));
         });
 
         // x + (~x) → -1
@@ -321,15 +329,15 @@ static std::vector<PrioritizedRule> buildRulesForGroup(IdentityGroup target)
 
         // x * -1 → -x
         add(2, "x*-1->-x", bop(BinOpKind::Mul, cap("x"), cnst(-1)), [](const MatchBindings& b) {
-            return exprNeg(b.at("x"));
+            return exprNeg(b.at(ruleName("x")));
         });
         add(2, "-1*x->-x", bop(BinOpKind::Mul, cnst(-1), cap("x")), [](const MatchBindings& b) {
-            return exprNeg(b.at("x"));
+            return exprNeg(b.at(ruleName("x")));
         });
 
         // 0 - x → -x
         add(2, "0-x->-x", bop(BinOpKind::Sub, cnst(0), cap("x")), [](const MatchBindings& b) {
-            return exprNeg(b.at("x"));
+            return exprNeg(b.at(ruleName("x")));
         });
 
         // 0 >> x → 0, 0 << x → 0
@@ -373,7 +381,7 @@ static std::vector<PrioritizedRule> buildRulesForGroup(IdentityGroup target)
         add(2,
             "x&(x^y)->x&~y",
             bop(BinOpKind::And, cap("x"), bop(BinOpKind::Xor, cap("x"), cap("y"))),
-            [](const MatchBindings& b) { return exprAnd(b.at("x"), exprNot(b.at("y"))); });
+            [](const MatchBindings& b) { return exprAnd(b.at(ruleName("x")), exprNot(b.at(ruleName("y")))); });
 
         // x | (x & y) → x
         add(2,
@@ -386,13 +394,13 @@ static std::vector<PrioritizedRule> buildRulesForGroup(IdentityGroup target)
             "(x+y)*2->(x+y)<<1",
             bop(BinOpKind::Mul, bop(BinOpKind::Add, cap("x"), cap("y")), cnst(2)),
             [](const MatchBindings& b) {
-                return exprShl(exprAdd(b.at("x"), b.at("y")), exprConst(1));
+                return exprShl(exprAdd(b.at(ruleName("x")), b.at(ruleName("y"))), exprConst(1));
             });
         add(2,
             "2*(x+y)->(x+y)<<1",
             bop(BinOpKind::Mul, cnst(2), bop(BinOpKind::Add, cap("x"), cap("y"))),
             [](const MatchBindings& b) {
-                return exprShl(exprAdd(b.at("x"), b.at("y")), exprConst(1));
+                return exprShl(exprAdd(b.at(ruleName("x")), b.at(ruleName("y"))), exprConst(1));
             });
 
     }   // Simplify group
@@ -401,16 +409,16 @@ static std::vector<PrioritizedRule> buildRulesForGroup(IdentityGroup target)
 
     if (target == IdentityGroup::Obfuscate || target == IdentityGroup::Both) {
         add(10, "x->x+0", cap("x"), [](const MatchBindings& b) {
-            return exprAdd(b.at("x"), exprConst(0));
+            return exprAdd(b.at(ruleName("x")), exprConst(0));
         });
         add(10, "x->x^0", cap("x"), [](const MatchBindings& b) {
-            return exprXor(b.at("x"), exprConst(0));
+            return exprXor(b.at(ruleName("x")), exprConst(0));
         });
         add(10, "x->x*1", cap("x"), [](const MatchBindings& b) {
-            return exprMul(b.at("x"), exprConst(1));
+            return exprMul(b.at(ruleName("x")), exprConst(1));
         });
         add(10, "x->x|0", cap("x"), [](const MatchBindings& b) {
-            return exprOr(b.at("x"), exprConst(0));
+            return exprOr(b.at(ruleName("x")), exprConst(0));
         });
     }
 

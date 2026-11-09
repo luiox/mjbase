@@ -374,9 +374,9 @@ std::string keyOf(const PathConstraint& c)
 {
     std::string key = to_string(c.cmp);
     key.push_back('|');
-    key += expr::toInfix(*c.lhs);
+    key += expr::toInfix(*c.lhs).to_std_string();
     key.push_back('|');
-    key += expr::toInfix(*c.rhs);
+    key += expr::toInfix(*c.rhs).to_std_string();
     return key;
 }
 
@@ -434,9 +434,10 @@ Bindings bindingsOf(const FactSet& facts)
         if (var == nullptr || con == nullptr) {
             continue;
         }
-        const auto inserted = out.emplace(var->name(), expr::ExprValue(con->value(), con->bitWidth()));
+        const std::string varName = var->name().to_std_string();
+        const auto inserted = out.emplace(varName, expr::ExprValue(con->value(), con->bitWidth()));
         if (!inserted.second && inserted.first->second.rawValue() != con->truncatedValue()) {
-            conflicted.insert(var->name());
+            conflicted.insert(varName);
         }
     }
     for (const std::string& name : conflicted) {
@@ -450,7 +451,15 @@ std::optional<ca::i64> evalConst(const ExprRef& e, const Bindings& bindings)
     if (!e) {
         return std::nullopt;
     }
-    const expr::EvalResult result = expr::eval(*e, bindings, kMaxEvalDepth);
+    // 本地 Bindings 以 std::string 为工作键；eval 面 VarBindings 键为 Utf8String，
+    // 边界处按字节保真转换（变量名来源为解析标识符，ASCII 域）。
+    expr::VarBindings evalBindings;
+    for (const auto& [name, value] : bindings) {
+        evalBindings.emplace(ca::str::Utf8String::from_data_unchecked(
+                                 reinterpret_cast<const ca::u8*>(name.data()), name.size()),
+                             value);
+    }
+    const expr::EvalResult result = expr::eval(*e, evalBindings, kMaxEvalDepth);
     if (!result.ok) {
         return std::nullopt;
     }

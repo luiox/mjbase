@@ -1,8 +1,19 @@
 #include "expr_eval.hpp"
 
 #include <stack>
-#include <vector>
+#include <string>
 #include <unordered_set>
+#include <vector>
+
+namespace {
+
+/// 变量名视图 → 绑定表 key（Utf8String 无异构查找；标识符 ASCII 域，字节保真收进）。
+ca::str::Utf8String keyOf(const ca::str::Utf8StringRef& name)
+{
+    return ca::str::Utf8String::from_data_unchecked(name.data(), name.byte_length());
+}
+
+}   // namespace
 
 namespace mjbase::expr {
 
@@ -61,9 +72,11 @@ EvalResult eval(const ExprNode& node, const VarBindings& vars, ca::u32 maxDepth)
             case NodeKind::Var:
             {
                 auto* vn = static_cast<const VarNode*>(n);
-                auto  it = vars.find(vn->name());
+                auto  it = vars.find(keyOf(vn->name()));
                 if (it == vars.end()) {
-                    return EvalResult::err("unbound variable: " + vn->name());
+                    std::string msg = "unbound variable: ";
+                    msg += vn->name().to_std_string();
+                    return EvalResult::err(msg);
                 }
                 valueStack.push(it->second);
                 break;

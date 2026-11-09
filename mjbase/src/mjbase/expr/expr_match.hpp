@@ -3,7 +3,6 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -12,7 +11,7 @@
 namespace mjbase::expr {
 
 /// Match bindings: capture name -> matched sub-expression
-using MatchBindings = std::unordered_map<std::string, ExprRef>;
+using MatchBindings = std::unordered_map<ca::str::Utf8String, ExprRef>;
 
 /// Pattern node — describes a tree structure to match against.
 class Pattern
@@ -30,14 +29,14 @@ public:
 
     // Factory methods
     static Pattern Wild();
-    static Pattern Capture(std::string name);
+    static Pattern Capture(std::string_view name);
     static Pattern Const(ca::i64 val);
-    static Pattern Var(std::string name);
+    static Pattern Var(std::string_view name);
     static Pattern UnaryOp(UnaryOpKind op, Pattern child);
     static Pattern BinOp(BinOpKind op, Pattern left, Pattern right);
 
-    Kind               kind() const noexcept { return kind_; }
-    const std::string& name() const noexcept { return name_; }
+    Kind          kind() const noexcept { return kind_; }
+    ca::str::Utf8StringRef name() const noexcept { return name_.ref(); }
     ca::i64            constVal() const noexcept { return constVal_; }
     UnaryOpKind        unaryOp() const noexcept { return unaryOp_; }
     BinOpKind          binaryOp() const noexcept { return binaryOp_; }
@@ -47,7 +46,7 @@ public:
     /// Copy constructor (deep copy child patterns)
     Pattern(const Pattern& other)
         : kind_(other.kind_)
-        , name_(other.name_)
+        , name_(other.name_.clone())
         , constVal_(other.constVal_)
         , unaryOp_(other.unaryOp_)
         , binaryOp_(other.binaryOp_)
@@ -59,7 +58,7 @@ public:
     {
         if (this != &other) {
             kind_      = other.kind_;
-            name_      = other.name_;
+            name_      = other.name_.clone();
             constVal_  = other.constVal_;
             unaryOp_   = other.unaryOp_;
             binaryOp_  = other.binaryOp_;
@@ -82,7 +81,7 @@ private:
     {}
 
     Kind                     kind_;
-    std::string              name_;           // for Capture / Var
+    ca::str::Utf8String      name_;           // for Capture / Var
     ca::i64                  constVal_ = 0;   // for Const
     UnaryOpKind              unaryOp_  = UnaryOpKind::Neg;
     BinOpKind                binaryOp_ = BinOpKind::Add;
@@ -95,7 +94,7 @@ struct RewriteRule
 {
     Pattern                                      lhs;
     std::function<ExprRef(const MatchBindings&)> rhs;
-    std::string                                  name;
+    ca::str::Utf8String                          name;
 };
 
 /// Priority — lower number = higher priority

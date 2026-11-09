@@ -49,12 +49,12 @@ TEST(MjExprPrintTest, complexSExpr)
 TEST(MjExprPrintTest, dotFormat)
 {
     auto n   = exprAdd(exprConst(1), exprConst(2));
-    auto dot = toDot(*n);
-    EXPECT_NE(dot.find("digraph expr"), std::string::npos);
-    EXPECT_NE(dot.find("const 1:i32"), std::string::npos);
-    EXPECT_NE(dot.find("const 2:i32"), std::string::npos);
-    EXPECT_NE(dot.find("+"), std::string::npos);
-    EXPECT_NE(dot.find("->"), std::string::npos);
+    const auto dot = toDot(*n);
+    EXPECT_NE(dot.to_std_string().find("digraph expr"), std::string::npos);
+    EXPECT_NE(dot.to_std_string().find("const 1:i32"), std::string::npos);
+    EXPECT_NE(dot.to_std_string().find("const 2:i32"), std::string::npos);
+    EXPECT_NE(dot.to_std_string().find("+"), std::string::npos);
+    EXPECT_NE(dot.to_std_string().find("->"), std::string::npos);
 }
 
 // ── toInfix：中缀 + 最小括号（与 expr_parser 优先级一致）─────
@@ -68,20 +68,25 @@ void checkInfixRoundtrip(const std::string& input,
 {
     auto first = parseExpression(input);
     ASSERT_NE(first, nullptr) << "parse failed: " << input;
-    std::string once = toInfix(*first);
+    const auto once = toInfix(*first);
 
-    auto second = parseExpression(once);
-    ASSERT_NE(second, nullptr) << "reparse failed for toInfix output: " << once;
-    std::string twice = toInfix(*second);
+    auto second = parseExpression(once.ref());
+    ASSERT_NE(second, nullptr) << "reparse failed for toInfix output: "
+                               << once.to_std_string();
+    const auto twice = toInfix(*second);
 
-    EXPECT_EQ(once, twice) << "print not a fixed point for: " << input;
+    EXPECT_TRUE(once == twice) << "print not a fixed point for: " << input;
 
     VarBindings bindings;
-    for (const auto& [name, value] : vars) bindings.emplace(name, ExprValue(value));
+    for (const auto& [name, value] : vars) {
+        bindings.emplace(ca::str::Utf8String::from_data_unchecked(
+                             reinterpret_cast<const ca::u8*>(name.data()), name.size()),
+                         ExprValue(value));
+    }
     auto v1 = eval(*first, bindings);
     auto v2 = eval(*second, bindings);
     ASSERT_TRUE(v1.ok) << input;
-    ASSERT_TRUE(v2.ok) << once;
+    ASSERT_TRUE(v2.ok) << once.to_std_string();
     EXPECT_EQ(v1.value.rawValue(), v2.value.rawValue()) << "value changed for: " << input;
 }
 

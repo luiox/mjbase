@@ -7,6 +7,13 @@
 
 using namespace mjbase::expr;
 
+namespace {
+
+/// 测试助手：字面量键 → 绑定表 key（Utf8String 无 const char* 隐式构造）。
+ca::str::Utf8String U8(const char* s) { return ca::str::Utf8String::from_cstr(s); }
+
+}   // namespace
+
 // ── MBAState RNG ──
 
 TEST(MjExprMbaGenTest, rngDeterministic)
@@ -102,7 +109,8 @@ TEST(MjExprMbaGenTest, generateVarTarget)
     EXPECT_GT(nodeCount(*obf), 1);
 
     // Evaluate with x=5 should get 5
-    VarBindings vars   = {{"x", ExprValue(5)}};
+    VarBindings vars   ;
+    vars.emplace(U8("x"), ExprValue(5));
     auto        result = eval(*obf, vars);
     ASSERT_TRUE(result.ok);
     EXPECT_EQ(result.value.rawValue(), 5);
@@ -138,7 +146,8 @@ TEST(MjExprMbaGenTest, generateComplexExpr)
 
     EXPECT_GT(nodeCount(*obf), nodeCount(*target));
 
-    VarBindings vars   = {{"x", ExprValue(7)}};
+    VarBindings vars   ;
+    vars.emplace(U8("x"), ExprValue(7));
     auto        result = eval(*obf, vars);
     ASSERT_TRUE(result.ok);
     EXPECT_EQ(result.value.rawValue(), 20);   // (7+3)*2 == 20
@@ -154,7 +163,8 @@ TEST(MjExprMbaGenTest, applyObfuscation)
 
     EXPECT_GT(nodeCount(*obf), nodeCount(*expr));
 
-    VarBindings vars   = {{"x", ExprValue(10)}};
+    VarBindings vars   ;
+    vars.emplace(U8("x"), ExprValue(10));
     auto        result = eval(*obf, vars);
     ASSERT_TRUE(result.ok);
     EXPECT_EQ(result.value.rawValue(), 15);

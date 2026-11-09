@@ -63,6 +63,13 @@ TEST(MjExprUtilTest, nodeCountComplex)
 
 // ── collectVars ──
 
+namespace {
+
+/// 测试助手：字面量键 → 绑定表 key（Utf8String 无 const char* 隐式构造）。
+ca::str::Utf8String U8(const char* s) { return ca::str::Utf8String::from_cstr(s); }
+
+}   // namespace
+
 TEST(MjExprUtilTest, collectVarsNone)
 {
     auto vars = collectVars(*exprConst(42));
@@ -73,7 +80,7 @@ TEST(MjExprUtilTest, collectVarsSingle)
 {
     auto vars = collectVars(*exprVar("x"));
     EXPECT_EQ(vars.size(), 1);
-    EXPECT_TRUE(vars.count("x"));
+    EXPECT_TRUE(vars.count(U8("x")));
 }
 
 TEST(MjExprUtilTest, collectVarsMultiple)
@@ -81,8 +88,8 @@ TEST(MjExprUtilTest, collectVarsMultiple)
     auto n    = exprMul(exprVar("x"), exprAdd(exprVar("y"), exprVar("x")));
     auto vars = collectVars(*n);
     EXPECT_EQ(vars.size(), 2);
-    EXPECT_TRUE(vars.count("x"));
-    EXPECT_TRUE(vars.count("y"));
+    EXPECT_TRUE(vars.count(U8("x")));
+    EXPECT_TRUE(vars.count(U8("y")));
 }
 
 // ── replaceAt ──

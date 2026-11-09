@@ -1,10 +1,11 @@
 #pragma once
 
 #include <memory>
-#include <string>
+#include <string_view>
 #include <vector>
 
 #include "libca/core/datatype.hpp"
+#include "libca/str/utf8_string.hpp"
 
 namespace mjbase::expr {
 
@@ -93,15 +94,15 @@ private:
 class VarNode final : public ExprNode
 {
 public:
-    VarNode(std::string name, BitWidth bw) noexcept;
+    VarNode(std::string_view name, BitWidth bw) noexcept;
 
-    NodeKind           kind() const noexcept override { return NodeKind::Var; }
-    const std::string& name() const noexcept { return name_; }
+    NodeKind       kind() const noexcept override { return NodeKind::Var; }
+    ca::str::Utf8StringRef name() const noexcept { return name_.ref(); }
     BitWidth           bitWidth() const noexcept { return bw_; }
 
 private:
-    std::string name_;
-    BitWidth    bw_;
+    ca::str::Utf8String name_;
+    BitWidth            bw_;
 };
 
 // ── Unary node ──
@@ -143,7 +144,7 @@ private:
 // ── Factory functions ──
 
 ExprRef exprConst(ca::i64 val, BitWidth bw = BitWidth::B32);
-ExprRef exprVar(std::string name, BitWidth bw = BitWidth::B32);
+ExprRef exprVar(std::string_view name, BitWidth bw = BitWidth::B32);
 ExprRef exprUnary(UnaryOpKind op, ExprRef child);
 ExprRef exprBinary(BinOpKind op, ExprRef left, ExprRef right);
 

@@ -12,10 +12,18 @@ TEST(MjExprEvalTest, constEval)
     EXPECT_EQ(r.value.rawValue(), 42);
 }
 
+namespace {
+
+/// 测试助手：字面量键 → 绑定表 key（Utf8String 无 const char* 隐式构造）。
+ca::str::Utf8String U8(const char* s) { return ca::str::Utf8String::from_cstr(s); }
+
+}   // namespace
+
 TEST(MjExprEvalTest, varEval)
 {
     auto        expr = exprVar("x");
-    VarBindings vars = {{"x", ExprValue(10)}};
+    VarBindings vars ;
+    vars.emplace(U8("x"), ExprValue(10));
     auto        r    = eval(*expr, vars);
     EXPECT_TRUE(r.ok);
     EXPECT_EQ(r.value.rawValue(), 10);
@@ -26,7 +34,7 @@ TEST(MjExprEvalTest, varUnbound)
     auto expr = exprVar("x");
     auto r    = eval(*expr);
     EXPECT_FALSE(r.ok);
-    EXPECT_NE(r.error.find("unbound"), std::string::npos);
+    EXPECT_NE(r.error.to_std_string().find("unbound"), std::string::npos);
 }
 
 TEST(MjExprEvalTest, addEval)
@@ -73,7 +81,8 @@ TEST(MjExprEvalTest, complexEval)
 {
     // (x + 3) * 2
     auto        expr = exprMul(exprAdd(exprVar("x"), exprConst(3)), exprConst(2));
-    VarBindings vars = {{"x", ExprValue(5)}};
+    VarBindings vars ;
+    vars.emplace(U8("x"), ExprValue(5));
     auto        r    = eval(*expr, vars);
     EXPECT_TRUE(r.ok);
     EXPECT_EQ(r.value.rawValue(), 16);

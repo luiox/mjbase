@@ -5,6 +5,14 @@
 
 using namespace mjbase::expr;
 
+namespace {
+
+/// 测试助手：字面量键 → 绑定表 key（Utf8String 无 const char* 隐式构造）。
+ca::str::Utf8String U8(const char* s) { return ca::str::Utf8String::from_cstr(s); }
+
+}   // namespace
+
+
 // ── Pattern wild ──
 
 TEST(MjExprMatchTest, wildMatchesAnything)
@@ -25,8 +33,8 @@ TEST(MjExprMatchTest, captureBinds)
     MatchBindings b;
     auto          n = exprConst(42);
     EXPECT_TRUE(p.match(n, b));
-    ASSERT_TRUE(b.count("x"));
-    EXPECT_TRUE(b["x"]->structuralEqual(*n));
+    ASSERT_TRUE(b.count(U8("x")));
+    EXPECT_TRUE(b[U8("x")]->structuralEqual(*n));
 }
 
 // ── Pattern const ──
@@ -59,8 +67,8 @@ TEST(MjExprMatchTest, unaryOpMatch)
     MatchBindings b;
     auto          n = exprNeg(exprConst(5));
     EXPECT_TRUE(p.match(n, b));
-    ASSERT_TRUE(b.count("x"));
-    EXPECT_TRUE(b["x"]->structuralEqual(*exprConst(5)));
+    ASSERT_TRUE(b.count(U8("x")));
+    EXPECT_TRUE(b[U8("x")]->structuralEqual(*exprConst(5)));
 }
 
 TEST(MjExprMatchTest, unaryOpWrongOp)
@@ -78,10 +86,10 @@ TEST(MjExprMatchTest, binaryOpMatch)
     MatchBindings b;
     auto          n = exprAdd(exprConst(1), exprConst(2));
     EXPECT_TRUE(p.match(n, b));
-    ASSERT_TRUE(b.count("l"));
-    ASSERT_TRUE(b.count("r"));
-    EXPECT_TRUE(b["l"]->structuralEqual(*exprConst(1)));
-    EXPECT_TRUE(b["r"]->structuralEqual(*exprConst(2)));
+    ASSERT_TRUE(b.count(U8("l")));
+    ASSERT_TRUE(b.count(U8("r")));
+    EXPECT_TRUE(b[U8("l")]->structuralEqual(*exprConst(1)));
+    EXPECT_TRUE(b[U8("r")]->structuralEqual(*exprConst(2)));
 }
 
 TEST(MjExprMatchTest, binaryOpWrongOp)
@@ -103,8 +111,8 @@ TEST(MjExprMatchTest, nestedPattern)
     MatchBindings b;
     auto          n = exprMul(exprAdd(exprVar("a"), exprConst(5)), exprConst(3));
     EXPECT_TRUE(p.match(n, b));
-    ASSERT_TRUE(b.count("x"));
-    EXPECT_TRUE(b["x"]->structuralEqual(*exprVar("a")));
+    ASSERT_TRUE(b.count(U8("x")));
+    EXPECT_TRUE(b[U8("x")]->structuralEqual(*exprVar("a")));
 }
 
 // ── Rewrite simple ──
@@ -115,8 +123,8 @@ TEST(MjExprMatchTest, rewriteAddZero)
     std::vector<PrioritizedRule> rules;
     rules.push_back({0,
                      {Pattern::BinOp(BinOpKind::Add, Pattern::Capture("x"), Pattern::Const(0)),
-                      [](const MatchBindings& b) { return b.at("x"); },
-                      "x+0->x"}});
+                      [](const MatchBindings& b) { return b.at(U8("x")); },
+                      U8("x+0->x")}});
 
     auto expr   = exprAdd(exprConst(42), exprConst(0));
     auto result = rewrite(expr, rules);
@@ -129,8 +137,8 @@ TEST(MjExprMatchTest, rewriteZeroAdd)
     std::vector<PrioritizedRule> rules;
     rules.push_back({0,
                      {Pattern::BinOp(BinOpKind::Add, Pattern::Const(0), Pattern::Capture("x")),
-                      [](const MatchBindings& b) { return b.at("x"); },
-                      "0+x->x"}});
+                      [](const MatchBindings& b) { return b.at(U8("x")); },
+                      U8("0+x->x")}});
 
     auto expr   = exprAdd(exprConst(0), exprConst(99));
     auto result = rewrite(expr, rules);
@@ -143,7 +151,7 @@ TEST(MjExprMatchTest, rewriteMulByZero)
     rules.push_back({0,
                      {Pattern::BinOp(BinOpKind::Mul, Pattern::Capture("x"), Pattern::Const(0)),
                       [](const MatchBindings&) { return exprConst(0); },
-                      "x*0->0"}});
+                      U8("x*0->0")}});
 
     auto expr   = exprMul(exprVar("x"), exprConst(0));
     auto result = rewrite(expr, rules);
@@ -156,8 +164,8 @@ TEST(MjExprMatchTest, rewriteDeep)
     std::vector<PrioritizedRule> rules;
     rules.push_back({0,
                      {Pattern::BinOp(BinOpKind::Add, Pattern::Capture("x"), Pattern::Const(0)),
-                      [](const MatchBindings& b) { return b.at("x"); },
-                      "x+0->x"}});
+                      [](const MatchBindings& b) { return b.at(U8("x")); },
+                      U8("x+0->x")}});
 
     auto expr   = exprAdd(exprAdd(exprVar("x"), exprConst(0)), exprConst(0));
     auto result = rewrite(expr, rules);
@@ -171,13 +179,13 @@ TEST(MjExprMatchTest, rewritePriority)
     // Priority 1: x + 0 → x + 99 (weaker)
     rules.push_back({1,
                      {Pattern::BinOp(BinOpKind::Add, Pattern::Capture("x"), Pattern::Const(0)),
-                      [](const MatchBindings& b) { return exprAdd(b.at("x"), exprConst(99)); },
-                      "x+0->x+99"}});
+                      [](const MatchBindings& b) { return exprAdd(b.at(U8("x")), exprConst(99)); },
+                      U8("x+0->x+99")}});
     // Priority 0: x + 0 → x (stronger — should be tried first)
     rules.push_back({0,
                      {Pattern::BinOp(BinOpKind::Add, Pattern::Capture("x"), Pattern::Const(0)),
-                      [](const MatchBindings& b) { return b.at("x"); },
-                      "x+0->x"}});
+                      [](const MatchBindings& b) { return b.at(U8("x")); },
+                      U8("x+0->x")}});
 
     auto expr   = exprAdd(exprConst(42), exprConst(0));
     auto result = rewrite(expr, rules);
@@ -189,8 +197,8 @@ TEST(MjExprMatchTest, rewriteNoMatch)
     std::vector<PrioritizedRule> rules;
     rules.push_back({0,
                      {Pattern::BinOp(BinOpKind::Add, Pattern::Capture("x"), Pattern::Const(0)),
-                      [](const MatchBindings& b) { return b.at("x"); },
-                      "x+0->x"}});
+                      [](const MatchBindings& b) { return b.at(U8("x")); },
+                      U8("x+0->x")}});
 
     auto expr   = exprAdd(exprConst(42), exprConst(1));
     auto result = rewrite(expr, rules);
@@ -208,8 +216,8 @@ TEST(MjExprMatchTest, sameCaptureMatch)
     // Same expression in both positions → match
     auto n = exprSub(exprVar("a"), exprVar("a"));
     EXPECT_TRUE(p.match(n, b));
-    ASSERT_TRUE(b.count("x"));
-    EXPECT_TRUE(b["x"]->structuralEqual(*exprVar("a")));
+    ASSERT_TRUE(b.count(U8("x")));
+    EXPECT_TRUE(b[U8("x")]->structuralEqual(*exprVar("a")));
 }
 
 TEST(MjExprMatchTest, sameCaptureMismatch)

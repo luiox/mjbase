@@ -1,10 +1,11 @@
 #pragma once
 
-#include <string>
 #include <unordered_set>
 #include <vector>
 
 #include "expr_node.hpp"
+
+#include "libca/str/utf8_string.hpp"
 
 namespace mjbase::expr {
 
@@ -15,7 +16,7 @@ ca::u32 depth(const ExprNode& node);
 ca::u32 nodeCount(const ExprNode& node);
 
 /// Collect all variable names
-std::unordered_set<std::string> collectVars(const ExprNode& node);
+std::unordered_set<ca::str::Utf8String> collectVars(const ExprNode& node);
 
 /// Sub-expression at the given path (indices into children: 0=left, 1=right, etc.)
 /// Empty path returns the node itself.
