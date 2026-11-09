@@ -1798,6 +1798,53 @@ constexpr const char* kSchemaDdl[] = {
     "CREATE INDEX closure_members_member ON closure_members(member_id)",
 };
 
+/// @brief 常量事实面 DDL（schema v12 纯新增，全带 IF NOT EXISTS 幂等）。
+///        单独成组：v11→v12 原地迁移只重放本组（存量表 DDL 无 IF NOT
+///        EXISTS，重放 kSchemaDdl 全组会在既有表上报错）；fresh 建库在
+///        kSchemaDdl 之后照抄执行本组。
+///
+/// cp_strings：类常量池字符串。kind 二分（1 = CONSTANT_String 字面量，
+/// 0 = 未被 String 引用的裸 UTF8）；facet 是生产方按消费方同款形状规则
+/// 入库时算好的预分（name/descriptor/classref），SQL 侧不复刻形状判定。
+/// UNIQUE 即引擎命中行去重口径（同类同值折叠一行）；切片替换按 class_id
+/// 前缀下探走 UNIQUE 索引，无独立索引。
+///
+/// number_literals：数值字面量。member_id = 0 哨兵 = 常量池行（无 FK——
+/// 哨兵不在 members 表，归属由写入口解析承载），非 0 = 方法体行（members
+/// 只增不删保证不悬垂）。value_int / value_bits 是等值收窄键（整型值 /
+/// IEEE 位型），查询 OR 三键下推后消费方仍须数值等值终审；UNIQUE 与引擎
+/// 命中行去重同口径。
+constexpr const char* kConstFacesDdl[] = {
+    "CREATE TABLE IF NOT EXISTS cp_strings("
+    "  string_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  class_id INTEGER NOT NULL REFERENCES classes(class_id) ON DELETE CASCADE,"
+    "  kind INTEGER NOT NULL CHECK(kind IN (0,1)),"
+    "  facet INTEGER NOT NULL CHECK(facet IN (0,1,2)),"
+    "  value TEXT NOT NULL,"
+    "  UNIQUE(class_id, kind, facet, value)"
+    ")",
+    "CREATE TABLE IF NOT EXISTS number_literals("
+    "  literal_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  class_id INTEGER NOT NULL REFERENCES classes(class_id) ON DELETE CASCADE,"
+    "  member_id INTEGER NOT NULL DEFAULT 0,"
+    "  insn_index INTEGER NOT NULL DEFAULT -1,"
+    "  opcode INTEGER,"
+    "  kind INTEGER NOT NULL CHECK(kind IN (0,1,2,3)),"
+    "  value_int INTEGER,"
+    "  value_bits INTEGER,"
+    "  value_text TEXT NOT NULL,"
+    "  UNIQUE(class_id, member_id, insn_index, kind, value_text)"
+    ")",
+    // 方法体切片替换按 member_id 下探；两条等值收窄键各建部分索引（NULL /
+    // 0 行不参与等值探）。常量池行切片按 class_id 前缀走 UNIQUE 索引。
+    "CREATE INDEX IF NOT EXISTS number_literals_member ON number_literals(member_id) "
+    "  WHERE member_id != 0",
+    "CREATE INDEX IF NOT EXISTS number_literals_value_int ON number_literals(value_int) "
+    "  WHERE value_int IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS number_literals_value_bits ON number_literals(value_bits) "
+    "  WHERE value_bits IS NOT NULL",
+};
+
 /// @brief 全部后代闭包 SQL（allSubclasses / allSubclassesPaged 共用）；
 ///        分页变体在末尾追加 LIMIT/OFFSET 窗口。
 constexpr const char* kAllSubclassesSql =
@@ -2111,6 +2158,11 @@ ca::Result<AnalysisDb, AnalysisDbError> AnalysisDb::open(const ca::str::Utf8Stri
                 return errorOf(std::move(result));
             }
         }
+        for (const char* ddl : kConstFacesDdl) {
+            if (auto result = exec(handle, ddl); result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
         if (auto result = exec(handle,
                                "INSERT INTO meta(key, value) VALUES('kind', 'mjbase-analysis-db')");
             result.is_err()) {
@@ -2138,31 +2190,31 @@ ca::Result<AnalysisDb, AnalysisDbError> AnalysisDb::open(const ca::str::Utf8Stri
                                  "not an mjbase analysis database (application_id=" +
                                      std::to_string(appId) + ")"));
     }
-    // v10 → v11 原地迁移（members.signature）：末位追加缺省空串列，存量行
-    // 零损失。只收编紧邻上一版（版本步进政策见 hpp 的版本常量注）；ReadOnly
-    // 连接不写库，旧版只读开库维持 fail-loud。PRAGMA user_version 参与事务
-    // （存数据库头），ALTER 与版本号同事务提交。
-    if (version == 10 && static_cast<ca::i64>(kAnalysisDbSchemaVersion) == 11) {
+    // v11 → v12 原地迁移（常量事实面）：纯新增 cp_strings / number_literals
+    // 两表与索引（CREATE IF NOT EXISTS 幂等），存量表与行零改动。只收编紧
+    // 邻上一版（版本步进政策见 hpp 的版本常量注；更老版本 fail-loud，临时
+    // 库重导入即愈）；ReadOnly 连接不写库，旧版只读开库维持 fail-loud。
+    // PRAGMA user_version 参与事务（存数据库头），建表与版本号同事务提交。
+    if (version == 11 && static_cast<ca::i64>(kAnalysisDbSchemaVersion) == 12) {
         if (mode == AnalysisDbOpenMode::ReadOnly) {
             return ca::Err(makeError(
                 AnalysisDbErrorKind::Schema,
-                "analysis database schema v10 needs an in-place migration; "
+                "analysis database schema v11 needs an in-place migration; "
                 "reopen read-write to upgrade"));
         }
         auto transaction = Transaction::begin(handle);
         if (transaction.is_err()) return errorOf(std::move(transaction));
         auto txn = std::move(transaction).unwrap();
-        if (auto result = exec(handle,
-                               "ALTER TABLE members ADD COLUMN signature "
-                               "TEXT NOT NULL DEFAULT ''");
-            result.is_err()) {
-            return errorOf(std::move(result));
+        for (const char* ddl : kConstFacesDdl) {
+            if (auto result = exec(handle, ddl); result.is_err()) {
+                return errorOf(std::move(result));
+            }
         }
-        if (auto result = exec(handle, "PRAGMA user_version = 11"); result.is_err()) {
+        if (auto result = exec(handle, "PRAGMA user_version = 12"); result.is_err()) {
             return errorOf(std::move(result));
         }
         if (auto result = txn.commit(); result.is_err()) return errorOf(std::move(result));
-        version = 11;
+        version = 12;
     }
     if (version != static_cast<ca::i64>(kAnalysisDbSchemaVersion)) {
         return ca::Err(makeError(AnalysisDbErrorKind::Schema,
@@ -4707,6 +4759,362 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceReferencesFromClass(
     return ca::Ok(references.size());
 }
 
+ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceCpStringsFromClass(
+    ca::i64 batchId, ca::i64 classId, std::vector<DbStringRecord> records)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+    if (batchId < 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "batch id must not be negative"));
+    }
+
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
+
+    // 切片身份先落定：类不存在 → Invalid，旧切片保持不动。
+    auto cls = prepare(impl_->handle, "SELECT internal_name FROM classes WHERE class_id=?1");
+    if (cls.is_err()) return errorOf(std::move(cls));
+    auto clsStatement = std::move(cls).unwrap();
+    if (auto result = bindInt(impl_->handle, clsStatement.raw, 1, classId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasClass = step(impl_->handle, clsStatement.raw);
+    if (hasClass.is_err()) return errorOf(std::move(hasClass));
+    if (!hasClass.unwrap()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "cp strings class is not registered: " +
+                                     std::to_string(classId)));
+    }
+    resetStatement(clsStatement);
+
+    if (batchId != 0) {
+        // 类作用域锚：与 ingestClasses 同 (2, class_id) 锚——类常量池与类事实
+        // 在归属解析上是同一事实区间。
+        if (auto result = validateOpenBatchForWrite(impl_->handle, batchId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto scopeInsert = prepare(impl_->handle, kScopeRowInsertSql);
+        if (scopeInsert.is_err()) return errorOf(std::move(scopeInsert));
+        auto scopeStatement = std::move(scopeInsert).unwrap();
+        if (auto result = writeScopeRow(impl_->handle, scopeStatement.raw, batchId,
+                                        DbBatchScopeKind::Class, classId);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+    }
+
+    auto erase = prepare(impl_->handle, "DELETE FROM cp_strings WHERE class_id=?1");
+    if (erase.is_err()) return errorOf(std::move(erase));
+    auto eraseStatement = std::move(erase).unwrap();
+    if (auto result = bindInt(impl_->handle, eraseStatement.raw, 1, classId);
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto erased = step(impl_->handle, eraseStatement.raw);
+    if (erased.is_err()) return errorOf(std::move(erased));
+
+    // 同形重复行 ON CONFLICT DO NOTHING 折叠——与消费方命中行去重同口径。
+    auto insert = prepare(
+        impl_->handle,
+        "INSERT INTO cp_strings(class_id, kind, facet, value) VALUES(?1, ?2, ?3, ?4) "
+        "ON CONFLICT(class_id, kind, facet, value) DO NOTHING");
+    if (insert.is_err()) return errorOf(std::move(insert));
+    auto insertStatement = std::move(insert).unwrap();
+    for (const DbStringRecord& record : records) {
+        if (auto result = bindInt(impl_->handle, insertStatement.raw, 1, classId);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, insertStatement.raw, 2,
+                                  static_cast<ca::i64>(record.kind));
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, insertStatement.raw, 3,
+                                  //String 行 facet 归一为 0——facet 只对裸 UTF8
+                                  //行有意义，防等值 String 行因 facet 裂行（与
+                                  //引擎同类同值折叠口径漂移）。
+                                  record.kind == DbStringKind::String
+                                      ? 0
+                                      : static_cast<ca::i64>(record.facet));
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindText(impl_->handle, insertStatement.raw, 4, record.value.ref());
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto inserted = step(impl_->handle, insertStatement.raw);
+        if (inserted.is_err()) return errorOf(std::move(inserted));
+        resetStatement(insertStatement);
+    }
+    if (auto result = txn.commit(); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    return ca::Ok(records.size());
+}
+
+ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceNumbersFromMember(
+    ca::i64 batchId, ca::i64 memberId, std::vector<DbNumberRecord> records)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+    if (batchId < 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "batch id must not be negative"));
+    }
+
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
+
+    // 切片身份先落定：取成员宿主类（数值行 class_id 由此携带——行不重复
+    // 携带文本源）；成员不存在或不是方法 → Invalid（refs 成员切片同款口径）。
+    auto member = prepare(
+        impl_->handle,
+        "SELECT class_id FROM members WHERE member_id=?1 AND kind=1");
+    if (member.is_err()) return errorOf(std::move(member));
+    auto memberStatement = std::move(member).unwrap();
+    if (auto result = bindInt(impl_->handle, memberStatement.raw, 1, memberId);
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasMember = step(impl_->handle, memberStatement.raw);
+    if (hasMember.is_err()) return errorOf(std::move(hasMember));
+    if (!hasMember.unwrap()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "number literal member is not a registered method: " +
+                                     std::to_string(memberId)));
+    }
+    const ca::i64 ownerClassId = sqlite3_column_int64(memberStatement.raw, 0);
+    resetStatement(memberStatement);
+
+    if (batchId != 0) {
+        // 成员切片锚：类事实未触碰，不落 class 作用域行（refs 成员切片同款）。
+        if (auto result = validateOpenBatchForWrite(impl_->handle, batchId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto scopeInsert = prepare(impl_->handle, kScopeRowInsertSql);
+        if (scopeInsert.is_err()) return errorOf(std::move(scopeInsert));
+        auto scopeStatement = std::move(scopeInsert).unwrap();
+        if (auto result = writeScopeRow(impl_->handle, scopeStatement.raw, batchId,
+                                        DbBatchScopeKind::Member, memberId);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+    }
+
+    // member_id 非 0 定向删——常量池行（member_id = 0 哨兵）不被方法体切片
+    // 触碰；空输入即清空该方法的数值切片（消失方法清切片口径）。
+    auto erase = prepare(impl_->handle, "DELETE FROM number_literals WHERE member_id=?1");
+    if (erase.is_err()) return errorOf(std::move(erase));
+    auto eraseStatement = std::move(erase).unwrap();
+    if (auto result = bindInt(impl_->handle, eraseStatement.raw, 1, memberId);
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto erased = step(impl_->handle, eraseStatement.raw);
+    if (erased.is_err()) return errorOf(std::move(erased));
+
+    auto insert = prepare(
+        impl_->handle,
+        "INSERT INTO number_literals(class_id, member_id, insn_index, opcode, kind, "
+        "value_int, value_bits, value_text) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) "
+        "ON CONFLICT(class_id, member_id, insn_index, kind, value_text) DO NOTHING");
+    if (insert.is_err()) return errorOf(std::move(insert));
+    auto insertStatement = std::move(insert).unwrap();
+    for (const DbNumberRecord& record : records) {
+        if (auto result = bindInt(impl_->handle, insertStatement.raw, 1, ownerClassId);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, insertStatement.raw, 2, memberId);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, insertStatement.raw, 3, record.insnIndex);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (record.opcode >= 0) {
+            if (auto result = bindInt(impl_->handle, insertStatement.raw, 4, record.opcode);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+        else if (auto result = bindNull(impl_->handle, insertStatement.raw, 4);
+                 result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, insertStatement.raw, 5,
+                                  static_cast<ca::i64>(record.kind));
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (record.valueInt.has_value()) {
+            if (auto result = bindInt(impl_->handle, insertStatement.raw, 6, *record.valueInt);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+        else if (auto result = bindNull(impl_->handle, insertStatement.raw, 6);
+                 result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (record.valueBits.has_value()) {
+            if (auto result = bindInt(impl_->handle, insertStatement.raw, 7,
+                                      *record.valueBits);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+        else if (auto result = bindNull(impl_->handle, insertStatement.raw, 7);
+                 result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindText(impl_->handle, insertStatement.raw, 8, record.valueText.ref());
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto inserted = step(impl_->handle, insertStatement.raw);
+        if (inserted.is_err()) return errorOf(std::move(inserted));
+        resetStatement(insertStatement);
+    }
+    if (auto result = txn.commit(); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    return ca::Ok(records.size());
+}
+
+ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceCpNumbersFromClass(
+    ca::i64 batchId, ca::i64 classId, std::vector<DbNumberRecord> records)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+    if (batchId < 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "batch id must not be negative"));
+    }
+
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
+
+    auto cls = prepare(impl_->handle, "SELECT internal_name FROM classes WHERE class_id=?1");
+    if (cls.is_err()) return errorOf(std::move(cls));
+    auto clsStatement = std::move(cls).unwrap();
+    if (auto result = bindInt(impl_->handle, clsStatement.raw, 1, classId); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto hasClass = step(impl_->handle, clsStatement.raw);
+    if (hasClass.is_err()) return errorOf(std::move(hasClass));
+    if (!hasClass.unwrap()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "cp numbers class is not registered: " +
+                                     std::to_string(classId)));
+    }
+    resetStatement(clsStatement);
+
+    if (batchId != 0) {
+        // 类作用域锚：与 ingestClasses 同 (2, class_id) 锚。
+        if (auto result = validateOpenBatchForWrite(impl_->handle, batchId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto scopeInsert = prepare(impl_->handle, kScopeRowInsertSql);
+        if (scopeInsert.is_err()) return errorOf(std::move(scopeInsert));
+        auto scopeStatement = std::move(scopeInsert).unwrap();
+        if (auto result = writeScopeRow(impl_->handle, scopeStatement.raw, batchId,
+                                        DbBatchScopeKind::Class, classId);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+    }
+
+    // member_id = 0 哨兵定向删——方法体数值切片不被类常量池替换触碰。
+    auto erase = prepare(
+        impl_->handle, "DELETE FROM number_literals WHERE class_id=?1 AND member_id=0");
+    if (erase.is_err()) return errorOf(std::move(erase));
+    auto eraseStatement = std::move(erase).unwrap();
+    if (auto result = bindInt(impl_->handle, eraseStatement.raw, 1, classId);
+        result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    auto erased = step(impl_->handle, eraseStatement.raw);
+    if (erased.is_err()) return errorOf(std::move(erased));
+
+    auto insert = prepare(
+        impl_->handle,
+        "INSERT INTO number_literals(class_id, member_id, insn_index, opcode, kind, "
+        "value_int, value_bits, value_text) VALUES(?1, 0, ?2, NULL, ?3, ?4, ?5, ?6) "
+        "ON CONFLICT(class_id, member_id, insn_index, kind, value_text) DO NOTHING");
+    if (insert.is_err()) return errorOf(std::move(insert));
+    auto insertStatement = std::move(insert).unwrap();
+    for (const DbNumberRecord& record : records) {
+        if (auto result = bindInt(impl_->handle, insertStatement.raw, 1, classId);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, insertStatement.raw, 2, record.insnIndex);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, insertStatement.raw, 3,
+                                  static_cast<ca::i64>(record.kind));
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (record.valueInt.has_value()) {
+            if (auto result = bindInt(impl_->handle, insertStatement.raw, 4, *record.valueInt);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+        else if (auto result = bindNull(impl_->handle, insertStatement.raw, 4);
+                 result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (record.valueBits.has_value()) {
+            if (auto result = bindInt(impl_->handle, insertStatement.raw, 5,
+                                      *record.valueBits);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+        else if (auto result = bindNull(impl_->handle, insertStatement.raw, 5);
+                 result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindText(impl_->handle, insertStatement.raw, 6, record.valueText.ref());
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto inserted = step(impl_->handle, insertStatement.raw);
+        if (inserted.is_err()) return errorOf(std::move(inserted));
+        resetStatement(insertStatement);
+    }
+    if (auto result = txn.commit(); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    return ca::Ok(records.size());
+}
+
 ca::Result<std::optional<DbClassInfo>, AnalysisDbError> AnalysisDb::findClass(
     const ca::str::Utf8StringRef& owner) const
 {
@@ -5090,6 +5498,243 @@ ca::Result<DbMemberSearchPage, AnalysisDbError> AnalysisDb::searchMembersPaged(
         }
     }
     return ca::Ok(std::move(page));
+}
+
+ca::Result<DbStringSearchPage, AnalysisDbError> AnalysisDb::searchStringsPaged(
+    const DbStringSearchQuery& query, ca::i64 limit, ca::i64 offset) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto result = validatePageWindow(limit, offset); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    //谓词与参数按声明序编号（?1..?n），跨 COUNT 与窗口 SELECT 复用。
+    std::vector<std::string> params;
+    std::string              predicate;
+    const auto addParam = [&params](std::string value) {
+        params.push_back(std::move(value));
+        return "?" + std::to_string(params.size());
+    };
+    const auto addPredicate = [&predicate](std::string fragment) {
+        if (predicate.empty()) predicate = std::move(fragment);
+        else predicate += " AND " + fragment;
+    };
+
+    //单文本面（value）——与消费方 strings 扫描面同形：只对 value 匹配，
+    //owner 只作作用域。三档语义与 searchMembersPaged 的 faceClause 同款。
+    const std::string needle = query.needle.to_std_string();
+    if (!needle.empty()) {
+        std::string clause;
+        const char* face = "s.value";
+        if (query.caseSensitive) {
+            if (query.match == DbTextMatchKind::Exact) {
+                clause = std::string(face) + " = " + addParam(needle);
+            }
+            else {
+                std::string glob = globEscape(needle);
+                glob = query.match == DbTextMatchKind::Contains ? "*" + glob + "*"
+                                                                : glob + "*";
+                clause = std::string(face) + " GLOB " + addParam(std::move(glob));
+            }
+        }
+        else if (query.match == DbTextMatchKind::Exact) {
+            clause = "LOWER(" + std::string(face) + ") = " + addParam(asciiLower(needle));
+        }
+        else {
+            std::string like = likeEscape(asciiLower(needle));
+            like = query.match == DbTextMatchKind::Contains ? "%" + like + "%"
+                                                            : like + "%";
+            clause = "LOWER(" + std::string(face) + ") LIKE " + addParam(std::move(like)) +
+                     " ESCAPE '\\'";
+        }
+        addPredicate(std::move(clause));
+    }
+    if (query.stringKind.has_value()) {
+        switch (*query.stringKind) {
+        case DbStringKindFilter::StringLiteral:
+            addPredicate("s.kind = 1");
+            break;
+        case DbStringKindFilter::Utf8Name:
+            addPredicate("s.kind = 0 AND s.facet = 0");
+            break;
+        case DbStringKindFilter::Utf8Descriptor:
+            addPredicate("s.kind = 0 AND s.facet = 1");
+            break;
+        case DbStringKindFilter::Utf8ClassRef:
+            addPredicate("s.kind = 0 AND s.facet = 2");
+            break;
+        }
+    }
+    if (!query.owner.is_empty()) {
+        const std::string p = addParam(query.owner.to_std_string());
+        addPredicate("c.internal_name = " + p);
+    }
+    if (!query.packagePrefix.is_empty()) {
+        const std::string p =
+            addParam(globEscape(query.packagePrefix.to_std_string()) + "*");
+        addPredicate("c.internal_name GLOB " + p);
+    }
+
+    //可见域：活跃锚类的常量池字符串行（与类/成员搜索同一域）。
+    const std::string from =
+        " FROM cp_strings s"
+        " JOIN classes c ON c.class_id = s.class_id"
+        " JOIN entries e ON e.entry_id = c.entry_id AND e.tombstoned = 0";
+    const std::string where = predicate.empty() ? std::string() : " WHERE " + predicate;
+
+    //全量命中数（窗口外行不进 rows）。
+    DbStringSearchPage page;
+    {
+        const std::string countSql = "SELECT COUNT(*)" + from + where;
+        auto prepared = prepare(impl_->handle, countSql.c_str());
+        if (prepared.is_err()) return errorOf(std::move(prepared));
+        auto statement = std::move(prepared).unwrap();
+        for (ca::usize i = 0; i < params.size(); ++i) {
+            if (auto result = bindText(impl_->handle, statement.raw,
+                                       static_cast<int>(i + 1), refOfText(params[i]));
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) return ca::Ok(std::move(page));
+        page.total = static_cast<ca::u64>(sqlite3_column_int64(statement.raw, 0));
+    }
+
+    //窗口行：(entry path, internal_name, 类别文本序, value) BINARY 升序 =
+    //消费方命中行全序——类别文本 "constant_pool_string"(kind=1) 字典序先于
+    //"constant_pool_utf8"(kind=0)，CASE 显式落定，不用 kind 数值序。
+    {
+        const std::string rowsSql =
+            "SELECT c.internal_name, e.path, s.kind, s.facet, s.value" + from + where +
+            " ORDER BY e.path, c.internal_name,"
+            " CASE WHEN s.kind=1 THEN 0 ELSE 1 END, s.value LIMIT ?" +
+            std::to_string(params.size() + 1) + " OFFSET ?" +
+            std::to_string(params.size() + 2);
+        auto prepared = prepare(impl_->handle, rowsSql.c_str());
+        if (prepared.is_err()) return errorOf(std::move(prepared));
+        auto statement = std::move(prepared).unwrap();
+        for (ca::usize i = 0; i < params.size(); ++i) {
+            if (auto result = bindText(impl_->handle, statement.raw,
+                                       static_cast<int>(i + 1), refOfText(params[i]));
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw,
+                                  static_cast<int>(params.size() + 1), limit);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw,
+                                  static_cast<int>(params.size() + 2), offset);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        for (;;) {
+            auto hasRow = step(impl_->handle, statement.raw);
+            if (hasRow.is_err()) return errorOf(std::move(hasRow));
+            if (!hasRow.unwrap()) break;
+            DbStringSearchRow row;
+            row.internalName = utf8Column(statement.raw, 0);
+            row.entryPath    = utf8Column(statement.raw, 1);
+            row.kind         = static_cast<DbStringKind>(sqlite3_column_int(statement.raw, 2));
+            row.facet        = static_cast<DbUtf8Facet>(sqlite3_column_int(statement.raw, 3));
+            row.value        = utf8Column(statement.raw, 4);
+            page.rows.push_back(std::move(row));
+        }
+    }
+    return ca::Ok(std::move(page));
+}
+
+ca::Result<std::vector<DbNumberRow>, AnalysisDbError> AnalysisDb::searchNumbers(
+    const DbNumberQuery& query) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (query.needle.is_empty()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "number needle must not be empty"));
+    }
+
+    //值收窄三键 OR（value_text 字节等值 / value_int / value_bits）——候选
+    //超集，数值等值语义（消费方 stold 等值）SQL 不可表达，终审在消费方。
+    std::vector<std::string> params;
+    std::string              predicate;
+    const auto addParam = [&params](std::string value) {
+        params.push_back(std::move(value));
+        return "?" + std::to_string(params.size());
+    };
+
+    predicate = "n.value_text = " + addParam(query.needle.to_std_string());
+    if (query.valueInt.has_value()) {
+        predicate += " OR n.value_int = " + addParam(std::to_string(*query.valueInt));
+    }
+    if (query.valueBits.has_value()) {
+        predicate += " OR n.value_bits = " + addParam(std::to_string(*query.valueBits));
+    }
+    predicate = "(" + predicate + ")";
+    if (query.opcode >= 0) {
+        //opcode 门：常量池行 opcode 为 NULL 自动出局——与消费方「opcode 门
+        //排除常量池来源」同口径。
+        predicate += " AND n.opcode = " + addParam(std::to_string(query.opcode));
+    }
+    if (!query.owner.is_empty()) {
+        predicate += " AND c.internal_name = " + addParam(query.owner.to_std_string());
+    }
+    if (!query.packagePrefix.is_empty()) {
+        predicate += " AND c.internal_name GLOB " +
+                     addParam(globEscape(query.packagePrefix.to_std_string()) + "*");
+    }
+
+    //可见域同字符串/成员面；方法体行 LEFT JOIN members 补成员名（常量池行
+    // member_id = 0 不命中，两名列回空）。
+    const std::string sql =
+        "SELECT c.internal_name, e.path, m.name, m.descriptor, n.insn_index, n.opcode, "
+        "n.kind, n.value_text"
+        " FROM number_literals n"
+        " JOIN classes c ON c.class_id = n.class_id"
+        " JOIN entries e ON e.entry_id = c.entry_id AND e.tombstoned = 0"
+        " LEFT JOIN members m ON m.member_id = n.member_id"
+        " WHERE " +
+        predicate +
+        " ORDER BY e.path, c.internal_name, n.member_id, n.insn_index, n.literal_id";
+    auto prepared = prepare(impl_->handle, sql.c_str());
+    if (prepared.is_err()) return errorOf(std::move(prepared));
+    auto statement = std::move(prepared).unwrap();
+    for (ca::usize i = 0; i < params.size(); ++i) {
+        if (auto result = bindText(impl_->handle, statement.raw,
+                                   static_cast<int>(i + 1), refOfText(params[i]));
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+    }
+
+    std::vector<DbNumberRow> rows;
+    for (;;) {
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) break;
+        DbNumberRow row;
+        row.internalName     = utf8Column(statement.raw, 0);
+        row.entryPath        = utf8Column(statement.raw, 1);
+        row.memberName       = utf8Column(statement.raw, 2);
+        row.memberDescriptor = utf8Column(statement.raw, 3);
+        row.insnIndex        = sqlite3_column_int64(statement.raw, 4);
+        //常量池行 opcode 列 NULL——column_int 对 NULL 回 0，显式判型回 -1
+        //（与 DbNumberRecord 的哨兵口径一致）。
+        row.opcode           = sqlite3_column_type(statement.raw, 5) == SQLITE_NULL
+                                   ? -1
+                                   : sqlite3_column_int(statement.raw, 5);
+        row.kind             = static_cast<DbNumberKind>(sqlite3_column_int(statement.raw, 6));
+        row.valueText        = utf8Column(statement.raw, 7);
+        rows.push_back(std::move(row));
+    }
+    return ca::Ok(std::move(rows));
 }
 
 ca::Result<std::vector<DbMemberInfo>, AnalysisDbError> AnalysisDb::listMembers(

@@ -98,10 +98,17 @@ namespace mjbase::project {
 
 /// @brief 当前 schema 版本（`PRAGMA user_version`）。不识别的版本拒绝打开。
 ///        例外：紧邻上一版的旧库（v(n-1)）开 ReadWrite 时**原地迁移**——只做
-///        末位追加列的 `ALTER TABLE ADD COLUMN`，存量行零损失（renames 覆盖层
-///        等既有数据不动）；更老的版本与 ReadOnly 旧库仍 fail-loud（临时库
-///        重导入即愈）。新迁移步按版本序在此追加声明。
+///        零损失追加（末位追加列或纯新增表），renames 覆盖层等既有数据不动；
+///        更老的版本与 ReadOnly 旧库仍 fail-loud（临时库重导入即愈）。新迁移
+///        步按版本序在此追加声明。
 ///
+/// v12：常量事实面（strings/numbers 搜索 DB 化前提）——新增 `cp_strings`
+///        （类常量池字符串：String 条目与裸 UTF8，facet 由生产方按形状预分）
+///        与 `number_literals`（数值字面量：常量池条目 + 方法体指令立即数，
+///        值文本与整型值/浮点位型收窄键随行携带）两张纯新增表，存量表零
+///        改动；查询面 `searchStringsPaged` / `searchNumbers`，切片替换面
+///        `replaceCpStringsFromClass` / `replaceNumbersFromMember` /
+///        `replaceCpNumbersFromClass`。
 /// v11：成员签名面（成员搜索 DB 化前提）——members 末位追加 `signature`
 ///        列（TEXT NOT NULL DEFAULT ''，泛型签名原文；无签名空串），
 ///        `DbMemberInput` 随之携带、成员 upsert 覆写。
@@ -131,7 +138,7 @@ namespace mjbase::project {
 ///        `classes.entry_id` 外键。v2：classes 增加 super/access/version，
 ///        新增 interfaces 与 refs 表，members 增加 access。v1 未发布，
 ///        版本号仅用于识别本分支早期的临时库。
-inline constexpr ca::u32 kAnalysisDbSchemaVersion = 11;
+inline constexpr ca::u32 kAnalysisDbSchemaVersion = 12;
 
 /// @brief SQLite 数据库头里的应用标识（ASCII "MJDB"）。
 inline constexpr ca::u32 kAnalysisDbApplicationId = 0x4D4A4442u;
@@ -364,6 +371,125 @@ struct DbMemberSearchPage
 {
     std::vector<DbMemberSearchRow> rows;
     ca::u64                        total = 0; ///< 全量命中数（窗口外行不计入 rows）
+};
+
+/// @brief 常量池字符串条目类别（`cp_strings.kind`）。
+enum class DbStringKind : ca::u8
+{
+    Utf8   = 0, ///< 裸 UTF8 条目（未被任何 CONSTANT_String 引用）
+    String = 1, ///< CONSTANT_String 条目（字面量）
+};
+
+/// @brief 裸 UTF8 行的形状预分（生产方入库时按消费方同款形状规则算好，
+///        SQL 侧不做形状判定）。
+enum class DbUtf8Facet : ca::u8
+{
+    Name      = 0,
+    Descriptor = 1,
+    ClassRef  = 2,
+};
+
+/// @brief `searchStringsPaged` 的 string_kind 过滤（与消费方 MCP 面取值一一
+///        对应；literal = String 条目，其余三值只作用于裸 UTF8 行）。
+enum class DbStringKindFilter : ca::u8
+{
+    StringLiteral = 0,
+    Utf8Name      = 1,
+    Utf8Descriptor = 2,
+    Utf8ClassRef  = 3,
+};
+
+/// @brief 入库的常量池字符串行（`replaceCpStringsFromClass` 输入）。
+struct DbStringRecord
+{
+    DbStringKind        kind = DbStringKind::Utf8;
+    DbUtf8Facet         facet = DbUtf8Facet::Name; ///< 裸 UTF8 行的形状预分；String 行忽略
+    ca::str::Utf8String value;
+};
+
+/// @brief 常量池字符串搜索查询（`searchStringsPaged` 入参）。
+///
+/// 文本面与消费方工作副本扫描面逐字节对齐：仅对 `value` 单面匹配（引擎
+/// strings 面只匹配 value 文本，owner 仅作作用域）。
+struct DbStringSearchQuery
+{
+    ca::str::Utf8String needle;    ///< 匹配串；空 = 不做文本过滤（全量）
+    DbTextMatchKind     match = DbTextMatchKind::Contains;
+    bool                caseSensitive = false; ///< true = 字节敏感（GLOB/= 路径）
+    ca::str::Utf8String owner;    ///< 非空 = 类 internal_name 字节精确等值作用域
+    ca::str::Utf8String packagePrefix; ///< 非空 = 类 internal_name 字节前缀作用域
+    std::optional<DbStringKindFilter> stringKind; ///< 非空 = 只取该类别
+};
+
+/// @brief 常量池字符串搜索行（查询输出）。
+struct DbStringSearchRow
+{
+    ca::str::Utf8String internalName;
+    ca::str::Utf8String entryPath; ///< 关联活跃条目 path（可见域保证有锚）
+    DbStringKind        kind = DbStringKind::Utf8;
+    DbUtf8Facet         facet = DbUtf8Facet::Name;
+    ca::str::Utf8String value;
+};
+
+/// @brief 常量池字符串搜索页（查询输出）：窗口行 + 全量命中数。
+struct DbStringSearchPage
+{
+    std::vector<DbStringSearchRow> rows;
+    ca::u64                        total = 0; ///< 全量命中数（窗口外行不计入 rows）
+};
+
+/// @brief 数值字面量类别（`number_literals.kind`）。
+enum class DbNumberKind : ca::u8
+{
+    Int    = 0,
+    Long   = 1,
+    Float  = 2,
+    Double = 3,
+};
+
+/// @brief 入库的数值字面量行（`replaceNumbersFrom*` 输入）。
+///
+/// @p valueText 是消费方格式化器的逐字节产物（显示与匹配面）；@p valueInt /
+/// @p valueBits 是等值收窄键——整型值（int/long，及浮点行的整数值）带
+/// @p valueInt，float/double 行额外带 IEEE 位型 @p valueBits，消费方查询时
+/// 三键 OR 收窄后仍须客户端终审（数值等值语义 SQL 不可表达）。
+struct DbNumberRecord
+{
+    ca::i64              insnIndex = -1; ///< 常量池行恒 -1；方法体行 = 指令序号
+    ca::i32              opcode = -1;    ///< 常量池行恒 -1；方法体行 = opcode
+    DbNumberKind         kind = DbNumberKind::Int;
+    std::optional<ca::i64> valueInt;   ///< 整型值收窄键（可整表示时携带）
+    std::optional<ca::i64> valueBits;  ///< IEEE 位型收窄键（float/double 行携带）
+    ca::str::Utf8String   valueText;
+};
+
+/// @brief 数值字面量候选查询（`searchNumbers` 入参）。
+///
+/// 值收窄 = `valueText` 字节等值 OR `valueInt` 等值 OR `valueBits` 等值
+/// （三者都可选；返回集是消费方数值等值终审的候选超集，不在此复刻数值
+/// 语义）。@p opcode >= 0 时只取方法体行（常量池行 opcode 为 NULL 自动
+/// 出局，与消费方「opcode 门排除常量池来源」同口径）。
+struct DbNumberQuery
+{
+    ca::str::Utf8String   needle;    ///< 值文本等值守卫（必填非空）
+    std::optional<ca::i64> valueInt;  ///< 整型值收窄键；空 = 不参与
+    std::optional<ca::i64> valueBits; ///< IEEE 位型收窄键；空 = 不参与
+    ca::str::Utf8String   owner;    ///< 非空 = 类 internal_name 字节精确等值作用域
+    ca::str::Utf8String   packagePrefix; ///< 非空 = 类 internal_name 字节前缀作用域
+    ca::i32               opcode = -1;  ///< >= 0 = 只取该 opcode 的方法体行
+};
+
+/// @brief 数值字面量候选行（查询输出；memberName/Descriptor 为空 = 常量池行）。
+struct DbNumberRow
+{
+    ca::str::Utf8String internalName;
+    ca::str::Utf8String entryPath; ///< 关联活跃条目 path（可见域保证有锚）
+    ca::str::Utf8String memberName;       ///< 常量池行为空串
+    ca::str::Utf8String memberDescriptor; ///< 常量池行为空串
+    ca::i64             insnIndex = -1;
+    ca::i32             opcode = -1;
+    DbNumberKind        kind = DbNumberKind::Int;
+    ca::str::Utf8String valueText;
 };
 
 /// @brief 成员事实（查询输出）。
@@ -1121,6 +1247,42 @@ public:
     ca::Result<ca::usize, AnalysisDbError> replaceReferencesFromClass(
         ca::i64 batchId, ca::i64 sourceClassId, std::vector<DbReferenceRecord> references);
 
+    /// @brief 原子替换单个类的常量池字符串事实（单事务切片替换）。
+    ///
+    /// 删除 @p classId 名下全部 `cp_strings` 行后按输入序插入 @p records
+    ///（同形重复行 `ON CONFLICT DO NOTHING` 折叠——与消费方命中行去重
+    /// 同口径）；其他类的行逐行不动。@p classId 不存在或记录形状非法 →
+    /// `Invalid`，旧切片保持不动；空输入 = 清空该类切片。类常量池随类字
+    /// 节整体变化，无方法级切片。`batchId` 首参挂靠批次：0 = 无批写入；
+    /// 非 0 落 (2, class_id) 作用域行——与 `ingestClasses` 同锚。
+    ///
+    /// @return 写入的行数（折叠后）。
+    ca::Result<ca::usize, AnalysisDbError> replaceCpStringsFromClass(
+        ca::i64 batchId, ca::i64 classId, std::vector<DbStringRecord> records);
+
+    /// @brief 原子替换单个方法的方法体数值字面量事实（单事务切片替换）。
+    ///
+    /// 删除 @p memberId 名下全部方法体数值行（member_id 锚定）后按输入序
+    /// 插入 @p records（同形折叠同上）；该类常量池数值行与其他方法逐行
+    /// 不动。@p memberId 不存在或不是方法 → `Invalid`；空输入 = 清空切片
+    ///（消失方法的清切片即空输入调用）。
+    /// `batchId`：0 = 无批写入；非 0 落 (3, member_id) 作用域行。
+    ///
+    /// @return 写入的行数（折叠后）。
+    ca::Result<ca::usize, AnalysisDbError> replaceNumbersFromMember(
+        ca::i64 batchId, ca::i64 memberId, std::vector<DbNumberRecord> records);
+
+    /// @brief 原子替换单个类的常量池数值事实（单事务切片替换）。
+    ///
+    /// 删除 @p classId 名下全部常量池数值行（member_id = 0 哨兵锚定）后
+    /// 按输入序插入 @p records；方法体数值切片与其他类逐行不动。@p classId
+    /// 不存在 → `Invalid`；空输入 = 清空切片。`batchId`：0 = 无批写入；
+    /// 非 0 落 (2, class_id) 作用域行——与 `ingestClasses` 同锚。
+    ///
+    /// @return 写入的行数（折叠后）。
+    ca::Result<ca::usize, AnalysisDbError> replaceCpNumbersFromClass(
+        ca::i64 batchId, ca::i64 classId, std::vector<DbNumberRecord> records);
+
     /// @brief 按内部名查类事实；未登记返回 `std::nullopt`。
     ca::Result<std::optional<DbClassInfo>, AnalysisDbError> findClass(
         const ca::str::Utf8StringRef& owner) const;
@@ -1154,6 +1316,29 @@ public:
     /// 窗口 SELECT 两条语句）。
     ca::Result<DbMemberSearchPage, AnalysisDbError> searchMembersPaged(
         const DbMemberSearchQuery& query, ca::i64 limit, ca::i64 offset) const;
+
+    /// @brief 常量池字符串文本搜索（分页）。
+    ///
+    /// 可见域 = 活跃锚类的常量池字符串行（与类/成员搜索同一域）。文本面
+    /// 单面：`value` contains/prefix/exact 三档——不敏感档 `LOWER` 折叠
+    /// （只折 ASCII），敏感档 GLOB/= 字节语义，needle 元字符转义为字面；
+    /// `owner` / `packagePrefix` / `stringKind` 与文本谓词 AND。行序
+    /// (entry path, internal_name, 类别文本序 [String 先于 Utf8], value)
+    /// BINARY 升序 = 消费方命中行全序；页结构与窗口契约同
+    /// `searchClassesPaged`（limit/offset 负值 `Invalid`，页附全量 total）。
+    ca::Result<DbStringSearchPage, AnalysisDbError> searchStringsPaged(
+        const DbStringSearchQuery& query, ca::i64 limit, ca::i64 offset) const;
+
+    /// @brief 数值字面量候选查询（全量行，无窗口）。
+    ///
+    /// 值收窄三键 OR（`valueText` 字节等值 / `valueInt` / `valueBits`），
+    /// 作用域与 opcode 门同查询面契约；返回**候选超集**，数值等值语义
+    /// （消费方 `stold` 等值）不可 SQL 表达，由消费方对 `valueText` 终审
+    /// 后再排序分页。可见域同上；行序 (entry path, internal_name,
+    /// member_id, insn_index, literal_id) 全确定。`needle` 为空 →
+    /// `Invalid`（值等值守卫是本面的下限）。
+    ca::Result<std::vector<DbNumberRow>, AnalysisDbError> searchNumbers(
+        const DbNumberQuery& query) const;
 
     /// @brief 类的全部成员，按 (kind, name, descriptor) 升序。
     ca::Result<std::vector<DbMemberInfo>, AnalysisDbError> listMembers(

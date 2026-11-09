@@ -3671,12 +3671,564 @@ TEST(MjAnalysisDbTest, SearchMembersMatchesTextFacesScopesAndKindFilter)
     }
 }
 
-///v10 旧库开 ReadWrite 原地迁移到 v11（members 末位追加 signature 列）：
-///存量行零损失、旧行 signature 取列默认空串、其余表与锚关联不动；ReadOnly
-///旧库不迁移，fail-loud。
-TEST(MjAnalysisDbTest, MigratesMembersSignatureFromV10InPlace)
+//-- 常量事实面（cp_strings / number_literals）----------------------------------
+
+namespace {
+
+DbStringRecord stringRecord(DbStringKind kind, DbUtf8Facet facet, const char* value)
 {
-    const auto fabricateV10 = [](const std::filesystem::path& path) {
+    DbStringRecord record;
+    record.kind   = kind;
+    record.facet  = facet;
+    record.value  = Utf8String::from_cstr(value);
+    return record;
+}
+
+DbStringSearchQuery stringQuery(const char* needle, DbTextMatchKind match, bool caseSensitive)
+{
+    DbStringSearchQuery query;
+    query.needle        = Utf8String::from_cstr(needle);
+    query.match         = match;
+    query.caseSensitive = caseSensitive;
+    return query;
+}
+
+///命中行压成 `owner|kind|value` 键（kind 按消费方文本序：string 先于 utf8）。
+std::vector<std::string> stringKeys(const DbStringSearchPage& page)
+{
+    std::vector<std::string> keys;
+    keys.reserve(page.rows.size());
+    for (const DbStringSearchRow& row : page.rows) {
+        keys.push_back(row.internalName.to_std_string() + "|" +
+                       (row.kind == DbStringKind::String ? "string" : "utf8") + "|" +
+                       row.value.to_std_string());
+    }
+    return keys;
+}
+
+DbNumberRecord numberRecord(ca::i64 insn, ca::i32 opcode, DbNumberKind kind,
+                            std::optional<ca::i64> valueInt, std::optional<ca::i64> valueBits,
+                            const char* text)
+{
+    DbNumberRecord record;
+    record.insnIndex = insn;
+    record.opcode    = opcode;
+    record.kind      = kind;
+    record.valueInt  = valueInt;
+    record.valueBits = valueBits;
+    record.valueText = Utf8String::from_cstr(text);
+    return record;
+}
+
+}   // namespace
+
+///单文本面（value）× 三档 × 折叠/字节敏感、stringKind 过滤、作用域 AND、
+///同类同值 UNIQUE 折叠、墓碑/无锚类不可见、类别文本序 + 窗口/负值。
+TEST(MjAnalysisDbTest, SearchStringsMatchValueKindScopesAndFold)
+{
+    const auto path = freshDbPath("search_strings_match");
+    auto       db   = openOrDie(path);
+    auto inputId = db.ensureInput(S("lib/app.jar"), refOf(std::string(64, '0')), 4096);
+    ASSERT_TRUE(inputId.is_ok());
+    const ca::i64 jar = inputId.unwrap();
+
+    std::vector<DbEntryInput> entries;
+    entries.push_back(searchEntry("demo/Alpha.class", 'a'));
+    entries.push_back(searchEntry("demo/Beta.class", 'b'));
+    entries.push_back(searchEntry("demo/Gone.class", 'c'));
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(entries)).is_ok());
+    const auto firstLive = searchLiveEntryIds(db, jar);
+    const ca::i64 goneEntry = firstLive.at("demo/Gone.class");
+
+    std::vector<DbEntryInput> reduced;
+    reduced.push_back(searchEntry("demo/Alpha.class", 'a'));
+    reduced.push_back(searchEntry("demo/Beta.class", 'b'));
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(reduced)).is_ok());
+    const auto live = searchLiveEntryIds(db, jar);
+
+    std::vector<DbClassInput> classes;
+    classes.push_back(searchClass("demo/Alpha", live.at("demo/Alpha.class")));
+    classes.push_back(searchClass("demo/Beta", live.at("demo/Beta.class")));
+    classes.push_back(searchClass("demo/Gone", goneEntry));   // 墓碑锚：不可见
+    classes.push_back(searchClass("demo/NoAnchor", 0));       // 无锚类：不可见
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
+
+    const auto classIdOf = [&db](const char* name) -> ca::i64 {
+        const auto internal = Utf8String::from_cstr(name);
+        auto       found    = db.findClass(internal.ref());
+        EXPECT_TRUE(found.is_ok());
+        return std::move(found).unwrap().value_or(DbClassInfo{}).classId;
+    };
+    const ca::i64 alpha    = classIdOf("demo/Alpha");
+    const ca::i64 beta     = classIdOf("demo/Beta");
+    const ca::i64 gone     = classIdOf("demo/Gone");
+    const ca::i64 noAnchor = classIdOf("demo/NoAnchor");
+    ASSERT_GT(alpha, 0);
+    ASSERT_GT(beta, 0);
+
+    {
+        std::vector<DbStringRecord> records;
+        records.push_back(stringRecord(DbStringKind::String, DbUtf8Facet::Name,
+                                       "hello world"));
+        records.push_back(stringRecord(DbStringKind::String, DbUtf8Facet::Name, "Hello"));
+        records.push_back(stringRecord(DbStringKind::Utf8, DbUtf8Facet::Descriptor, "I"));
+        records.push_back(stringRecord(DbStringKind::Utf8, DbUtf8Facet::ClassRef,
+                                       "demo/Alpha"));
+        // 同类同值重复行：ON CONFLICT DO NOTHING 折叠（与引擎命中行去重同口径）。
+        records.push_back(stringRecord(DbStringKind::Utf8, DbUtf8Facet::Name, "counter"));
+        records.push_back(stringRecord(DbStringKind::Utf8, DbUtf8Facet::Name, "counter"));
+        auto replaced = db.replaceCpStringsFromClass(0, alpha, std::move(records));
+        ASSERT_TRUE(replaced.is_ok());
+    }
+    {
+        std::vector<DbStringRecord> records;
+        records.push_back(stringRecord(DbStringKind::Utf8, DbUtf8Facet::Name, "Widget"));
+        records.push_back(stringRecord(DbStringKind::String, DbUtf8Facet::Name, "greeting"));
+        ASSERT_TRUE(db.replaceCpStringsFromClass(0, beta, std::move(records)).is_ok());
+    }
+    {
+        std::vector<DbStringRecord> records;
+        records.push_back(stringRecord(DbStringKind::String, DbUtf8Facet::Name,
+                                       "ghost-string"));
+        ASSERT_TRUE(db.replaceCpStringsFromClass(0, gone, std::move(records)).is_ok());
+        records.clear();
+        records.push_back(stringRecord(DbStringKind::Utf8, DbUtf8Facet::Name,
+                                       "phantom-name"));
+        ASSERT_TRUE(db.replaceCpStringsFromClass(0, noAnchor, std::move(records)).is_ok());
+    }
+    // 未登记类：Invalid，不写库。
+    {
+        std::vector<DbStringRecord> records;
+        records.push_back(stringRecord(DbStringKind::String, DbUtf8Facet::Name, "x"));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.replaceCpStringsFromClass(0, 999999, std::move(records))));
+    }
+
+    // contains 不敏感：value 单面折叠命中。
+    {
+        auto page = db.searchStringsPaged(stringQuery("WORLD", DbTextMatchKind::Contains, false),
+                                          100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(1U, result.total);
+        ASSERT_EQ(1U, result.rows.size());
+        EXPECT_EQ("demo/Alpha", result.rows[0].internalName.to_std_string());
+        EXPECT_EQ("demo/Alpha.class", result.rows[0].entryPath.to_std_string());
+        EXPECT_EQ(DbStringKind::String, result.rows[0].kind);
+        EXPECT_EQ("hello world", result.rows[0].value.to_std_string());
+    }
+    // contains 字节敏感：大写 needle 不折叠，落空。
+    {
+        auto page = db.searchStringsPaged(stringQuery("WORLD", DbTextMatchKind::Contains, true),
+                                          100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(0U, std::move(page).unwrap().total);
+    }
+    // prefix / exact 两档（折叠路径）。
+    {
+        auto prefixed = db.searchStringsPaged(
+            stringQuery("DEMO/", DbTextMatchKind::Prefix, false), 100, 0);
+        ASSERT_TRUE(prefixed.is_ok());
+        const auto result = std::move(prefixed).unwrap();
+        EXPECT_EQ(1U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Alpha|utf8|demo/Alpha"}), stringKeys(result));
+    }
+    {
+        auto exact = db.searchStringsPaged(stringQuery("widget", DbTextMatchKind::Exact, false),
+                                           100, 0);
+        ASSERT_TRUE(exact.is_ok());
+        const auto result = std::move(exact).unwrap();
+        EXPECT_EQ(1U, result.total);
+        EXPECT_EQ(DbUtf8Facet::Name, result.rows[0].facet);
+    }
+    // stringKind 过滤：literal 只取 String 行；三档 utf8 形状只作用于裸 utf8 行。
+    {
+        DbStringSearchQuery query = stringQuery("e", DbTextMatchKind::Contains, false);
+        query.stringKind = DbStringKindFilter::StringLiteral;
+        auto page        = db.searchStringsPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(3U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Alpha|string|Hello",
+                                            "demo/Alpha|string|hello world",
+                                            "demo/Beta|string|greeting"}),
+                  stringKeys(result));
+    }
+    {
+        DbStringSearchQuery query = stringQuery("ounter", DbTextMatchKind::Contains, false);
+        query.stringKind = DbStringKindFilter::Utf8Name;
+        auto page        = db.searchStringsPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(1U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Alpha|utf8|counter"}), stringKeys(result));
+    }
+    {
+        DbStringSearchQuery query = stringQuery("I", DbTextMatchKind::Exact, true);
+        query.stringKind = DbStringKindFilter::Utf8Descriptor;
+        auto page        = db.searchStringsPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(1U, std::move(page).unwrap().total);
+    }
+    {
+        DbStringSearchQuery query = stringQuery("Alpha", DbTextMatchKind::Contains, false);
+        query.stringKind = DbStringKindFilter::Utf8ClassRef;
+        auto page        = db.searchStringsPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(1U, std::move(page).unwrap().total);
+    }
+    // 作用域 AND。
+    {
+        DbStringSearchQuery query = stringQuery("llo", DbTextMatchKind::Contains, false);
+        query.owner = Utf8String::from_cstr("demo/Alpha");
+        auto page   = db.searchStringsPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(2U, result.total);
+    }
+    {
+        DbStringSearchQuery query = stringQuery("llo", DbTextMatchKind::Contains, false);
+        query.packagePrefix = Utf8String::from_cstr("other/");
+        auto page           = db.searchStringsPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(0U, std::move(page).unwrap().total);
+    }
+    // 可见域：墓碑锚类与无锚类的行不在面内。
+    {
+        auto ghost = db.searchStringsPaged(stringQuery("ghost", DbTextMatchKind::Contains, false),
+                                           100, 0);
+        ASSERT_TRUE(ghost.is_ok());
+        EXPECT_EQ(0U, std::move(ghost).unwrap().total);
+        auto phantom = db.searchStringsPaged(
+            stringQuery("phantom", DbTextMatchKind::Contains, false), 100, 0);
+        ASSERT_TRUE(phantom.is_ok());
+        EXPECT_EQ(0U, std::move(phantom).unwrap().total);
+    }
+    // 空 needle 全量：重复行已折叠——7 行；类别文本序（string 先于 utf8）+
+    // value BINARY（"Hello" 的 'H' 先于 "hello world" 的 'h'；utf8 段
+    // "I" < "counter" < "demo/Alpha"）。
+    {
+        DbStringSearchQuery query;
+        auto page = db.searchStringsPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(7U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Alpha|string|Hello",
+                                            "demo/Alpha|string|hello world",
+                                            "demo/Alpha|utf8|I",
+                                            "demo/Alpha|utf8|counter",
+                                            "demo/Alpha|utf8|demo/Alpha",
+                                            "demo/Beta|string|greeting",
+                                            "demo/Beta|utf8|Widget"}),
+                  stringKeys(result));
+    }
+    // 窗口：offset 跳行、limit 截尾；total 恒全量。
+    {
+        DbStringSearchQuery query;
+        auto page = db.searchStringsPaged(query, 2, 3);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(7U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Alpha|utf8|counter",
+                                            "demo/Alpha|utf8|demo/Alpha"}),
+                  stringKeys(result));
+    }
+    // 负窗口：Invalid。
+    {
+        DbStringSearchQuery query;
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.searchStringsPaged(query, -1, 0)));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.searchStringsPaged(query, 10, -1)));
+    }
+}
+
+///数值候选三键 OR 收窄、opcode 门排除常量池行、作用域/可见域、切片替换
+///（换锚重写 / 空清 / 跨类隔离 / 未登记与字段成员 Invalid / 同形折叠）。
+TEST(MjAnalysisDbTest, ReplacesAndSearchesNumberLiterals)
+{
+    const auto path = freshDbPath("search_numbers_match");
+    auto       db   = openOrDie(path);
+    auto inputId = db.ensureInput(S("lib/app.jar"), refOf(std::string(64, '0')), 4096);
+    ASSERT_TRUE(inputId.is_ok());
+    const ca::i64 jar = inputId.unwrap();
+
+    std::vector<DbEntryInput> entries;
+    entries.push_back(searchEntry("demo/Alpha.class", 'a'));
+    entries.push_back(searchEntry("demo/Beta.class", 'b'));
+    entries.push_back(searchEntry("demo/Gone.class", 'c'));
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(entries)).is_ok());
+    const auto firstLive = searchLiveEntryIds(db, jar);
+    const ca::i64 goneEntry = firstLive.at("demo/Gone.class");
+
+    std::vector<DbEntryInput> reduced;
+    reduced.push_back(searchEntry("demo/Alpha.class", 'a'));
+    reduced.push_back(searchEntry("demo/Beta.class", 'b'));
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(reduced)).is_ok());
+    const auto live = searchLiveEntryIds(db, jar);
+
+    std::vector<DbClassInput> classes;
+    {
+        DbClassInput alpha = searchClass("demo/Alpha", live.at("demo/Alpha.class"));
+        alpha.members.push_back(methodInput("run", "()V"));
+        classes.push_back(std::move(alpha));
+    }
+    {
+        DbClassInput beta = searchClass("demo/Beta", live.at("demo/Beta.class"));
+        beta.members.push_back(methodInput("go", "()V"));
+        beta.members.push_back(fieldInput("count", "I"));   // 字段：数值切片拒收
+        classes.push_back(std::move(beta));
+    }
+    classes.push_back(searchClass("demo/Gone", goneEntry));   // 墓碑锚：不可见
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
+
+    const auto classIdOf = [&db](const char* name) -> ca::i64 {
+        const auto internal = Utf8String::from_cstr(name);
+        auto       found    = db.findClass(internal.ref());
+        EXPECT_TRUE(found.is_ok());
+        return std::move(found).unwrap().value_or(DbClassInfo{}).classId;
+    };
+    const auto methodIdOf = [&db](const char* owner, const char* name) -> ca::i64 {
+        const auto ownerText = Utf8String::from_cstr(owner);
+        const auto nameText  = Utf8String::from_cstr(name);
+        auto       found     = db.findMember(DbMemberKind::Method, ownerText.ref(),
+                                             nameText.ref(), refOf(std::string("()V")));
+        EXPECT_TRUE(found.is_ok());
+        return std::move(found).unwrap().value_or(DbMemberInfo{}).memberId;
+    };
+    const ca::i64 alpha    = classIdOf("demo/Alpha");
+    const ca::i64 beta     = classIdOf("demo/Beta");
+    const ca::i64 gone     = classIdOf("demo/Gone");
+    const ca::i64 alphaRun = methodIdOf("demo/Alpha", "run");
+    const ca::i64 betaGo   = methodIdOf("demo/Beta", "go");
+    ASSERT_GT(alphaRun, 0);
+    ASSERT_GT(betaGo, 0);
+
+    // float 1.0f 位型 0x3F800000；0.5f 位型 0x3F000000；double 0.5 位型
+    // 0x3FE0000000000000——float/double 同值不同位型，收窄键可分。
+    const ca::i64 floatOneBits   = 0x3F800000;
+    const ca::i64 floatHalfBits  = 0x3F000000;
+    const ca::i64 doubleHalfBits = static_cast<ca::i64>(0x3FE0000000000000ULL);
+
+    {
+        std::vector<DbNumberRecord> records;
+        records.push_back(numberRecord(1, 18, DbNumberKind::Float, 1, floatOneBits, "1"));
+        ASSERT_TRUE(db.replaceNumbersFromMember(0, alphaRun, std::move(records)).is_ok());
+    }
+    {
+        std::vector<DbNumberRecord> records;
+        records.push_back(numberRecord(0, 16, DbNumberKind::Int, 1, std::nullopt, "1"));
+        records.push_back(numberRecord(3, 132, DbNumberKind::Int, 5, std::nullopt, "5"));
+        ASSERT_TRUE(db.replaceNumbersFromMember(0, betaGo, std::move(records)).is_ok());
+    }
+    {
+        std::vector<DbNumberRecord> records;
+        records.push_back(numberRecord(-1, -1, DbNumberKind::Int, 42, std::nullopt, "42"));
+        records.push_back(numberRecord(-1, -1, DbNumberKind::Double, std::nullopt,
+                                       doubleHalfBits, "0.5"));
+        ASSERT_TRUE(db.replaceCpNumbersFromClass(0, beta, std::move(records)).is_ok());
+    }
+    {
+        std::vector<DbNumberRecord> records;
+        records.push_back(numberRecord(-1, -1, DbNumberKind::Float, std::nullopt,
+                                       floatHalfBits, "0.5"));
+        ASSERT_TRUE(db.replaceCpNumbersFromClass(0, alpha, std::move(records)).is_ok());
+    }
+    {
+        std::vector<DbNumberRecord> records;
+        records.push_back(numberRecord(-1, -1, DbNumberKind::Int, 999, std::nullopt, "999"));
+        ASSERT_TRUE(db.replaceCpNumbersFromClass(0, gone, std::move(records)).is_ok());
+    }
+    // 未登记成员 / 字段成员 / 未登记类：Invalid，不写库。
+    {
+        std::vector<DbNumberRecord> records;
+        records.push_back(numberRecord(0, 16, DbNumberKind::Int, 1, std::nullopt, "1"));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.replaceNumbersFromMember(0, 999999, std::move(records))));
+    }
+    {
+        const auto ownerText = Utf8String::from_cstr("demo/Beta");
+        const auto nameText  = Utf8String::from_cstr("count");
+        auto       field     = db.findMember(DbMemberKind::Field, ownerText.ref(),
+                                             nameText.ref(), refOf(std::string("I")));
+        ASSERT_TRUE(field.is_ok());
+        const ca::i64 fieldId = std::move(field).unwrap().value_or(DbMemberInfo{}).memberId;
+        ASSERT_GT(fieldId, 0);
+        std::vector<DbNumberRecord> records;
+        records.push_back(numberRecord(0, 16, DbNumberKind::Int, 1, std::nullopt, "1"));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.replaceNumbersFromMember(0, fieldId, std::move(records))));
+    }
+    {
+        std::vector<DbNumberRecord> records;
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.replaceCpNumbersFromClass(0, 999999, std::move(records))));
+    }
+
+    // valueInt 收窄：int 1 与 float 1.0f（值文本 "1"、valueInt 1）双命中——
+    // needle 文本 "1.0" 不等于任何行文本，等值全靠收窄键（候选超集语义）。
+    {
+        DbNumberQuery query;
+        query.needle   = Utf8String::from_cstr("1.0");
+        query.valueInt = 1;
+        auto searched  = db.searchNumbers(query);
+        ASSERT_TRUE(searched.is_ok());
+        const auto rows = std::move(searched).unwrap();
+        ASSERT_EQ(2U, rows.size());
+        EXPECT_EQ("demo/Alpha", rows[0].internalName.to_std_string());
+        EXPECT_EQ("run", rows[0].memberName.to_std_string());
+        EXPECT_EQ("()V", rows[0].memberDescriptor.to_std_string());
+        EXPECT_EQ(1, rows[0].insnIndex);
+        EXPECT_EQ(18, rows[0].opcode);
+        EXPECT_EQ(DbNumberKind::Float, rows[0].kind);
+        EXPECT_EQ("demo/Beta", rows[1].internalName.to_std_string());
+        EXPECT_EQ(0, rows[1].insnIndex);
+        EXPECT_EQ(DbNumberKind::Int, rows[1].kind);
+    }
+    // valueBits 收窄：float 与 double 同值 0.5 位型可分——needle 取文本臂
+    // 落空的 "0.50"（stold 等值、字节不等），命中全靠位型键（超集语义）。
+    {
+        DbNumberQuery query;
+        query.needle    = Utf8String::from_cstr("0.50");
+        query.valueBits = doubleHalfBits;
+        auto searched   = db.searchNumbers(query);
+        ASSERT_TRUE(searched.is_ok());
+        const auto rows = std::move(searched).unwrap();
+        ASSERT_EQ(1U, rows.size());
+        EXPECT_EQ("demo/Beta", rows[0].internalName.to_std_string());
+        EXPECT_EQ(DbNumberKind::Double, rows[0].kind);
+        // 常量池行：成员名列空、insn -1、opcode -1（NULL 判型回哨兵）。
+        EXPECT_TRUE(rows[0].memberName.is_empty());
+        EXPECT_EQ(-1, rows[0].insnIndex);
+        EXPECT_EQ(-1, rows[0].opcode);
+    }
+    {
+        DbNumberQuery query;
+        query.needle    = Utf8String::from_cstr("0.50");
+        query.valueBits = floatHalfBits;
+        auto searched   = db.searchNumbers(query);
+        ASSERT_TRUE(searched.is_ok());
+        const auto rows = std::move(searched).unwrap();
+        ASSERT_EQ(1U, rows.size());
+        EXPECT_EQ(DbNumberKind::Float, rows[0].kind);
+        EXPECT_EQ("demo/Alpha", rows[0].internalName.to_std_string());
+    }
+    // 仅文本等值（无收窄键）：两条 0.5 都命中（value_text 精确等值）。
+    {
+        DbNumberQuery query;
+        query.needle  = Utf8String::from_cstr("0.5");
+        auto searched = db.searchNumbers(query);
+        ASSERT_TRUE(searched.is_ok());
+        EXPECT_EQ(2U, std::move(searched).unwrap().size());
+    }
+    // opcode 门：常量池行（opcode NULL）与其他 opcode 的行出局。
+    {
+        DbNumberQuery query;
+        query.needle   = Utf8String::from_cstr("1");
+        query.valueInt = 1;
+        query.opcode   = 18;
+        auto searched  = db.searchNumbers(query);
+        ASSERT_TRUE(searched.is_ok());
+        const auto rows = std::move(searched).unwrap();
+        ASSERT_EQ(1U, rows.size());
+        EXPECT_EQ("demo/Alpha", rows[0].internalName.to_std_string());
+        EXPECT_EQ(18, rows[0].opcode);
+    }
+    // 作用域 / 可见域（墓碑类的常量池数值不可见）。
+    {
+        DbNumberQuery query;
+        query.needle  = Utf8String::from_cstr("42");
+        query.owner   = Utf8String::from_cstr("demo/Beta");
+        auto searched = db.searchNumbers(query);
+        ASSERT_TRUE(searched.is_ok());
+        EXPECT_EQ(1U, std::move(searched).unwrap().size());
+    }
+    {
+        DbNumberQuery query;
+        query.needle       = Utf8String::from_cstr("42");
+        query.packagePrefix = Utf8String::from_cstr("other/");
+        auto searched      = db.searchNumbers(query);
+        ASSERT_TRUE(searched.is_ok());
+        EXPECT_EQ(0U, std::move(searched).unwrap().size());
+    }
+    {
+        DbNumberQuery query;
+        query.needle   = Utf8String::from_cstr("999");
+        query.valueInt = 999;
+        auto searched  = db.searchNumbers(query);
+        ASSERT_TRUE(searched.is_ok());
+        EXPECT_EQ(0U, std::move(searched).unwrap().size());
+    }
+    // 空 needle：Invalid（值等值守卫是本面下限）。
+    {
+        DbNumberQuery query;
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid, takeErrorKind(db.searchNumbers(query)));
+    }
+
+    // 切片替换：换锚重写（旧行消失）、同形折叠、空输入清空、类常量池/方法体
+    // 互不触碰、跨类隔离。
+    {
+        std::vector<DbNumberRecord> records;
+        records.push_back(numberRecord(9, 16, DbNumberKind::Int, 77, std::nullopt, "77"));
+        // 同形重复：折叠为一行。
+        records.push_back(numberRecord(9, 16, DbNumberKind::Int, 77, std::nullopt, "77"));
+        ASSERT_TRUE(db.replaceNumbersFromMember(0, betaGo, std::move(records)).is_ok());
+
+        DbNumberQuery stale;
+        stale.needle   = Utf8String::from_cstr("5");
+        stale.valueInt = 5;
+        auto goneRows  = db.searchNumbers(stale);
+        ASSERT_TRUE(goneRows.is_ok());
+        EXPECT_EQ(0U, std::move(goneRows).unwrap().size());
+
+        DbNumberQuery fresh;
+        fresh.needle   = Utf8String::from_cstr("77");
+        fresh.valueInt = 77;
+        auto found     = db.searchNumbers(fresh);
+        ASSERT_TRUE(found.is_ok());
+        EXPECT_EQ(1U, std::move(found).unwrap().size());
+    }
+    {
+        // 方法体清空不影响本类常量池行。
+        std::vector<DbNumberRecord> records;
+        ASSERT_TRUE(db.replaceNumbersFromMember(0, betaGo, std::move(records)).is_ok());
+        DbNumberQuery member;
+        member.needle   = Utf8String::from_cstr("77");
+        member.valueInt = 77;
+        auto emptied    = db.searchNumbers(member);
+        ASSERT_TRUE(emptied.is_ok());
+        EXPECT_EQ(0U, std::move(emptied).unwrap().size());
+        DbNumberQuery cp;
+        cp.needle   = Utf8String::from_cstr("42");
+        cp.valueInt = 42;
+        auto kept   = db.searchNumbers(cp);
+        ASSERT_TRUE(kept.is_ok());
+        EXPECT_EQ(1U, std::move(kept).unwrap().size());
+    }
+    {
+        // 类常量池清空不影响其他类的方法体行。
+        std::vector<DbNumberRecord> records;
+        ASSERT_TRUE(db.replaceCpNumbersFromClass(0, beta, std::move(records)).is_ok());
+        DbNumberQuery cp;
+        cp.needle   = Utf8String::from_cstr("42");
+        cp.valueInt = 42;
+        auto gone   = db.searchNumbers(cp);
+        ASSERT_TRUE(gone.is_ok());
+        EXPECT_EQ(0U, std::move(gone).unwrap().size());
+        DbNumberQuery other;
+        other.needle   = Utf8String::from_cstr("1");
+        other.valueInt = 1;
+        auto kept      = db.searchNumbers(other);
+        ASSERT_TRUE(kept.is_ok());
+        EXPECT_EQ(1U, std::move(kept).unwrap().size());
+    }
+}
+
+///v11 旧库开 ReadWrite 原地迁移到 v12（纯新增常量面两表）：存量事实零损失、
+///新面空库可查可写；ReadOnly 旧库与 v10 旧库 fail-loud。
+TEST(MjAnalysisDbTest, MigratesConstFacesFromV11InPlace)
+{
+    const auto fabricate = [](const std::filesystem::path& path, int version) {
         {
             auto db = openOrDie(path);
             auto inputId = db.ensureInput(S("lib/app.jar"), refOf(std::string(64, '0')), 4096);
@@ -3686,15 +4238,13 @@ TEST(MjAnalysisDbTest, MigratesMembersSignatureFromV10InPlace)
             entries.push_back(searchEntry("demo/Mig.class", 'd'));
             ASSERT_TRUE(db.ingestEntries(0, jar, std::move(entries)).is_ok());
             const auto live = searchLiveEntryIds(db, jar);
-            //类不带成员入库——members 表随后被整体换成 v10 旧形状。
             std::vector<DbClassInput> classes;
             classes.push_back(searchClass("demo/Mig", live.at("demo/Mig.class")));
             ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
             ASSERT_TRUE(db.save().is_ok());
         }
 
-        //裸读写连接把 members 换回 v10 旧形状（无 signature 列）并写入一行
-        //旧数据，user_version 落 10。
+        // 裸读写连接把库压回旧版：常量面两表整体摘除 + user_version 落指定版。
         sqlite3* rw = nullptr;
         ASSERT_EQ(SQLITE_OK, sqlite3_open_v2(path.string().c_str(), &rw,
                                              SQLITE_OPEN_READWRITE, nullptr));
@@ -3704,62 +4254,66 @@ TEST(MjAnalysisDbTest, MigratesMembersSignatureFromV10InPlace)
             sqlite3_free(message);
             return rc;
         };
-        ASSERT_EQ(SQLITE_OK, execRaw("DROP TABLE members"));
-        ASSERT_EQ(SQLITE_OK, execRaw(
-            "CREATE TABLE members("
-            "  member_id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "  class_id INTEGER NOT NULL REFERENCES classes(class_id) ON DELETE CASCADE,"
-            "  kind INTEGER NOT NULL CHECK(kind IN (0,1)),"
-            "  name TEXT NOT NULL,"
-            "  descriptor TEXT NOT NULL,"
-            "  access INTEGER NOT NULL DEFAULT 0,"
-            "  UNIQUE(class_id, kind, name, descriptor)"
-            ")"));
-        ASSERT_EQ(SQLITE_OK, execRaw(
-            "INSERT INTO members(class_id, kind, name, descriptor, access) VALUES("
-            "(SELECT class_id FROM classes WHERE internal_name='demo/Mig'), "
-            "1, 'run', '()V', 1)"));
-        ASSERT_EQ(SQLITE_OK, execRaw("PRAGMA user_version=10"));
+        ASSERT_EQ(SQLITE_OK, execRaw("DROP TABLE cp_strings"));
+        ASSERT_EQ(SQLITE_OK, execRaw("DROP TABLE number_literals"));
+        const std::string versionSql = "PRAGMA user_version=" + std::to_string(version);
+        ASSERT_EQ(SQLITE_OK, execRaw(versionSql.c_str()));
         sqlite3_close(rw);
     };
 
-    //ReadWrite 重开：原地 ALTER 迁移，版本落 v11。
+    // ReadWrite 重开：原地纯新增迁移，版本落 v12。
     {
-        const auto path = freshDbPath("members_v10_migrate");
-        fabricateV10(path);
+        const auto path = freshDbPath("const_faces_v11_migrate");
+        fabricate(path, 11);
 
         auto db = openOrDie(path);
         EXPECT_EQ(kAnalysisDbSchemaVersion, db.schemaVersion());
-        EXPECT_EQ(11U, kAnalysisDbSchemaVersion);
+        EXPECT_EQ(12U, kAnalysisDbSchemaVersion);
 
-        //旧 members 行零损失：类锚关联仍在、行可搜，signature 取列默认空串。
-        auto page = db.searchMembersPaged(
-            memberQuery("run", DbTextMatchKind::Contains, false), 100, 0);
-        ASSERT_TRUE(page.is_ok());
-        const auto result = std::move(page).unwrap();
-        ASSERT_EQ(1U, result.rows.size());
-        EXPECT_EQ(1U, result.total);
-        EXPECT_EQ("run", result.rows[0].name.to_std_string());
-        EXPECT_EQ("()V", result.rows[0].descriptor.to_std_string());
-        EXPECT_EQ(DbMemberKind::Method, result.rows[0].kind);
-        EXPECT_EQ("demo/Mig.class", result.rows[0].entryPath.to_std_string());
-        EXPECT_TRUE(result.rows[0].signature.is_empty());
-
-        //迁移只动 members：类事实/条目锚照常可查。
-        auto classPage = db.searchClassesPaged(searchQuery("Mig", DbTextMatchKind::Contains,
-                                                           false),
-                                               100, 0);
+        // 存量事实零损失：类照常可查；新面空库可查（两张表已重建）。
+        auto classPage = db.searchClassesPaged(
+            searchQuery("Mig", DbTextMatchKind::Contains, false), 100, 0);
         ASSERT_TRUE(classPage.is_ok());
-        const auto classResult = std::move(classPage).unwrap();
-        EXPECT_EQ(1U, classResult.total);
+        EXPECT_EQ(1U, std::move(classPage).unwrap().total);
+        DbStringSearchQuery strings;
+        auto stringsPage = db.searchStringsPaged(strings, 100, 0);
+        ASSERT_TRUE(stringsPage.is_ok());
+        EXPECT_EQ(0U, std::move(stringsPage).unwrap().total);
+        DbNumberQuery numbers;
+        numbers.needle = Utf8String::from_cstr("1");
+        auto numberRows = db.searchNumbers(numbers);
+        ASSERT_TRUE(numberRows.is_ok());
+        EXPECT_TRUE(std::move(numberRows).unwrap().empty());
+
+        // 迁移后新面照常可写（写路径走新表无残留态）。
+        const auto migText = Utf8String::from_cstr("demo/Mig");
+        auto       found   = db.findClass(migText.ref());
+        ASSERT_TRUE(found.is_ok());
+        const ca::i64 mig = std::move(found).unwrap().value_or(DbClassInfo{}).classId;
+        ASSERT_GT(mig, 0);
+        std::vector<DbStringRecord> records;
+        records.push_back(stringRecord(DbStringKind::String, DbUtf8Facet::Name, "mig"));
+        ASSERT_TRUE(db.replaceCpStringsFromClass(0, mig, std::move(records)).is_ok());
+        auto after = db.searchStringsPaged(
+            stringQuery("mig", DbTextMatchKind::Contains, false), 100, 0);
+        ASSERT_TRUE(after.is_ok());
+        EXPECT_EQ(1U, std::move(after).unwrap().total);
     }
 
-    //ReadOnly 旧库：不迁移，Schema fail-loud。
+    // ReadOnly 旧库：不迁移，Schema fail-loud。
     {
-        const auto path = freshDbPath("members_v10_readonly");
-        fabricateV10(path);
-
+        const auto path = freshDbPath("const_faces_v11_readonly");
+        fabricate(path, 11);
         auto result = AnalysisDb::open(refOf(path.string()), AnalysisDbOpenMode::ReadOnly);
+        ASSERT_TRUE(result.is_err());
+        EXPECT_EQ(AnalysisDbErrorKind::Schema, std::move(result).unwrap_err().kind);
+    }
+
+    // v10 旧库（隔代）：n-1 政策之外，fail-loud。
+    {
+        const auto path = freshDbPath("const_faces_v10_fail");
+        fabricate(path, 10);
+        auto result = AnalysisDb::open(refOf(path.string()), AnalysisDbOpenMode::ReadWrite);
         ASSERT_TRUE(result.is_err());
         EXPECT_EQ(AnalysisDbErrorKind::Schema, std::move(result).unwrap_err().kind);
     }
