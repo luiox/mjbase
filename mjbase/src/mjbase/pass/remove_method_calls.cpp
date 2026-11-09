@@ -162,8 +162,8 @@ bool isCat2Arg(char typeChar) noexcept { return typeChar == 'J' || typeChar == '
 bool specMatches(const MethodCallSpec& spec, std::string_view owner, std::string_view name,
                  std::string_view desc)
 {
-    return spec.owner == owner && spec.name == name &&
-           (spec.desc.empty() || spec.desc == desc);
+    return spec.owner.ref() == owner && spec.name.ref() == name &&
+           (spec.desc.is_empty() || spec.desc.ref() == desc);
 }
 
 bool anySpecMatches(const std::vector<MethodCallSpec>& specs, std::string_view owner,
@@ -439,8 +439,9 @@ bool specIsPinned(const MethodCallSpec&                              spec,
                   const std::unordered_set<MemberTriple, MemberTripleHash>& pins)
 {
     for (const MemberTriple& pin : pins) {
-        if (pin.owner == spec.owner && pin.name == spec.name &&
-            (spec.desc.empty() || pin.desc == spec.desc)) {
+        if (spec.owner.ref() == std::string_view(pin.owner) &&
+            spec.name.ref() == std::string_view(pin.name) &&
+            (spec.desc.is_empty() || std::string_view(pin.desc) == spec.desc.ref())) {
             return true;
         }
     }
@@ -628,7 +629,10 @@ mjbase::spi::PreservedAnalyses MethodCallRemover::run(mjbase::model::ResourceCon
     }
     std::vector<const MethodCallSpec*> includes;
     for (const MethodCallSpec& spec : config_.includeCalls) {
-        if (anySpecMatches(config_.excludeCalls, spec.owner, spec.name, spec.desc)) continue;
+        if (anySpecMatches(config_.excludeCalls, spec.owner.ref(), spec.name.ref(),
+                           spec.desc.ref())) {
+            continue;
+        }
         if (specIsPinned(spec, pins)) continue;
         includes.push_back(&spec);
     }

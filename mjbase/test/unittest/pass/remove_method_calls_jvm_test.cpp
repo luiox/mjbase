@@ -120,12 +120,12 @@ TEST(MethodCallRemoverJvm, CleanedClassRunsOnRealJvm)
 
     mjbase::pass::MethodCallRemovalConfig config;
     mjbase::pass::MethodCallSpec noisy;
-    noisy.owner = "hb/jvm/rmcall/Main";
-    noisy.name  = "noisy";
-    noisy.desc  = "()V";
-    config.includeCalls.push_back(noisy);
+    noisy.owner = ca::str::Utf8String::from_cstr("hb/jvm/rmcall/Main");
+    noisy.name  = ca::str::Utf8String::from_cstr("noisy");
+    noisy.desc  = ca::str::Utf8String::from_cstr("()V");
+    config.includeCalls.push_back(std::move(noisy));
     config.enableUnusedResultWhitelist = true;
-    mjbase::pass::MethodCallRemover    pass(config);
+    mjbase::pass::MethodCallRemover    pass(std::move(config));
 
     {
         ca::str::Utf8StringArena           arena;

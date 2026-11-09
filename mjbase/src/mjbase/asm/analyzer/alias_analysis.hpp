@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "libca/core/datatype.hpp"
+#include "libca/str/utf8_string.hpp"
 
 #include "mjbase/analysis/andersen_points_to.hpp"
 #include "mjbase/keys.hpp"
@@ -303,21 +304,24 @@ public:
                                                    const AliasValue& index) const;
 
     /// @brief 已知值代表的具体分配类型（"new:" 身份的尾段，排序去重）。
-    std::vector<std::string> possibleTypesOf(const AliasValue& value) const;
+    ///
+    /// 诊断出口：类型名为内部名（ASCII 域），驻留收进返回。
+    std::vector<ca::str::Utf8String> possibleTypesOf(const AliasValue& value) const;
 
-    std::vector<std::string> possibleReturnTypesOf(std::string_view owner, std::string_view name,
-                                                   std::string_view desc) const;
+    std::vector<ca::str::Utf8String> possibleReturnTypesOf(std::string_view owner,
+                                                           std::string_view name,
+                                                           std::string_view desc) const;
 
     /// @brief 到达方法返回槽的 Andersen 分配点集合（诊断出口）。
-    std::vector<std::string> andersenReturnPointsToOf(std::string_view owner,
-                                                      std::string_view name,
-                                                      std::string_view desc) const;
+    std::vector<ca::str::Utf8String> andersenReturnPointsToOf(std::string_view owner,
+                                                              std::string_view name,
+                                                              std::string_view desc) const;
 
     /// @brief 到达方法某形参的 Andersen 分配点集合（诊断出口）。
-    std::vector<std::string> andersenParameterPointsToOf(std::string_view owner,
-                                                         std::string_view name,
-                                                         std::string_view desc,
-                                                         ca::usize        parameter) const;
+    std::vector<ca::str::Utf8String> andersenParameterPointsToOf(std::string_view owner,
+                                                                 std::string_view name,
+                                                                 std::string_view desc,
+                                                                 ca::usize        parameter) const;
 
     /// @brief 展开调用绑定后的等价事实流（诊断/测试专用）。
     AliasExpandedFacts expandedFactsOf(std::string_view owner, std::string_view name,

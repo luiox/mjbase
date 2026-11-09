@@ -19,6 +19,8 @@
 /// 推导基本类型（int/long/float/double），引用类型保留原声明；命名照常。
 #pragma once
 
+#include "libca/str/utf8_string.hpp"
+
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
 #include "mjbase/spi/pass_pipeline.hpp"
@@ -32,8 +34,8 @@ struct LocalVariableAnnotatorOptions
     bool promoteTypes = true;
     /// @brief 覆盖已有名字；false 时沿用覆盖该段起点的原 LVT 行名字。
     bool replaceNames = true;
-    /// @brief 生成名前缀，最终名为 `<prefix><slot>[_<序号>]`。
-    std::string prefix = "var";
+    /// @brief 生成名前缀，最终名为 `<prefix><slot>[_<序号>]`（内部字面量驻留）。
+    ca::str::Utf8String prefix = ca::str::Utf8String::from_cstr("var");
 };
 
 /// @brief 局部变量表规范化 pass（容器级）。

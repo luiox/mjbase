@@ -379,7 +379,7 @@ std::optional<MethodResult> annotateMethod(jbc::ir::ClassSession& session, ca::u
         startSegment(local.slot, after, std::move(storeType), false);
     }
 
-    assignNames(segments, options.prefix);
+    assignNames(segments, options.prefix.ref());
 
     MethodResult result;
     for (const Segment& segment : segments) {

@@ -195,14 +195,20 @@ bool IntermediateMapping::isEmpty() const
 
 void IntermediateMapping::rememberSource(ca::str::Utf8StringRef format, ca::str::Utf8StringRef text)
 {
-    sourceSnapshots_[format.to_std_string()] = text.to_std_string();
-    sourceRevision_                          = revision_;
+    // 原文快照按字节保真收进（映射文本可能携带任意字节，不做 UTF-8 校验；
+    // format 键为注册表字面量名，同通道收进）。
+    auto formatKey = ca::str::Utf8String::from_data_unchecked(format.data(), format.byte_length());
+    sourceSnapshots_.insert_or_assign(
+        std::move(formatKey),
+        ca::str::Utf8String::from_data_unchecked(text.data(), text.byte_length()));
+    sourceRevision_ = revision_;
 }
 
-const std::string* IntermediateMapping::unmodifiedSource(ca::str::Utf8StringRef format) const
+const ca::str::Utf8String* IntermediateMapping::unmodifiedSource(ca::str::Utf8StringRef format) const
 {
     if (sourceRevision_ != revision_) return nullptr;
-    const auto it = sourceSnapshots_.find(format.to_std_string());
+    const auto it = sourceSnapshots_.find(
+        ca::str::Utf8String::from_data_unchecked(format.data(), format.byte_length()));
     return it == sourceSnapshots_.end() ? nullptr : &it->second;
 }
 

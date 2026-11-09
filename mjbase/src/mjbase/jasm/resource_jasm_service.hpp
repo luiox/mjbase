@@ -3,7 +3,7 @@
 #include "jvm_jasm_service.hpp"
 #include "mjbase/model/resource_container.hpp"
 
-#include <string>
+#include <string_view>
 
 namespace mjbase::jasm {
 
@@ -25,7 +25,7 @@ public:
     {}
 
     /// @brief 按 URI 反汇编 ClassResource。
-    Result<JvmJasmDisassembly> disassemble(const std::string& uri) const;
+    Result<JvmJasmDisassembly> disassemble(std::string_view uri) const;
 
     /// @brief 按 URI 事务式汇编并替换已有 ClassResource。
     ///
@@ -37,7 +37,7 @@ public:
     /// 改动。边界面：jhasm 数据流分析（engine.compute）仍运行——数据流本身
     /// 失败的类（栈深不一致、无不动点等）两档同败；本档只豁免帧序列化
     /// （conflict/unnamed slot 等坏帧面）。
-    Result<JvmJasmClass> assemble(const std::string& uri, ca::str::Utf16StringRef sourceName,
+    Result<JvmJasmClass> assemble(std::string_view uri, ca::str::Utf16StringRef sourceName,
                                   ca::str::Utf16StringRef source, JvmJasmContext context = {},
                                   FrameMode frameMode = FrameMode::Regenerate);
 

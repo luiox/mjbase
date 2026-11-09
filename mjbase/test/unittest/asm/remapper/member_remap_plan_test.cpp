@@ -1919,7 +1919,7 @@ TEST(MjAsmRemapperTest, containerRemapRewritesBusinessTextOnlyWhenExplicitlyAuth
 
     {
         RemapPolicy  policy    = RemapPolicy::all();
-        policy.authorizedTextResourceUris = {"business.txt"};
+        policy.authorizedTextResourceUris.emplace_back(ca::str::Utf8String::from_cstr("business.txt"));
         auto      container = buildContainer();
         auto      applied   = mjbase::asm_remapper::applyResourceRemapPlan(container, plan, policy);
         ASSERT_FALSE(applied.is_err());
@@ -2080,11 +2080,11 @@ TEST(MjAsmRemapperTest, resourceRemapperKeepsAllPolicySurfacesIndependent)
     const Bytes bytes = buildRemapClass();
 
     RemapPolicy p1 = RemapPolicy::bytecodeOnly();
-    RemapPolicy p2 = p1;
+    RemapPolicy p2 = p1.clone();
     p2.reflectionStrings = true;
-    RemapPolicy p3 = p2;
+    RemapPolicy p3 = p2.clone();
     p3.annotations = true;
-    RemapPolicy p4 = p3;
+    RemapPolicy p4 = p3.clone();
     p4.signatures  = true;
 
     // p1：仅字节码面——类树改名；字符串/签名/注解保持。

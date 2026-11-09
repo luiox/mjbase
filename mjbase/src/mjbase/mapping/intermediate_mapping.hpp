@@ -1,7 +1,6 @@
 #pragma once
 #include <vector>
 #include <unordered_map>
-#include <string>
 #include "libca/core/datatype.hpp"
 #include "libca/str/utf8_string.hpp"
 #include "libca/str/utf8_string_arena.hpp"
@@ -94,7 +93,7 @@ public:
     void rememberSource(ca::str::Utf8StringRef format, ca::str::Utf8StringRef text);
 
     /// Return exact source text for the same format, or nullptr after any mutation.
-    const std::string* unmodifiedSource(ca::str::Utf8StringRef format) const;
+    const ca::str::Utf8String* unmodifiedSource(ca::str::Utf8StringRef format) const;
 
     /// @brief Source snapshots carried through line-oriented format conversion.
     const auto& sourceSnapshots() const { return sourceSnapshots_; }
@@ -118,7 +117,9 @@ private:
     std::unordered_map<ca::str::Utf8StringRef, ClassMapping>               classes_;
     std::unordered_map<ca::str::Utf8StringRef, std::vector<FieldMapping>>  fields_;
     std::unordered_map<ca::str::Utf8StringRef, std::vector<MethodMapping>> methods_;
-    std::unordered_map<std::string, std::string>                           sourceSnapshots_;
+    /// 原文快照（format → 原文字节）：磁盘/文本边界载荷，from_data_unchecked
+    /// 按原始字节保真存取（format 键为注册表字面量名）。
+    std::unordered_map<ca::str::Utf8String, ca::str::Utf8String>           sourceSnapshots_;
     ca::usize                                                              revision_       = 0;
     ca::usize                                                              sourceRevision_ = 0;
 };

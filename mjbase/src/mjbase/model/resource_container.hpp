@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "libca/core/datatype.hpp"
+#include "libca/str/utf8_string.hpp"
 #include "libca/str/utf8_string_arena.hpp"
 
 #include "resource_model.hpp"
@@ -155,7 +156,7 @@ struct ClassFamilyView
 /// 借用容器 arena，容器存活期内有效。推导不出内名的条目（非 class 资源、非
 /// class 形状、版本段 N < 9）不入索引。base 缺失而仅存版本化变体的族原样
 /// 呈现（baseUri 空视图）——本层不做「最小变体升格 base」的布局重构。
-std::unordered_map<std::string, ClassFamilyView> buildClassFamilyIndex(
+std::unordered_map<ca::str::Utf8String, ClassFamilyView> buildClassFamilyIndex(
     const IResourceContainer& container);
 
 }   // namespace mjbase::model

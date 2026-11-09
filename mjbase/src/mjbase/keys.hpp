@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "libca/core/result.hpp"
+#include "libca/str/utf8_string.hpp"
 #include "libca/str/utf8_string_arena.hpp"
 
 namespace mjbase {
@@ -83,7 +84,9 @@ MemberKey memberKeyOf(KeyPool& pool,
                       std::string_view name,
                       std::string_view desc);
 
-/// @brief 调试/输出用：成员键展开为 "owner.name desc" 形式（拼接进调用方缓冲）。
-void formatMember(const KeyPool& pool, MemberKey key, std::string& out);
+/// @brief 调试/输出用：成员键展开为 "owner.name desc" 形式。
+///
+/// 展示出口：本地缓冲拼接（驻留视图为内部名 ASCII 域）后按字节收进。
+ca::str::Utf8String formatMember(const KeyPool& pool, MemberKey key);
 
 }   // namespace mjbase

@@ -38,6 +38,15 @@ KeyPool& identityPool()
     return pool;
 }
 
+/// Andersen points-to 诊断出口：身份串为本分析域内部名（ASCII 域，
+/// 详见 andersen_points_to.hpp 的 pointsTo 出口注释）；#211 起求解器
+/// 直接交付 vector<Utf8String>，此处仅作调用面收口。
+std::vector<ca::str::Utf8String> andersenPointsTo(const mjbase::analysis::AndersenPointsToSolver& solver,
+                                                  std::string_view variable)
+{
+    return solver.pointsTo(variable);
+}
+
 
 }   // namespace
 
@@ -2404,7 +2413,7 @@ std::optional<AliasValue> AliasAnalysis::resolvedArrayValueOf(const AliasValue& 
     return result;
 }
 
-std::vector<std::string> AliasAnalysis::possibleTypesOf(const AliasValue& value) const
+std::vector<ca::str::Utf8String> AliasAnalysis::possibleTypesOf(const AliasValue& value) const
 {
     std::vector<std::string_view> identities = value.pointsTo;
     if (identities.empty() && value.isKnown()) identities.push_back(value.identity);
@@ -2417,43 +2426,39 @@ std::vector<std::string> AliasAnalysis::possibleTypesOf(const AliasValue& value)
     }
     std::sort(types.begin(), types.end());
     types.erase(std::unique(types.begin(), types.end()), types.end());
-    return types;
+    // 诊断出口：分配类型为内部名（ASCII 域），本地缓冲排序去重后逐条驻留收进。
+    std::vector<ca::str::Utf8String> out;
+    out.reserve(types.size());
+    for (const std::string& type : types) {
+        out.push_back(ca::str::Utf8String::from_data_unchecked(
+            reinterpret_cast<const ca::u8*>(type.data()), type.size()));
+    }
+    return out;
 }
 
-std::vector<std::string> AliasAnalysis::possibleReturnTypesOf(std::string_view owner,
-                                                              std::string_view name,
-                                                              std::string_view desc) const
+std::vector<ca::str::Utf8String> AliasAnalysis::possibleReturnTypesOf(std::string_view owner,
+                                                                      std::string_view name,
+                                                                      std::string_view desc) const
 {
     const AliasMethodSummary* summary = summaryOf(owner, name, desc);
-    return summary != nullptr ? possibleTypesOf(summary->returnValue) : std::vector<std::string>{};
+    return summary != nullptr ? possibleTypesOf(summary->returnValue)
+                              : std::vector<ca::str::Utf8String>{};
 }
 
-std::vector<std::string> AliasAnalysis::andersenReturnPointsToOf(std::string_view owner,
-                                                                 std::string_view name,
-                                                                 std::string_view desc) const
+std::vector<ca::str::Utf8String> AliasAnalysis::andersenReturnPointsToOf(std::string_view owner,
+                                                                         std::string_view name,
+                                                                         std::string_view desc) const
 {
-    // 求解器诊断出口物化为 Utf8String；本查询面维持 std::string 逐元素转出。
-    std::vector<std::string> out;
-    for (const auto& item :
-         andersen_.pointsTo(std::string(owner) + "\n" + std::string(name) + "\n" +
-                            std::string(desc) + "\nreturn")) {
-        out.push_back(item.to_std_string());
-    }
-    return out;
+    // Andersen 变量标识与 points-to 身份均为本分析域内部名（ASCII 域），逐条驻留收进。
+    return andersenPointsTo(andersen_, std::string(owner) + "\n" + std::string(name) + "\n" +
+                                           std::string(desc) + "\nreturn");
 }
 
-std::vector<std::string> AliasAnalysis::andersenParameterPointsToOf(std::string_view owner,
-                                                                    std::string_view name,
-                                                                    std::string_view desc,
-                                                                    ca::usize parameter) const
+std::vector<ca::str::Utf8String> AliasAnalysis::andersenParameterPointsToOf(
+    std::string_view owner, std::string_view name, std::string_view desc, ca::usize parameter) const
 {
-    std::vector<std::string> out;
-    for (const auto& item :
-         andersen_.pointsTo(std::string(owner) + "\n" + std::string(name) + "\n" +
-                            std::string(desc) + "\nparam:" + std::to_string(parameter))) {
-        out.push_back(item.to_std_string());
-    }
-    return out;
+    return andersenPointsTo(andersen_, std::string(owner) + "\n" + std::string(name) + "\n" +
+                                           std::string(desc) + "\nparam:" + std::to_string(parameter));
 }
 
 const AliasMethodSummary* AliasAnalysis::summaryOf(std::string_view owner, std::string_view name,

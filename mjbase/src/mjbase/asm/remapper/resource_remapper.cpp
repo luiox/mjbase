@@ -364,9 +364,10 @@ bool remapTextResourcesOfKind(model::ResourceContainer& container, const MemberR
 
 bool isAuthorizedTextResourceUri(const RemapPolicy& policy, std::string_view uri)
 {
-    return std::find(policy.authorizedTextResourceUris.begin(),
-                     policy.authorizedTextResourceUris.end(),
-                     uri) != policy.authorizedTextResourceUris.end();
+    for (const ca::str::Utf8String& authorized : policy.authorizedTextResourceUris) {
+        if (authorized.ref() == uri) return true;
+    }
+    return false;
 }
 
 void renameClassResources(model::ResourceContainer&                                 container,

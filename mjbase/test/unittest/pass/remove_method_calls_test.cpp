@@ -79,9 +79,9 @@ Bytes buildCalleeClass(const std::string& name)
 MethodCallSpec spec(const char* owner, const char* name, const char* desc)
 {
     MethodCallSpec s;
-    s.owner = owner;
-    s.name  = name;
-    s.desc  = desc;
+    s.owner = ca::str::Utf8String::from_cstr(owner);
+    s.name  = ca::str::Utf8String::from_cstr(name);
+    s.desc  = ca::str::Utf8String::from_cstr(desc);
     return s;
 }
 
@@ -193,7 +193,7 @@ TEST(MethodCallRemover, RemovesStaticCallWithSwallowedCat1Result)
 
     MethodCallRemovalConfig config;
     config.includeCalls.push_back(pickSpec());
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_FALSE(runPass(pass, container).areAllPreserved());
 
     const auto* caller = classResource(container, "Caller.class");
@@ -248,7 +248,7 @@ TEST(MethodCallRemover, RemovesAllFourInvokeFamilies)
     config.includeCalls.push_back(spec("Used", "virt", "()V"));
     config.includeCalls.push_back(spec("Used", "priv", "()V"));
     config.includeCalls.push_back(spec("Itf", "f", "()V"));
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_FALSE(runPass(pass, container).areAllPreserved());
 
     const auto* caller = classResource(container, "Caller.class");
@@ -293,7 +293,7 @@ TEST(MethodCallRemover, SwallowsCat2ResultAndCat2Args)
     MethodCallRemovalConfig config;
     config.includeCalls.push_back(spec("Used", "jl", "()J"));
     config.includeCalls.push_back(spec("Used", "pl", "(J)I"));
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_FALSE(runPass(pass, container).areAllPreserved());
 
     const auto* caller = classResource(container, "Caller.class");
@@ -324,7 +324,7 @@ TEST(MethodCallRemover, VoidCallArgsSwallowedByPops)
 
     MethodCallRemovalConfig config;
     config.includeCalls.push_back(spec("Used", "takes", "(IJLjava/lang/String;)V"));
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_FALSE(runPass(pass, container).areAllPreserved());
 
     const auto* caller = classResource(container, "Caller.class");
@@ -365,7 +365,7 @@ TEST(MethodCallRemover, DeadLocalStoreResultRemovedLiveStoreKept)
 
     MethodCallRemovalConfig config;
     config.includeCalls.push_back(pickSpec());
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_FALSE(runPass(pass, container).areAllPreserved());
 
     const auto* caller = classResource(container, "Caller.class");
@@ -396,7 +396,7 @@ TEST(MethodCallRemover, DupPrefixConstructorSiteAbandoned)
 
     MethodCallRemovalConfig config;
     config.includeCalls.push_back(spec("Used", "<init>", "()V"));
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_TRUE(runPass(pass, container).areAllPreserved()) << "dup 前缀调用点保守放弃";
     EXPECT_EQ(classResource(container, "Caller.class")->get(), before);
 }
@@ -421,7 +421,7 @@ TEST(MethodCallRemover, Dup2PrefixStaticSiteAbandoned)
 
     MethodCallRemovalConfig config;
     config.includeCalls.push_back(spec("Used", "pl", "(J)V"));
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_TRUE(runPass(pass, container).areAllPreserved());
     EXPECT_EQ(classResource(container, "Caller.class")->get(), before);
 }
@@ -447,7 +447,7 @@ TEST(MethodCallRemover, MethodHandlePinnedMemberAbandoned)
 
     MethodCallRemovalConfig config;
     config.includeCalls.push_back(pickSpec());
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_TRUE(runPass(pass, container).areAllPreserved())
         << "句柄钉死的成员整体放弃：删调用与删除意图矛盾";
     EXPECT_EQ(classResource(container, "Caller.class")->get(), before);
@@ -471,7 +471,7 @@ TEST(MethodCallRemover, ExcludeCancelsInclude)
     MethodCallRemovalConfig config;
     config.includeCalls.push_back(pickSpec());
     config.excludeCalls.push_back(pickSpec());
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_TRUE(runPass(pass, container).areAllPreserved());
     EXPECT_EQ(classResource(container, "Caller.class")->get(), before);
 }
@@ -498,7 +498,7 @@ TEST(MethodCallRemover, UnreadableClassAbortsWholePass)
 
     MethodCallRemovalConfig config;
     config.includeCalls.push_back(pickSpec());
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_TRUE(runPass(pass, container).areAllPreserved());
     EXPECT_EQ(classResource(container, "Caller.class")->get(), before);
 }
@@ -528,7 +528,7 @@ TEST(MethodCallRemover, BranchAnchoredSiteKept)
 
     MethodCallRemovalConfig config;
     config.includeCalls.push_back(pickSpec());
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_TRUE(runPass(pass, container).areAllPreserved()) << "分支锚定的调用点保守放弃";
     EXPECT_EQ(classResource(container, "Caller.class")->get(), before);
 }
@@ -552,7 +552,7 @@ TEST(MethodCallRemover, ConsumedResultSiteAbandoned)
 
     MethodCallRemovalConfig config;
     config.includeCalls.push_back(pickSpec());
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_TRUE(runPass(pass, container).areAllPreserved());
     EXPECT_EQ(classResource(container, "Caller.class")->get(), before);
 }
@@ -592,7 +592,7 @@ TEST(MethodCallRemover, CallGraphEdgesResyncAfterRemoval)
     // 经 PassManager 跑：失效由编排器按 none() 驱动——后续消费者重建出的
     // 调用图不再有被删调用边。
     mjbase::spi::GlobalPassManager mgr;
-    mgr.addPass(std::make_unique<MethodCallRemover>(config));
+    mgr.addPass(std::make_unique<MethodCallRemover>(std::move(config)));
     EXPECT_FALSE(mgr.run(container, gam).areAllPreserved());
 
     auto& graphAfter = gam.getResult<ref::CallGraphAnalysis>(container);
@@ -629,7 +629,7 @@ TEST(MethodCallRemover, BranchyMethodRewrittenWithFrameRewire)
 
     MethodCallRemovalConfig config;
     config.includeCalls.push_back(pickSpec());
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_FALSE(runPass(pass, container).areAllPreserved());
 
     // 改写类必须仍可解析（会话重开 + promote 即解析门），调用点消失：
@@ -678,7 +678,7 @@ TEST(MethodCallRemover, SecondRunIsStrictNoOp)
 
     MethodCallRemovalConfig config;
     config.includeCalls.push_back(pickSpec());
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_FALSE(runPass(pass, container).areAllPreserved());
     const Bytes afterFirst = classResource(container, "Caller.class")->get();
 
@@ -705,7 +705,7 @@ TEST(MethodCallRemover, WhitelistStringWindowRemoved)
 
     MethodCallRemovalConfig config;
     config.enableUnusedResultWhitelist = true;   // 内建默认白名单
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_FALSE(runPass(pass, container).areAllPreserved());
     EXPECT_EQ(methodOps(classResource(container, "Caller.class")->get(), "go"),
               (std::vector<jbc::core::Op>{jbc::core::Op::RETURN}));
@@ -730,7 +730,7 @@ TEST(MethodCallRemover, WhitelistStringNonConstReceiverKept)
 
     MethodCallRemovalConfig config;
     config.enableUnusedResultWhitelist = true;
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_TRUE(runPass(pass, container).areAllPreserved());
     EXPECT_EQ(classResource(container, "Caller.class")->get(), before);
 }
@@ -763,7 +763,7 @@ TEST(MethodCallRemover, WhitelistMathWindowRemovedNonConstArgKept)
 
     MethodCallRemovalConfig config;
     config.enableUnusedResultWhitelist = true;
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_FALSE(runPass(pass, container).areAllPreserved());
 
     const auto* caller = classResource(container, "Caller.class");
@@ -790,7 +790,7 @@ TEST(MethodCallRemover, WhitelistCat2JdkCallRemoved)
 
     MethodCallRemovalConfig config;
     config.enableUnusedResultWhitelist = true;
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_FALSE(runPass(pass, container).areAllPreserved());
     EXPECT_EQ(methodOps(classResource(container, "Caller.class")->get(), "go"),
               (std::vector<jbc::core::Op>{jbc::core::Op::RETURN}));
@@ -817,7 +817,7 @@ TEST(MethodCallRemover, WhitelistUserDiscardableEntrySwallowsArgs)
     config.useDefaultWhitelist         = false;   // 只用用户追加名单
     config.discardableCalls.push_back(
         spec("com/example/Log", "d", "(Ljava/lang/String;Ljava/lang/String;)I"));
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_FALSE(runPass(pass, container).areAllPreserved());
 
     // 调用与结果 pop 消失；实参生产者保留、由吞参 pop 收走。
@@ -856,7 +856,7 @@ TEST(MethodCallRemover, WhitelistFacetOffByDefault)
     const Bytes before = classResource(container, "Caller.class")->get();
 
     MethodCallRemovalConfig config;   // 白名单面默认关
-    MethodCallRemover pass(config);
+    MethodCallRemover pass(std::move(config));
     EXPECT_TRUE(runPass(pass, container).areAllPreserved());
     EXPECT_EQ(classResource(container, "Caller.class")->get(), before);
 }
