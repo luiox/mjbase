@@ -96,10 +96,16 @@ namespace mjbase::project {
 /// 线程模型：一个 `AnalysisDb` 实例持有一个连接，不是线程安全的；写由单连接
 /// 串行化。只读打开不获取写锁、不触发任何分析。
 
-/// @brief 当前 schema 版本（`PRAGMA user_version`）。不识别的版本拒绝打开
-///        （包括旧版本：不提供自动迁移，旧库由上层显式重建）。
+/// @brief 当前 schema 版本（`PRAGMA user_version`）。不识别的版本拒绝打开。
+///        例外：紧邻上一版的旧库（v(n-1)）开 ReadWrite 时**原地迁移**——只做
+///        末位追加列的 `ALTER TABLE ADD COLUMN`，存量行零损失（renames 覆盖层
+///        等既有数据不动）；更老的版本与 ReadOnly 旧库仍 fail-loud（临时库
+///        重导入即愈）。新迁移步按版本序在此追加声明。
 ///
-/// v10：可达闭包精度档（#159 后置批）——closure_batches 末位追加 `precision`
+/// v11：成员签名面（成员搜索 DB 化前提）——members 末位追加 `signature`
+///        列（TEXT NOT NULL DEFAULT ''，泛型签名原文；无签名空串），
+///        `DbMemberInput` 随之携带、成员 upsert 覆写。
+///        v10：可达闭包精度档（#159 后置批）——closure_batches 末位追加 `precision`
 ///        列（0 = CHA 全族保守展开，1 = RTA 实例化集合收窄）；复用判定
 ///        随之升级为指纹 + seed_mask + precision 三匹配（精度档是计算输入，
 ///        同图不同档不得互复用）。v9：全程序可达闭包（#159）——新增
@@ -125,7 +131,7 @@ namespace mjbase::project {
 ///        `classes.entry_id` 外键。v2：classes 增加 super/access/version，
 ///        新增 interfaces 与 refs 表，members 增加 access。v1 未发布，
 ///        版本号仅用于识别本分支早期的临时库。
-inline constexpr ca::u32 kAnalysisDbSchemaVersion = 10;
+inline constexpr ca::u32 kAnalysisDbSchemaVersion = 11;
 
 /// @brief SQLite 数据库头里的应用标识（ASCII "MJDB"）。
 inline constexpr ca::u32 kAnalysisDbApplicationId = 0x4D4A4442u;
@@ -257,6 +263,7 @@ struct DbMemberInput
     DbMemberKind        kind = DbMemberKind::Method;
     ca::str::Utf8String name;
     ca::str::Utf8String descriptor;
+    ca::str::Utf8String signature; ///< 泛型签名原文（schema v11；无签名为空串）
     ca::i32             access = 0;
 };
 
@@ -324,6 +331,39 @@ struct DbClassSearchPage
 {
     std::vector<DbClassSearchRow> rows;
     ca::u64                       total = 0; ///< 全量命中数（窗口外行不计入 rows）
+};
+
+/// @brief 成员搜索查询（`searchMembersPaged` 入参）。
+///
+/// 文本面与消费方工作副本扫描面逐字节对齐：owner（类内部名）、成员 name、
+/// descriptor、signature 四面 + 空接复合串（四面按单空格拼接）各自独立
+/// 参与匹配（同一匹配档下任一面命中即命中；复合串承接跨面 contains 查询）。
+struct DbMemberSearchQuery
+{
+    ca::str::Utf8String needle;    ///< 匹配串；空 = 不做文本过滤（全量）
+    DbTextMatchKind     match = DbTextMatchKind::Contains;
+    bool                caseSensitive = false; ///< true = 字节敏感（GLOB/= 路径）
+    ca::str::Utf8String owner;    ///< 非空 = 类 internal_name 字节精确等值作用域
+    ca::str::Utf8String packagePrefix; ///< 非空 = 类 internal_name 字节前缀作用域
+    std::optional<DbMemberKind> memberKind; ///< 非空 = 只取该成员种类
+};
+
+/// @brief 成员搜索行（查询输出）。
+struct DbMemberSearchRow
+{
+    ca::str::Utf8String internalName;
+    ca::str::Utf8String entryPath; ///< 关联活跃条目 path（可见域保证有锚，恒非空）
+    DbMemberKind        kind = DbMemberKind::Method;
+    ca::str::Utf8String name;
+    ca::str::Utf8String descriptor;
+    ca::str::Utf8String signature;
+};
+
+/// @brief 成员搜索页（查询输出）：窗口行 + 全量命中数。
+struct DbMemberSearchPage
+{
+    std::vector<DbMemberSearchRow> rows;
+    ca::u64                        total = 0; ///< 全量命中数（窗口外行不计入 rows）
 };
 
 /// @brief 成员事实（查询输出）。
@@ -1099,6 +1139,21 @@ public:
     /// （COUNT 与窗口 SELECT 两条语句，跨页一致以同一事实状态为前提）。
     ca::Result<DbClassSearchPage, AnalysisDbError> searchClassesPaged(
         const DbClassSearchQuery& query, ca::i64 limit, ca::i64 offset) const;
+
+    /// @brief 成员文本搜索（分页）：可见域 = 关联活跃条目的类之成员（与
+    ///        `searchClassesPaged` 同口径），文本面 = 类内部名 / 成员 name /
+    ///        descriptor / signature 四面 + 空接复合串（见
+    ///        `DbMemberSearchQuery`），作用域 `owner`（字节精确）/
+    ///        `packagePrefix`（字节前缀）作用于类内部名、`memberKind` 过滤
+    ///        成员种类，均与文本面 AND。
+    ///
+    /// 行序 (entry path, internal_name, name, descriptor, kind) BINARY 升序
+    /// （确定序，与消费方命中行全序一致；同键成员行按 kind 收尾——field
+    /// 字典序先于 method，即 kind 数值序）。窗口参数约束与
+    /// `searchClassesPaged` 分页契约相同；另附全量命中数 `total`（COUNT 与
+    /// 窗口 SELECT 两条语句）。
+    ca::Result<DbMemberSearchPage, AnalysisDbError> searchMembersPaged(
+        const DbMemberSearchQuery& query, ca::i64 limit, ca::i64 offset) const;
 
     /// @brief 类的全部成员，按 (kind, name, descriptor) 升序。
     ca::Result<std::vector<DbMemberInfo>, AnalysisDbError> listMembers(
