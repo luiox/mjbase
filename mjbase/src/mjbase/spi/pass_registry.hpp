@@ -16,11 +16,12 @@
 #pragma once
 
 #include <functional>
-#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 #include "libca/core/datatype.hpp"
+#include "libca/str/utf8_string.hpp"
 
 #include "mjbase/spi/pipeline_builder.hpp"
 
@@ -40,9 +41,15 @@ const char* to_string(PassStability stability) noexcept;
 /// 已注册流水线的元信息。
 struct PassPipelineInfo
 {
-    std::string   name;
-    std::string   description;
-    PassStability stability = PassStability::OptIn;
+    ca::str::Utf8String name;
+    ca::str::Utf8String description;
+    PassStability       stability = PassStability::OptIn;
+
+    /// 显式深拷贝（Utf8String 成员禁拷贝后的唯一复制方式）。
+    PassPipelineInfo clone() const
+    {
+        return PassPipelineInfo{name.clone(), description.clone(), stability};
+    }
 };
 
 /// @brief Pass 流水线注册中心：名字 → 配置（工厂）。
@@ -56,20 +63,20 @@ public:
     /// @brief 注册一个命名流水线。同名重复注册覆盖旧值（与 mbase 一致：
     ///        流水线集合由本注册表单点定义，覆盖是受控的更新而非撞名事故）。
     /// @return *this 便于链式注册。
-    PassRegistry& registerPipeline(const std::string& name, const std::string& description,
+    PassRegistry& registerPipeline(std::string_view name, std::string_view description,
                                    PipelineFactory factory,
                                    PassStability   stability = PassStability::OptIn);
 
     /// 查询是否已注册某名字。
-    bool hasPipeline(const std::string& name) const;
+    bool hasPipeline(std::string_view name) const;
 
     /// 取某名字的 PipelineBuilder（每次都重新调用 factory，得到全新 pass 实例）。
     /// 未注册返回空的 PipelineBuilder。
-    PipelineBuilder getPipeline(const std::string& name) const;
+    PipelineBuilder getPipeline(std::string_view name) const;
 
     /// @brief 查询单个 pipeline 的元信息；未注册返回 nullptr。
     /// 指针指向 registry 内部数据，仅在 registry 未重新注册同名 pipeline 期间有效。
-    const PassPipelineInfo* pipelineInfo(const std::string& name) const;
+    const PassPipelineInfo* pipelineInfo(std::string_view name) const;
 
     /// 列出所有已注册流水线的元信息（按 name 排序，供 CLI/MCP 稳定输出）。
     std::vector<PassPipelineInfo> listPipelines() const;
@@ -81,7 +88,7 @@ private:
         PassPipelineInfo meta;
         PipelineFactory  factory;
     };
-    std::unordered_map<std::string, Entry> entries_;
+    std::unordered_map<ca::str::Utf8String, Entry> entries_;
 };
 
 /// @brief 注册内置流水线（default-optimize 等）。程序/workspace 入口调用一次；

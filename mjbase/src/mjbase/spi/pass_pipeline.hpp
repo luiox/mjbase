@@ -238,10 +238,11 @@ struct PassFaultReport
                                       ///< "writer_error"
         ca::str::Utf8String detail;   ///< 失败详情；空表示无细节
 
-        /// stable-skip 诊断行（与既有契约断言格式一致；stdout/日志输出面）。
-        /// 无 detail 时省略该段。
-        std::string toLine() const
+        /// stable-skip 诊断行（与既有契约断言格式一致）。无 detail 时省略该段。
+        ca::str::Utf8String toLine() const
         {
+            // 拼接走本地字节缓冲，from_data_unchecked 原始字节保真（成员与
+            // methodTargetText/detailText 同口径收进；行文本仅作展示/日志）。
             std::string line = "SKIP ";
             line += scope.to_std_string();
             line += '=';
@@ -252,7 +253,8 @@ struct PassFaultReport
                 line += " detail=";
                 line += detail.to_std_string();
             }
-            return line;
+            return ca::str::Utf8String::from_data_unchecked(
+                reinterpret_cast<const ca::u8*>(line.data()), line.size());
         }
     };
 

@@ -30,12 +30,13 @@
 
 #include <functional>
 #include <memory>
-#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "libca/core/datatype.hpp"
 #include "libca/core/result.hpp"
+#include "libca/str/utf8_string.hpp"
 
 #include "mjbase/spi/job_context.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
@@ -55,13 +56,13 @@ public:
     using GlobalFactory = std::function<std::unique_ptr<GlobalPass>()>;
 
     /// 添加方法级 pass（每次 build 都重新调用 factory，实例不跨构建共享）。
-    PipelineBuilder& addMethodPass(MethodFactory factory, std::string nameHint = {});
+    PipelineBuilder& addMethodPass(MethodFactory factory, std::string_view nameHint = {});
     /// 添加类级 pass。
-    PipelineBuilder& addClassPass(ClassFactory factory, std::string nameHint = {});
+    PipelineBuilder& addClassPass(ClassFactory factory, std::string_view nameHint = {});
     /// 添加容器级 pass（执行于 class 段 adaptor 之前）。
-    PipelineBuilder& addGlobalPass(GlobalFactory factory, std::string nameHint = {});
+    PipelineBuilder& addGlobalPass(GlobalFactory factory, std::string_view nameHint = {});
     /// 添加 post-class 容器级 pass（执行于 class 段 adaptor 之后）。
-    PipelineBuilder& addPostClassPass(GlobalFactory factory, std::string nameHint = {});
+    PipelineBuilder& addPostClassPass(GlobalFactory factory, std::string_view nameHint = {});
 
     /// @brief 构建完整嵌套管线（净化门 head + 三段 + post-class，见文件头）。
     ///
@@ -83,16 +84,16 @@ public:
     ca::usize postClassPassCount() const { return postClassFactories_.size(); }
 
     /// @brief 各段 nameHint 列表（注册序；未传 hint 的槽位为空串）。
-    std::vector<std::string> methodPassNames() const;
-    std::vector<std::string> classPassNames() const;
-    std::vector<std::string> globalPassNames() const;
-    std::vector<std::string> postClassPassNames() const;
+    std::vector<ca::str::Utf8String> methodPassNames() const;
+    std::vector<ca::str::Utf8String> classPassNames() const;
+    std::vector<ca::str::Utf8String> globalPassNames() const;
+    std::vector<ca::str::Utf8String> postClassPassNames() const;
 
 private:
-    std::vector<std::pair<std::string, MethodFactory>> methodFactories_;
-    std::vector<std::pair<std::string, ClassFactory>>  classFactories_;
-    std::vector<std::pair<std::string, GlobalFactory>> globalFactories_;
-    std::vector<std::pair<std::string, GlobalFactory>> postClassFactories_;
+    std::vector<std::pair<ca::str::Utf8String, MethodFactory>> methodFactories_;
+    std::vector<std::pair<ca::str::Utf8String, ClassFactory>>  classFactories_;
+    std::vector<std::pair<ca::str::Utf8String, GlobalFactory>> globalFactories_;
+    std::vector<std::pair<ca::str::Utf8String, GlobalFactory>> postClassFactories_;
 };
 
 /// @brief 注册名 → builder 段位投递（§9：按 scope 标签分派，唯一收口）。

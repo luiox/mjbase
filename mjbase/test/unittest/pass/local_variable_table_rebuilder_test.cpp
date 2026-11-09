@@ -676,8 +676,9 @@ TEST(MjPassLocalVariableTableRebuilderTest, PipelineConfigOptInEnablesRebuild)
                                            loaded.unwrap(), builder)
                     .is_ok());
     EXPECT_EQ(builder.classPassCount(), static_cast<ca::usize>(1));
-    EXPECT_EQ(builder.classPassNames(),
-              (std::vector<std::string>{"LocalVariableTableRebuilder"}));
+    const auto classNames = builder.classPassNames();
+    ASSERT_EQ(classNames.size(), static_cast<ca::usize>(1));
+    EXPECT_EQ(classNames[0], "LocalVariableTableRebuilder");
 
     mjbase::spi::PassJobContext job;
     auto                        mgr = builder.buildNestedPipeline(job);
@@ -698,7 +699,7 @@ TEST(MjPassLocalVariableTableRebuilderTest, DefaultChainLeavesStaleTableUntouche
     const auto pipeline = pipelines.getPipeline("default-optimize");
     EXPECT_TRUE(pipeline.classPassNames().empty()) << "默认链无类级段";
     const auto names = pipeline.methodPassNames();
-    for (const std::string& name : names) {
+    for (const auto& name : names) {
         EXPECT_NE(name, "LocalVariableTableRebuilder") << "opt-in 不入默认链";
     }
 

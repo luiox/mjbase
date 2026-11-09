@@ -63,10 +63,19 @@ TEST(PipelineBuilderTest, NamesReportPerSegmentInRegistrationOrder)
         .addGlobalPass([&sink] { return std::make_unique<OrderProbePass>(sink, 0); }, "g1")
         .addPostClassPass([&sink] { return std::make_unique<OrderProbePass>(sink, 0); }, "p1");
 
-    EXPECT_EQ(builder.methodPassNames(), (std::vector<std::string>{"m1"}));
-    EXPECT_EQ(builder.classPassNames(), (std::vector<std::string>{"c1"}));
-    EXPECT_EQ(builder.globalPassNames(), (std::vector<std::string>{"g1"}));
-    EXPECT_EQ(builder.postClassPassNames(), (std::vector<std::string>{"p1"}));
+    // nameHint 列表已迁 Utf8String（禁拷贝类型），逐段按 size+元素断言。
+    const auto methodNames = builder.methodPassNames();
+    ASSERT_EQ(methodNames.size(), static_cast<ca::usize>(1));
+    EXPECT_EQ(methodNames[0], "m1");
+    const auto classNames = builder.classPassNames();
+    ASSERT_EQ(classNames.size(), static_cast<ca::usize>(1));
+    EXPECT_EQ(classNames[0], "c1");
+    const auto globalNames = builder.globalPassNames();
+    ASSERT_EQ(globalNames.size(), static_cast<ca::usize>(1));
+    EXPECT_EQ(globalNames[0], "g1");
+    const auto postClassNames = builder.postClassPassNames();
+    ASSERT_EQ(postClassNames.size(), static_cast<ca::usize>(1));
+    EXPECT_EQ(postClassNames[0], "p1");
     EXPECT_FALSE(builder.empty());
 }
 
@@ -91,9 +100,15 @@ TEST(PipelineBuilderTest, ApplyToDispatchesByScopeTagAndRejectsUnknownAndCf)
     ASSERT_TRUE(applyTo(registry, "M", builder).is_ok());
     ASSERT_TRUE(applyTo(registry, "C", builder).is_ok());
     ASSERT_TRUE(applyTo(registry, "G", builder).is_ok());
-    EXPECT_EQ(builder.methodPassNames(), (std::vector<std::string>{"M"}));
-    EXPECT_EQ(builder.classPassNames(), (std::vector<std::string>{"C"}));
-    EXPECT_EQ(builder.globalPassNames(), (std::vector<std::string>{"G"}));
+    const auto methodNames = builder.methodPassNames();
+    ASSERT_EQ(methodNames.size(), static_cast<ca::usize>(1));
+    EXPECT_EQ(methodNames[0], "M");
+    const auto classNames = builder.classPassNames();
+    ASSERT_EQ(classNames.size(), static_cast<ca::usize>(1));
+    EXPECT_EQ(classNames[0], "C");
+    const auto globalNames = builder.globalPassNames();
+    ASSERT_EQ(globalNames.size(), static_cast<ca::usize>(1));
+    EXPECT_EQ(globalNames[0], "G");
 
     EXPECT_EQ(applyTo(registry, "Missing", builder).unwrap_err(), RegistryError::UnknownPass);
 
