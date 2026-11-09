@@ -1327,6 +1327,36 @@ public:
     ca::Result<ca::usize, AnalysisDbError> replaceConstantFaces(
         ca::i64 batchId, std::vector<DbClassConstantFaces> classes);
 
+    /// @brief 原子替换一批常量事实切片（单事务多切片合批）。
+    ///
+    /// 三个逐切片入口（`replaceCpStringsFromClass` / `replaceCpNumbersFromClass`
+    /// / `replaceNumbersFromMember`）的单事务合批：一次事务内逐组落定——每类组
+    /// 清该类两个类级切片（`cp_strings` 按 class_id 全清 + `number_literals` 的
+    /// member_id=0 哨兵切片）后写入 @p cpStrings / @p cpNumbers；每 memberNumbers
+    /// 切片按 member_id != 0 定向删后写入该方法体行。INSERT 形状与逐切片入口
+    /// 逐字节同款（String 行 facet 归一 0、同形重复行 ON CONFLICT DO NOTHING
+    /// 折叠）。**逐切片替换，不是整库清空**：未列出的类与其他成员的行逐行不动
+    /// （类级不整表清 `number_literals`——那会把未列出成员的方法体行抹掉）；
+    /// 空输入类组 = 清空该类两切片（逐切片入口"空输入即清空"同款）；整体空
+    /// 输入 = 无操作返回 0（清空两表是 `replaceConstantFaces` 的语义）。
+    ///
+    /// 分工：整库重建（full_import）→ `replaceConstantFaces`；交互式编辑一次
+    /// 提交多个切片 → 本入口（逐切片调用每调用各开一事务，Windows 上每事务
+    /// fsync 的可感知延迟由此合并为一次）；单片替换仍走三个逐切片入口。
+    ///
+    /// 身份校验在事务内（整库版同款，任一失败整批回滚、全部切片保持调用前
+    /// 原状）：每个 classId 必须已注册（否则 `Invalid`），每个 memberId 必须
+    /// 存在且 kind=1 方法、宿主类须等于所在切片组的 classId（否则 `Invalid`）。
+    /// `batchId`：0 = 无批写入；非 0 必须是未收尾的已注册批次（否则
+    /// `Invalid`），命中后按逐切片入口同款锚纪律落 (2, class_id)（每类组）与
+    /// (3, member_id)（每个出现的切片）作用域行，INSERT OR IGNORE 幂等——
+    /// 不加新 scope 种类、零 schema 变更。
+    ///
+    /// @return 写入的总行数（strings + cp numbers + member numbers，按输入
+    ///         记录数计，同逐切片入口口径）。
+    ca::Result<ca::usize, AnalysisDbError> replaceConstantFaceSlices(
+        ca::i64 batchId, const std::vector<DbClassConstantFaces>& classes);
+
     /// @brief 按内部名查类事实；未登记返回 `std::nullopt`。
     ca::Result<std::optional<DbClassInfo>, AnalysisDbError> findClass(
         const ca::str::Utf8StringRef& owner) const;
