@@ -239,7 +239,8 @@ TEST(MjAsmTmatcherTest, TracerRecordingAndFurthestCursor)
     EXPECT_EQ(tmatcher::TracePhase::Fail, trace.events()[1].phase);
     EXPECT_EQ(5, trace.events()[3].nextCursor);
     EXPECT_EQ(5, trace.furthestCursor());
-    const std::string pretty = trace.toPrettyString();
+    // toPrettyString 迁 Utf8String（调试渲染出口），本地转 std::string 断言。
+    const std::string pretty = trace.toPrettyString().to_std_string();
     EXPECT_NE(std::string::npos, pretty.find("FAIL"));
     EXPECT_NE(std::string::npos, pretty.find("b"));
 }
@@ -342,7 +343,7 @@ TEST(MjAsmTmatcherTest, PredLeaf)
     auto r = runMatch(*p, dom);
     ASSERT_EQ(1u, r.size());
     EXPECT_EQ(1, r[0].cursor);
-    EXPECT_NE(std::string::npos, p->name().find("isBinaryAdd"));
+    EXPECT_NE(std::string::npos, p->name().to_std_string().find("isBinaryAdd"));
 }
 
 // ========== 分支目标条件（createLabel 造分支目标） ==========
@@ -519,7 +520,7 @@ TEST(MjAsmTmatcherTest, RepeatInvalidRangeNeverMatches)
     CodeDom dom;
     appendOk(dom, insnOf(Op::NOP));
     auto p = repeat(any(), 3, 2);
-    EXPECT_NE(std::string::npos, p->name().find("invalid"));
+    EXPECT_NE(std::string::npos, p->name().to_std_string().find("invalid"));
     EXPECT_TRUE(runMatch(*p, dom).empty());
     EXPECT_TRUE(runMatch(*repeat(any(), -1, 5), dom).empty());
 }
