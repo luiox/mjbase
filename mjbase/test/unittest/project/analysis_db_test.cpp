@@ -3424,3 +3424,343 @@ TEST(MjAnalysisDbTest, SearchClassesPagesLiveAnchoredClassesDeterministically)
                   takeErrorKind(db.searchClassesPaged(query, 10, -1)));
     }
 }
+
+//-- 成员文本搜索（searchMembersPaged）----------------------------------------
+
+namespace {
+
+DbMemberSearchQuery memberQuery(const char* needle, DbTextMatchKind match, bool caseSensitive)
+{
+    DbMemberSearchQuery query;
+    query.needle        = Utf8String::from_cstr(needle);
+    query.match         = match;
+    query.caseSensitive = caseSensitive;
+    return query;
+}
+
+///命中行压成 `owner|name|descriptor|kind` 键，便于整序断言。
+std::vector<std::string> memberKeys(const DbMemberSearchPage& page)
+{
+    std::vector<std::string> keys;
+    keys.reserve(page.rows.size());
+    for (const DbMemberSearchRow& row : page.rows) {
+        keys.push_back(row.internalName.to_std_string() + "|" + row.name.to_std_string() +
+                       "|" + row.descriptor.to_std_string() + "|" +
+                       (row.kind == DbMemberKind::Field ? "field" : "method"));
+    }
+    return keys;
+}
+
+}   // namespace
+
+///五文本面（类内部名/name/descriptor/signature/复合串）× 匹配档 × 折叠/字节
+///敏感、kind 过滤、owner/packagePrefix 作用域 AND、墓碑/无锚类不可见、
+///(path, internal_name, name, descriptor, kind) BINARY 确定行序。
+TEST(MjAnalysisDbTest, SearchMembersMatchesTextFacesScopesAndKindFilter)
+{
+    const auto path = freshDbPath("search_members_match");
+    auto       db   = openOrDie(path);
+    auto inputId = db.ensureInput(S("lib/app.jar"), refOf(std::string(64, '0')), 4096);
+    ASSERT_TRUE(inputId.is_ok());
+    const ca::i64 jar = inputId.unwrap();
+
+    std::vector<DbEntryInput> entries;
+    entries.push_back(searchEntry("demo/Alpha.class", 'a'));
+    entries.push_back(searchEntry("demo/Beta.class", 'b'));
+    entries.push_back(searchEntry("demo/Gone.class", 'c'));
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(entries)).is_ok());
+    const auto firstLive = searchLiveEntryIds(db, jar);
+    const ca::i64 goneEntry = firstLive.at("demo/Gone.class");
+
+    //墓碑：同输入重导缺 demo/Gone.class → 该条目入墓碑（类行不删）。
+    std::vector<DbEntryInput> reduced;
+    reduced.push_back(searchEntry("demo/Alpha.class", 'a'));
+    reduced.push_back(searchEntry("demo/Beta.class", 'b'));
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(reduced)).is_ok());
+    const auto live = searchLiveEntryIds(db, jar);
+
+    std::vector<DbClassInput> classes;
+    {
+        DbClassInput alpha = searchClass("demo/Alpha", live.at("demo/Alpha.class"));
+        alpha.members.push_back(fieldInput("count", "I"));
+        alpha.members.push_back(methodInput("run", "()V"));
+        DbMemberInput generic = methodInput("generic", "(Ljava/util/List;)V");
+        generic.signature = Utf8String::from_cstr("(Ljava/util/List<Ljava/lang/String;>;)V");
+        alpha.members.push_back(std::move(generic));
+        classes.push_back(std::move(alpha));
+    }
+    {
+        DbClassInput beta = searchClass("demo/Beta", live.at("demo/Beta.class"));
+        beta.members.push_back(methodInput("run", "()I"));
+        beta.members.push_back(fieldInput("run", "I"));
+        beta.members.push_back(methodInput("Widget", "()V"));
+        classes.push_back(std::move(beta));
+    }
+    {
+        DbClassInput gone = searchClass("demo/Gone", goneEntry);   //墓碑锚：不可见
+        gone.members.push_back(methodInput("ghost", "()V"));
+        classes.push_back(std::move(gone));
+    }
+    {
+        DbClassInput noAnchor = searchClass("demo/NoAnchor", 0);   //无锚类：不可见
+        noAnchor.members.push_back(methodInput("phantom", "()V"));
+        classes.push_back(std::move(noAnchor));
+    }
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
+
+    //contains 不敏感：needle 折叠命中 name 面（Alpha.run 方法、Beta.run 方法
+    //+ 同名字段）；Beta 同名行按 descriptor 定序——"()I" 的 '('(0x28) 字节序
+    //先于字段的 "I"(0x49)。
+    {
+        auto page = db.searchMembersPaged(memberQuery("RUN", DbTextMatchKind::Contains, false),
+                                          100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(3U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Alpha|run|()V|method",
+                                            "demo/Beta|run|()I|method",
+                                            "demo/Beta|run|I|field"}),
+                  memberKeys(result));
+    }
+    //contains 字节敏感：大写 needle 不折叠，落空。
+    {
+        auto page = db.searchMembersPaged(memberQuery("RUN", DbTextMatchKind::Contains, true),
+                                          100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(0U, std::move(page).unwrap().total);
+    }
+    //signature 面：泛型签名原文只在 signature 列出现，行原样带回。
+    {
+        auto page = db.searchMembersPaged(
+            memberQuery("List<Ljava/lang/String;>", DbTextMatchKind::Contains, false), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(1U, result.total);
+        ASSERT_EQ(1U, result.rows.size());
+        EXPECT_EQ("demo/Alpha|generic|(Ljava/util/List;)V|method", memberKeys(result)[0]);
+        EXPECT_EQ("(Ljava/util/List<Ljava/lang/String;>;)V",
+                  result.rows[0].signature.to_std_string());
+    }
+    //复合串面：跨 owner 与 name 的单空格拼接（"demo/Alpha run ()V "）。
+    {
+        auto page = db.searchMembersPaged(memberQuery("alpha run", DbTextMatchKind::Contains,
+                                                      false),
+                                          100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(1U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Alpha|run|()V|method"}), memberKeys(result));
+    }
+    //复合串字节parity：signature 为空的行复合串尾留一个空格——exact 折叠等值
+    //对无尾空格 needle 落空，带尾空格命中（与扫描面拼接字节序一致）。
+    {
+        auto bare = db.searchMembersPaged(memberQuery("demo/beta run i", DbTextMatchKind::Exact,
+                                                      false),
+                                          100, 0);
+        ASSERT_TRUE(bare.is_ok());
+        EXPECT_EQ(0U, std::move(bare).unwrap().total);
+        auto spaced = db.searchMembersPaged(memberQuery("demo/beta run i ", DbTextMatchKind::Exact,
+                                                        false),
+                                            100, 0);
+        ASSERT_TRUE(spaced.is_ok());
+        const auto result = std::move(spaced).unwrap();
+        EXPECT_EQ(1U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Beta|run|I|field"}), memberKeys(result));
+    }
+    //exact 折叠 vs 字节敏感。
+    {
+        auto folded = db.searchMembersPaged(memberQuery("widget", DbTextMatchKind::Exact, false),
+                                            100, 0);
+        ASSERT_TRUE(folded.is_ok());
+        EXPECT_EQ(1U, std::move(folded).unwrap().total);
+        auto sensitive = db.searchMembersPaged(memberQuery("widget", DbTextMatchKind::Exact, true),
+                                               100, 0);
+        ASSERT_TRUE(sensitive.is_ok());
+        EXPECT_EQ(0U, std::move(sensitive).unwrap().total);
+        auto exactCase = db.searchMembersPaged(memberQuery("Widget", DbTextMatchKind::Exact, true),
+                                               100, 0);
+        ASSERT_TRUE(exactCase.is_ok());
+        const auto result = std::move(exactCase).unwrap();
+        EXPECT_EQ(1U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Beta|Widget|()V|method"}), memberKeys(result));
+    }
+    //kind 过滤与文本谓词 AND。
+    {
+        DbMemberSearchQuery query = memberQuery("run", DbTextMatchKind::Contains, false);
+        query.memberKind = DbMemberKind::Method;
+        auto page = db.searchMembersPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(2U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Alpha|run|()V|method",
+                                            "demo/Beta|run|()I|method"}),
+                  memberKeys(result));
+    }
+    {
+        DbMemberSearchQuery query = memberQuery("run", DbTextMatchKind::Contains, false);
+        query.memberKind = DbMemberKind::Field;
+        auto page = db.searchMembersPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(1U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Beta|run|I|field"}), memberKeys(result));
+    }
+    //owner / packagePrefix 作用域（与文本谓词 AND）。
+    {
+        DbMemberSearchQuery query = memberQuery("run", DbTextMatchKind::Contains, false);
+        query.owner = Utf8String::from_cstr("demo/Alpha");
+        auto page = db.searchMembersPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(1U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Alpha|run|()V|method"}), memberKeys(result));
+    }
+    {
+        DbMemberSearchQuery query = memberQuery("run", DbTextMatchKind::Contains, false);
+        query.packagePrefix = Utf8String::from_cstr("other/");
+        auto page = db.searchMembersPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(0U, std::move(page).unwrap().total);
+    }
+    //可见域：墓碑锚类与无锚类的成员不在面内。
+    {
+        auto ghost = db.searchMembersPaged(memberQuery("ghost", DbTextMatchKind::Contains, false),
+                                           100, 0);
+        ASSERT_TRUE(ghost.is_ok());
+        EXPECT_EQ(0U, std::move(ghost).unwrap().total);
+        auto phantom = db.searchMembersPaged(
+            memberQuery("phantom", DbTextMatchKind::Contains, false), 100, 0);
+        ASSERT_TRUE(phantom.is_ok());
+        EXPECT_EQ(0U, std::move(phantom).unwrap().total);
+    }
+    //空 needle 全量：(path, internal_name, name, descriptor, kind) BINARY 确定
+    //序；Beta 内 'W'(0x57) 字节序先于小写 'r'(0x72)，同名 method/field 由
+    //descriptor 分定。
+    {
+        DbMemberSearchQuery query;
+        auto page = db.searchMembersPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(6U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Alpha|count|I|field",
+                                            "demo/Alpha|generic|(Ljava/util/List;)V|method",
+                                            "demo/Alpha|run|()V|method",
+                                            "demo/Beta|Widget|()V|method",
+                                            "demo/Beta|run|()I|method",
+                                            "demo/Beta|run|I|field"}),
+                  memberKeys(result));
+    }
+    //窗口：offset 跳行、limit 截尾；total 恒全量。
+    {
+        DbMemberSearchQuery query;
+        auto page = db.searchMembersPaged(query, 2, 3);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(6U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"demo/Beta|Widget|()V|method",
+                                            "demo/Beta|run|()I|method"}),
+                  memberKeys(result));
+    }
+    //负窗口：Invalid。
+    {
+        DbMemberSearchQuery query;
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.searchMembersPaged(query, -1, 0)));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.searchMembersPaged(query, 10, -1)));
+    }
+}
+
+///v10 旧库开 ReadWrite 原地迁移到 v11（members 末位追加 signature 列）：
+///存量行零损失、旧行 signature 取列默认空串、其余表与锚关联不动；ReadOnly
+///旧库不迁移，fail-loud。
+TEST(MjAnalysisDbTest, MigratesMembersSignatureFromV10InPlace)
+{
+    const auto fabricateV10 = [](const std::filesystem::path& path) {
+        {
+            auto db = openOrDie(path);
+            auto inputId = db.ensureInput(S("lib/app.jar"), refOf(std::string(64, '0')), 4096);
+            ASSERT_TRUE(inputId.is_ok());
+            const ca::i64 jar = inputId.unwrap();
+            std::vector<DbEntryInput> entries;
+            entries.push_back(searchEntry("demo/Mig.class", 'd'));
+            ASSERT_TRUE(db.ingestEntries(0, jar, std::move(entries)).is_ok());
+            const auto live = searchLiveEntryIds(db, jar);
+            //类不带成员入库——members 表随后被整体换成 v10 旧形状。
+            std::vector<DbClassInput> classes;
+            classes.push_back(searchClass("demo/Mig", live.at("demo/Mig.class")));
+            ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
+            ASSERT_TRUE(db.save().is_ok());
+        }
+
+        //裸读写连接把 members 换回 v10 旧形状（无 signature 列）并写入一行
+        //旧数据，user_version 落 10。
+        sqlite3* rw = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open_v2(path.string().c_str(), &rw,
+                                             SQLITE_OPEN_READWRITE, nullptr));
+        const auto execRaw = [rw](const char* sql) {
+            char*     message = nullptr;
+            const int rc      = sqlite3_exec(rw, sql, nullptr, nullptr, &message);
+            sqlite3_free(message);
+            return rc;
+        };
+        ASSERT_EQ(SQLITE_OK, execRaw("DROP TABLE members"));
+        ASSERT_EQ(SQLITE_OK, execRaw(
+            "CREATE TABLE members("
+            "  member_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  class_id INTEGER NOT NULL REFERENCES classes(class_id) ON DELETE CASCADE,"
+            "  kind INTEGER NOT NULL CHECK(kind IN (0,1)),"
+            "  name TEXT NOT NULL,"
+            "  descriptor TEXT NOT NULL,"
+            "  access INTEGER NOT NULL DEFAULT 0,"
+            "  UNIQUE(class_id, kind, name, descriptor)"
+            ")"));
+        ASSERT_EQ(SQLITE_OK, execRaw(
+            "INSERT INTO members(class_id, kind, name, descriptor, access) VALUES("
+            "(SELECT class_id FROM classes WHERE internal_name='demo/Mig'), "
+            "1, 'run', '()V', 1)"));
+        ASSERT_EQ(SQLITE_OK, execRaw("PRAGMA user_version=10"));
+        sqlite3_close(rw);
+    };
+
+    //ReadWrite 重开：原地 ALTER 迁移，版本落 v11。
+    {
+        const auto path = freshDbPath("members_v10_migrate");
+        fabricateV10(path);
+
+        auto db = openOrDie(path);
+        EXPECT_EQ(kAnalysisDbSchemaVersion, db.schemaVersion());
+        EXPECT_EQ(11U, kAnalysisDbSchemaVersion);
+
+        //旧 members 行零损失：类锚关联仍在、行可搜，signature 取列默认空串。
+        auto page = db.searchMembersPaged(
+            memberQuery("run", DbTextMatchKind::Contains, false), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        ASSERT_EQ(1U, result.rows.size());
+        EXPECT_EQ(1U, result.total);
+        EXPECT_EQ("run", result.rows[0].name.to_std_string());
+        EXPECT_EQ("()V", result.rows[0].descriptor.to_std_string());
+        EXPECT_EQ(DbMemberKind::Method, result.rows[0].kind);
+        EXPECT_EQ("demo/Mig.class", result.rows[0].entryPath.to_std_string());
+        EXPECT_TRUE(result.rows[0].signature.is_empty());
+
+        //迁移只动 members：类事实/条目锚照常可查。
+        auto classPage = db.searchClassesPaged(searchQuery("Mig", DbTextMatchKind::Contains,
+                                                           false),
+                                               100, 0);
+        ASSERT_TRUE(classPage.is_ok());
+        const auto classResult = std::move(classPage).unwrap();
+        EXPECT_EQ(1U, classResult.total);
+    }
+
+    //ReadOnly 旧库：不迁移，Schema fail-loud。
+    {
+        const auto path = freshDbPath("members_v10_readonly");
+        fabricateV10(path);
+
+        auto result = AnalysisDb::open(refOf(path.string()), AnalysisDbOpenMode::ReadOnly);
+        ASSERT_TRUE(result.is_err());
+        EXPECT_EQ(AnalysisDbErrorKind::Schema, std::move(result).unwrap_err().kind);
+    }
+}

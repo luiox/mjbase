@@ -1027,9 +1027,10 @@ ca::Result<void, AnalysisDbError> applyClassBatch(sqlite3*                      
 
     auto upsertMember = prepare(
         db,
-        "INSERT INTO members(class_id, kind, name, descriptor, access) "
-        "VALUES(?1, ?2, ?3, ?4, ?5) "
-        "ON CONFLICT(class_id, kind, name, descriptor) DO UPDATE SET access=excluded.access");
+        "INSERT INTO members(class_id, kind, name, descriptor, access, signature) "
+        "VALUES(?1, ?2, ?3, ?4, ?5, ?6) "
+        "ON CONFLICT(class_id, kind, name, descriptor) DO UPDATE SET "
+        "access=excluded.access, signature=excluded.signature");
     if (upsertMember.is_err()) return errorOf(std::move(upsertMember));
     auto upsertMemberStatement = std::move(upsertMember).unwrap();
 
@@ -1123,6 +1124,10 @@ ca::Result<void, AnalysisDbError> applyClassBatch(sqlite3*                      
                 return errorOf(std::move(result));
             }
             if (auto result = bindInt(db, upsertMemberStatement.raw, 5, member.access);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindText(db, upsertMemberStatement.raw, 6, member.signature.ref());
                 result.is_err()) {
                 return errorOf(std::move(result));
             }
@@ -1622,6 +1627,7 @@ constexpr const char* kSchemaDdl[] = {
     "  name TEXT NOT NULL,"
     "  descriptor TEXT NOT NULL,"
     "  access INTEGER NOT NULL DEFAULT 0,"
+    "  signature TEXT NOT NULL DEFAULT '',"
     "  UNIQUE(class_id, kind, name, descriptor)"
     ")",
     // 引用目标 id 化（v5）：目标整体二元化——写入时 owner 与成员共解析则整
@@ -2075,8 +2081,9 @@ ca::Result<AnalysisDb, AnalysisDbError> AnalysisDb::open(const ca::str::Utf8Stri
     auto userVersion = queryScalarInt(handle, "PRAGMA user_version");
     if (userVersion.is_err()) return errorOf(std::move(userVersion));
 
-    const ca::i64 appId   = applicationId.unwrap();
-    const ca::i64 version = userVersion.unwrap();
+    const ca::i64 appId = applicationId.unwrap();
+    //version 迁移路径（v10→v11 原地升级）会改写回 11，故非 const。
+    ca::i64       version = userVersion.unwrap();
 
     if (appId == 0 && version == 0) {
         auto tableCount = queryScalarInt(
@@ -2130,6 +2137,32 @@ ca::Result<AnalysisDb, AnalysisDbError> AnalysisDb::open(const ca::str::Utf8Stri
         return ca::Err(makeError(AnalysisDbErrorKind::Schema,
                                  "not an mjbase analysis database (application_id=" +
                                      std::to_string(appId) + ")"));
+    }
+    // v10 → v11 原地迁移（members.signature）：末位追加缺省空串列，存量行
+    // 零损失。只收编紧邻上一版（版本步进政策见 hpp 的版本常量注）；ReadOnly
+    // 连接不写库，旧版只读开库维持 fail-loud。PRAGMA user_version 参与事务
+    // （存数据库头），ALTER 与版本号同事务提交。
+    if (version == 10 && static_cast<ca::i64>(kAnalysisDbSchemaVersion) == 11) {
+        if (mode == AnalysisDbOpenMode::ReadOnly) {
+            return ca::Err(makeError(
+                AnalysisDbErrorKind::Schema,
+                "analysis database schema v10 needs an in-place migration; "
+                "reopen read-write to upgrade"));
+        }
+        auto transaction = Transaction::begin(handle);
+        if (transaction.is_err()) return errorOf(std::move(transaction));
+        auto txn = std::move(transaction).unwrap();
+        if (auto result = exec(handle,
+                               "ALTER TABLE members ADD COLUMN signature "
+                               "TEXT NOT NULL DEFAULT ''");
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = exec(handle, "PRAGMA user_version = 11"); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = txn.commit(); result.is_err()) return errorOf(std::move(result));
+        version = 11;
     }
     if (version != static_cast<ca::i64>(kAnalysisDbSchemaVersion)) {
         return ca::Err(makeError(AnalysisDbErrorKind::Schema,
@@ -4913,6 +4946,146 @@ ca::Result<DbClassSearchPage, AnalysisDbError> AnalysisDb::searchClassesPaged(
             DbClassSearchRow row;
             row.internalName = utf8Column(statement.raw, 0);
             row.entryPath    = utf8Column(statement.raw, 1);
+            page.rows.push_back(std::move(row));
+        }
+    }
+    return ca::Ok(std::move(page));
+}
+
+ca::Result<DbMemberSearchPage, AnalysisDbError> AnalysisDb::searchMembersPaged(
+    const DbMemberSearchQuery& query, ca::i64 limit, ca::i64 offset) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto result = validatePageWindow(limit, offset); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    //谓词与参数按声明序编号（?1..?n），跨 COUNT 与窗口 SELECT 复用。
+    std::vector<std::string> params;
+    std::string              predicate;
+    const auto addParam = [&params](std::string value) {
+        params.push_back(std::move(value));
+        return "?" + std::to_string(params.size());
+    };
+    const auto addPredicate = [&predicate](std::string fragment) {
+        if (predicate.empty()) predicate = std::move(fragment);
+        else predicate += " AND " + fragment;
+    };
+
+    //五个文本面（类内部名 / 成员 name / descriptor / signature / 空接复合
+    //串）与消费方扫描面逐面同形：同一匹配档下任一面命中即命中。复合串按
+    //单空格拼接（signature 为空时尾部留一个空格——与扫描面的拼接字节序
+    //逐字节一致，contains 跨面查询的命中域不漂移）。
+    const std::string composite =
+        "c.internal_name || ' ' || m.name || ' ' || m.descriptor || ' ' || m.signature";
+    const std::string needle = query.needle.to_std_string();
+    if (!needle.empty()) {
+        //同一档的匹配子句模板 × 五面 OR。
+        const auto faceClause = [&](const std::string& face) -> std::string {
+            if (query.caseSensitive) {
+                if (query.match == DbTextMatchKind::Exact) {
+                    return face + " = " + addParam(needle);
+                }
+                std::string glob = globEscape(needle);
+                glob = query.match == DbTextMatchKind::Contains ? "*" + glob + "*" : glob + "*";
+                return face + " GLOB " + addParam(std::move(glob));
+            }
+            if (query.match == DbTextMatchKind::Exact) {
+                return "LOWER(" + face + ") = " + addParam(asciiLower(needle));
+            }
+            std::string like = likeEscape(asciiLower(needle));
+            like = query.match == DbTextMatchKind::Contains ? "%" + like + "%" : like + "%";
+            return "LOWER(" + face + ") LIKE " + addParam(std::move(like)) + " ESCAPE '\\'";
+        };
+        addPredicate("(" + faceClause("c.internal_name") + " OR" +
+                     " " + faceClause("m.name") + " OR" +
+                     " " + faceClause("m.descriptor") + " OR" +
+                     " " + faceClause("m.signature") + " OR" +
+                     " " + faceClause(composite) + ")");
+    }
+    if (query.memberKind.has_value()) {
+        addPredicate("m.kind = " +
+                     std::to_string(static_cast<int>(*query.memberKind)));
+    }
+    if (!query.owner.is_empty()) {
+        const std::string p = addParam(query.owner.to_std_string());
+        addPredicate("c.internal_name = " + p);
+    }
+    if (!query.packagePrefix.is_empty()) {
+        const std::string p =
+            addParam(globEscape(query.packagePrefix.to_std_string()) + "*");
+        addPredicate("c.internal_name GLOB " + p);
+    }
+
+    //可见域：关联活跃条目的类之成员（跨输入并集；墓碑/无锚类不在面内）。
+    const std::string from =
+        " FROM members m"
+        " JOIN classes c ON c.class_id = m.class_id"
+        " JOIN entries e ON e.entry_id = c.entry_id AND e.tombstoned = 0";
+    const std::string where = predicate.empty() ? std::string() : " WHERE " + predicate;
+
+    //全量命中数（窗口外行不进 rows）。
+    DbMemberSearchPage page;
+    {
+        const std::string countSql = "SELECT COUNT(*)" + from + where;
+        auto prepared = prepare(impl_->handle, countSql.c_str());
+        if (prepared.is_err()) return errorOf(std::move(prepared));
+        auto statement = std::move(prepared).unwrap();
+        for (ca::usize i = 0; i < params.size(); ++i) {
+            if (auto result = bindText(impl_->handle, statement.raw,
+                                       static_cast<int>(i + 1), refOfText(params[i]));
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) return ca::Ok(std::move(page));
+        page.total = static_cast<ca::u64>(sqlite3_column_int64(statement.raw, 0));
+    }
+
+    //窗口行：(entry path, internal_name, name, descriptor, kind) BINARY 升序
+    //= 消费方命中行全序（field 字典序先于 method 与 kind 数值序一致）。
+    {
+        const std::string rowsSql =
+            "SELECT c.internal_name, e.path, m.kind, m.name, m.descriptor, m.signature" +
+            from + where +
+            " ORDER BY e.path, c.internal_name, m.name, m.descriptor, m.kind LIMIT ?" +
+            std::to_string(params.size() + 1) + " OFFSET ?" +
+            std::to_string(params.size() + 2);
+        auto prepared = prepare(impl_->handle, rowsSql.c_str());
+        if (prepared.is_err()) return errorOf(std::move(prepared));
+        auto statement = std::move(prepared).unwrap();
+        for (ca::usize i = 0; i < params.size(); ++i) {
+            if (auto result = bindText(impl_->handle, statement.raw,
+                                       static_cast<int>(i + 1), refOfText(params[i]));
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw,
+                                  static_cast<int>(params.size() + 1), limit);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw,
+                                  static_cast<int>(params.size() + 2), offset);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        for (;;) {
+            auto hasRow = step(impl_->handle, statement.raw);
+            if (hasRow.is_err()) return errorOf(std::move(hasRow));
+            if (!hasRow.unwrap()) break;
+            DbMemberSearchRow row;
+            row.internalName = utf8Column(statement.raw, 0);
+            row.entryPath    = utf8Column(statement.raw, 1);
+            row.kind = static_cast<DbMemberKind>(sqlite3_column_int(statement.raw, 2));
+            row.name        = utf8Column(statement.raw, 3);
+            row.descriptor  = utf8Column(statement.raw, 4);
+            row.signature   = utf8Column(statement.raw, 5);
             page.rows.push_back(std::move(row));
         }
     }
