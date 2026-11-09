@@ -20,12 +20,12 @@
 /// 口径。容器入参因此收非 const&（应用路径就地写回）。
 #pragma once
 
-#include <string>
 #include <string_view>
 #include <vector>
 
 #include "libca/core/datatype.hpp"
 #include "libca/core/result.hpp"
+#include "libca/str/utf8_string.hpp"
 
 #include "mjbase/asm/remapper/member_remapper.hpp"
 #include "mjbase/mapping/intermediate_mapping.hpp"
@@ -79,9 +79,9 @@ struct AcceptedChange
 /// @brief 一条被拒建议的流水条目（完整建议原文 + 原因 + 细节）。
 struct RejectedProposal
 {
-    NameProposal     proposal;
-    RejectionReason  reason = RejectionReason::None;
-    std::string      detail;
+    NameProposal        proposal;
+    RejectionReason     reason = RejectionReason::None;
+    ca::str::Utf8String detail;
 };
 
 /// @brief 改名审计记录：IntermediateMapping 底座 + source/confidence 溯源 +
@@ -106,12 +106,12 @@ public:
     const std::vector<RejectedProposal>& rejected() const { return rejected_; }
 
     /// @brief 经注册格式导出映射文本（如 "Tiny-V2"）；未注册格式 Err。
-    ca::core::Result<ca::str::Utf8String, std::string> exportMapping(
+    ca::core::Result<ca::str::Utf8String, ca::str::Utf8String> exportMapping(
         std::string_view formatName, const mjbase::mapping::MappingFormatRegistry& registry) const;
 
     /// @brief 静态导出通道：任意 IntermediateMapping 底座复用同一导出路径
     ///        （外部记录经此导出；语义与实例方法完全一致）。
-    static ca::core::Result<ca::str::Utf8String, std::string> exportMapping(
+    static ca::core::Result<ca::str::Utf8String, ca::str::Utf8String> exportMapping(
         const mjbase::mapping::IntermediateMapping& mapping, std::string_view formatName,
         const mjbase::mapping::MappingFormatRegistry& registry);
 
@@ -121,7 +121,7 @@ private:
 
     mjbase::mapping::IntermediateMapping& mappingMut() { return mapping_; }
     void                                  addAccepted(AcceptedChange change);
-    void addRejected(NameProposal proposal, RejectionReason reason, std::string detail);
+    void addRejected(NameProposal proposal, RejectionReason reason, std::string_view detail);
 
     mjbase::mapping::IntermediateMapping mapping_;
     std::vector<AcceptedChange>          accepted_;
@@ -135,12 +135,12 @@ private:
 /// 纪律，不引 Status）。
 struct RenamerRunResult
 {
-    bool            ok     = false;
-    std::string     error;          ///< ok=false 时的失败原因
-    bool            applied = false;   ///< 应用面成功落地（含 zero-applied）
-    RenameRunStats  stats;
-    RenamePlan      plan;
-    NameChangeRecord record;
+    bool                ok     = false;
+    ca::str::Utf8String error;          ///< ok=false 时的失败原因
+    bool                applied = false;   ///< 应用面成功落地（含 zero-applied）
+    RenameRunStats      stats;
+    RenamePlan          plan;
+    NameChangeRecord    record;
 };
 
 /// @brief 统一 renamer 编排引擎（管线见文件头）。

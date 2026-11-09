@@ -1,6 +1,7 @@
 #include "shadow_token.hpp"
 
 #include <algorithm>
+#include <string>
 #include <vector>
 
 namespace mjbase::renamer {
@@ -21,14 +22,28 @@ bool isShadowSegmentChar(char c)
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
 }
 
+/// 借用视图 → 自有 Utf8String（原始字节保真，不校验 UTF-8）：jasm/描述符原文
+/// 可能含非法 UTF-8 字节，解析/核表/诊断不得变形（口径同 model/resource_model）。
+ca::str::Utf8String ownText(std::string_view value) noexcept
+{
+    return ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(value.data()),
+                                                    value.size());
+}
+
+/// Utf8String → 裸字节借用视图（ Utf8StringRef 的隐式 string_view 出口）。
+std::string_view viewOf(const ca::str::Utf8String& value) noexcept
+{
+    return value.ref();
+}
+
 /// 恰好 8 位小写 hex；成功消费 8 字节到 out。
-bool take8Hex(std::string_view input, std::size_t& cursor, std::string& out)
+bool take8Hex(std::string_view input, std::size_t& cursor, ca::str::Utf8String& out)
 {
     if (cursor + 8 > input.size()) return false;
     for (std::size_t i = 0; i < 8; ++i) {
         if (!isLowerHex(input[cursor + i])) return false;
     }
-    out = std::string(input.substr(cursor, 8));
+    out = ownText(input.substr(cursor, 8));
     cursor += 8;
     return true;
 }
@@ -52,18 +67,18 @@ std::string quoted(std::string_view value)
 ///
 /// 返回条目拷贝（optional 按值）——不得返回指向 findByShadowName 临时 vector
 /// 内部的指针（悬垂 UB，mjt 9e72e9f 实修，本移植自始按值交付）。
-std::optional<ShadowAliasEntry> findClassByHandle(const ShadowAliasTable& table,
-                                                  const std::string&      index,
-                                                  const std::string&      token,
-                                                  bool&                   shadowNameExisted)
+std::optional<ShadowAliasEntry> findClassByHandle(const ShadowAliasTable&     table,
+                                                  const ca::str::Utf8String&  index,
+                                                  const ca::str::Utf8String&  token,
+                                                  bool&                       shadowNameExisted)
 {
-    const auto shadow = "Class_" + index;
+    std::string shadow = "Class_";
+    shadow += viewOf(index);
     shadowNameExisted = false;
     for (const auto& entry : table.findByShadowName(shadow)) {
         if (entry.kind != ShadowKind::Class) continue;
         shadowNameExisted = true;
-        if (entry.token8.size() == token.size() &&
-            std::equal(token.begin(), token.end(), entry.token8.begin())) {
+        if (viewOf(token) == entry.token8) {
             return entry;
         }
     }
@@ -104,19 +119,19 @@ ShadowSlotResult failure(ShadowSlotError error, const std::string& detail)
     text               += ": ";
     text               += detail;
     appendRepairAction(error, text);
-    result.message = std::move(text);
+    result.message = ownText(text);
     return result;
 }
 
 /// raw/EscapedLiteral 共用：恒等放行 + （可选）存在性核验。
 ShadowSlotResult resolveRawIdentity(const ShadowAliasTable& table,
-                                    const std::string&      name,
+                                    std::string_view        name,
                                     bool                    member,
-                                    const std::string&      owner,
+                                    std::string_view        owner,
                                     bool                    verifyRaw)
 {
     ShadowSlotResult result;
-    result.raw = name;
+    result.raw = ownText(name);
     if (!verifyRaw || table.empty()) return result;
 
     if (member) {
@@ -143,7 +158,7 @@ ShadowRefParts parseShadowRef(std::string_view input)
     ShadowRefParts parts;
     if (input.compare(0, 3, "$${") == 0) {
         parts.form    = ShadowRefForm::EscapedLiteral;
-        parts.literal = std::string(input.substr(1));
+        parts.literal = ownText(input.substr(1));
         return parts;
     }
     if (input.compare(0, 2, "${") != 0) {
@@ -164,7 +179,7 @@ ShadowRefParts parseShadowRef(std::string_view input)
         parts.form = ShadowRefForm::Malformed;
         return parts;
     }
-    parts.index = std::string(input.substr(indexBegin, cursor - indexBegin));
+    parts.index = ownText(input.substr(indexBegin, cursor - indexBegin));
     if (cursor >= input.size() || input[cursor] != '.') {
         parts.form = ShadowRefForm::Malformed;
         return parts;
@@ -194,7 +209,7 @@ ShadowRefParts parseShadowRef(std::string_view input)
         parts.form = ShadowRefForm::Malformed;
         return parts;
     }
-    parts.memberShadow = std::string(input.substr(shadowBegin, cursor - shadowBegin));
+    parts.memberShadow = ownText(input.substr(shadowBegin, cursor - shadowBegin));
     if (cursor >= input.size() || input[cursor] != '.') {
         parts.form = ShadowRefForm::Malformed;
         return parts;
@@ -226,7 +241,7 @@ const char* shadowSlotErrorCode(ShadowSlotError error)
 }
 
 std::optional<ShadowAliasEntry> resolveShadowHandleEntry(const ShadowAliasTable& table,
-                                                         const std::string&      handle,
+                                                         std::string_view        handle,
                                                          ShadowSlotResult&       result)
 {
     result = ShadowSlotResult{};
@@ -243,8 +258,11 @@ std::optional<ShadowAliasEntry> resolveShadowHandleEntry(const ShadowAliasTable&
     bool shadowNameExisted = false;
     auto classEntry = findClassByHandle(table, parts.index, parts.classToken, shadowNameExisted);
     if (!classEntry.has_value()) {
-        std::string detail = "no class entry matches ${Class_" + parts.index + "." +
-                             parts.classToken + "} in the loaded shadow sidecar";
+        std::string detail = "no class entry matches ${Class_";
+        detail += viewOf(parts.index);
+        detail += '.';
+        detail += viewOf(parts.classToken);
+        detail += "} in the loaded shadow sidecar";
         if (shadowNameExisted) detail += " (class shadow name exists but token mismatches)";
         result = failure(ShadowSlotError::UnknownHandle, detail);
         return std::nullopt;
@@ -252,7 +270,7 @@ std::optional<ShadowAliasEntry> resolveShadowHandleEntry(const ShadowAliasTable&
     const auto ownerView = classEntry->rawName;
     if (parts.form == ShadowRefForm::ClassRef) {
         result.error      = ShadowSlotError::None;
-        result.raw        = ownerView;
+        result.raw        = ownText(ownerView);
         result.kind       = ShadowKind::Class;
         result.fromHandle = true;
         return classEntry;
@@ -261,14 +279,14 @@ std::optional<ShadowAliasEntry> resolveShadowHandleEntry(const ShadowAliasTable&
     // 二元 handle：类 + 成员影子名定位；成员 token 作后缀核验（防手滑
     // 错位到同影子名的另一枚），不参与候选选择。
     std::vector<ShadowAliasEntry> candidates;
-    for (const auto& entry : table.findByShadowName(parts.memberShadow)) {
+    for (const auto& entry : table.findByShadowName(viewOf(parts.memberShadow))) {
         if (entry.kind == ShadowKind::Class) continue;
         if (entry.owner != ownerView) continue;
         candidates.push_back(entry);
     }
     if (candidates.empty()) {
         result = failure(ShadowSlotError::UnknownHandle,
-                         "member shadow " + quoted(parts.memberShadow) +
+                         "member shadow " + quoted(viewOf(parts.memberShadow)) +
                              " is not registered under owner " + brief(ownerView) + " (" +
                              std::to_string(ownerView.size()) + " bytes)");
         return std::nullopt;
@@ -283,25 +301,22 @@ std::optional<ShadowAliasEntry> resolveShadowHandleEntry(const ShadowAliasTable&
         return std::nullopt;
     }
     const auto& member = candidates.front();
-    const bool  tokenMatches =
-        member.token8.size() == parts.memberToken.size() &&
-        std::equal(parts.memberToken.begin(), parts.memberToken.end(), member.token8.begin());
-    if (!tokenMatches) {
+    if (viewOf(parts.memberToken) != member.token8) {
         result = failure(ShadowSlotError::UnknownHandle,
-                         "member token " + quoted(parts.memberToken) + " mismatches for " +
-                             quoted(parts.memberShadow) + " under owner " + brief(ownerView));
+                         "member token " + quoted(viewOf(parts.memberToken)) + " mismatches for " +
+                             quoted(viewOf(parts.memberShadow)) + " under owner " + brief(ownerView));
         return std::nullopt;
     }
     result.error      = ShadowSlotError::None;
-    result.raw        = member.rawName;
-    result.descriptor = member.desc;
+    result.raw        = ownText(member.rawName);
+    result.descriptor = ownText(member.desc);
     result.kind       = member.kind;
     result.fromHandle = true;
     return member;
 }
 
 ShadowSlotResult resolveShadowSlot(const ShadowAliasTable& table,
-                                   const std::string&      input,
+                                   std::string_view        input,
                                    const ShadowSlotQuery&  query)
 {
     if (query.position == ShadowSlotPosition::Descriptor) {
@@ -315,11 +330,13 @@ ShadowSlotResult resolveShadowSlot(const ShadowAliasTable& table,
     const auto parts = parseShadowRef(input);
     switch (parts.form) {
     case ShadowRefForm::Raw:
-        return resolveRawIdentity(table, input, query.member, query.owner, query.verifyRaw);
+        return resolveRawIdentity(table, input, query.member, viewOf(query.owner),
+                                  query.verifyRaw);
 
     case ShadowRefForm::EscapedLiteral:
         // `$${…}` = 字面 `${…}`：剥 `$` 后按 raw 语义（恒等/核验同 raw 分支）。
-        return resolveRawIdentity(table, parts.literal, query.member, query.owner, query.verifyRaw);
+        return resolveRawIdentity(table, viewOf(parts.literal), query.member,
+                                  viewOf(query.owner), query.verifyRaw);
 
     case ShadowRefForm::Malformed:
         if (table.empty()) {
@@ -350,7 +367,7 @@ ShadowSlotResult resolveShadowSlot(const ShadowAliasTable& table,
 
 
 ShadowSlotResult resolveShadowDescriptor(const ShadowAliasTable& table,
-                                         const std::string&      input)
+                                         std::string_view        input)
 {
     ShadowSlotResult result;
     std::string      out;
@@ -409,13 +426,13 @@ ShadowSlotResult resolveShadowDescriptor(const ShadowAliasTable& table,
             case ShadowRefForm::EscapedLiteral:
                 // 字面请求：剥 $ 后的段按普通类名输出（与 Name 槽剥皮语义一致）。
                 out += 'L';
-                out += parts.literal;
+                out += viewOf(parts.literal);
                 out += ';';
                 break;
             case ShadowRefForm::ClassRef: {
                 ShadowSlotResult entryResult;
                 const auto entry =
-                    resolveShadowHandleEntry(table, std::string(content), entryResult);
+                    resolveShadowHandleEntry(table, content, entryResult);
                 if (!entry.has_value()) {
                     result = std::move(entryResult);
                     return false;
@@ -497,30 +514,30 @@ ShadowSlotResult resolveShadowDescriptor(const ShadowAliasTable& table,
         return result;
     }
     result.error      = ShadowSlotError::None;
-    result.raw        = std::move(out);
+    result.raw        = ownText(out);
     result.fromHandle = expansions > 0;
     return result;
 }
 
 
 ShadowSlotResult resolveShadowJasmBody(const ShadowAliasTable& table,
-                                       const std::string&      input)
+                                       std::string_view        input)
 {
     ShadowSlotResult result;
     if (input.empty()) {
-        result.raw  = input;
+        result.raw  = ownText(input);
         result.error = ShadowSlotError::None;
         return result;
     }
 
     // ── 尾随描述符切分 ──
-    std::string refPart;
-    std::string descPart;      // 括号内（方法）或尾 token（字段）；空 = 无
-    std::string separator;     // 引用部与描述符之间的原样分隔（" (" / " "）
-    bool        hasDesc = false;
+    std::string_view refPart;
+    std::string_view descPart;      // 括号内（方法）或尾 token（字段）；空 = 无
+    std::string      separator;     // 引用部与描述符之间的原样分隔（" (" / " "）
+    bool             hasDesc = false;
     if (input.back() == ')') {
         const auto paren = input.rfind(" (");
-        if (paren == std::string::npos || paren + 2 >= input.size() - 1) {
+        if (paren == std::string_view::npos || paren + 2 >= input.size() - 1) {
             return failure(ShadowSlotError::MalformedHandle,
                            "operand '" + brief(input) +
                                "' ends with ')' but has no ' (desc)' group");
@@ -532,7 +549,7 @@ ShadowSlotResult resolveShadowJasmBody(const ShadowAliasTable& table,
     }
     else {
         const auto space = input.rfind(' ');
-        if (space != std::string::npos && space + 1 < input.size()) {
+        if (space != std::string_view::npos && space + 1 < input.size()) {
             refPart   = input.substr(0, space);
             descPart  = input.substr(space + 1);
             separator = " ";
@@ -553,9 +570,9 @@ ShadowSlotResult resolveShadowJasmBody(const ShadowAliasTable& table,
 
     // name 段：裸名直通；嵌套 MemberRef handle 展开并核验与 raw owner 自洽。
     // 失败时已填 result，返回 false。
-    const auto resolveNamePart = [&](const std::string& namePart,
-                                     const std::string& rawOwner,
-                                     std::string&       out) -> bool {
+    const auto resolveNamePart = [&](std::string_view namePart,
+                                     std::string_view rawOwner,
+                                     std::string&     out) -> bool {
         if (namePart.rfind("${", 0) != 0) {
             out = namePart;
             return true;
@@ -600,13 +617,13 @@ ShadowSlotResult resolveShadowJasmBody(const ShadowAliasTable& table,
         ++expansions;
     }
     else if (parts.form == ShadowRefForm::EscapedLiteral) {
-        resolvedRef = parts.literal;
+        resolvedRef = viewOf(parts.literal);
     }
     else if (parts.form == ShadowRefForm::Malformed && refPart.rfind("${", 0) == 0) {
         // 复合拆分：首个 '}' 前为 owner handle（须 ClassRef 形状）；表查询
         // 错误原样直传——unknown-handle 不得被复合语境吞成 malformed。
         const auto close = refPart.find('}');
-        if (close == std::string::npos) {
+        if (close == std::string_view::npos) {
             return failure(ShadowSlotError::MalformedHandle,
                            "malformed reference " + quoted(refPart) +
                                " in jasm operand (no closing brace)");
@@ -642,12 +659,12 @@ ShadowSlotResult resolveShadowJasmBody(const ShadowAliasTable& table,
         // 花括号裁定按段进行：段首 ${ 走句柄路径，其余位置的花括号 =
         // 未标记引用中段，fail-loud（同 Descriptor 槽类型段；显示文本的
         // shadow 复合名不含 ${ 形状，零漂移不受损）。
-        const auto bracesIn = [](const std::string& segment) {
-            return segment.find('{') != std::string::npos ||
-                   segment.find('}') != std::string::npos;
+        const auto bracesIn = [](std::string_view segment) {
+            return segment.find('{') != std::string_view::npos ||
+                   segment.find('}') != std::string_view::npos;
         };
         const auto dot = refPart.find('.');
-        if (dot == std::string::npos) {
+        if (dot == std::string_view::npos) {
             if (bracesIn(refPart)) {
                 return failure(ShadowSlotError::MalformedHandle,
                                "raw reference " + quoted(refPart) +
@@ -676,51 +693,73 @@ ShadowSlotResult resolveShadowJasmBody(const ShadowAliasTable& table,
             }
             std::string resolvedName;
             if (!resolveNamePart(namePart, ownerPart, resolvedName)) return result;
-            resolvedRef = ownerPart + "." + resolvedName;
+            resolvedRef = std::string(ownerPart) + "." + resolvedName;
         }
     }
 
     // ── 描述符部展开 ──
     std::string resolvedDesc;
     if (hasDesc) {
-        const auto descResult = resolveShadowDescriptor(table, descPart);
+        auto descResult = resolveShadowDescriptor(table, descPart);
         if (descResult.error != ShadowSlotError::None) return descResult;
-        resolvedDesc = descResult.raw;
+        resolvedDesc = viewOf(descResult.raw);
         if (descResult.fromHandle) ++expansions;
     }
 
+    std::string composed;
+    composed.reserve(resolvedRef.size() + separator.size() + resolvedDesc.size() + 1);
+    composed += resolvedRef;
+    composed += separator;
+    if (hasDesc) composed += resolvedDesc;
+    if (separator == " (") composed += ')';
     result.error      = ShadowSlotError::None;
-    result.raw        = resolvedRef + separator + (hasDesc ? resolvedDesc : "") +
-                 (separator == " (" ? ")" : "");
+    result.raw        = ownText(composed);
     result.fromHandle = expansions > 0;
     return result;
 }
 
-std::string shadowRefHandleOf(const ShadowAliasTable& table, const ShadowAliasEntry& entry)
+ca::str::Utf8String shadowRefHandleOf(const ShadowAliasTable& table, const ShadowAliasEntry& entry)
 {
-    const std::string token(entry.token8);
+    const std::string_view token(entry.token8);
     if (token.size() != 8) return {};
     if (entry.kind == ShadowKind::Class) {
         // 类影子名必须呈 `Class_<纯数字>` 规范形（§2 文法前缀）；手工名不发句柄。
-        const std::string shadow(entry.shadowName);
+        const std::string_view shadow(entry.shadowName);
         if (shadow.size() <= 6 || shadow.compare(0, 6, "Class_") != 0) return {};
         for (std::size_t i = 6; i < shadow.size(); ++i) {
             if (!isDigit(shadow[i])) return {};
         }
-        return "${" + shadow + "." + token + "}";
+        std::string handle;
+        handle.reserve(shadow.size() + token.size() + 4);
+        handle += "${";
+        handle += shadow;
+        handle += '.';
+        handle += token;
+        handle += '}';
+        return ownText(handle);
     }
 
     // 成员条目：owner 类条目须存在且可发句柄。
     const auto* ownerEntry = table.classEntry(entry.owner);
     if (ownerEntry == nullptr) return {};
-    const std::string ownerHandle = shadowRefHandleOf(table, *ownerEntry);
-    if (ownerHandle.empty()) return {};
-    const std::string memberShadow(entry.shadowName);
+    const auto ownerHandle = shadowRefHandleOf(table, *ownerEntry);
+    if (ownerHandle.is_empty()) return {};
+    const std::string_view memberShadow(entry.shadowName);
     if (memberShadow.empty()) return {};
     for (const char c : memberShadow) {
         if (!isShadowSegmentChar(c)) return {};
     }
-    return ownerHandle.substr(0, ownerHandle.size() - 1) + "." + memberShadow + "." + token + "}";
+    // ownerHandle 形如 "${Class_N.token8}"：剥尾 '}' 拼成员段。
+    const std::string_view ownerHandleView = viewOf(ownerHandle);
+    std::string            handle;
+    handle.reserve(ownerHandleView.size() + memberShadow.size() + token.size() + 3);
+    handle += ownerHandleView.substr(0, ownerHandleView.size() - 1);
+    handle += '.';
+    handle += memberShadow;
+    handle += '.';
+    handle += token;
+    handle += '}';
+    return ownText(handle);
 }
 
 }   // namespace mjbase::renamer

@@ -59,7 +59,7 @@ public:
 
     std::string_view name() const override { return name_; }
 
-    ca::core::Result<std::vector<NameProposal>, std::string> propose(
+    ca::core::Result<std::vector<NameProposal>, ca::str::Utf8String> propose(
         const RenameContext&) override
     {
         return ca::core::Ok(std::move(proposals_));
@@ -80,10 +80,10 @@ public:
 
     std::string_view name() const override { return name_; }
 
-    ca::core::Result<std::vector<NameProposal>, std::string> propose(
+    ca::core::Result<std::vector<NameProposal>, ca::str::Utf8String> propose(
         const RenameContext&) override
     {
-        return ca::core::Err(std::string("boom"));
+        return ca::core::Err(ca::str::Utf8String::from_cstr("boom"));
     }
 
 private:
@@ -279,7 +279,7 @@ TEST(MjRenamerLegalityTest, rejectsKeywordIllegalCharNoOpSchemaAndMissingTarget)
     // 被拒流水完整：保留建议原文 + 原因 + 细节
     EXPECT_EQ(std::string(rejected[0].proposal.newName), "class");
     EXPECT_EQ(rejected[0].proposal.source, "batch");
-    EXPECT_FALSE(rejected[0].detail.empty());
+    EXPECT_FALSE(rejected[0].detail.is_empty());
 }
 
 TEST(MjRenamerLegalityTest, exemptsInitClinitAndRejectsThemAsNewNames)
@@ -925,7 +925,7 @@ TEST(MjRenamerRecordTest, providerErrorSkippedAndOthersContinue)
     EXPECT_EQ(result.stats.accepted, 1U);
     const auto* failure = findRejected(result, RejectionReason::ProviderError);
     ASSERT_NE(failure, nullptr);
-    EXPECT_NE(failure->detail.find("broken"), std::string::npos);
+    EXPECT_NE(std::string_view(failure->detail).find("broken"), std::string_view::npos);
     EXPECT_NE(result.plan.findField("A", "oldField", "I"), nullptr);
 }
 

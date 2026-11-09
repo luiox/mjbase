@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "mjbase/renamer/shadow_alias.hpp"
@@ -21,6 +22,13 @@
 namespace mjbase::renamer {
 
 namespace {
+
+/// 借用视图 → 自有 Utf8String（原始字节保真；口径同 resource_model ownText）。
+ca::str::Utf8String ownUtf8(std::string_view value) noexcept
+{
+    return ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(value.data()),
+                                                    value.size());
+}
 
 /// 手工表（全部自造名/号）：
 ///   Class_1 = a/b/Alpha（token 11111111），方法 m_1 = fly ()V（token 22222222），
@@ -47,24 +55,24 @@ ShadowAliasTable makeAmbiguousTable()
     return table;
 }
 
-ShadowSlotResult resolve(const ShadowAliasTable& table, const std::string& input)
+ShadowSlotResult resolve(const ShadowAliasTable& table, std::string_view input)
 {
     return resolveShadowSlot(table, input);
 }
 
 ShadowSlotResult resolveMember(const ShadowAliasTable& table,
-                               const std::string&      owner,
-                               const std::string&      input)
+                               std::string_view        owner,
+                               std::string_view        input)
 {
     ShadowSlotQuery query;
     query.member = true;
-    query.owner  = owner;
+    query.owner  = ownUtf8(owner);
     return resolveShadowSlot(table, input, query);
 }
 
-const std::string& text(const ShadowSlotResult& result)
+std::string_view text(const ShadowSlotResult& result)
 {
-    return result.message;
+    return std::string_view(result.message);
 }
 
 constexpr const char* kClassRef  = "${Class_1.11111111}";
@@ -349,22 +357,22 @@ TEST(MjShadowTokenTest, HandleIssuanceCoversClassAndMemberEntries)
 {
     const auto table = makeTable();
     ASSERT_EQ(5U, table.size());
-    std::string classHandle;
-    std::string memberHandle;
+    ca::str::Utf8String classHandle;
+    ca::str::Utf8String memberHandle;
     for (const auto& entry : table.entries()) {
-        const auto handle = shadowRefHandleOf(table, entry);
+        auto handle = shadowRefHandleOf(table, entry);
         if (entry.kind == ShadowKind::Class && entry.rawName == "a/b/Alpha") {
-            classHandle = handle;
+            classHandle = std::move(handle);
         }
         if (entry.kind == ShadowKind::Method && entry.rawName == "fly") {
-            memberHandle = handle;
-            EXPECT_EQ("${Class_1.11111111.m_1.22222222}", handle);
+            memberHandle = std::move(handle);
+            EXPECT_EQ("${Class_1.11111111.m_1.22222222}", memberHandle);
         }
     }
     EXPECT_EQ(kClassRef, classHandle);
 
     // 发出的句柄必可解析回同一符号（发放/解析闭环）。
-    const auto back = resolve(table, memberHandle);
+    const auto back = resolve(table, std::string_view(memberHandle));
     EXPECT_EQ(ShadowSlotError::None, back.error);
     EXPECT_EQ("fly", back.raw);
 }
@@ -382,10 +390,10 @@ TEST(MjShadowTokenTest, HandleIssuanceSkipsTokenlessAndManualNames)
             EXPECT_EQ("${Class_4.cccccccc}", handle);
         }
         else if (entry.kind == ShadowKind::Method) {
-            EXPECT_TRUE(handle.empty());   // 影子名出文法字符 → 不发句柄
+            EXPECT_TRUE(handle.is_empty());   // 影子名出文法字符 → 不发句柄
         }
         else {
-            EXPECT_TRUE(handle.empty());   // 缺 token / 手工名 → 不发句柄
+            EXPECT_TRUE(handle.is_empty());   // 缺 token / 手工名 → 不发句柄
         }
     }
 }
@@ -396,7 +404,7 @@ TEST(MjShadowTokenTest, HandleIssuanceSkipsTokenlessAndManualNames)
 namespace {
 
 /// Descriptor 槽快捷入口。
-ShadowSlotResult resolveDesc(const ShadowAliasTable& table, const std::string& input)
+ShadowSlotResult resolveDesc(const ShadowAliasTable& table, std::string_view input)
 {
     ShadowSlotQuery query;
     query.position = ShadowSlotPosition::Descriptor;
@@ -487,7 +495,7 @@ TEST(MjShadowTokenTest, DescriptorMemberRefRejectedInTypePosition)
     const auto table = makeTable();
     const auto r = resolveDesc(table, "(L" + std::string(kMemberRef) + ";)V");
     EXPECT_EQ(r.error, ShadowSlotError::MalformedHandle);
-    EXPECT_NE(r.message.find("type position"), std::string::npos);
+    EXPECT_NE(text(r).find("type position"), std::string_view::npos);
 }
 
 TEST(MjShadowTokenTest, DescriptorGenericSignatureFailsLoud)
@@ -496,7 +504,7 @@ TEST(MjShadowTokenTest, DescriptorGenericSignatureFailsLoud)
     // 泛型签名标记 fail-loud（Sig v2 另批），不静默替换。
     const auto r = resolveDesc(table, "(L" + std::string(kClassRef) + "<TT;>;)V");
     EXPECT_EQ(r.error, ShadowSlotError::MalformedHandle);
-    EXPECT_NE(r.message.find("generic signature"), std::string::npos);
+    EXPECT_NE(text(r).find("generic signature"), std::string_view::npos);
 }
 
 TEST(MjShadowTokenTest, DescriptorGrammarGarbageFailsLoud)
@@ -533,7 +541,7 @@ TEST(MjShadowTokenTest, DescriptorEscapedLiteralKeepsLiteralBraces)
 namespace {
 
 /// JasmBody 槽快捷入口。
-ShadowSlotResult resolveJasm(const ShadowAliasTable& table, const std::string& input)
+ShadowSlotResult resolveJasm(const ShadowAliasTable& table, std::string_view input)
 {
     ShadowSlotQuery query;
     query.position = ShadowSlotPosition::JasmBody;
@@ -750,7 +758,9 @@ TEST(MjShadowTokenTest, JasmBodyCompositeOperandMatrix)
         const auto r = resolveJasm(table, c.in);
         if (c.legal) {
             EXPECT_EQ(r.error, ShadowSlotError::None) << c.in << " -> " << text(r);
-            if (r.error == ShadowSlotError::None) EXPECT_EQ(r.raw, c.raw) << c.in;
+            if (r.error == ShadowSlotError::None) {
+                EXPECT_EQ(std::string_view(r.raw), std::string_view(c.raw)) << c.in;
+            }
         }
         else {
             EXPECT_EQ(r.error, ShadowSlotError::MalformedHandle) << c.in << " -> " << text(r);
