@@ -6,29 +6,42 @@
 
 namespace mjbase::spi {
 
+namespace {
+
+/// nameHint 借用视图 → 驻留 Utf8String（空视图安全；hint 是内部注册名/字面量，
+/// 来源可信，按字节收进，不做错误通道回传）。
+ca::str::Utf8String hintToUtf8(std::string_view hint)
+{
+    if (hint.empty()) return ca::str::Utf8String{};
+    return ca::str::Utf8String::from_data(reinterpret_cast<const ca::u8*>(hint.data()),
+                                          hint.size());
+}
+
+}   // namespace
+
 // ── 注册 ──
 
-PipelineBuilder& PipelineBuilder::addMethodPass(MethodFactory factory, std::string nameHint)
+PipelineBuilder& PipelineBuilder::addMethodPass(MethodFactory factory, std::string_view nameHint)
 {
-    methodFactories_.emplace_back(std::move(nameHint), std::move(factory));
+    methodFactories_.emplace_back(hintToUtf8(nameHint), std::move(factory));
     return *this;
 }
 
-PipelineBuilder& PipelineBuilder::addClassPass(ClassFactory factory, std::string nameHint)
+PipelineBuilder& PipelineBuilder::addClassPass(ClassFactory factory, std::string_view nameHint)
 {
-    classFactories_.emplace_back(std::move(nameHint), std::move(factory));
+    classFactories_.emplace_back(hintToUtf8(nameHint), std::move(factory));
     return *this;
 }
 
-PipelineBuilder& PipelineBuilder::addGlobalPass(GlobalFactory factory, std::string nameHint)
+PipelineBuilder& PipelineBuilder::addGlobalPass(GlobalFactory factory, std::string_view nameHint)
 {
-    globalFactories_.emplace_back(std::move(nameHint), std::move(factory));
+    globalFactories_.emplace_back(hintToUtf8(nameHint), std::move(factory));
     return *this;
 }
 
-PipelineBuilder& PipelineBuilder::addPostClassPass(GlobalFactory factory, std::string nameHint)
+PipelineBuilder& PipelineBuilder::addPostClassPass(GlobalFactory factory, std::string_view nameHint)
 {
-    postClassFactories_.emplace_back(std::move(nameHint), std::move(factory));
+    postClassFactories_.emplace_back(hintToUtf8(nameHint), std::move(factory));
     return *this;
 }
 
@@ -93,35 +106,35 @@ bool PipelineBuilder::empty() const
            postClassFactories_.empty();
 }
 
-std::vector<std::string> PipelineBuilder::methodPassNames() const
+std::vector<ca::str::Utf8String> PipelineBuilder::methodPassNames() const
 {
-    std::vector<std::string> names;
+    std::vector<ca::str::Utf8String> names;
     names.reserve(methodFactories_.size());
-    for (const auto& [hint, factory] : methodFactories_) names.push_back(hint);
+    for (const auto& [hint, factory] : methodFactories_) names.push_back(hint.clone());
     return names;
 }
 
-std::vector<std::string> PipelineBuilder::classPassNames() const
+std::vector<ca::str::Utf8String> PipelineBuilder::classPassNames() const
 {
-    std::vector<std::string> names;
+    std::vector<ca::str::Utf8String> names;
     names.reserve(classFactories_.size());
-    for (const auto& [hint, factory] : classFactories_) names.push_back(hint);
+    for (const auto& [hint, factory] : classFactories_) names.push_back(hint.clone());
     return names;
 }
 
-std::vector<std::string> PipelineBuilder::globalPassNames() const
+std::vector<ca::str::Utf8String> PipelineBuilder::globalPassNames() const
 {
-    std::vector<std::string> names;
+    std::vector<ca::str::Utf8String> names;
     names.reserve(globalFactories_.size());
-    for (const auto& [hint, factory] : globalFactories_) names.push_back(hint);
+    for (const auto& [hint, factory] : globalFactories_) names.push_back(hint.clone());
     return names;
 }
 
-std::vector<std::string> PipelineBuilder::postClassPassNames() const
+std::vector<ca::str::Utf8String> PipelineBuilder::postClassPassNames() const
 {
-    std::vector<std::string> names;
+    std::vector<ca::str::Utf8String> names;
     names.reserve(postClassFactories_.size());
-    for (const auto& [hint, factory] : postClassFactories_) names.push_back(hint);
+    for (const auto& [hint, factory] : postClassFactories_) names.push_back(hint.clone());
     return names;
 }
 
@@ -147,7 +160,7 @@ Result<void, RegistryError> applyTo(const PassNameRegistry& registry, std::strin
                     throw std::invalid_argument("applyTo: createMethodPass failed: " + name);
                 return std::move(std::move(pass).unwrap());
             },
-            std::string(name));
+            name);
         return Ok();
     }
     case PassScope::Class:
@@ -159,7 +172,7 @@ Result<void, RegistryError> applyTo(const PassNameRegistry& registry, std::strin
                     throw std::invalid_argument("applyTo: createClassPass failed: " + name);
                 return std::move(std::move(pass).unwrap());
             },
-            std::string(name));
+            name);
         return Ok();
     }
     case PassScope::Global:
@@ -171,7 +184,7 @@ Result<void, RegistryError> applyTo(const PassNameRegistry& registry, std::strin
                     throw std::invalid_argument("applyTo: createGlobalPass failed: " + name);
                 return std::move(std::move(pass).unwrap());
             },
-            std::string(name));
+            name);
         return Ok();
     }
     case PassScope::Cf:

@@ -681,10 +681,10 @@ TEST(MjPassDuplicateAnnotationRemoverTest, DefaultChainLeavesDuplicatesUntouched
     const auto& pipelines = mjbase::spi::PassRegistry::instance();
     ASSERT_TRUE(pipelines.hasPipeline("default-optimize"));
     const auto pipeline = pipelines.getPipeline("default-optimize");
-    for (const std::string& name : pipeline.classPassNames()) {
+    for (const auto& name : pipeline.classPassNames()) {
         EXPECT_NE(name, "DuplicateAnnotationRemover") << "opt-in 不入默认链";
     }
-    for (const std::string& name : pipeline.methodPassNames()) {
+    for (const auto& name : pipeline.methodPassNames()) {
         EXPECT_NE(name, "DuplicateAnnotationRemover") << "opt-in 不入默认链";
     }
 
