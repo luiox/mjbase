@@ -4365,8 +4365,8 @@ TEST(MjAnalysisDbTest, ReplaceConstantFacesRebuildsAtomically)
         replacedCount = replaced.unwrap();
     }
     // 总行数按输入记录数计（同逐切片入口口径）：3 strings + 1 cp number +
-    // 3 member numbers = 7（折叠不计减）。
-    EXPECT_EQ(7U, replacedCount);
+    // 4 member numbers（alpha 1 + beta 2 含同形重复）= 8（折叠不计减）。
+    EXPECT_EQ(8U, replacedCount);
 
     // 读回验证：旧事实整体消失（整库替换语义）。
     {
