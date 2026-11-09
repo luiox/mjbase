@@ -12,10 +12,10 @@
 
 #include <functional>
 #include <memory>
-#include <string>
 #include <vector>
 
 #include "libca/core/datatype.hpp"
+#include "libca/str/utf8_string.hpp"
 
 #include "jbc/ir/code_dom.hpp"
 
@@ -61,7 +61,9 @@ public:
                                           ca::i32                 depth) = 0;
 
     /// @brief 调试标识，例如 "opcode(IADD)" / "seq" / "repeat(min=1,max=3)"。
-    virtual std::string name() const = 0;
+    /// @return 按值返回的驻留文本（诊断出口；实现方持成员的用 clone()，
+    ///         字面量用 from_cstr）。
+    virtual ca::str::Utf8String name() const = 0;
 };
 
 }   // namespace mjbase::asm_tmatcher

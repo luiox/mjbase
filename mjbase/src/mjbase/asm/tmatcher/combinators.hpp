@@ -16,10 +16,12 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "libca/core/datatype.hpp"
+#include "libca/str/utf8_string.hpp"
 
 #include "jbc/core/opcode.hpp"
 #include "jbc/ir/code_dom.hpp"
@@ -37,33 +39,33 @@ namespace mjbase::asm_tmatcher {
 /// @brief 通用叶子 step：谓词判定当前指令。所有具体原子 step 的基类。
 class LeafStep : public IMatchStep
 {
-    std::string   name_;
-    InsnPredicate pred_;
+    ca::str::Utf8String name_;
+    InsnPredicate       pred_;
 
 public:
-    LeafStep(std::string name, InsnPredicate pred)
-        : name_(std::move(name))
+    LeafStep(std::string_view name, InsnPredicate pred)
+        : name_(diagnosticText(name))
         , pred_(std::move(pred))
     {}
 
-    std::string name() const override { return name_; }
+    ca::str::Utf8String name() const override { return name_.clone(); }
 
     std::vector<MatchState> match(const jbc::ir::CodeDom& dom,
                                   const MatchState&       state,
                                   MatchTracer&            tracer,
                                   ca::i32                 depth) override
     {
-        tracer.enter(name_, depth, state.cursor);
+        tracer.enter(name_.ref(), depth, state.cursor);
         InsnCursorView view{&dom, state.cursor, nullptr};
         if (state.cursor >= 0 && state.cursor < static_cast<ca::i32>(dom.size())) {
             view.insn = dom.peek(dom.order()[static_cast<ca::usize>(state.cursor)]);
         }
         if (!view.valid() || !pred_(view, state.captures)) {
-            tracer.fail(name_, depth, state.cursor, "predicate failed");
+            tracer.fail(name_.ref(), depth, state.cursor, "predicate failed");
             return {};
         }
         const MatchState next = state.withCursor(state.cursor + 1);
-        tracer.success(name_, depth, state.cursor, next.cursor);
+        tracer.success(name_.ref(), depth, state.cursor, next.cursor);
         return {next};
     }
 };
@@ -71,35 +73,43 @@ public:
 /// @brief 匹配指定 opcode 的单条指令。
 class OpcodeStep : public IMatchStep
 {
-    jbc::core::Op op_;
-    std::string   name_;
+    jbc::core::Op       op_;
+    ca::str::Utf8String name_;
 
 public:
     explicit OpcodeStep(jbc::core::Op op)
         : op_(op)
-        , name_(std::string("opcode(") + jbc::core::mnemonicOf(op) + ")")
+        , name_(debugNameOf(op))
     {}
 
-    std::string name() const override { return name_; }
+    ca::str::Utf8String name() const override { return name_.clone(); }
 
     std::vector<MatchState> match(const jbc::ir::CodeDom& dom,
                                   const MatchState&       state,
                                   MatchTracer&            tracer,
                                   ca::i32                 depth) override
     {
-        tracer.enter(name_, depth, state.cursor);
+        tracer.enter(name_.ref(), depth, state.cursor);
         if (state.cursor < 0 || state.cursor >= static_cast<ca::i32>(dom.size())) {
-            tracer.fail(name_, depth, state.cursor, "cursor out of bounds");
+            tracer.fail(name_.ref(), depth, state.cursor, "cursor out of bounds");
             return {};
         }
         const jbc::ir::Insn* now = dom.peek(dom.order()[static_cast<ca::usize>(state.cursor)]);
         if (now == nullptr || now->op != op_) {
-            tracer.fail(name_, depth, state.cursor, "opcode mismatch");
+            tracer.fail(name_.ref(), depth, state.cursor, "opcode mismatch");
             return {};
         }
         const MatchState next = state.withCursor(state.cursor + 1);
-        tracer.success(name_, depth, state.cursor, next.cursor);
+        tracer.success(name_.ref(), depth, state.cursor, next.cursor);
         return {next};
+    }
+
+private:
+    /// 调试名本地拼接后按字节收进（助记符为 ASCII 字面表）。
+    static ca::str::Utf8String debugNameOf(jbc::core::Op op)
+    {
+        const std::string name = std::string("opcode(") + jbc::core::mnemonicOf(op) + ")";
+        return diagnosticText(name);
     }
 };
 
@@ -107,20 +117,23 @@ public:
 class AnyOneStep : public IMatchStep
 {
 public:
-    std::string name() const override { return "any"; }
+    ca::str::Utf8String name() const override
+    {
+        return ca::str::Utf8String::from_cstr("any");
+    }
 
     std::vector<MatchState> match(const jbc::ir::CodeDom& dom,
                                   const MatchState&       state,
                                   MatchTracer&            tracer,
                                   ca::i32                 depth) override
     {
-        tracer.enter(name(), depth, state.cursor);
+        tracer.enter(name().ref(), depth, state.cursor);
         if (state.cursor < 0 || state.cursor >= static_cast<ca::i32>(dom.size())) {
-            tracer.fail(name(), depth, state.cursor, "cursor out of bounds");
+            tracer.fail(name().ref(), depth, state.cursor, "cursor out of bounds");
             return {};
         }
         const MatchState next = state.withCursor(state.cursor + 1);
-        tracer.success(name(), depth, state.cursor, next.cursor);
+        tracer.success(name().ref(), depth, state.cursor, next.cursor);
         return {next};
     }
 };
@@ -131,22 +144,22 @@ public:
 /// 失败原因写进 name() 与 trace detail，调用方可观察。
 class NeverMatchStep : public IMatchStep
 {
-    std::string name_;
+    ca::str::Utf8String name_;
 
 public:
-    explicit NeverMatchStep(std::string name)
-        : name_(std::move(name))
+    explicit NeverMatchStep(std::string_view name)
+        : name_(diagnosticText(name))
     {}
 
-    std::string name() const override { return name_; }
+    ca::str::Utf8String name() const override { return name_.clone(); }
 
     std::vector<MatchState> match(const jbc::ir::CodeDom& /*dom*/,
                                   const MatchState&       state,
                                   MatchTracer&            tracer,
                                   ca::i32                 depth) override
     {
-        tracer.enter(name_, depth, state.cursor, "invalid pattern");
-        tracer.fail(name_, depth, state.cursor, "invalid pattern");
+        tracer.enter(name_.ref(), depth, state.cursor, "invalid pattern");
+        tracer.fail(name_.ref(), depth, state.cursor, "invalid pattern");
         return {};
     }
 };
@@ -168,14 +181,17 @@ public:
         : nodes_(std::move(nodes))
     {}
 
-    std::string name() const override { return "seq"; }
+    ca::str::Utf8String name() const override
+    {
+        return ca::str::Utf8String::from_cstr("seq");
+    }
 
     std::vector<MatchState> match(const jbc::ir::CodeDom& dom,
                                   const MatchState&       state,
                                   MatchTracer&            tracer,
                                   ca::i32                 depth) override
     {
-        tracer.enter(name(), depth, state.cursor,
+        tracer.enter(name().ref(), depth, state.cursor,
                      "size=" + std::to_string(nodes_.size()));
         std::vector<MatchState> states = {state};
         for (std::size_t i = 0; i < nodes_.size(); i++) {
@@ -187,13 +203,13 @@ public:
                             std::make_move_iterator(branch.end()));
             }
             if (next.empty()) {
-                tracer.fail(name(), depth, state.cursor,
+                tracer.fail(name().ref(), depth, state.cursor,
                             "child " + std::to_string(i) + " failed");
                 return {};
             }
             states = std::move(next);
         }
-        tracer.success(name(), depth, state.cursor, states.front().cursor,
+        tracer.success(name().ref(), depth, state.cursor, states.front().cursor,
                        "candidates=" + std::to_string(states.size()));
         return states;
     }
@@ -211,14 +227,17 @@ public:
         : branches_(std::move(branches))
     {}
 
-    std::string name() const override { return "alt"; }
+    ca::str::Utf8String name() const override
+    {
+        return ca::str::Utf8String::from_cstr("alt");
+    }
 
     std::vector<MatchState> match(const jbc::ir::CodeDom& dom,
                                   const MatchState&       state,
                                   MatchTracer&            tracer,
                                   ca::i32                 depth) override
     {
-        tracer.enter(name(), depth, state.cursor,
+        tracer.enter(name().ref(), depth, state.cursor,
                      "branches=" + std::to_string(branches_.size()));
         std::vector<MatchState> results;
         for (auto& branch : branches_) {
@@ -228,10 +247,10 @@ public:
                            std::make_move_iterator(matched.end()));
         }
         if (results.empty()) {
-            tracer.fail(name(), depth, state.cursor, "all branches failed");
+            tracer.fail(name().ref(), depth, state.cursor, "all branches failed");
             return {};
         }
-        tracer.success(name(), depth, state.cursor, results.front().cursor,
+        tracer.success(name().ref(), depth, state.cursor, results.front().cursor,
                        "candidates=" + std::to_string(results.size()));
         return results;
     }
@@ -250,19 +269,22 @@ public:
         : node_(std::move(node))
     {}
 
-    std::string name() const override { return "opt"; }
+    ca::str::Utf8String name() const override
+    {
+        return ca::str::Utf8String::from_cstr("opt");
+    }
 
     std::vector<MatchState> match(const jbc::ir::CodeDom& dom,
                                   const MatchState&       state,
                                   MatchTracer&            tracer,
                                   ca::i32                 depth) override
     {
-        tracer.enter(name(), depth, state.cursor);
+        tracer.enter(name().ref(), depth, state.cursor);
         auto matched = node_->match(dom, state, tracer, depth + 1);
         matched.push_back(state);
         std::sort(matched.begin(), matched.end(),
                   [](const MatchState& a, const MatchState& b) { return a.cursor > b.cursor; });
-        tracer.success(name(), depth, state.cursor, matched.front().cursor);
+        tracer.success(name().ref(), depth, state.cursor, matched.front().cursor);
         return matched;
     }
 };
@@ -275,11 +297,11 @@ public:
 /// 子 step 必须推进游标（零宽循环体视为该候选失败），防死循环。
 class RepeatStep : public IMatchStep
 {
-    StepPtr   node_;
-    ca::i32   min_;
-    ca::i32   max_;      ///< < 0 表示无上限
-    bool      greedy_;
-    std::string name_;
+    StepPtr             node_;
+    ca::i32             min_;
+    ca::i32             max_;      ///< < 0 表示无上限
+    bool                greedy_;
+    ca::str::Utf8String name_;
 
 public:
     RepeatStep(StepPtr node, ca::i32 min, ca::i32 max, bool greedy)
@@ -287,19 +309,17 @@ public:
         , min_(min)
         , max_(max)
         , greedy_(greedy)
-        , name_("repeat(min=" + std::to_string(min) + ",max=" +
-                (max < 0 ? std::string("inf") : std::to_string(max)) +
-                (greedy ? "" : ",lazy") + ")")
+        , name_(makeName(min, max, greedy))
     {}
 
-    std::string name() const override { return name_; }
+    ca::str::Utf8String name() const override { return name_.clone(); }
 
     std::vector<MatchState> match(const jbc::ir::CodeDom& dom,
                                   const MatchState&       state,
                                   MatchTracer&            tracer,
                                   ca::i32                 depth) override
     {
-        tracer.enter(name_, depth, state.cursor);
+        tracer.enter(name_.ref(), depth, state.cursor);
         std::vector<MatchState> accepted;
         std::vector<MatchState> current = {state};
         if (min_ == 0) {
@@ -312,7 +332,7 @@ public:
             for (const auto& candidate : current) {
                 for (auto& out : node_->match(dom, candidate, tracer, depth + 1)) {
                     if (out.cursor <= candidate.cursor) {
-                        tracer.fail(name_, depth, candidate.cursor, "child did not advance");
+                        tracer.fail(name_.ref(), depth, candidate.cursor, "child did not advance");
                         continue;
                     }
                     next.push_back(std::move(out));
@@ -329,16 +349,26 @@ public:
             }
         }
         if (accepted.empty()) {
-            tracer.fail(name_, depth, state.cursor, "min bound not met");
+            tracer.fail(name_.ref(), depth, state.cursor, "min bound not met");
             return {};
         }
         std::sort(accepted.begin(), accepted.end(),
                   [this](const MatchState& a, const MatchState& b) {
                       return greedy_ ? a.cursor > b.cursor : a.cursor < b.cursor;
                   });
-        tracer.success(name_, depth, state.cursor, accepted.front().cursor,
+        tracer.success(name_.ref(), depth, state.cursor, accepted.front().cursor,
                        "candidates=" + std::to_string(accepted.size()));
         return accepted;
+    }
+
+private:
+    /// 调试名本地拼接后按字节收进（纯 ASCII 诊断文本）。
+    static ca::str::Utf8String makeName(ca::i32 min, ca::i32 max, bool greedy)
+    {
+        const std::string name = "repeat(min=" + std::to_string(min) + ",max=" +
+                                 (max < 0 ? std::string("inf") : std::to_string(max)) +
+                                 (greedy ? "" : ",lazy") + ")";
+        return diagnosticText(name);
     }
 };
 
@@ -362,9 +392,10 @@ public:
         , node_(std::move(node))
     {}
 
-    std::string name() const override
+    ca::str::Utf8String name() const override
     {
-        return "capture(" + std::string(name_) + ")";
+        const std::string label = "capture(" + std::string(name_) + ")";
+        return diagnosticText(label);
     }
 
     std::vector<MatchState> match(const jbc::ir::CodeDom& dom,
@@ -372,34 +403,34 @@ public:
                                   MatchTracer&            tracer,
                                   ca::i32                 depth) override
     {
-        const std::string label = name();
-        tracer.enter(label, depth, state.cursor);
+        const ca::str::Utf8String label = name();
+        tracer.enter(label.ref(), depth, state.cursor);
         const ca::i32 start    = state.cursor;
         auto          matched  = node_->match(dom, state, tracer, depth + 1);
         if (matched.empty()) {
-            tracer.fail(label, depth, state.cursor, "child failed");
+            tracer.fail(label.ref(), depth, state.cursor, "child failed");
             return {};
         }
         std::vector<MatchState> out;
         for (auto& candidate : matched) {
             if (candidate.cursor <= start) {
-                tracer.fail(label, depth, start, "zero-width capture rejected");
+                tracer.fail(label.ref(), depth, start, "zero-width capture rejected");
                 continue;
             }
             const jbc::ir::InsnId id =
                 dom.order()[static_cast<ca::usize>(start)];
             auto bound = candidate.captures.bind(name_, id);
             if (!bound) {
-                tracer.fail(label, depth, start, "capture conflict");
+                tracer.fail(label.ref(), depth, start, "capture conflict");
                 continue;
             }
             out.push_back(candidate.withCaptures(*bound));
         }
         if (out.empty()) {
-            tracer.fail(label, depth, state.cursor, "all candidates rejected");
+            tracer.fail(label.ref(), depth, state.cursor, "all candidates rejected");
             return {};
         }
-        tracer.success(label, depth, state.cursor, out.front().cursor);
+        tracer.success(label.ref(), depth, state.cursor, out.front().cursor);
         return out;
     }
 };
@@ -413,9 +444,9 @@ namespace combinators {
 // ---------- 原子 step ----------
 
 /// @brief 通用谓词叶子：name 仅作调试标识。
-inline StepPtr pred(std::string name, InsnPredicate p)
+inline StepPtr pred(std::string_view name, InsnPredicate p)
 {
-    return std::make_unique<LeafStep>(std::move(name), std::move(p));
+    return std::make_unique<LeafStep>(name, std::move(p));
 }
 
 /// @brief 匹配指定 opcode 的单条指令。
