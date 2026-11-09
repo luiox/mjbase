@@ -76,12 +76,12 @@
 #pragma once
 
 #include <cstdint>
-#include <string>
 #include <string_view>
 #include <vector>
 
 #include "libca/core/datatype.hpp"
 #include "libca/core/result.hpp"
+#include "libca/str/utf8_string.hpp"
 
 namespace mjbase::reference {
 
@@ -166,13 +166,15 @@ Result<KeepTier, KeepRuleErrorCode> keepTierFrom(std::string_view text);
 ///
 /// 三段模式均已在解析时归一化（`.` → `/`）。`name`/`desc` 空串表示「任意」的
 /// 通配等价形态由解析层保证（desc 缺省展开为 `**`，name 不允许为空）。
+/// 四段均为解析产物的 owning 驻留（DSL 配置文本按字节保真，`from_data_unchecked`
+/// 入池；UTF-8 编码不在本层校验，查询面一律按字节 glob 比较）。
 struct KeepRule
 {
-    KeepRuleKind kind   = KeepRuleKind::Class;
-    std::string  owner;   ///< 类内部名 glob（member 规则为宿主 glob）
-    std::string  name;    ///< 成员名 glob（member；解析后恒非空）
-    std::string  desc;    ///< 描述符 glob（member；缺省 `**`）
-    std::string  source;  ///< 原始行文本（诊断回溯用，保留归一化前的输入）
+    KeepRuleKind        kind   = KeepRuleKind::Class;
+    ca::str::Utf8String owner;   ///< 类内部名 glob（member 规则为宿主 glob）
+    ca::str::Utf8String name;    ///< 成员名 glob（member；解析后恒非空）
+    ca::str::Utf8String desc;    ///< 描述符 glob（member；缺省 `**`）
+    ca::str::Utf8String source;  ///< 原始行文本（诊断回溯用，保留归一化前的输入）
 };
 
 /// glob 匹配：`*` 不跨 `/`，`**` 跨 `/`，`?` 单字符不跨 `/`，其余字面。
@@ -188,6 +190,10 @@ class KeepRuleSet
 {
 public:
     KeepRuleSet() = default;
+    KeepRuleSet(KeepRuleSet&&)                 = default;
+    KeepRuleSet& operator=(KeepRuleSet&&)      = default;
+    KeepRuleSet(const KeepRuleSet&)            = delete;
+    KeepRuleSet& operator=(const KeepRuleSet&) = delete;
 
     /// @brief 解析行式 DSL 全文（fail-loud，见文件头语法）。
     /// @return Ok(规则集) 或 Err(行号+原因码)；不含任何部分结果。

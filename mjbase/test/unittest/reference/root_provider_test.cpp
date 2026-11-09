@@ -132,7 +132,7 @@ ResourceContainer buildFixture()
 
 KeepRuleSet parseRules(const char* text)
 {
-    const auto parsed = KeepRuleSet::parse(text);
+    auto parsed = KeepRuleSet::parse(text);
     EXPECT_TRUE(parsed.is_ok());
     return parsed.is_ok() ? std::move(parsed).unwrap() : KeepRuleSet{};
 }

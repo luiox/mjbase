@@ -323,20 +323,19 @@ AnalysisProject AnalysisProject::createEmpty()
 
 bool AnalysisProject::addInput(AnalysisInput input)
 {
-    const std::string key = input.path.to_std_string();
-    if (key.empty() || inputIndex_.count(key) > 0) return false;
+    if (input.path.is_empty() || inputIndex_.count(input.path.clone()) > 0) return false;
     // parent（v2）：引用必须已登记。挂载树无环不变量由归纳保证——已登记集
     // 合无环，新节点只有一条指向已有节点的出边，不可能引入环；解析期整表
     // 装载才需要显式查环（见 parseAnalysisProjectText）。
-    if (!input.parent.is_empty() && inputIndex_.count(toStd(input.parent)) == 0) return false;
-    inputIndex_.emplace(key, inputs_.size());
+    if (!input.parent.is_empty() && inputIndex_.count(copyOf(input.parent)) == 0) return false;
+    inputIndex_.emplace(input.path.clone(), inputs_.size());
     inputs_.push_back(std::move(input));
     return true;
 }
 
 ca::usize AnalysisProject::removeInput(const Utf8StringRef& path)
 {
-    const auto  it = inputIndex_.find(toStd(path));
+    const auto  it = inputIndex_.find(copyOf(path));
     if (it == inputIndex_.end()) return 0;
     // v2 挂载树：被其他条目 parent 引用时拒绝摘除（不构造悬垂引用）。
     for (const auto& input : inputs_) {
@@ -346,14 +345,14 @@ ca::usize AnalysisProject::removeInput(const Utf8StringRef& path)
     inputs_.erase(inputs_.begin() + static_cast<std::ptrdiff_t>(victim));
     inputIndex_.clear();
     for (ca::usize i = 0; i < inputs_.size(); ++i) {
-        inputIndex_.emplace(inputs_[i].path.to_std_string(), i);
+        inputIndex_.emplace(inputs_[i].path.clone(), i);
     }
     return 1;
 }
 
 const AnalysisInput* AnalysisProject::findInput(const Utf8StringRef& path) const
 {
-    const auto  it = inputIndex_.find(toStd(path));
+    const auto  it = inputIndex_.find(copyOf(path));
     if (it == inputIndex_.end()) return nullptr;
     return &inputs_[it->second];
 }
@@ -395,7 +394,7 @@ ca::u64 AnalysisProject::addAnnotation(AnnotationTarget              target,
     const auto  index = annotations_.size();
     annotations_.push_back(std::move(annotation));
     annotationIndex_.emplace(annotations_[index].id, index);
-    ownerIndex_[annotations_[index].target.owner.to_std_string()].push_back(index);
+    ownerIndex_[copyOf(annotations_[index].target.owner)].push_back(index);
     return annotations_[index].id;
 }
 
@@ -412,7 +411,7 @@ bool AnalysisProject::removeAnnotation(ca::u64 id)
     ownerIndex_.clear();
     for (ca::usize i = 0; i < annotations_.size(); ++i) {
         annotationIndex_.emplace(annotations_[i].id, i);
-        ownerIndex_[annotations_[i].target.owner.to_std_string()].push_back(i);
+        ownerIndex_[copyOf(annotations_[i].target.owner)].push_back(i);
     }
     return true;
 }
@@ -428,7 +427,7 @@ std::vector<const AnalysisAnnotation*> AnalysisProject::annotationsOf(
     const Utf8StringRef& owner) const
 {
     std::vector<const AnalysisAnnotation*> result;
-    const auto                             it = ownerIndex_.find(toStd(owner));
+    const auto                             it = ownerIndex_.find(copyOf(owner));
     if (it == ownerIndex_.end()) return result;
     result.reserve(it->second.size());
     for (const auto  index : it->second) result.push_back(&annotations_[index]);
@@ -635,8 +634,7 @@ ca::Result<AnalysisProject, AnalysisProjectError> parseAnalysisProjectText(
         // parent 存在性/无环由装载后的挂载树整表校验统一裁决（§1.5）；addInput
         // 的增量 parent 检查只服务于增量 API，不适用于整文件装载。
         project.inputs_.push_back(std::move(input));
-        project.inputIndex_[project.inputs_.back().path.to_std_string()] =
-            project.inputs_.size() - 1;
+        project.inputIndex_[copyOf(project.inputs_.back().path)] = project.inputs_.size() - 1;
         ++inputIndex;
     }
 
@@ -650,7 +648,7 @@ ca::Result<AnalysisProject, AnalysisProjectError> parseAnalysisProjectText(
                 return ca::Err(makeError(AnalysisProjectErrorKind::Schema,
                                          "inputs mount tree is cyclic at: " + cursor));
             }
-            const auto  it = project.inputIndex_.find(cursor);
+            const auto  it = project.inputIndex_.find(copyOf(Utf8StringRef::from_string_view(cursor)));
             if (it == project.inputIndex_.end()) {
                 return ca::Err(makeError(AnalysisProjectErrorKind::Schema,
                                          "inputs mount tree references unregistered path: " +
@@ -798,7 +796,7 @@ ca::Result<AnalysisProject, AnalysisProjectError> parseAnalysisProjectText(
         const auto  slot = project.annotations_.size();
         project.annotations_.push_back(std::move(annotation));
         project.annotationIndex_.emplace(project.annotations_[slot].id, slot);
-        project.ownerIndex_[project.annotations_[slot].target.owner.to_std_string()].push_back(slot);
+        project.ownerIndex_[copyOf(project.annotations_[slot].target.owner)].push_back(slot);
     }
     project.nextAnnotationId_ = static_cast<ca::u64>(nextId.unwrap());
 

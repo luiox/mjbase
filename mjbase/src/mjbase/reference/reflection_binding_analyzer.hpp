@@ -50,7 +50,6 @@
 /// ReferenceSite 与 ReferenceIndex 同构，供后续 callgraph 消费。
 #pragma once
 
-#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -204,9 +203,9 @@ public:
         return stringConstants_;
     }
 
-    /// @brief static final String[] 名表（key = "owner.name" 驻留视图）。方法内
-    /// 值流解释器查询用；只读。
-    const std::unordered_map<std::string_view, std::vector<std::string>>& nameTables() const
+    /// @brief static final String[] 名表（key = "owner.name" 驻留视图，元素同为
+    /// 分析器自有 KeyPool 驻留视图）。方法内值流解释器查询用；只读。
+    const std::unordered_map<std::string_view, std::vector<std::string_view>>& nameTables() const
     {
         return nameTables_;
     }
@@ -234,8 +233,9 @@ private:
     std::unordered_map<std::string_view, ClassInfo>              classes_;
     /// @brief static final String 常量表：key = "owner.name" → 值。
     std::unordered_map<std::string_view, std::string_view>       stringConstants_;
-    /// @brief static final String[] 名表：key = "owner.name" → 全量元素。
-    std::unordered_map<std::string_view, std::vector<std::string>> nameTables_;
+    /// @brief static final String[] 名表：key = "owner.name" → 全量元素（键与
+    /// 元素均为 pool_ 驻留视图——classfile 字节随会话消亡，值一律先驻留）。
+    std::unordered_map<std::string_view, std::vector<std::string_view>> nameTables_;
     std::vector<ReflectionBinding>                               bindings_;
 };
 

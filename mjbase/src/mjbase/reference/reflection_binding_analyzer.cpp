@@ -356,7 +356,7 @@ struct BindingDomainEnv
 {
     const jbc::core::ConstantPool*                             cp       = nullptr;
     const std::unordered_map<std::string_view, std::string_view>* stringConstants = nullptr;
-    const std::unordered_map<std::string_view, std::vector<std::string>>* nameTables = nullptr;
+    const std::unordered_map<std::string_view, std::vector<std::string_view>>* nameTables = nullptr;
     const std::unordered_map<ca::u32, BindingValue>*            injected = nullptr;
 };
 
@@ -1222,9 +1222,12 @@ void ReflectionBindingAnalyzer::scanStaticNameTables(jbc::ir::ClassSession& sess
             if (!full) continue;
             if (regionHasIncomingBranches(code, pos - 1, putPos)) continue;
 
-            std::vector<std::string> table;
+            // 元素先驻留进 pool_：扫描缓冲随会话消亡，输出契约是池驻留视图。
+            std::vector<std::string_view> table;
             table.reserve(elements.size());
-            for (const auto& element : elements) table.push_back(*element);
+            for (const auto& element : elements) {
+                table.push_back(pool_.str(pool_.intern(*element)));
+            }
             const std::string key = std::string(className) + "." + std::string(sem.name);
             nameTables_[pool_.str(pool_.intern(key))] = std::move(table);
         }
@@ -1303,7 +1306,7 @@ void ReflectionBindingAnalyzer::analyzeSession(jbc::ir::ClassSession& session)
                 const auto*   v       = p.frames->stackFromTop(id, fromTop);
                 return v != nullptr ? *v : BindingValue::unknown();
             };
-            auto isv = [&](std::string text) { return pool_.str(pool_.intern(text)); };
+            auto isv = [&](std::string_view text) { return pool_.str(pool_.intern(text)); };
 
             // ── catalog-only：Lookup 族 ──
             if (sink->catalogOnly) {
@@ -1319,14 +1322,14 @@ void ReflectionBindingAnalyzer::analyzeSession(jbc::ir::ClassSession& session)
                 if (argument.kind == BindingValue::Kind::AmbiguousString) {
                     binding.state     = ReflectionBindingState::Pending;
                     binding.reason    = ReflectionPendingReason::AmbiguousArray;
-                    binding.className = isv(std::string(normalizeClassName(argument.text)));
+                    binding.className = isv(normalizeClassName(argument.text));
                 }
                 else if (argument.kind != BindingValue::Kind::String) {
                     binding.state  = ReflectionBindingState::Pending;
                     binding.reason = ReflectionPendingReason::UnknownArgs;
                 }
                 else {
-                    binding.className = isv(std::string(normalizeClassName(argument.text)));
+                    binding.className = isv(normalizeClassName(argument.text));
                     if (classes_.find(binding.className) == classes_.end()) {
                         binding.state  = ReflectionBindingState::Pending;
                         binding.reason = ReflectionPendingReason::NoSuchClass;
@@ -1349,7 +1352,7 @@ void ReflectionBindingAnalyzer::analyzeSession(jbc::ir::ClassSession& session)
                 const BindingValue receiver =
                     receiverSlot != nullptr ? *receiverSlot : BindingValue::unknown();
                 if (receiver.kind == BindingValue::Kind::ClassObject) {
-                    binding.className = isv(std::string(normalizeClassName(receiver.text)));
+                    binding.className = isv(normalizeClassName(receiver.text));
                 }
 
                 if (sink->memberEnumeration) {
@@ -1490,7 +1493,7 @@ void ReflectionBindingAnalyzer::analyzeSession(jbc::ir::ClassSession& session)
                     bindings_.push_back(std::move(binding));
                     continue;
                 }
-                binding.className = isv(std::string(normalizeClassName(receiver.text)));
+                binding.className = isv(normalizeClassName(receiver.text));
                 auto classIt      = classes_.find(binding.className);
                 if (classIt == classes_.end()) {
                     binding.state  = ReflectionBindingState::Pending;
@@ -1514,7 +1517,7 @@ void ReflectionBindingAnalyzer::analyzeSession(jbc::ir::ClassSession& session)
                 continue;
             }
 
-            binding.className  = isv(std::string(normalizeClassName(receiver.member->owner)));
+            binding.className  = isv(normalizeClassName(receiver.member->owner));
             binding.memberName = isv(receiver.member->name);
             auto classIt       = classes_.find(binding.className);
             if (binding.className.empty() || classIt == classes_.end()) {
@@ -1668,8 +1671,10 @@ void ReflectionBindingAnalyzer::indexSession(jbc::ir::ClassSession& session)
                     if (entry.tag == CpTag::String && cp.isUtf8(entry.a)) {
                         const std::string key =
                             std::string(className) + "." + std::string(fieldName);
+                        // 值必须先驻留再存视图：classfile 常量池字节随会话消亡，
+                        // 直接存 utf8Of 视图（或 std::string 临时量的视图）都会悬垂。
                         stringConstants_[pool_.str(pool_.intern(key))] =
-                            std::string(cp.utf8Of(entry.a));
+                            pool_.str(pool_.intern(cp.utf8Of(entry.a)));
                     }
                 }
                 break;   // ConstantValue 每字段至多一个

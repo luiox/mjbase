@@ -14,6 +14,19 @@
 using mjbase::analysis::AndersenPointsToSolver;
 using NameId = AndersenPointsToSolver::NameId;
 
+namespace {
+
+/// pointsTo 出口物化为 Utf8String；断言面转 std::string 逐字等强比对。
+std::vector<std::string> asStdString(std::vector<ca::str::Utf8String> names)
+{
+    std::vector<std::string> out;
+    out.reserve(names.size());
+    for (const auto& name : names) out.push_back(name.to_std_string());
+    return out;
+}
+
+}   // namespace
+
 TEST(MjAnalysisAndersenTest, PropagatesCopyConstraintsToFixedPoint)
 {
     AndersenPointsToSolver solver;
@@ -29,7 +42,7 @@ TEST(MjAnalysisAndersenTest, PropagatesCopyConstraintsToFixedPoint)
     solver.addCopy(c, d);
     solver.solve();
 
-    EXPECT_EQ(solver.pointsTo("d"), (std::vector<std::string>{"alloc:A", "alloc:B"}));
+    EXPECT_EQ(asStdString(solver.pointsTo("d")), (std::vector<std::string>{"alloc:A", "alloc:B"}));
 }
 
 TEST(MjAnalysisAndersenTest, ResolvesChainedFieldLoads)
@@ -51,8 +64,8 @@ TEST(MjAnalysisAndersenTest, ResolvesChainedFieldLoads)
     solver.addLoad(c, a, g);
     solver.solve();
 
-    EXPECT_EQ(solver.pointsTo("a"), std::vector<std::string>{"alloc:Middle"});
-    EXPECT_EQ(solver.pointsTo("c"), std::vector<std::string>{"alloc:Leaf"});
+    EXPECT_EQ(asStdString(solver.pointsTo("a")), std::vector<std::string>{"alloc:Middle"});
+    EXPECT_EQ(asStdString(solver.pointsTo("c")), std::vector<std::string>{"alloc:Leaf"});
 }
 
 TEST(MjAnalysisAndersenTest, KeepsHeapFieldsAllocationSensitive)
@@ -75,8 +88,8 @@ TEST(MjAnalysisAndersenTest, KeepsHeapFieldsAllocationSensitive)
     solver.addLoad(rightResult, right, value);
     solver.solve();
 
-    EXPECT_EQ(solver.pointsTo("leftResult"), std::vector<std::string>{"alloc:LeftValue"});
-    EXPECT_EQ(solver.pointsTo("rightResult"), std::vector<std::string>{"alloc:RightValue"});
+    EXPECT_EQ(asStdString(solver.pointsTo("leftResult")), std::vector<std::string>{"alloc:LeftValue"});
+    EXPECT_EQ(asStdString(solver.pointsTo("rightResult")), std::vector<std::string>{"alloc:RightValue"});
 }
 
 TEST(MjAnalysisAndersenTest, AcceptsConstraintsAfterInitialSolve)
@@ -93,5 +106,5 @@ TEST(MjAnalysisAndersenTest, AcceptsConstraintsAfterInitialSolve)
     solver.addAddressOf(solver.intern("value"), solver.intern("alloc:Late"));
     solver.addStore(base, slot, solver.intern("value"));
     solver.solve();
-    EXPECT_EQ(solver.pointsTo("result"), std::vector<std::string>{"alloc:Late"});
+    EXPECT_EQ(asStdString(solver.pointsTo("result")), std::vector<std::string>{"alloc:Late"});
 }

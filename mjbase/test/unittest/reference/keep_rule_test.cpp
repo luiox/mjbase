@@ -59,7 +59,7 @@ TEST(MjReferenceGlobMatchTest, LiteralAndExactMatch)
 
 TEST(MjKeepRuleParseTest, ParsesClassMemberPresetLines)
 {
-    const auto parsed = KeepRuleSet::parse(
+    auto parsed = KeepRuleSet::parse(
         "# comment line\n"
         "\n"
         "class com.foo.**\r\n"
@@ -67,7 +67,7 @@ TEST(MjKeepRuleParseTest, ParsesClassMemberPresetLines)
         "member com.foo.Bar#anyName\n"
         "preset +lambda\n");
     ASSERT_TRUE(parsed.is_ok());
-    const KeepRuleSet& set = parsed.unwrap();
+    const KeepRuleSet set = std::move(parsed).unwrap();
     ASSERT_EQ(set.size(), 5u);   // 3 条显式行 + preset +lambda 展开 2 条
 
     const std::vector<mjbase::reference::KeepRule>& rules = set.rules();
@@ -85,16 +85,16 @@ TEST(MjKeepRuleParseTest, ParsesClassMemberPresetLines)
 
 TEST(MjKeepRuleParseTest, EmptyTextYieldsEmptySet)
 {
-    const auto parsed = KeepRuleSet::parse("");
+    auto parsed = KeepRuleSet::parse("");
     ASSERT_TRUE(parsed.is_ok());
-    EXPECT_TRUE(parsed.unwrap().empty());
+    EXPECT_TRUE(std::move(parsed).unwrap().empty());
 }
 
 // ── DSL 解析：fail-loud（行号 + 原因码）────────────────────────────────────────
 
 TEST(MjKeepRuleParseTest, UnknownKeywordFailsLoudWithLine)
 {
-    const auto parsed = KeepRuleSet::parse("class a.B\nkeep com/x/Y\n");
+    auto parsed = KeepRuleSet::parse("class a.B\nkeep com/x/Y\n");
     ASSERT_TRUE(parsed.is_err());
     const KeepRuleParseError err = parsed.unwrap_err();
     EXPECT_EQ(err.line, 2u);
@@ -103,7 +103,7 @@ TEST(MjKeepRuleParseTest, UnknownKeywordFailsLoudWithLine)
 
 TEST(MjKeepRuleParseTest, MissingArgumentFailsLoud)
 {
-    const auto parsed = KeepRuleSet::parse("class\n");
+    auto parsed = KeepRuleSet::parse("class\n");
     ASSERT_TRUE(parsed.is_err());
     EXPECT_EQ(parsed.unwrap_err().line, 1u);
     EXPECT_EQ(parsed.unwrap_err().code, KeepRuleErrorCode::MissingArgument);
@@ -131,7 +131,7 @@ TEST(MjKeepRuleParseTest, UnknownPresetFailsLoud)
 {
     // 名字必须在预设库里不存在——预设库会扩，用 `+nope` 这种恒不存在的名字，
     // 别拿某个当前未实现的家族名（将来实现了这个用例会静默变绿变假）。
-    const auto parsed = KeepRuleSet::parse("class a/B\npreset +nope\n");
+    auto parsed = KeepRuleSet::parse("class a/B\npreset +nope\n");
     ASSERT_TRUE(parsed.is_err());
     EXPECT_EQ(parsed.unwrap_err().line, 2u);
     EXPECT_EQ(parsed.unwrap_err().code, KeepRuleErrorCode::UnknownPreset);
@@ -141,9 +141,9 @@ TEST(MjKeepRuleParseTest, UnknownPresetFailsLoud)
 
 TEST(MjKeepRulePresetTest, SerializationPresetExpandsToCallbackFamily)
 {
-    const auto parsed = KeepRuleSet::parse("preset serialization\n");
+    auto parsed = KeepRuleSet::parse("preset serialization\n");
     ASSERT_TRUE(parsed.is_ok());
-    const KeepRuleSet& set = parsed.unwrap();
+    const KeepRuleSet set = std::move(parsed).unwrap();
     // 9 个成员模式（7 回调 + serialVersionUID + serialPersistentFields）
     // + 无参构造器。
     EXPECT_EQ(set.size(), 10u);
@@ -165,9 +165,9 @@ TEST(MjKeepRulePresetTest, SerializationPresetExpandsToCallbackFamily)
 
 TEST(MjKeepRulePresetTest, LambdaPresetMatchesSyntheticNames)
 {
-    const auto parsed = KeepRuleSet::parse("preset +lambda\n");
+    auto parsed = KeepRuleSet::parse("preset +lambda\n");
     ASSERT_TRUE(parsed.is_ok());
-    const KeepRuleSet& set = parsed.unwrap();
+    const KeepRuleSet set = std::move(parsed).unwrap();
     EXPECT_TRUE(set.matchesMember("com/foo/Bar", "lambda$main$0", "(I)Ljava/lang/String;"));
     EXPECT_TRUE(set.matchesMember("com/foo/Bar", "$deserializeLambda$X", "(I)Ljava/lang/Object;"));
     EXPECT_FALSE(set.matchesMember("com/foo/Bar", "main", "([Ljava/lang/String;)V"));
@@ -185,9 +185,9 @@ TEST(MjKeepRulePresetTest, AddPresetProgrammaticPath)
 // RMI：骨架/存根类按名字反射加载；层级谓词挂账，只落命名部分。
 TEST(MjKeepRulePresetTest, RmiPresetCoversSkeletonClassNamesAndRemoteRefCtor)
 {
-    const auto parsed = KeepRuleSet::parse("preset +rmi\n");
+    auto parsed = KeepRuleSet::parse("preset +rmi\n");
     ASSERT_TRUE(parsed.is_ok());
-    const KeepRuleSet& set = parsed.unwrap();
+    const KeepRuleSet set = std::move(parsed).unwrap();
 
     EXPECT_TRUE(set.matchesClass("com/foo/Payroll_Stub"));
     EXPECT_TRUE(set.matchesClass("com/foo/Payroll_Skel"));
@@ -203,9 +203,9 @@ TEST(MjKeepRulePresetTest, RmiPresetCoversSkeletonClassNamesAndRemoteRefCtor)
 // EJB：容器按名反射调用生命周期回调；注解族挂账，只落回调名。
 TEST(MjKeepRulePresetTest, EjbPresetCoversLifecycleCallbacks)
 {
-    const auto parsed = KeepRuleSet::parse("preset ejb\n");
+    auto parsed = KeepRuleSet::parse("preset ejb\n");
     ASSERT_TRUE(parsed.is_ok());
-    const KeepRuleSet& set = parsed.unwrap();
+    const KeepRuleSet set = std::move(parsed).unwrap();
 
     EXPECT_TRUE(set.matchesMember("com/foo/AccountBean", "ejbCreate", "()V"));
     EXPECT_TRUE(set.matchesMember("com/foo/AccountBean", "ejbCreateWithId", "(I)V"));  // 通配后缀
@@ -227,9 +227,9 @@ TEST(MjKeepRulePresetTest, EjbPresetCoversLifecycleCallbacks)
 // JMX：MBean/MXBean 接口由 MBeanServer 按名发现。
 TEST(MjKeepRulePresetTest, JmxPresetCoversMbeanClassNames)
 {
-    const auto parsed = KeepRuleSet::parse("preset +jmx\n");
+    auto parsed = KeepRuleSet::parse("preset +jmx\n");
     ASSERT_TRUE(parsed.is_ok());
-    const KeepRuleSet& set = parsed.unwrap();
+    const KeepRuleSet set = std::move(parsed).unwrap();
 
     EXPECT_TRUE(set.matchesClass("com/foo/CacheMBean"));
     EXPECT_TRUE(set.matchesClass("com/foo/CacheMXBean"));
@@ -242,9 +242,9 @@ TEST(MjKeepRulePresetTest, JmxPresetCoversMbeanClassNames)
 // 参数侧、放开返回侧。
 TEST(MjKeepRulePresetTest, EnumPresetCoversSyntheticEnumSurface)
 {
-    const auto parsed = KeepRuleSet::parse("preset +enum\n");
+    auto parsed = KeepRuleSet::parse("preset +enum\n");
     ASSERT_TRUE(parsed.is_ok());
-    const KeepRuleSet& set = parsed.unwrap();
+    const KeepRuleSet set = std::move(parsed).unwrap();
 
     EXPECT_TRUE(set.matchesMember("com/foo/Color", "values", "()[Lcom/foo/Color;"));
     EXPECT_TRUE(set.matchesMember("com/foo/Color", "valueOf", "(Ljava/lang/String;)Lcom/foo/Color;"));
@@ -259,9 +259,9 @@ TEST(MjKeepRulePresetTest, EnumPresetCoversSyntheticEnumSurface)
 // Swing 可插拔 L&F：UI 委托由 UIManager 反射按名实例化。
 TEST(MjKeepRulePresetTest, SwingPresetCoversPluggableLookAndFeelEntries)
 {
-    const auto parsed = KeepRuleSet::parse("preset +swing\n");
+    auto parsed = KeepRuleSet::parse("preset +swing\n");
     ASSERT_TRUE(parsed.is_ok());
-    const KeepRuleSet& set = parsed.unwrap();
+    const KeepRuleSet set = std::move(parsed).unwrap();
 
     EXPECT_TRUE(set.matchesMember("com/foo/MyButtonUI", "createUI",
                                   "(Ljavax/swing/JComponent;)Ljavax/swing/plaf/ComponentUI;"));
@@ -275,9 +275,9 @@ TEST(MjKeepRulePresetTest, SwingPresetCoversPluggableLookAndFeelEntries)
 // JAXB：只保 ObjectFactory（反射实例化入口）；注解族挂账。
 TEST(MjKeepRulePresetTest, JaxbPresetCoversObjectFactoryOnly)
 {
-    const auto parsed = KeepRuleSet::parse("preset +jaxb\n");
+    auto parsed = KeepRuleSet::parse("preset +jaxb\n");
     ASSERT_TRUE(parsed.is_ok());
-    const KeepRuleSet& set = parsed.unwrap();
+    const KeepRuleSet set = std::move(parsed).unwrap();
 
     EXPECT_EQ(set.size(), 1u);   // 一行数据：注解族尚未接入，不得假装覆盖
     EXPECT_TRUE(set.matchesClass("com/foo/generated/ObjectFactory"));
@@ -301,9 +301,9 @@ TEST(MjKeepRulePresetTest, PresetNameRoundTripsThroughTheSameTable)
         // 程序化入口与 DSL 入口必须展开出同样多的规则（两处不得分家）。
         KeepRuleSet viaEnum;
         ASSERT_TRUE(viaEnum.addPreset(preset).is_ok());
-        const auto viaText = KeepRuleSet::parse(std::string("preset ").append(name).append("\n"));
+        auto viaText = KeepRuleSet::parse(std::string("preset ").append(name).append("\n"));
         ASSERT_TRUE(viaText.is_ok()) << name;
-        EXPECT_EQ(viaEnum.size(), viaText.unwrap().size()) << name;
+        EXPECT_EQ(viaEnum.size(), std::move(viaText).unwrap().size()) << name;
     }
 }
 
@@ -322,17 +322,17 @@ TEST(MjKeepRulePresetTest, UnknownPresetNameFailsFrom)
 
 TEST(MjKeepRuleMatchTest, ClassAndMemberRulesAreUnions)
 {
-    const auto parsed = KeepRuleSet::parse(
+    auto parsed = KeepRuleSet::parse(
         "class com.keep.**\n"
         "member com/foo/Bar#api#(\n");
     // 上一行故意畸形：先确认失败，再用合法文本测并集。
     EXPECT_TRUE(parsed.is_err());
 
-    const auto ok = KeepRuleSet::parse(
+    auto ok = KeepRuleSet::parse(
         "class com.keep.**\n"
         "member com/foo/Bar#api()V\n");
     ASSERT_TRUE(ok.is_ok());
-    const KeepRuleSet& set = ok.unwrap();
+    const KeepRuleSet set = std::move(ok).unwrap();
 
     EXPECT_TRUE(set.matchesClass("com/keep/Anything"));
     EXPECT_TRUE(set.matchesClass("com/keep/deep/Nested"));

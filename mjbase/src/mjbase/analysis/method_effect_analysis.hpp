@@ -19,12 +19,12 @@
 #pragma once
 
 #include <cmath>
-#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
 
 #include "libca/core/datatype.hpp"
+#include "libca/str/utf8_string.hpp"
 
 #include "mjbase/keys.hpp"
 #include "mjbase/model/resource_container.hpp"
@@ -55,12 +55,24 @@ enum class ConstantReturnKind
 /// @brief 纯函数的常量返回摘要。
 struct ConstantReturnValue
 {
-    ConstantReturnKind kind          = ConstantReturnKind::Unknown;
-    ca::i64            intValue      = 0;
-    double             floatingValue = 0.0;
-    std::string        stringValue;   ///< 出口物化（诊断/测试用），池驻留视图见 summary
+    ConstantReturnKind  kind          = ConstantReturnKind::Unknown;
+    ca::i64             intValue      = 0;
+    double              floatingValue = 0.0;
+    /// @brief String 出口物化（诊断/测试用；classfile 常量池字节保真，
+    /// `from_data_unchecked` 入池）。池驻留视图见 summary。
+    ca::str::Utf8String stringValue;
 
     bool isKnown() const { return kind != ConstantReturnKind::Unknown; }
+    /// @brief 显式深拷贝（stringValue 持 Utf8String 使本类型 move-only）。
+    ConstantReturnValue clone() const
+    {
+        ConstantReturnValue out;
+        out.kind          = kind;
+        out.intValue      = intValue;
+        out.floatingValue = floatingValue;
+        out.stringValue   = stringValue.clone();
+        return out;
+    }
     bool operator==(const ConstantReturnValue& other) const
     {
         if (kind != other.kind) return false;
