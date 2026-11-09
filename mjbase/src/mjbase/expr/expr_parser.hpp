@@ -1,8 +1,10 @@
 #pragma once
 
-#include <string>
+#include <string_view>
 
 #include "expr_node.hpp"
+
+#include "libca/str/utf8_string.hpp"
 
 namespace mjbase::expr {
 
@@ -16,6 +18,6 @@ namespace mjbase::expr {
 ///   - Standard C operator precedence
 ///
 /// On parse error, returns nullptr and sets errorMsg.
-ExprRef parseExpression(const std::string& input, std::string* errorMsg = nullptr);
+ExprRef parseExpression(std::string_view input, ca::str::Utf8String* errorMsg = nullptr);
 
 }   // namespace mjbase::expr

@@ -88,7 +88,7 @@ void infixEmit(std::ostringstream& os, const ExprNode& node)
         os << static_cast<const ConstNode&>(node).value();
         return;
     case NodeKind::Var:
-        os << static_cast<const VarNode&>(node).name();
+        os << static_cast<const VarNode&>(node).name().to_std_string();
         return;
     case NodeKind::UnaryOp:
     {
@@ -127,7 +127,7 @@ void infixEmit(std::ostringstream& os, const ExprNode& node)
 
 }   // anonymous namespace
 
-std::string toSExpr(const ExprNode& node)
+ca::str::Utf8String toSExpr(const ExprNode& node)
 {
     std::stack<SExprFrame>  st;
     std::stack<std::string> result;
@@ -152,7 +152,7 @@ std::string toSExpr(const ExprNode& node)
             {
                 auto*              vn = static_cast<const VarNode*>(n);
                 std::ostringstream os;
-                os << "(var " << vn->name() << ":" << bitWidthSuffix(vn->bitWidth()) << ")";
+                os << "(var " << vn->name().to_std_string() << ":" << bitWidthSuffix(vn->bitWidth()) << ")";
                 result.push(os.str());
                 break;
             }
@@ -202,22 +202,25 @@ std::string toSExpr(const ExprNode& node)
         }
     }
 
-    if (result.empty()) return "";
+    if (result.empty()) return ca::str::Utf8String{};
     auto r = result.top();
     result.pop();
-    return r;
+    return ca::str::Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(r.data()), r.size());
 }
 
-std::string toInfix(const ExprNode& node)
+ca::str::Utf8String toInfix(const ExprNode& node)
 {
     // 中缀 + 最小括号：只在解析器优先级要求的位置加括号，输出可被
     // parseExpression 无损重解析（位宽不进入打印，重解析取解析器默认位宽）。
     std::ostringstream os;
     infixEmit(os, node);
-    return os.str();
+    const std::string out = os.str();
+    return ca::str::Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(out.data()), out.size());
 }
 
-std::string toDot(const ExprNode& node)
+ca::str::Utf8String toDot(const ExprNode& node)
 {
     std::ostringstream os;
     os << "digraph expr {\n";
@@ -301,7 +304,9 @@ std::string toDot(const ExprNode& node)
     }
 
     os << "}\n";
-    return os.str();
+    const std::string out = os.str();
+    return ca::str::Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(out.data()), out.size());
 }
 
 }   // namespace mjbase::expr

@@ -37,7 +37,7 @@ TEST(MjExprNodeTest, varNode)
     auto n = exprVar("x", BitWidth::B64);
     EXPECT_EQ(n->kind(), NodeKind::Var);
     auto* vn = static_cast<const VarNode*>(n.get());
-    EXPECT_EQ(vn->name(), "x");
+    EXPECT_TRUE(vn->name() == "x");
     EXPECT_EQ(vn->bitWidth(), BitWidth::B64);
 }
 

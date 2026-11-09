@@ -7,6 +7,8 @@
 #include "expr_node.hpp"
 #include "expr_value.hpp"
 
+#include "libca/str/utf8_string.hpp"
+
 namespace mjbase::expr {
 
 // ── Simplify pass interface ──
@@ -14,8 +16,8 @@ namespace mjbase::expr {
 class SimplifyPass
 {
 public:
-    virtual ~SimplifyPass()                       = default;
-    virtual std::string name() const              = 0;
+    virtual ~SimplifyPass()          = default;
+    virtual ca::str::Utf8String name() const = 0;
     virtual ExprRef     apply(ExprRef expr) const = 0;
 };
 

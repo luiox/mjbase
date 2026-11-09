@@ -48,56 +48,56 @@ static std::vector<MBAIdentity> makeObfuscateIdentities()
     std::vector<MBAIdentity> ids;
 
     // T → T + 0
-    ids.push_back({"T->T+0", IdentityGroup::Obfuscate, [](ExprRef x, MBAState&) {
+    ids.push_back({ca::str::Utf8String::from_cstr("T->T+0"), IdentityGroup::Obfuscate, [](ExprRef x, MBAState&) {
                        return exprAdd(x, exprConst(0));
                    }});
 
     // T → T * 1
-    ids.push_back({"T->T*1", IdentityGroup::Obfuscate, [](ExprRef x, MBAState&) {
+    ids.push_back({ca::str::Utf8String::from_cstr("T->T*1"), IdentityGroup::Obfuscate, [](ExprRef x, MBAState&) {
                        return exprMul(x, exprConst(1));
                    }});
 
     // T → T ^ 0
-    ids.push_back({"T->T^0", IdentityGroup::Obfuscate, [](ExprRef x, MBAState&) {
+    ids.push_back({ca::str::Utf8String::from_cstr("T->T^0"), IdentityGroup::Obfuscate, [](ExprRef x, MBAState&) {
                        return exprXor(x, exprConst(0));
                    }});
 
     // T → T | 0
-    ids.push_back({"T->T|0", IdentityGroup::Obfuscate, [](ExprRef x, MBAState&) {
+    ids.push_back({ca::str::Utf8String::from_cstr("T->T|0"), IdentityGroup::Obfuscate, [](ExprRef x, MBAState&) {
                        return exprOr(x, exprConst(0));
                    }});
 
     // T → T & -1
-    ids.push_back({"T->T&-1", IdentityGroup::Obfuscate, [](ExprRef x, MBAState&) {
+    ids.push_back({ca::str::Utf8String::from_cstr("T->T&-1"), IdentityGroup::Obfuscate, [](ExprRef x, MBAState&) {
                        return exprAnd(x, exprConst(-1));
                    }});
 
     // T → T + R - R
-    ids.push_back({"T->T+R-R", IdentityGroup::Obfuscate, [](ExprRef x, MBAState& rng) {
+    ids.push_back({ca::str::Utf8String::from_cstr("T->T+R-R"), IdentityGroup::Obfuscate, [](ExprRef x, MBAState& rng) {
                        auto r = freshR(rng);
                        return exprAdd(x, exprSub(r, r));
                    }});
 
     // T → T ^ R ^ R
-    ids.push_back({"T->T^R^R", IdentityGroup::Obfuscate, [](ExprRef x, MBAState& rng) {
+    ids.push_back({ca::str::Utf8String::from_cstr("T->T^R^R"), IdentityGroup::Obfuscate, [](ExprRef x, MBAState& rng) {
                        auto r = freshR(rng);
                        return exprXor(x, exprXor(r, r));
                    }});
 
     // T → T & R | (T & ~R)   (identity: x = (x & y) | (x & ~y))
-    ids.push_back({"T->(T&R)|(T&~R)", IdentityGroup::Obfuscate, [](ExprRef x, MBAState& rng) {
+    ids.push_back({ca::str::Utf8String::from_cstr("T->(T&R)|(T&~R)"), IdentityGroup::Obfuscate, [](ExprRef x, MBAState& rng) {
                        auto r = freshR(rng);
                        return exprOr(exprAnd(x, r), exprAnd(x, exprNot(r)));
                    }});
 
     // T → (T ^ R) + ((T & R) << 1)   MBA: x + y = (x ^ y) + (x & y) * 2
-    ids.push_back({"T->(T^R)+((T&R)<<1)", IdentityGroup::Obfuscate, [](ExprRef x, MBAState& rng) {
+    ids.push_back({ca::str::Utf8String::from_cstr("T->(T^R)+((T&R)<<1)"), IdentityGroup::Obfuscate, [](ExprRef x, MBAState& rng) {
                        auto r = freshR(rng);
                        return exprAdd(exprXor(x, r), exprShl(exprAnd(x, r), exprConst(1)));
                    }});
 
     // T → (T & R) + (T | R)   MBA: x + y = (x & y) + (x | y)
-    ids.push_back({"T->(T&R)+(T|R)", IdentityGroup::Obfuscate, [](ExprRef x, MBAState& rng) {
+    ids.push_back({ca::str::Utf8String::from_cstr("T->(T&R)+(T|R)"), IdentityGroup::Obfuscate, [](ExprRef x, MBAState& rng) {
                        auto r = freshR(rng);
                        return exprAdd(exprAnd(x, r), exprOr(x, r));
                    }});

@@ -90,8 +90,10 @@ ca::i64 ConstNode::truncatedValue() const noexcept
 
 // ── VarNode ──
 
-VarNode::VarNode(std::string name, BitWidth bw) noexcept
-    : name_(std::move(name))
+VarNode::VarNode(std::string_view name, BitWidth bw) noexcept
+    // 标识符来源为解析器/内部字面量（ASCII 域），字节保真收进，不在此做编码裁决。
+    : name_(ca::str::Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(name.data()), name.size()))
     , bw_(bw)
 {}
 
@@ -141,9 +143,9 @@ ExprRef exprConst(ca::i64 val, BitWidth bw)
     return std::make_shared<const ConstNode>(val, bw);
 }
 
-ExprRef exprVar(std::string name, BitWidth bw)
+ExprRef exprVar(std::string_view name, BitWidth bw)
 {
-    return std::make_shared<const VarNode>(std::move(name), bw);
+    return std::make_shared<const VarNode>(name, bw);
 }
 
 ExprRef exprUnary(UnaryOpKind op, ExprRef child)

@@ -11,10 +11,11 @@ Pattern Pattern::Wild()
 {
     return Pattern(Kind::Wild);
 }
-Pattern Pattern::Capture(std::string n)
+Pattern Pattern::Capture(std::string_view n)
 {
     Pattern p(Kind::Capture);
-    p.name_ = std::move(n);
+    p.name_ = ca::str::Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(n.data()), n.size());
     return p;
 }
 Pattern Pattern::Const(ca::i64 v)
@@ -23,10 +24,11 @@ Pattern Pattern::Const(ca::i64 v)
     p.constVal_ = v;
     return p;
 }
-Pattern Pattern::Var(std::string n)
+Pattern Pattern::Var(std::string_view n)
 {
     Pattern p(Kind::Var);
-    p.name_ = std::move(n);
+    p.name_ = ca::str::Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(n.data()), n.size());
     return p;
 }
 Pattern Pattern::UnaryOp(UnaryOpKind o, Pattern c)
@@ -56,12 +58,12 @@ bool Pattern::match(ExprRef node, MatchBindings& bindings) const
 
     case Kind::Capture:
     {
-        if (name_.empty()) return true;
+        if (name_.is_empty()) return true;
         auto it = bindings.find(name_);
         if (it != bindings.end()) {
             return it->second->structuralEqual(*node);
         }
-        bindings[name_] = node;
+        bindings.emplace(name_.clone(), node);
         return true;
     }
 
@@ -71,7 +73,7 @@ bool Pattern::match(ExprRef node, MatchBindings& bindings) const
 
     case Kind::Var:
         if (node->kind() != NodeKind::Var) return false;
-        return static_cast<const VarNode&>(*node).name() == name_;
+        return static_cast<const VarNode&>(*node).name() == name_.ref();
 
     case Kind::UnaryOp:
         if (node->kind() != NodeKind::UnaryOp) return false;
@@ -95,7 +97,10 @@ bool Pattern::match(ExprRef node, MatchBindings& bindings) const
 
 namespace {
 
-ExprRef applyPass(ExprRef expr, const std::vector<PrioritizedRule>& rules, ca::u32 depth,
+/// 规则经指针借用分组（PrioritizedRule 携 Utf8String 名字，禁拷贝）。
+using RuleGroup = std::vector<const PrioritizedRule*>;
+
+ExprRef applyPass(ExprRef expr, const std::vector<RuleGroup>& groups, ca::u32 depth,
                   ca::u32 maxDepth)
 {
     if (!expr || depth > maxDepth) return expr;
@@ -105,8 +110,8 @@ ExprRef applyPass(ExprRef expr, const std::vector<PrioritizedRule>& rules, ca::u
     case NodeKind::BinaryOp:
     {
         auto& bn       = static_cast<const BinaryNode&>(*expr);
-        auto  newLeft  = applyPass(bn.left(), rules, depth + 1, maxDepth);
-        auto  newRight = applyPass(bn.right(), rules, depth + 1, maxDepth);
+        auto  newLeft  = applyPass(bn.left(), groups, depth + 1, maxDepth);
+        auto  newRight = applyPass(bn.right(), groups, depth + 1, maxDepth);
         if (newLeft.get() == bn.left().get() && newRight.get() == bn.right().get())
             rewritten = expr;
         else
@@ -116,7 +121,7 @@ ExprRef applyPass(ExprRef expr, const std::vector<PrioritizedRule>& rules, ca::u
     case NodeKind::UnaryOp:
     {
         auto& un       = static_cast<const UnaryNode&>(*expr);
-        auto  newChild = applyPass(un.child(), rules, depth + 1, maxDepth);
+        auto  newChild = applyPass(un.child(), groups, depth + 1, maxDepth);
         if (newChild.get() == un.child().get())
             rewritten = expr;
         else
@@ -126,10 +131,12 @@ ExprRef applyPass(ExprRef expr, const std::vector<PrioritizedRule>& rules, ca::u
     default: rewritten = expr; break;
     }
 
-    for (const auto& pr : rules) {
-        MatchBindings bindings;
-        if (pr.rule.lhs.match(rewritten, bindings)) {
-            return pr.rule.rhs(bindings);
+    for (const auto& group : groups) {
+        for (const auto* pr : group) {
+            MatchBindings bindings;
+            if (pr->rule.lhs.match(rewritten, bindings)) {
+                return pr->rule.rhs(bindings);
+            }
         }
     }
 
@@ -141,10 +148,10 @@ ExprRef applyPass(ExprRef expr, const std::vector<PrioritizedRule>& rules, ca::u
 ExprRef rewrite(ExprRef expr, const std::vector<PrioritizedRule>& rules, ca::u32 maxIter,
                 ca::u32 maxDepth)
 {
-    std::map<RulePriority, std::vector<PrioritizedRule>> groups;
-    for (const auto& r : rules) groups[r.priority].push_back(r);
+    std::map<RulePriority, RuleGroup> groups;
+    for (const auto& r : rules) groups[r.priority].push_back(&r);
 
-    std::vector<std::vector<PrioritizedRule>> ordered;
+    std::vector<RuleGroup> ordered;
     for (auto& [_, grp] : groups) ordered.push_back(std::move(grp));
 
     ExprRef                     current = expr;
@@ -153,13 +160,12 @@ ExprRef rewrite(ExprRef expr, const std::vector<PrioritizedRule>& rules, ca::u32
     for (ca::u32 iter = 0; iter < maxIter; ++iter) {
         ExprRef before = current;
 
-        for (const auto& group : ordered) {
-            current = applyPass(current, group, 0, maxDepth);
-        }
+        current = applyPass(current, ordered, 0, maxDepth);
 
         if (current.get() == before.get()) break;
 
-        auto fp = std::hash<std::string>{}(toSExpr(*current));
+        const auto sexpr = toSExpr(*current);
+        auto    fp   = std::hash<ca::str::Utf8String>{}(sexpr);
         if (!fingerprints.insert(fp).second) break;
     }
 

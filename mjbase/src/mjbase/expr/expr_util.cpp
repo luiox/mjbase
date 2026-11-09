@@ -89,9 +89,9 @@ ca::u32 nodeCount(const ExprNode& node)
     return count;
 }
 
-std::unordered_set<std::string> collectVars(const ExprNode& node)
+std::unordered_set<ca::str::Utf8String> collectVars(const ExprNode& node)
 {
-    std::unordered_set<std::string> vars;
+    std::unordered_set<ca::str::Utf8String> vars;
     std::stack<const ExprNode*>     st;
     st.push(&node);
 
@@ -103,7 +103,8 @@ std::unordered_set<std::string> collectVars(const ExprNode& node)
         case NodeKind::Var:
         {
             auto* vn = static_cast<const VarNode*>(n);
-            vars.insert(vn->name());
+            const auto name = vn->name();
+            vars.insert(ca::str::Utf8String::from_data_unchecked(name.data(), name.byte_length()));
             break;
         }
         case NodeKind::BinaryOp:

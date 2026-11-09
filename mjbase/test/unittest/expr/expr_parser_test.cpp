@@ -137,7 +137,9 @@ TEST(MjExprParserTest, parseVar)
 {
     auto e = parseExpression("x + 1");
     ASSERT_NE(e, nullptr);
-    auto r = eval(*e, {{"x", ExprValue(5)}});
+    VarBindings vars;
+    vars.emplace(ca::str::Utf8String::from_cstr("x"), ExprValue(5));
+    auto        r    = eval(*e, vars);
     ASSERT_TRUE(r.ok);
     EXPECT_EQ(r.value.rawValue(), 6);
 }
@@ -155,15 +157,15 @@ TEST(MjExprParserTest, parseComplex)
 
 TEST(MjExprParserTest, parseError)
 {
-    std::string err;
-    auto        e = parseExpression("1 + + 2", &err);
+    ca::str::Utf8String err;
+    auto                e = parseExpression("1 + + 2", &err);
     EXPECT_EQ(e, nullptr);
-    EXPECT_FALSE(err.empty());
+    EXPECT_FALSE(err.is_empty());
 }
 
 TEST(MjExprParserTest, parseEmptyError)
 {
-    std::string err;
-    auto        e = parseExpression("", &err);
+    ca::str::Utf8String err;
+    auto                e = parseExpression("", &err);
     EXPECT_EQ(e, nullptr);
 }

@@ -191,15 +191,18 @@ public:
         : lexer_(input)
     {}
 
-    ExprRef parse(std::string* error)
+    ExprRef parse(ca::str::Utf8String* error)
     {
         auto result = expr();
         if (lexer_.peek().kind != TokenKind::End) {
-            if (error) *error = "unexpected token after expression";
+            if (error) *error = ca::str::Utf8String::from_cstr("unexpected token after expression");
             return nullptr;
         }
         if (!lexer_.error().empty()) {
-            if (error) *error = lexer_.error();
+            const std::string& err = lexer_.error();
+            if (error)
+                *error = ca::str::Utf8String::from_data_unchecked(
+                    reinterpret_cast<const ca::u8*>(err.data()), err.size());
             return nullptr;
         }
         return result;
@@ -355,9 +358,9 @@ private:
 
 }   // anonymous namespace
 
-ExprRef parseExpression(const std::string& input, std::string* errorMsg)
+ExprRef parseExpression(std::string_view input, ca::str::Utf8String* errorMsg)
 {
-    Parser parser(input);
+    Parser parser{std::string(input)};
     return parser.parse(errorMsg);
 }
 
