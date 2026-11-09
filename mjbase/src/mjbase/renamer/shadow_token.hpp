@@ -24,8 +24,9 @@
 #pragma once
 
 #include <optional>
-#include <string>
 #include <string_view>
+
+#include "libca/str/utf8_string.hpp"
 
 #include "mjbase/renamer/shadow_alias.hpp"
 
@@ -64,12 +65,12 @@ enum class ShadowRefForm
 /// @brief parseShadowRef 的产物：形状 + 各段位（未命中的段为空）。
 struct ShadowRefParts
 {
-    ShadowRefForm form        = ShadowRefForm::Raw;
-    std::string   index;        ///< Class_ 序号（十进制串，保原样；不补齐不规范化）
-    std::string   classToken;   ///< 8 位小写 hex
-    std::string   memberShadow; ///< MemberRef 的成员影子名段
-    std::string   memberToken;  ///< MemberRef 的 8 位小写 hex
-    std::string   literal;      ///< EscapedLiteral：剥前导 `$` 后的字面名
+    ShadowRefForm       form        = ShadowRefForm::Raw;
+    ca::str::Utf8String index;        ///< Class_ 序号（十进制串，保原样；不补齐不规范化）
+    ca::str::Utf8String classToken;   ///< 8 位小写 hex
+    ca::str::Utf8String memberShadow; ///< MemberRef 的成员影子名段
+    ca::str::Utf8String memberToken;  ///< MemberRef 的 8 位小写 hex
+    ca::str::Utf8String literal;      ///< EscapedLiteral：剥前导 `$` 后的字面名
 };
 
 /// @brief 纯文法解析（无表）：整串 → 形状 + 段位。
@@ -117,12 +118,12 @@ struct ShadowSlotQuery
     ShadowSlotPosition position = ShadowSlotPosition::Name;
     /// true = 成员槽（name/member_name/method_name）：raw 分支按
     /// (owner, rawName) 定位核验，Ref 分支回填表内 desc。
-    bool        member = false;
+    bool                member = false;
     /// member=true 时必填：已解析的 owner raw 内部名。
-    std::string owner;
+    ca::str::Utf8String owner;
     /// member=true 时可选：调用方 raw desc（仅用于回传给接线层做一致性核对，
     /// 本收口不因 desc 不匹配改判四分类）。
-    std::string descHint;
+    ca::str::Utf8String descHint;
     /// false = raw 形状恒等直通、不做存在性核验（xref 族零漂移口径：表外
     /// 合法目标如 java/lang/Object 不因核表被拒）。Ref 形状不受此位影响，
     /// 照常全量解析。缺省 true（全量门控槽）。
@@ -133,12 +134,12 @@ struct ShadowSlotQuery
 ///        §6 固定修复动作」；error == None 时 raw/descriptor/kind 有效。
 struct ShadowSlotResult
 {
-    ShadowSlotError  error = ShadowSlotError::None;
-    std::string      message;    ///< 诊断消息（错误时）；成功时为空
-    std::string      raw;        ///< 解析出的真实名（Ref 展开）或原样（raw 恒等）
-    std::string      descriptor; ///< MemberRef 命中的表内 desc；其余为空
-    ShadowKind       kind = ShadowKind::Class; ///< 命中条目种类（raw 恒等路径 = 表内查得种类）
-    bool             fromHandle = false;       ///< true = Ref 展开发生；false = raw 恒等
+    ShadowSlotError     error = ShadowSlotError::None;
+    ca::str::Utf8String message;    ///< 诊断消息（错误时）；成功时为空
+    ca::str::Utf8String raw;        ///< 解析出的真实名（Ref 展开）或原样（raw 恒等）
+    ca::str::Utf8String descriptor; ///< MemberRef 命中的表内 desc；其余为空
+    ShadowKind          kind = ShadowKind::Class; ///< 命中条目种类（raw 恒等路径 = 表内查得种类）
+    bool                fromHandle = false;       ///< true = Ref 展开发生；false = raw 恒等
 };
 
 /// @brief resolve(s, pos) 单一收口（§3 name 槽行；唯一解析入口）。
@@ -157,7 +158,7 @@ struct ShadowSlotResult
 /// - Descriptor 位置：走 resolveShadowDescriptor（见下）。
 /// - JasmBody 位置：走 resolveShadowJasmBody（见下）。
 ShadowSlotResult resolveShadowSlot(const ShadowAliasTable& table,
-                                   const std::string&      input,
+                                   std::string_view        input,
                                    const ShadowSlotQuery&  query = {});
 
 /// @brief Descriptor 槽（§3 位置三分之描述符行）：字段/方法描述符内
@@ -177,7 +178,7 @@ ShadowSlotResult resolveShadowSlot(const ShadowAliasTable& table,
 /// 结果：raw = 替换后的完整描述符；fromHandle = 发生过 ≥1 次展开；
 /// descriptor/kind 不承载（类型位没有成员 desc 语义）。
 ShadowSlotResult resolveShadowDescriptor(const ShadowAliasTable& table,
-                                         const std::string&      input);
+                                         std::string_view        input);
 
 /// @brief JasmBody 槽（§3 位置三分之操作数行）：引用型指令操作数展开。
 ///
@@ -199,7 +200,7 @@ ShadowSlotResult resolveShadowDescriptor(const ShadowAliasTable& table,
 /// 结果：raw = 替换后的完整操作数；fromHandle = 发生过 ≥1 次展开；
 /// descriptor/kind 不承载。
 ShadowSlotResult resolveShadowJasmBody(const ShadowAliasTable& table,
-                                       const std::string&      input);
+                                       std::string_view        input);
 
 /// @brief 引用句柄（ClassRef/MemberRef）全量核验 → 命中条目（Ref 分支的条目面，
 ///        供回显工具 handle→条目反查；与 resolveShadowSlot 的 Ref 分支同判同错）。
@@ -211,7 +212,7 @@ ShadowSlotResult resolveShadowJasmBody(const ShadowAliasTable& table,
 ///   返回 nullopt，`result` 携带四分类错误与诊断消息；
 /// - 命中：返回表条目拷贝，`result` 填 raw/descriptor/kind 且 fromHandle=true。
 std::optional<ShadowAliasEntry> resolveShadowHandleEntry(const ShadowAliasTable& table,
-                                                         const std::string&      handle,
+                                                         std::string_view        handle,
                                                          ShadowSlotResult&       result);
 
 /// @brief 条目的引用句柄（§2 形态，供回显工具发放）。
@@ -221,6 +222,6 @@ std::optional<ShadowAliasEntry> resolveShadowHandleEntry(const ShadowAliasTable&
 /// 不可构造时返回空：缺 token8（v1 遗留）、类影子名非 `Class_<序号>` 形
 /// （手工名不在 §2 文法内，通路是 rename）、成员影子名段出文法字符、
 /// 成员条目的 owner 类条目缺失。
-std::string shadowRefHandleOf(const ShadowAliasTable& table, const ShadowAliasEntry& entry);
+ca::str::Utf8String shadowRefHandleOf(const ShadowAliasTable& table, const ShadowAliasEntry& entry);
 
 }   // namespace mjbase::renamer

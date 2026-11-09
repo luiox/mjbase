@@ -1,5 +1,6 @@
 #include "name_provider.hpp"
 
+#include <string>
 #include <utility>
 
 #include "mjbase/analysis/class_scan.hpp"
@@ -11,9 +12,21 @@ using ca::core::Err;
 using ca::core::Ok;
 using mjbase::ClassKey;
 
+namespace {
+
+/// 借用视图 → 自有 Utf8String（原始字节保真，不校验 UTF-8）：错误负载混有
+/// classfile 常量池原文，非法字节不校验不抛（口径同 model/resource_model）。
+ca::str::Utf8String ownText(std::string_view value) noexcept
+{
+    return ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(value.data()),
+                                                    value.size());
+}
+
+}   // namespace
+
 // ─────────────────────────── RenameContext ───────────────────────────
 
-Result<std::unique_ptr<RenameContext>, std::string> RenameContext::build(
+Result<std::unique_ptr<RenameContext>, ca::str::Utf8String> RenameContext::build(
     const mjbase::model::ResourceContainer& container)
 {
     // 堆上构造：ClassHierarchy 借用本对象 pool_ 的地址（查询按需 intern 的
@@ -29,9 +42,9 @@ Result<std::unique_ptr<RenameContext>, std::string> RenameContext::build(
                                                                         context->pool_);
         auto added = context->hierarchy_.addClass(summary);
         if (added.is_err()) {
-            return Err("build rename context: class '" +
-                       std::string(context->pool_.str(summary.self.id)) + "': " +
-                       hierarchy::to_string(std::move(added).unwrap_err()));
+            return Err(ownText("build rename context: class '" +
+                               std::string(context->pool_.str(summary.self.id)) + "': " +
+                               hierarchy::to_string(std::move(added).unwrap_err())));
         }
     }
     context->methods_.build(context->hierarchy_);
@@ -98,17 +111,17 @@ bool RenameContext::methodExists(std::string_view owner, std::string_view name,
     return ownerSummary != nullptr && classDeclaresMethod(*ownerSummary, name, desc);
 }
 
-Result<std::vector<OverrideComponentMember>, std::string> RenameContext::overrideComponentOf(
+Result<std::vector<OverrideComponentMember>, ca::str::Utf8String> RenameContext::overrideComponentOf(
     std::string_view owner, std::string_view name, std::string_view desc) const
 {
     const ClassKey ownerKey = hierarchy_.findClass(owner);
     if (!ownerKey.valid()) {
-        return Err("override component: owner not in container: " + std::string(owner));
+        return Err(ownText("override component: owner not in container: " + std::string(owner)));
     }
     const std::vector<MemberKey> family = methods_.overrideFamily(keyOf(owner, name, desc));
     if (family.empty()) {
-        return Err("override component: method not declared: " + std::string(owner) + "." +
-                   std::string(name) + std::string(desc));
+        return Err(ownText("override component: method not declared: " + std::string(owner) +
+                           "." + std::string(name) + std::string(desc)));
     }
     std::vector<OverrideComponentMember> members;
     members.reserve(family.size());
@@ -118,19 +131,20 @@ Result<std::vector<OverrideComponentMember>, std::string> RenameContext::overrid
     return Ok(std::move(members));
 }
 
-Result<MemberKey, std::string> RenameContext::overrideComponentRootOf(
+Result<MemberKey, ca::str::Utf8String> RenameContext::overrideComponentRootOf(
     std::string_view owner, std::string_view name, std::string_view desc) const
 {
     const ClassKey ownerKey = hierarchy_.findClass(owner);
     if (!ownerKey.valid()) {
-        return Err("override component root: owner not in container: " + std::string(owner));
+        return Err(ownText("override component root: owner not in container: " +
+                           std::string(owner)));
     }
     // 族内最浅声明是族的规范根：同族任意成员求根恒等（method_hierarchy 决胜序
     // 跨平台确定），可直接替代并查集根下标作去重键。
     const MemberKey root = methods_.sourceDeclaration(keyOf(owner, name, desc));
     if (root.cls == 0) {
-        return Err("override component root: method not declared: " + std::string(owner) +
-                   "." + std::string(name) + std::string(desc));
+        return Err(ownText("override component root: method not declared: " + std::string(owner) +
+                           "." + std::string(name) + std::string(desc)));
     }
     return Ok(root);
 }

@@ -7,12 +7,12 @@
 /// std::fstream 字节读写，路径/文本入参改 std::string_view 借用视图。
 #pragma once
 
-#include <string>
 #include <string_view>
 #include <vector>
 
 #include "libca/core/datatype.hpp"
 #include "libca/core/result.hpp"
+#include "libca/str/utf8_string.hpp"
 
 #include "mjbase/renamer/name_proposal.hpp"
 #include "mjbase/renamer/name_provider.hpp"
@@ -55,7 +55,7 @@ enum class SuggestionFileErrorKind : ca::u8
 struct SuggestionFileError
 {
     SuggestionFileErrorKind kind = SuggestionFileErrorKind::Schema;
-    std::string             message;
+    ca::str::Utf8String     message;
 };
 
 /// @brief AI 建议文件的 DTO（schema 是引擎输入契约）。
@@ -88,7 +88,7 @@ ca::core::Result<NameSuggestionFile, SuggestionFileError> readNameSuggestionFile
     std::string_view path);
 
 /// @brief 序列化为审阅稿 JSON（pretty）。验收口径：parse(write(parse(x))) 关键字段恒等。
-ca::core::Result<std::string, SuggestionFileError> writeNameSuggestionText(
+ca::core::Result<ca::str::Utf8String, SuggestionFileError> writeNameSuggestionText(
     const NameSuggestionFile& file);
 
 /// @brief 序列化并写出到文件。
@@ -108,7 +108,7 @@ public:
     std::string_view name() const override;
 
     /// @brief 原样产出一批建议；context 只读查询，本 provider 不消费。
-    ca::core::Result<std::vector<NameProposal>, std::string> propose(
+    ca::core::Result<std::vector<NameProposal>, ca::str::Utf8String> propose(
         const RenameContext& context) override;
 
 private:

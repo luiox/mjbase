@@ -27,6 +27,14 @@ std::string toStd(std::string_view value)
     return std::string(value);
 }
 
+/// 借用视图 → 自有 Utf8String（原始字节保真，不校验 UTF-8）：错误/诊断负载
+/// 混有 classfile 常量池原文，非法字节不校验不抛（口径同 model/resource_model）。
+ca::str::Utf8String ownText(std::string_view value) noexcept
+{
+    return ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(value.data()),
+                                                    value.size());
+}
+
 ca::str::Utf8StringRef utf8Ref(std::string_view value)
 {
     return ca::str::Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(value.data()),
@@ -247,9 +255,9 @@ void NameChangeRecord::addAccepted(AcceptedChange change)
 }
 
 void NameChangeRecord::addRejected(NameProposal proposal, RejectionReason reason,
-                                   std::string detail)
+                                   std::string_view detail)
 {
-    rejected_.push_back({std::move(proposal), reason, std::move(detail)});
+    rejected_.push_back({std::move(proposal), reason, ownText(detail)});
 }
 
 /// MappingError 的短标签（renamer 导出通道的拼串用）。
@@ -263,23 +271,23 @@ static std::string_view mappingErrorName(mjbase::mapping::MappingError error)
     return "?";
 }
 
-ca::core::Result<ca::str::Utf8String, std::string> NameChangeRecord::exportMapping(
+ca::core::Result<ca::str::Utf8String, ca::str::Utf8String> NameChangeRecord::exportMapping(
     const mjbase::mapping::IntermediateMapping&   mapping,
     std::string_view                              formatName,
     const mjbase::mapping::MappingFormatRegistry& registry)
 {
     if (!registry.hasFormat(utf8Ref(formatName))) {
-        return ca::core::Err("unknown mapping format: " + std::string(formatName));
+        return ca::core::Err(ownText("unknown mapping format: " + std::string(formatName)));
     }
     auto formatted = registry.format(utf8Ref(formatName), mapping);
     if (formatted.is_err()) {
-        return ca::core::Err("mapping export failed: " +
-                             std::string(mappingErrorName(std::move(formatted).unwrap_err())));
+        return ca::core::Err(ownText("mapping export failed: " +
+                                     std::string(mappingErrorName(std::move(formatted).unwrap_err()))));
     }
     return ca::core::Ok(std::move(formatted).unwrap());
 }
 
-ca::core::Result<ca::str::Utf8String, std::string> NameChangeRecord::exportMapping(
+ca::core::Result<ca::str::Utf8String, ca::str::Utf8String> NameChangeRecord::exportMapping(
     std::string_view formatName, const mjbase::mapping::MappingFormatRegistry& registry) const
 {
     return exportMapping(mapping_, formatName, registry);
@@ -310,10 +318,13 @@ RenamerRunResult RenamerEngine::run(mjbase::model::ResourceContainer&   containe
         if (stream.is_err()) {
             const auto failure = std::move(stream).unwrap_err();
             ++result.stats.rejected;
+            std::string detail = "provider '";
+            detail += provider->name();
+            detail += "' propose failed: ";
+            detail += failure.ref();
             result.record.addRejected(NameProposal{},
                                       RejectionReason::ProviderError,
-                                      "provider '" + std::string(provider->name()) +
-                                          "' propose failed: " + failure);
+                                      detail);
             continue;
         }
         auto batch = std::move(stream).unwrap();
@@ -998,7 +1009,8 @@ RenamerRunResult RenamerEngine::run(mjbase::model::ResourceContainer&   containe
                     RejectionReason::ApplyFailed,
                     "applyResourceRemapPlan failed; nothing committed");
                 result.ok    = false;
-                result.error = "renamer apply failed; container untouched per remapper atomicity";
+                result.error = ca::str::Utf8String::from_cstr(
+                    "renamer apply failed; container untouched per remapper atomicity");
                 return result;
             }
             result.applied = true;

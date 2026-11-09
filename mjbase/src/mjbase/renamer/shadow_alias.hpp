@@ -24,6 +24,7 @@
 
 #include "libca/core/datatype.hpp"
 #include "libca/core/result.hpp"
+#include "libca/str/utf8_string.hpp"
 
 #include "mjbase/keys.hpp"
 #include "mjbase/mapping/intermediate_mapping.hpp"
@@ -141,7 +142,7 @@ public:
     ///        随机源 = libca ca::crypto::secure_random_bytes（系统 CSPRNG）；
     ///        系统 RNG 不可用时报 Err（不自造随机源、不静默降级）。
     ///        返回本次补号条数。
-    ca::core::Result<ca::usize, std::string> backfillTokens();
+    ca::core::Result<ca::usize, ca::str::Utf8String> backfillTokens();
 
     // ── 生成期占用检查 ─────────────────────────────────────────────
     /// @brief shadow 名是否已被其它 class 占用（除 exceptRaw 外）。
@@ -180,7 +181,7 @@ private:
 ///   token 原样保留（随机源失败 → Err；已分配编号保留在表，重跑幂等补号）。
 /// 确定性：jar 不变则影子名编号输出不变（token8 为随机列，不参与编号与排序）；
 /// 容器遍历序无关（先排序后编号）。
-ca::core::Result<ShadowGenStats, std::string> generateMechanicalShadowNames(
+ca::core::Result<ShadowGenStats, ca::str::Utf8String> generateMechanicalShadowNames(
     const mjbase::model::ResourceContainer& container, ShadowAliasTable& table);
 
 /// @brief 重载拆分生成统计（同名异签方法的视图层拆分）。
@@ -204,16 +205,16 @@ struct OverloadSplitStats
 ///   无关，jar 不变重跑输出不变；
 /// - 收尾 backfillTokens()（同机械占位名生成；随机源失败 → Err，已分配
 ///   编号保留在表，重跑幂等补号）。
-ca::core::Result<OverloadSplitStats, std::string> generateOverloadSplitShadows(
+ca::core::Result<OverloadSplitStats, ca::str::Utf8String> generateOverloadSplitShadows(
     const mjbase::model::ResourceContainer& container, ShadowAliasTable& table);
 
 /// @brief 批量 shadow 指派规格（成员身份 = (owner, name, desc) 三元组）。
 struct OverloadShadowSpec
 {
-    std::string owner;    ///< class 内部名
-    std::string name;     ///< 方法真名
-    std::string desc;     ///< 方法描述符
-    std::string shadow;   ///< 指派 shadow 名（显示层）
+    ca::str::Utf8String owner;    ///< class 内部名
+    ca::str::Utf8String name;     ///< 方法真名
+    ca::str::Utf8String desc;     ///< 方法描述符
+    ca::str::Utf8String shadow;   ///< 指派 shadow 名（显示层）
 };
 
 /// @brief 批量方法 shadow 指派（单事务）：全部规格校验通过才落表，任一
@@ -227,7 +228,7 @@ struct OverloadShadowSpec
 ///   （先到者优先契约；撤销/重算走 clear/prune 重建路径）；
 /// - 同成员重复规格：同 shadow 视为一条，异 shadow → Err。
 /// 落表后收尾 backfillTokens()（随机源失败 → Err）。
-ca::core::Result<ca::usize, std::string> assignMethodShadowBatch(
+ca::core::Result<ca::usize, ca::str::Utf8String> assignMethodShadowBatch(
     const mjbase::model::ResourceContainer& container, ShadowAliasTable& table,
     const std::vector<OverloadShadowSpec>& specs);
 
@@ -243,11 +244,11 @@ struct RawRenameSpec
 {
     /// class 条目 = 类改名；成员条目 = 成员改名（匹配与撞键按表契约口径，
     /// kind 不参与身份——同 (owner, raw, desc) 跨 field/method 不能共存）。
-    ShadowKind  kind    = ShadowKind::Class;
-    std::string owner   = {};  ///< 成员条目必填；class 条目留空
-    std::string desc    = {};  ///< 成员条目必填；class 条目留空
-    std::string oldName = {};  ///< class 条目 = 旧内部名；成员条目 = 旧真名
-    std::string newName = {};  ///< 新内部名 / 新真名
+    ShadowKind          kind    = ShadowKind::Class;
+    ca::str::Utf8String owner   = {};  ///< 成员条目必填；class 条目留空
+    ca::str::Utf8String desc    = {};  ///< 成员条目必填；class 条目留空
+    ca::str::Utf8String oldName = {};  ///< class 条目 = 旧内部名；成员条目 = 旧真名
+    ca::str::Utf8String newName = {};  ///< 新内部名 / 新真名
 };
 
 /// @brief rename 后 shadow 表同步：按身份键重定位既有条目的 raw 面。

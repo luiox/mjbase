@@ -29,7 +29,7 @@ namespace fixture = renamer::test_support;
 
 std::string errText(ca::core::Result<NameSuggestionFile, SuggestionFileError> result)
 {
-    return std::move(result).unwrap_err().message;
+    return std::move(result).unwrap_err().message.to_std_string();
 }
 
 /// 最小引擎夹具：A{ oldField:I; alpha()V }。
@@ -117,7 +117,8 @@ TEST(MjNameSuggestionFileTest, syntaxErrorReportsLineAndJsonReadKind)
     ASSERT_TRUE(parsed.is_err());
     const auto error = std::move(parsed).unwrap_err();
     EXPECT_EQ(error.kind, SuggestionFileErrorKind::JsonRead);
-    EXPECT_NE(error.message.find("line"), std::string::npos) << error.message;
+    EXPECT_NE(std::string_view(error.message).find("line"), std::string_view::npos)
+        << std::string_view(error.message);
 }
 
 TEST(MjNameSuggestionFileTest, rejectsUnsupportedSchemaVersion)
@@ -127,9 +128,11 @@ TEST(MjNameSuggestionFileTest, rejectsUnsupportedSchemaVersion)
     ASSERT_TRUE(parsed.is_err());
     const auto error = std::move(parsed).unwrap_err();
     EXPECT_EQ(error.kind, SuggestionFileErrorKind::Schema);
-    EXPECT_NE(error.message.find("unsupported schema version"), std::string::npos)
-        << error.message;
-    EXPECT_NE(error.message.find("refusing to load"), std::string::npos) << error.message;
+    EXPECT_NE(std::string_view(error.message).find("unsupported schema version"),
+              std::string_view::npos)
+        << std::string_view(error.message);
+    EXPECT_NE(std::string_view(error.message).find("refusing to load"), std::string_view::npos)
+        << std::string_view(error.message);
 }
 
 TEST(MjNameSuggestionFileTest, rejectsMissingOrNonIntegerVersion)
@@ -311,7 +314,7 @@ TEST(MjNameSuggestionFileTest, writeRoundTripsContractFields)
 
     auto text = writeNameSuggestionText(std::move(first).unwrap());
     ASSERT_TRUE(text.is_ok());
-    auto second = parseNameSuggestionFile(std::move(text).unwrap());
+    auto second = parseNameSuggestionFile(std::string_view(std::move(text).unwrap()));
     ASSERT_TRUE(second.is_ok()) << errText(std::move(second));
 
     auto file = std::move(second).unwrap();

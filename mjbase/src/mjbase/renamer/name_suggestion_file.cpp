@@ -30,6 +30,14 @@ ca::str::Utf8StringRef utf8Ref(std::string_view value)
                                              value.size());
 }
 
+/// 借用视图 → 自有 Utf8String（原始字节保真，不校验 UTF-8）：诊断消息混有
+/// 文件原文片段，非法字节不校验不抛（口径同 model/resource_model）。
+ca::str::Utf8String ownText(std::string_view value) noexcept
+{
+    return ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(value.data()),
+                                                    value.size());
+}
+
 std::string_view viewOf(const ca::str::Utf8StringRef& value)
 {
     return std::string_view(reinterpret_cast<const char*>(value.data()), value.byte_length());
@@ -39,7 +47,7 @@ SuggestionFileError makeError(SuggestionFileErrorKind kind, const std::string& m
 {
     SuggestionFileError error;
     error.kind    = kind;
-    error.message = message;
+    error.message = ownText(message);
     return error;
 }
 
@@ -500,13 +508,16 @@ ca::core::Result<NameSuggestionFile, SuggestionFileError> readNameSuggestionFile
     auto parsed = parseNameSuggestionFile(text);
     if (parsed.is_err()) {
         auto error = std::move(parsed).unwrap_err();
-        error.message = std::string(path) + ": " + error.message;
+        std::string prefixed = std::string(path);
+        prefixed += ": ";
+        prefixed += std::string_view(error.message);
+        error.message = ownText(prefixed);
         return ca::core::Err(std::move(error));
     }
     return parsed;
 }
 
-ca::core::Result<std::string, SuggestionFileError> writeNameSuggestionText(
+ca::core::Result<ca::str::Utf8String, SuggestionFileError> writeNameSuggestionText(
     const NameSuggestionFile& file)
 {
     ca::json::JsonDocument document;
@@ -544,7 +555,7 @@ ca::core::Result<std::string, SuggestionFileError> writeNameSuggestionText(
 
     ca::json::JsonWriterOptions options;
     options.pretty = true;
-    return ca::core::Ok(ca::json::JsonWriter::write(document, options).to_std_string());
+    return ca::core::Ok(ca::json::JsonWriter::write(document, options));
 }
 
 ca::core::Result<void, SuggestionFileError> writeNameSuggestionFile(
@@ -560,7 +571,8 @@ ca::core::Result<void, SuggestionFileError> writeNameSuggestionFile(
                                            std::string(path)));
     }
     const auto payload = std::move(text).unwrap();
-    out.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+    out.write(reinterpret_cast<const char*>(payload.data()),
+              static_cast<std::streamsize>(payload.byte_length()));
     if (!out) {
         return ca::core::Err(makeError(SuggestionFileErrorKind::Io,
                                        "failed to write suggestion file: " +
@@ -581,7 +593,7 @@ std::string_view FileSuggestionProvider::name() const
     return asm_analyzer::aliasInterned("suggestion-file:" + std::string(file_.source));
 }
 
-ca::core::Result<std::vector<NameProposal>, std::string> FileSuggestionProvider::propose(
+ca::core::Result<std::vector<NameProposal>, ca::str::Utf8String> FileSuggestionProvider::propose(
     const RenameContext&)
 {
     // 原样产出（provider 不做二次判定，合法性/消解全在引擎）；克隆交付保证

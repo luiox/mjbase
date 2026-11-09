@@ -26,6 +26,20 @@ std::string toStd(std::string_view value)
     return std::string(value);
 }
 
+/// 借用视图 → 自有 Utf8String（原始字节保真，不校验 UTF-8）：错误/诊断负载
+/// 混有 classfile 常量池原文，非法字节不校验不抛（口径同 model/resource_model）。
+ca::str::Utf8String ownText(std::string_view value) noexcept
+{
+    return ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(value.data()),
+                                                    value.size());
+}
+
+/// Utf8String → 裸字节借用视图（与 Utf8StringRef 的 viewOf 同口径）。
+std::string_view viewOf(const ca::str::Utf8String& value) noexcept
+{
+    return value.ref();
+}
+
 ca::str::Utf8StringRef utf8Ref(std::string_view value)
 {
     return ca::str::Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(value.data()),
@@ -64,13 +78,14 @@ std::string jasmEscaped(std::string_view value)
 /// #1156 引用 token：4 字节 CSPRNG → 8 位小写 hex（uint32 %08x 语义）；
 /// 与 taken 撞号则重生成（表内唯一）。随机源 = libca secure_random_bytes
 /// （系统 CSPRNG）；系统 RNG 失败属环境灾难，报 Err 而非自造随机源降级。
-ca::core::Result<std::string, std::string> freshUniqueToken8(
+ca::core::Result<std::string, ca::str::Utf8String> freshUniqueToken8(
     std::unordered_set<std::string>& taken)
 {
     for (;;) {
         auto bytes = ca::crypto::secure_random_bytes(4);
         if (bytes.is_err()) {
-            return ca::core::Err(std::string("secure_random_bytes failed: system RNG unavailable"));
+            return ca::core::Err(ca::str::Utf8String::from_cstr(
+                "secure_random_bytes failed: system RNG unavailable"));
         }
         auto       data = std::move(bytes).unwrap();
         const auto raw  = data.as_ptr();
@@ -351,7 +366,7 @@ const ShadowAliasEntry* ShadowAliasTable::classEntry(std::string_view raw) const
     return it == classByRaw_.end() ? nullptr : &entries_[it->second];
 }
 
-ca::core::Result<ca::usize, std::string> ShadowAliasTable::backfillTokens()
+ca::core::Result<ca::usize, ca::str::Utf8String> ShadowAliasTable::backfillTokens()
 {
     // 已占用 token 集合（含历史条目）；新号在此域内唯一（碰撞重生成）。
     std::unordered_set<std::string> taken;
@@ -445,7 +460,7 @@ std::vector<ClassSample> sampleContainerClasses(const mjbase::model::ResourceCon
 
 }   // namespace
 
-ca::core::Result<ShadowGenStats, std::string> generateMechanicalShadowNames(
+ca::core::Result<ShadowGenStats, ca::str::Utf8String> generateMechanicalShadowNames(
     const mjbase::model::ResourceContainer& container, ShadowAliasTable& table)
 {
     ShadowGenStats stats;
@@ -529,7 +544,7 @@ std::string overloadCandidate(std::string_view raw, ca::usize n)
 
 }   // namespace
 
-ca::core::Result<OverloadSplitStats, std::string> generateOverloadSplitShadows(
+ca::core::Result<OverloadSplitStats, ca::str::Utf8String> generateOverloadSplitShadows(
     const mjbase::model::ResourceContainer& container, ShadowAliasTable& table)
 {
     OverloadSplitStats stats;
@@ -584,7 +599,7 @@ ca::core::Result<OverloadSplitStats, std::string> generateOverloadSplitShadows(
     return ca::core::Ok(stats);
 }
 
-ca::core::Result<ca::usize, std::string> assignMethodShadowBatch(
+ca::core::Result<ca::usize, ca::str::Utf8String> assignMethodShadowBatch(
     const mjbase::model::ResourceContainer& container, ShadowAliasTable& table,
     const std::vector<OverloadShadowSpec>& specs)
 {
@@ -611,50 +626,93 @@ ca::core::Result<ca::usize, std::string> assignMethodShadowBatch(
     std::unordered_map<std::string, std::string> seen;   // 成员签名 → shadow
     std::unordered_map<std::string, std::unordered_set<std::string>> batchTaken;
     for (const OverloadShadowSpec& spec : specs) {
-        if (spec.shadow.empty()) {
-            return ca::core::Err("assignMethodShadowBatch: empty shadow for '"
-                                 + spec.owner + "." + spec.name + "'");
+        const std::string ownerKey = viewOf(spec.owner);
+        if (spec.shadow.is_empty()) {
+            std::string detail = "assignMethodShadowBatch: empty shadow for '";
+            detail += ownerKey;
+            detail += '.';
+            detail += viewOf(spec.name);
+            detail += '\'';
+            return ca::core::Err(ownText(detail));
         }
-        const auto ownerIt = byOwner.find(spec.owner);
+        const auto ownerIt = byOwner.find(ownerKey);
         if (ownerIt == byOwner.end()) {
-            return ca::core::Err("assignMethodShadowBatch: unknown class '" + spec.owner
-                                 + "'");
+            std::string detail = "assignMethodShadowBatch: unknown class '";
+            detail += ownerKey;
+            detail += '\'';
+            return ca::core::Err(ownText(detail));
         }
-        if (ownerIt->second.memberSigs.count(spec.name + '\x1f' + spec.desc) == 0) {
-            return ca::core::Err("assignMethodShadowBatch: unknown method '" + spec.owner
-                                 + "." + spec.name + spec.desc + "'");
+        std::string memberSig;
+        memberSig += viewOf(spec.name);
+        memberSig += '\x1f';
+        memberSig += viewOf(spec.desc);
+        if (ownerIt->second.memberSigs.count(memberSig) == 0) {
+            std::string detail = "assignMethodShadowBatch: unknown method '";
+            detail += ownerKey;
+            detail += '.';
+            detail += viewOf(spec.name);
+            detail += viewOf(spec.desc);
+            detail += '\'';
+            return ca::core::Err(ownText(detail));
         }
-        if (ownerIt->second.realNames.count(spec.shadow) != 0) {
-            return ca::core::Err("assignMethodShadowBatch: shadow '" + spec.shadow
-                                 + "' collides with a real member name in '" + spec.owner
-                                 + "'");
+        const std::string shadowText = viewOf(spec.shadow);
+        if (ownerIt->second.realNames.count(shadowText) != 0) {
+            std::string detail = "assignMethodShadowBatch: shadow '";
+            detail += shadowText;
+            detail += "' collides with a real member name in '";
+            detail += ownerKey;
+            detail += '\'';
+            return ca::core::Err(ownText(detail));
         }
-        const std::string_view current = table.methodShadow(spec.owner, spec.name, spec.desc);
+        const std::string_view current = table.methodShadow(viewOf(spec.owner), viewOf(spec.name),
+                                                            viewOf(spec.desc));
         if (!current.empty()) {
             if (current != spec.shadow) {
-                return ca::core::Err("assignMethodShadowBatch: '" + spec.owner + "."
-                                     + spec.name + spec.desc + "' already assigned '"
-                                     + std::string(current) + "'");
+                std::string detail = "assignMethodShadowBatch: '";
+                detail += ownerKey;
+                detail += '.';
+                detail += viewOf(spec.name);
+                detail += viewOf(spec.desc);
+                detail += "' already assigned '";
+                detail += current;
+                detail += '\'';
+                return ca::core::Err(ownText(detail));
             }
-        } else if (table.memberShadowTaken(spec.owner, spec.shadow)
-                   || batchTaken[spec.owner].count(spec.shadow) != 0) {
-            return ca::core::Err("assignMethodShadowBatch: shadow '" + spec.shadow
-                                 + "' already taken in '" + spec.owner + "'");
+        } else if (table.memberShadowTaken(viewOf(spec.owner), viewOf(spec.shadow))
+                   || batchTaken[ownerKey].count(shadowText) != 0) {
+            std::string detail = "assignMethodShadowBatch: shadow '";
+            detail += shadowText;
+            detail += "' already taken in '";
+            detail += ownerKey;
+            detail += '\'';
+            return ca::core::Err(ownText(detail));
         }
-        auto [hit, fresh] = seen.emplace(
-            spec.owner + '\x1f' + spec.name + '\x1f' + spec.desc, spec.shadow);
-        if (!fresh && hit->second != spec.shadow) {
-            return ca::core::Err("assignMethodShadowBatch: conflicting specs for '"
-                                 + spec.owner + "." + spec.name + spec.desc + "'");
+        std::string identity;
+        identity += ownerKey;
+        identity += '\x1f';
+        identity += viewOf(spec.name);
+        identity += '\x1f';
+        identity += viewOf(spec.desc);
+        auto [hit, fresh] = seen.emplace(identity, shadowText);
+        if (!fresh && hit->second != shadowText) {
+            std::string detail = "assignMethodShadowBatch: conflicting specs for '";
+            detail += ownerKey;
+            detail += '.';
+            detail += viewOf(spec.name);
+            detail += viewOf(spec.desc);
+            detail += '\'';
+            return ca::core::Err(ownText(detail));
         }
-        batchTaken[spec.owner].insert(spec.shadow);
+        batchTaken[ownerKey].insert(shadowText);
     }
 
     // 校验全过才落表；已登记成员幂等保留。
     ca::usize applied = 0;
     for (const OverloadShadowSpec& spec : specs) {
-        if (!table.methodShadow(spec.owner, spec.name, spec.desc).empty()) continue;
-        table.addMethod(spec.owner, spec.desc, spec.name, spec.shadow);
+        if (!table.methodShadow(viewOf(spec.owner), viewOf(spec.name), viewOf(spec.desc)).empty())
+            continue;
+        table.addMethod(viewOf(spec.owner), viewOf(spec.desc), viewOf(spec.name),
+                        viewOf(spec.shadow));
         ++applied;
     }
 
@@ -775,27 +833,35 @@ ca::usize rebindShadowRawNames(ShadowAliasTable&                 table,
     }
 
     // 成员撞键预检：目标身份 (owner, desc, raw) 是否已有条目（kind 无关）。
-    const auto memberTaken = [&](const std::string& owner, const std::string& desc,
-                                 const std::string& raw) {
-        return memberKey.find(owner + '\x1f' + desc + '\x1f' + raw) != memberKey.end();
+    const auto memberTaken = [&](std::string_view owner, std::string_view desc,
+                                 std::string_view raw) {
+        std::string key;
+        key += owner;
+        key += '\x1f';
+        key += desc;
+        key += '\x1f';
+        key += raw;
+        return memberKey.find(key) != memberKey.end();
     };
 
     ca::usize rebound = 0;
     for (const auto& spec : renames) {
-        if (spec.newName.empty() || spec.oldName.empty()) continue;
+        if (spec.newName.is_empty() || spec.oldName.is_empty()) continue;
         if (spec.kind == ShadowKind::Class) {
             // 类改名：类条目存在、目标 raw 未占用、且 owner 级联不产生成员
             // 撞键（新 owner 名下已有同 (kind, desc, raw) 的其它类成员）——
             // 任一不满足整规格跳过（先到者优先）。
-            const auto classIt = classRaw.find(spec.oldName);
+            const std::string oldNameKey = viewOf(spec.oldName);
+            const auto classIt = classRaw.find(oldNameKey);
             if (classIt == classRaw.end()) continue;
-            if (classRaw.find(spec.newName) != classRaw.end()) continue;
-            const auto ownerIt = byOwner.find(spec.oldName);
+            const std::string newNameKey = viewOf(spec.newName);
+            if (classRaw.find(newNameKey) != classRaw.end()) continue;
+            const auto ownerIt = byOwner.find(oldNameKey);
             if (ownerIt != byOwner.end()) {
                 bool cascadeCollision = false;
                 for (const ca::usize index : ownerIt->second) {
                     if (work[index].kind == ShadowKind::Class) continue;
-                    if (memberTaken(spec.newName, work[index].desc, work[index].raw)) {
+                    if (memberTaken(viewOf(spec.newName), work[index].desc, work[index].raw)) {
                         cascadeCollision = true;
                         break;
                     }
@@ -805,13 +871,13 @@ ca::usize rebindShadowRawNames(ShadowAliasTable&                 table,
             // 应用：类条目 raw 改写 + owner 级联 + 索引重键。
             const ca::usize classIndex = classIt->second;
             classRaw.erase(classIt);
-            classRaw.emplace(spec.newName, classIndex);
-            work[classIndex].raw = spec.newName;
+            classRaw.emplace(newNameKey, classIndex);
+            work[classIndex].raw = newNameKey;
             if (ownerIt != byOwner.end()) {
                 for (const ca::usize index : ownerIt->second) {
                     if (work[index].kind == ShadowKind::Class) continue;
                     memberKey.erase(keyOf(work[index]));
-                    work[index].owner = spec.newName;
+                    work[index].owner = newNameKey;
                     memberKey.emplace(keyOf(work[index]), index);
                 }
             }
@@ -820,12 +886,17 @@ ca::usize rebindShadowRawNames(ShadowAliasTable&                 table,
         }
 
         // 成员改名：owner/desc/oldName 精确匹配；目标身份未占用才改写。
-        const auto key = spec.owner + '\x1f' + spec.desc + '\x1f' + spec.oldName;
+        std::string key;
+        key += viewOf(spec.owner);
+        key += '\x1f';
+        key += viewOf(spec.desc);
+        key += '\x1f';
+        key += viewOf(spec.oldName);
         const auto it = memberKey.find(key);
         if (it == memberKey.end()) continue;
-        if (memberTaken(spec.owner, spec.desc, spec.newName)) continue;
+        if (memberTaken(viewOf(spec.owner), viewOf(spec.desc), viewOf(spec.newName))) continue;
         memberKey.erase(it);
-        work[it->second].raw = spec.newName;
+        work[it->second].raw = viewOf(spec.newName);
         memberKey.emplace(keyOf(work[it->second]), it->second);
         ++rebound;
     }

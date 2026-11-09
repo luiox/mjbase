@@ -34,7 +34,7 @@ const char kWeirdUtf8Name[] = "\xE5\x8F\x98\xE9\x87\x8F";
 
 std::string errText(ca::core::Result<NameSuggestionFile, SuggestionFileError> result)
 {
-    return std::move(result).unwrap_err().message;
+    return std::move(result).unwrap_err().message.to_std_string();
 }
 
 /// 引擎夹具：A{ oldField:I; other:J; flag:Z; <init>()V } + java/lang/Object。
@@ -74,7 +74,7 @@ std::string singleProposalFile(const std::string& newNameJson)
            fieldProposalJson(newNameJson) + "]}";
 }
 
-NameSuggestionFile parseOk(const std::string& text)
+NameSuggestionFile parseOk(std::string_view text)
 {
     auto parsed = parseNameSuggestionFile(text);
     EXPECT_TRUE(parsed.is_ok()) << errText(std::move(parsed));
@@ -219,7 +219,7 @@ TEST(MjWeirdNameSuggestionTest, weirdNamesSurviveWriteReadRoundTripByteIdentical
     const auto first   = parseOk(text);
     auto       written = writeNameSuggestionText(first);
     ASSERT_TRUE(written.is_ok());
-    const auto second = parseOk(std::move(written).unwrap());
+    const auto second = parseOk(std::string_view(std::move(written).unwrap()));
 
     EXPECT_EQ(std::string(second.source), "ai:weird src");
     ASSERT_EQ(second.proposals.size(), first.proposals.size());

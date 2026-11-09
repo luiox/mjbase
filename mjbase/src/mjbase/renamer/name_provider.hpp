@@ -10,12 +10,12 @@
 #pragma once
 
 #include <memory>
-#include <string>
 #include <string_view>
 #include <vector>
 
 #include "libca/core/datatype.hpp"
 #include "libca/core/result.hpp"
+#include "libca/str/utf8_string.hpp"
 
 #include "mjbase/hierarchy/class_hierarchy.hpp"
 #include "mjbase/hierarchy/method_hierarchy.hpp"
@@ -54,7 +54,7 @@ public:
     /// 堆上构造、以 unique_ptr 交付：ClassHierarchy 借用本对象 pool_ 的地址，
     /// 对象一经构造不得移动/拷贝。畸形类跳过（class_scan fail-open 口径，
     /// 与 reference_index 一致）；重复类名/环属数据灾难，Err 拒绝整次 run。
-    static Result<std::unique_ptr<RenameContext>, std::string> build(
+    static Result<std::unique_ptr<RenameContext>, ca::str::Utf8String> build(
         const mjbase::model::ResourceContainer& container);
 
     RenameContext(const RenameContext&)            = delete;
@@ -80,16 +80,16 @@ public:
     /// 目标方法不在容器中时 Err（NotFound 语义，调用方自行决定降级为单例组）。
     /// mjbase 层级只含容器内声明：组件延伸至容器外的成员本就不参与
     /// 改名，新图上天然不出现。
-    Result<std::vector<OverrideComponentMember>, std::string> overrideComponentOf(
+    Result<std::vector<OverrideComponentMember>, ca::str::Utf8String> overrideComponentOf(
         std::string_view owner, std::string_view name, std::string_view desc) const;
 
     /// @brief 方法所属 override 组件的规范根（族内最浅声明，run 内稳定）。
     ///
     /// 并查集根下标的替代品：同一族内任意成员的 sourceDeclaration 恒等，
     /// 引擎据此按组件去重。目标方法不在容器/未声明时 Err。
-    Result<MemberKey, std::string> overrideComponentRootOf(std::string_view owner,
-                                                           std::string_view name,
-                                                           std::string_view desc) const;
+    Result<MemberKey, ca::str::Utf8String> overrideComponentRootOf(std::string_view owner,
+                                                                   std::string_view name,
+                                                                   std::string_view desc) const;
 
     /// @brief 上下文私有驻留池（视图出处；池存活期 = 本对象存活期）。
     const KeyPool& pool() const noexcept { return pool_; }
@@ -140,7 +140,7 @@ public:
     virtual std::string_view name() const = 0;
 
     /// @brief 产出一批改名建议。context 只读，禁止缓存跨 run 引用（视图寿命 = run）。
-    virtual Result<std::vector<NameProposal>, std::string> propose(
+    virtual Result<std::vector<NameProposal>, ca::str::Utf8String> propose(
         const RenameContext& context) = 0;
 };
 

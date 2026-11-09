@@ -49,7 +49,7 @@ public:
 
     std::string_view name() const override { return name_; }
 
-    ca::core::Result<std::vector<NameProposal>, std::string> propose(
+    ca::core::Result<std::vector<NameProposal>, ca::str::Utf8String> propose(
         const RenameContext&) override
     {
         return ca::core::Ok(std::move(proposals_));
