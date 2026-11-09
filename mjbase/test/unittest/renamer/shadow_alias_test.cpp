@@ -57,6 +57,17 @@ inline RawRenameSpec rawSpecOf(ShadowKind kind, const char* owner, const char* d
     return RawRenameSpec{kind, utf8Of(owner), utf8Of(desc), utf8Of(oldName), utf8Of(newName)};
 }
 
+/// 规格列表构造：initializer_list 要求元素可拷贝，与 Utf8String 禁拷贝冲突；
+/// 逐个 push_back 右值消化 move（T 由首个实参推导点显式指定）。
+template <typename T, typename... Args>
+std::vector<T> specList(Args&&... args)
+{
+    std::vector<T> out;
+    out.reserve(sizeof...(args));
+    (out.push_back(std::move(args)), ...);
+    return out;
+}
+
 /// bytes 顺序即插入顺序（稳定性用例反序插入）。
 model::ResourceContainer buildContainer(const ClassBytes& bytes)
 {
@@ -781,49 +792,49 @@ TEST(MjShadowAliasTableTest, batchAssignAppliesAndValidatesTransactionally)
     ShadowAliasTable table;
 
     EXPECT_EQ(2U, batchOrDie(container, table,
-                             {specOf("A", "foo", "()V", "foo$0"),
-                              specOf("A", "foo", "(I)V", "foo$1")}));
+                             specList<OverloadShadowSpec>(specOf("A", "foo", "()V", "foo$0"),
+                              specOf("A", "foo", "(I)V", "foo$1"))));
     EXPECT_EQ("foo$0", toStd(table.methodShadow("A", "foo", "()V")));
     EXPECT_EQ("foo$1", toStd(table.methodShadow("A", "foo", "(I)V")));
 
     // 撞已分配 shadow：整批拒绝，表零改动。
     EXPECT_TRUE(assignMethodShadowBatch(
-                    container, table, {specOf("A", "foo", "(Ljava/lang/String;)V", "foo$0")})
+                    container, table, specList<OverloadShadowSpec>(specOf("A", "foo", "(Ljava/lang/String;)V", "foo$0")))
                     .is_err());
     EXPECT_TRUE(table.methodShadow("A", "foo", "(Ljava/lang/String;)V").empty());
 
     // 撞类内真实名（方法 bar）。
     EXPECT_TRUE(assignMethodShadowBatch(
-                    container, table, {specOf("A", "foo", "(Ljava/lang/String;)V", "bar")})
+                    container, table, specList<OverloadShadowSpec>(specOf("A", "foo", "(Ljava/lang/String;)V", "bar")))
                     .is_err());
 
     // 未知类 / 未知方法 / 未知描述符。
     EXPECT_TRUE(
-        assignMethodShadowBatch(container, table, {specOf("X", "foo", "()V", "s")}).is_err());
+        assignMethodShadowBatch(container, table, specList<OverloadShadowSpec>(specOf("X", "foo", "()V", "s"))).is_err());
     EXPECT_TRUE(
-        assignMethodShadowBatch(container, table, {specOf("A", "nope", "()V", "s")}).is_err());
+        assignMethodShadowBatch(container, table, specList<OverloadShadowSpec>(specOf("A", "nope", "()V", "s"))).is_err());
     EXPECT_TRUE(
-        assignMethodShadowBatch(container, table, {specOf("A", "foo", "(J)V", "s")}).is_err());
+        assignMethodShadowBatch(container, table, specList<OverloadShadowSpec>(specOf("A", "foo", "(J)V", "s"))).is_err());
 
     // 幂等重指派同 shadow：Ok(0)。
-    auto again = assignMethodShadowBatch(container, table, {specOf("A", "foo", "()V", "foo$0")});
+    auto again = assignMethodShadowBatch(container, table, specList<OverloadShadowSpec>(specOf("A", "foo", "()V", "foo$0")));
     ASSERT_TRUE(again.is_ok());
     EXPECT_EQ(0U, std::move(again).unwrap());
 
     // 异 shadow 重指派：Err（先到者优先契约）。
     EXPECT_TRUE(
-        assignMethodShadowBatch(container, table, {specOf("A", "foo", "()V", "other")}).is_err());
+        assignMethodShadowBatch(container, table, specList<OverloadShadowSpec>(specOf("A", "foo", "()V", "other"))).is_err());
 
     // 同批双成员同 shadow：Err，整批零改动。
     EXPECT_TRUE(assignMethodShadowBatch(container, table,
-                                        {specOf("A", "foo", "(Ljava/lang/String;)V", "s"),
-                                         specOf("A", "bar", "()V", "s")})
+                                        specList<OverloadShadowSpec>(specOf("A", "foo", "(Ljava/lang/String;)V", "s"),
+                                         specOf("A", "bar", "()V", "s")))
                     .is_err());
     EXPECT_TRUE(table.methodShadow("A", "bar", "()V").empty());
 
     // 冲突过后合法批次仍可落表。
     EXPECT_EQ(1U, batchOrDie(container, table,
-                             {specOf("A", "foo", "(Ljava/lang/String;)V", "foo$2")}));
+                             specList<OverloadShadowSpec>(specOf("A", "foo", "(Ljava/lang/String;)V", "foo$2"))));
     EXPECT_EQ("foo$2", toStd(table.methodShadow("A", "foo", "(Ljava/lang/String;)V")));
 }
 
@@ -850,7 +861,7 @@ ShadowAliasTable rebindTable()
 TEST(MjShadowAliasTableTest, rebindClassRenameCascadesOwnerAndKeepsIdentity)
 {
     ShadowAliasTable table = rebindTable();
-    const auto rebound = rebindShadowRawNames(table, {rawSpecOf(ShadowKind::Class, "", "", "A", "C")});
+    const auto rebound = rebindShadowRawNames(table, specList<RawRenameSpec>(rawSpecOf(ShadowKind::Class, "", "", "A", "C")));
     EXPECT_EQ(1U, rebound);
     // shadow 身份连续：新 raw 命中原 shadow/token；旧 raw 失配。
     EXPECT_EQ("Class_1", toStd(table.classShadow("C")));
@@ -874,14 +885,14 @@ TEST(MjShadowAliasTableTest, rebindMemberRenameMatchesExactIdentity)
 {
     ShadowAliasTable table = rebindTable();
     const auto rebound =
-        rebindShadowRawNames(table, {rawSpecOf(ShadowKind::Method, "A", "()V", "m", "renamed")});
+        rebindShadowRawNames(table, specList<RawRenameSpec>(rawSpecOf(ShadowKind::Method, "A", "()V", "m", "renamed")));
     EXPECT_EQ(1U, rebound);
     EXPECT_EQ("Method_1", toStd(table.methodShadow("A", "renamed", "()V")));
     EXPECT_TRUE(table.methodShadow("A", "m", "()V").empty());
     // desc 参与身份：同名字面异 desc 的规格不命中（无重建、表零变化）。
     ShadowAliasTable untouched = rebindTable();
     EXPECT_EQ(0U, rebindShadowRawNames(
-                      untouched, {rawSpecOf(ShadowKind::Method, "A", "(J)V", "m", "renamed")}));
+                      untouched, specList<RawRenameSpec>(rawSpecOf(ShadowKind::Method, "A", "(J)V", "m", "renamed"))));
     EXPECT_EQ("Method_1", toStd(untouched.methodShadow("A", "m", "()V")));
 }
 
@@ -890,9 +901,9 @@ TEST(MjShadowAliasTableTest, rebindUnknownSpecsAreNoOp)
     ShadowAliasTable table = rebindTable();
     const auto       size  = table.size();
     EXPECT_EQ(0U, rebindShadowRawNames(table,
-                                       {rawSpecOf(ShadowKind::Class, "", "", "X", "Y"),
+                                       specList<RawRenameSpec>(rawSpecOf(ShadowKind::Class, "", "", "X", "Y"),
                                         rawSpecOf(ShadowKind::Method, "A", "()V", "ghost", "any"),
-                                        rawSpecOf(ShadowKind::Class, "", "", "A", "")}));
+                                        rawSpecOf(ShadowKind::Class, "", "", "A", ""))));
     EXPECT_EQ(size, table.size());
     EXPECT_EQ("Class_1", toStd(table.classShadow("A")));
 }
@@ -902,17 +913,17 @@ TEST(MjShadowAliasTableTest, rebindCollisionsSkipSpecFirstWins)
     // 跨 owner 同名不撞（身份含 owner）：B.n()V → m 正常落地。
     ShadowAliasTable crossOwner = rebindTable();
     EXPECT_EQ(1U, rebindShadowRawNames(crossOwner,
-                                       {rawSpecOf(ShadowKind::Method, "B", "()V", "n", "m")}));
+                                       specList<RawRenameSpec>(rawSpecOf(ShadowKind::Method, "B", "()V", "n", "m"))));
     EXPECT_EQ("Method_2", toStd(crossOwner.methodShadow("B", "m", "()V")));
     // 同 owner 撞键：目标身份已有条目 → 规格跳过（先到者优先）。
     ShadowAliasTable table = rebindTable();
     table.addMethod("A", "()V", "m2", "Method_3", "ffffffff");
     EXPECT_EQ(0U, rebindShadowRawNames(table,
-                                       {rawSpecOf(ShadowKind::Method, "A", "()V", "m2", "m")}));
+                                       specList<RawRenameSpec>(rawSpecOf(ShadowKind::Method, "A", "()V", "m2", "m"))));
     EXPECT_EQ("Method_1", toStd(table.methodShadow("A", "m", "()V")));
     EXPECT_EQ("Method_3", toStd(table.methodShadow("A", "m2", "()V")));
     // 类撞键：A → B（B 已登记）→ 跳过。
-    EXPECT_EQ(0U, rebindShadowRawNames(table, {rawSpecOf(ShadowKind::Class, "", "", "A", "B")}));
+    EXPECT_EQ(0U, rebindShadowRawNames(table, specList<RawRenameSpec>(rawSpecOf(ShadowKind::Class, "", "", "A", "B"))));
     EXPECT_EQ("Class_1", toStd(table.classShadow("A")));
 }
 
@@ -923,7 +934,7 @@ TEST(MjShadowAliasTableTest, rebindClassCascadeCollisionSkipsWholeSpec)
     ShadowAliasTable table = rebindTable();
     table.addClass("C", "Class_3", "66666666");
     table.addMethod("C", "()V", "m", "Method_9", "77777777");
-    EXPECT_EQ(0U, rebindShadowRawNames(table, {rawSpecOf(ShadowKind::Class, "", "", "A", "C")}));
+    EXPECT_EQ(0U, rebindShadowRawNames(table, specList<RawRenameSpec>(rawSpecOf(ShadowKind::Class, "", "", "A", "C"))));
     EXPECT_EQ("Class_1", toStd(table.classShadow("A")));
     EXPECT_EQ("Method_1", toStd(table.methodShadow("A", "m", "()V")));
     EXPECT_EQ("Method_9", toStd(table.methodShadow("C", "m", "()V")));
@@ -935,8 +946,8 @@ TEST(MjShadowAliasTableTest, rebindSpecOrderClassBeforeMembers)
     ShadowAliasTable table    = rebindTable();
     const auto       rebound = rebindShadowRawNames(
         table,
-        {rawSpecOf(ShadowKind::Class, "", "", "A", "C"),
-         rawSpecOf(ShadowKind::Method, "C", "()V", "m", "fly")});
+        specList<RawRenameSpec>(rawSpecOf(ShadowKind::Class, "", "", "A", "C"),
+         rawSpecOf(ShadowKind::Method, "C", "()V", "m", "fly")));
     EXPECT_EQ(2U, rebound);
     EXPECT_EQ("Method_1", toStd(table.methodShadow("C", "fly", "()V")));
 }
@@ -946,7 +957,7 @@ TEST(MjShadowAliasTableTest, rebindFieldRenameKeepsTokenAndMappingRoundtrip)
     ShadowAliasTable table = rebindTable();
     // field 规格：改名后 shadow/token 原样（显示身份连续）。
     const auto rebound = rebindShadowRawNames(
-        table, {rawSpecOf(ShadowKind::Field, "A", "I", "f", "renamedF")});
+        table, specList<RawRenameSpec>(rawSpecOf(ShadowKind::Field, "A", "I", "f", "renamedF")));
     EXPECT_EQ(1U, rebound);
     EXPECT_EQ("Field_1", toStd(table.fieldShadow("A", "renamedF", "I")));
     EXPECT_TRUE(table.fieldShadow("A", "f", "I").empty());
@@ -972,7 +983,7 @@ TEST(MjShadowAliasTableTest, rebindCrossKindCollisionSkipsAndKeepsEntry)
     table.addField("A", "I", "other", "Field_1", "cccccccc");
     const auto size = table.size();
     EXPECT_EQ(0U, rebindShadowRawNames(
-                      table, {rawSpecOf(ShadowKind::Field, "A", "I", "other", "dup")}));
+                      table, specList<RawRenameSpec>(rawSpecOf(ShadowKind::Field, "A", "I", "other", "dup"))));
     EXPECT_EQ(size, table.size());
     EXPECT_EQ("Method_1", toStd(table.methodShadow("A", "dup", "I")));
     EXPECT_EQ("Field_1", toStd(table.fieldShadow("A", "other", "I")));

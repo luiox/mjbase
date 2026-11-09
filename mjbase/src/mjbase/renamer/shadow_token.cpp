@@ -700,7 +700,7 @@ ShadowSlotResult resolveShadowJasmBody(const ShadowAliasTable& table,
     // ── 描述符部展开 ──
     std::string resolvedDesc;
     if (hasDesc) {
-        const auto descResult = resolveShadowDescriptor(table, descPart);
+        auto descResult = resolveShadowDescriptor(table, descPart);
         if (descResult.error != ShadowSlotError::None) return descResult;
         resolvedDesc = viewOf(descResult.raw);
         if (descResult.fromHandle) ++expansions;

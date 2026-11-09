@@ -279,7 +279,7 @@ TEST(MjRenamerLegalityTest, rejectsKeywordIllegalCharNoOpSchemaAndMissingTarget)
     // 被拒流水完整：保留建议原文 + 原因 + 细节
     EXPECT_EQ(std::string(rejected[0].proposal.newName), "class");
     EXPECT_EQ(rejected[0].proposal.source, "batch");
-    EXPECT_FALSE(rejected[0].detail.empty());
+    EXPECT_FALSE(rejected[0].detail.is_empty());
 }
 
 TEST(MjRenamerLegalityTest, exemptsInitClinitAndRejectsThemAsNewNames)

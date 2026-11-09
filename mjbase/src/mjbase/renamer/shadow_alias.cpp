@@ -626,7 +626,7 @@ ca::core::Result<ca::usize, ca::str::Utf8String> assignMethodShadowBatch(
     std::unordered_map<std::string, std::string> seen;   // 成员签名 → shadow
     std::unordered_map<std::string, std::unordered_set<std::string>> batchTaken;
     for (const OverloadShadowSpec& spec : specs) {
-        const std::string ownerKey = viewOf(spec.owner);
+        const std::string ownerKey(viewOf(spec.owner));
         if (spec.shadow.is_empty()) {
             std::string detail = "assignMethodShadowBatch: empty shadow for '";
             detail += ownerKey;
@@ -655,7 +655,7 @@ ca::core::Result<ca::usize, ca::str::Utf8String> assignMethodShadowBatch(
             detail += '\'';
             return ca::core::Err(ownText(detail));
         }
-        const std::string shadowText = viewOf(spec.shadow);
+        const std::string shadowText(viewOf(spec.shadow));
         if (ownerIt->second.realNames.count(shadowText) != 0) {
             std::string detail = "assignMethodShadowBatch: shadow '";
             detail += shadowText;
@@ -851,10 +851,10 @@ ca::usize rebindShadowRawNames(ShadowAliasTable&                 table,
             // 类改名：类条目存在、目标 raw 未占用、且 owner 级联不产生成员
             // 撞键（新 owner 名下已有同 (kind, desc, raw) 的其它类成员）——
             // 任一不满足整规格跳过（先到者优先）。
-            const std::string oldNameKey = viewOf(spec.oldName);
+            const std::string oldNameKey(viewOf(spec.oldName));
             const auto classIt = classRaw.find(oldNameKey);
             if (classIt == classRaw.end()) continue;
-            const std::string newNameKey = viewOf(spec.newName);
+            const std::string newNameKey(viewOf(spec.newName));
             if (classRaw.find(newNameKey) != classRaw.end()) continue;
             const auto ownerIt = byOwner.find(oldNameKey);
             if (ownerIt != byOwner.end()) {
