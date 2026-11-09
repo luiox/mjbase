@@ -22,7 +22,7 @@
 ///   - BuiltinRefNotExpandable / RegistryMismatch（装配期防御桶）。
 ///
 /// 寿命与线程：入参 text 借用（装载完成即不再引用）；产物自持字符串
-/// （外部边界，std::string 允许——对齐 PackError 的边界豁免先例）。装载读
+/// （外部边界，std::string 允许）。装载读
 /// 全局注册表，对齐注册表纪律：初始化阶段调用，非线程安全。
 #pragma once
 
