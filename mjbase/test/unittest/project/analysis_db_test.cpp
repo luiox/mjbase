@@ -4318,3 +4318,69 @@ TEST(MjAnalysisDbTest, MigratesConstFacesFromV11InPlace)
         EXPECT_EQ(AnalysisDbErrorKind::Schema, std::move(result).unwrap_err().kind);
     }
 }
+
+/// @brief number_literals 的计划回归：三条部分索引只对能静态蕴含其谓词的
+///        WHERE 启用。参数化等值 member_id=?1 蕴含不了 != 0——
+///        replaceNumbersFromMember 的切片 DELETE 没有字面量谓词时退化为
+///        全表扫（消费方整库导入 4 万次逐成员替换实测约 47 分钟）；收窄键
+///        部分索引（IS NOT NULL 谓词）参数化等值可蕴含，无需字面量。
+///        EXPLAIN 计划在 prepare 期定型，?1 不绑即生产计划；DELETE 语句
+///        镜像 replaceNumbersFromMember。
+TEST(MjAnalysisDbTest, NumberLiteralQueryPlansProbePartialIndex)
+{
+    const auto path = freshDbPath("number_literal_plans");
+    {
+        auto db = openOrDie(path);
+        ASSERT_TRUE(db.save().is_ok());
+        ASSERT_TRUE(db.close().is_ok());
+    }
+
+    sqlite3* raw = openRawReadOnly(path);
+    ASSERT_NE(nullptr, raw);
+
+    const auto bareNumberLiteralsScan = [](const std::vector<std::string>& details) {
+        for (const auto& detail : details) {
+            if (detail.rfind("SCAN", 0) == 0 &&
+                (detail.find("number_literals") != std::string::npos ||
+                 detail.rfind("SCAN n", 0) == 0) &&
+                detail.find("USING") == std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // 切片 DELETE（镜像 replaceNumbersFromMember）：字面量 member_id != 0
+    // 谓词换 number_literals_member 部分索引下探；该谓词看似恒真实不可删。
+    {
+        auto details = rawQueryPlanDetails(
+            raw, "DELETE FROM number_literals WHERE member_id=?1 AND member_id != 0");
+        EXPECT_TRUE(hasSearchOnIndex(details, "number_literals_member"));
+        EXPECT_FALSE(bareNumberLiteralsScan(details));
+    }
+    // 反例钉死陷阱：去掉字面量谓词的语句形状（参数化等值单独出现）就是
+    // 裸扫——生产语句不得漂回此形态。
+    {
+        auto details = rawQueryPlanDetails(
+            raw, "DELETE FROM number_literals WHERE member_id=?1");
+        EXPECT_FALSE(hasSearchOnIndex(details, "number_literals_member"));
+        EXPECT_TRUE(bareNumberLiteralsScan(details));
+    }
+
+    // 收窄键单探（searchNumbers 的 OR 分支项）：IS NOT NULL 谓词可由参数化
+    // 等值蕴含，两键各自下探，无需字面量谓词。
+    {
+        auto details = rawQueryPlanDetails(
+            raw, "SELECT literal_id FROM number_literals WHERE value_int=?1");
+        EXPECT_TRUE(hasSearchOnIndex(details, "number_literals_value_int"));
+        EXPECT_FALSE(bareNumberLiteralsScan(details));
+    }
+    {
+        auto details = rawQueryPlanDetails(
+            raw, "SELECT literal_id FROM number_literals WHERE value_bits=?1");
+        EXPECT_TRUE(hasSearchOnIndex(details, "number_literals_value_bits"));
+        EXPECT_FALSE(bareNumberLiteralsScan(details));
+    }
+
+    sqlite3_close(raw);
+}

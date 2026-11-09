@@ -4918,7 +4918,15 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceNumbersFromMember(
 
     // member_id 非 0 定向删——常量池行（member_id = 0 哨兵）不被方法体切片
     // 触碰；空输入即清空该方法的数值切片（消失方法清切片口径）。
-    auto erase = prepare(impl_->handle, "DELETE FROM number_literals WHERE member_id=?1");
+    // 字面量 member_id != 0 谓词看似冗余实不可删：number_literals_member 是
+    // 部分索引（WHERE member_id != 0），SQLite 只对能静态蕴含其谓词的 WHERE
+    // 启用部分索引，参数化等值 member_id=?1 蕴含不了 != 0——少了它计划退化
+    // 为全表扫（消费方整库导入逐成员替换 4 万次实测约 47 分钟；计划断言见
+    // NumberLiteralQueryPlansProbePartialIndex）。谓词同时守住语义边界：member
+    // 级调用永远清不掉 member_id = 0 常量池行。
+    auto erase = prepare(
+        impl_->handle,
+        "DELETE FROM number_literals WHERE member_id=?1 AND member_id != 0");
     if (erase.is_err()) return errorOf(std::move(erase));
     auto eraseStatement = std::move(erase).unwrap();
     if (auto result = bindInt(impl_->handle, eraseStatement.raw, 1, memberId);
