@@ -1,7 +1,6 @@
 #pragma once
 
 #include <optional>
-#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -214,11 +213,11 @@ public:
 
 private:
     std::vector<AnalysisInput>            inputs_;
-    std::unordered_map<std::string, ca::usize> inputIndex_;    ///< path → inputs_ 下标
+    std::unordered_map<ca::str::Utf8String, ca::usize> inputIndex_;    ///< path → inputs_ 下标
     std::optional<ShadowSidecarRef>       shadowSidecar_;
     std::vector<AnalysisAnnotation>       annotations_;
     std::unordered_map<ca::u64, ca::usize>     annotationIndex_;  ///< id → annotations_ 下标
-    std::unordered_map<std::string, std::vector<ca::usize>> ownerIndex_;  ///< owner → 下标集
+    std::unordered_map<ca::str::Utf8String, std::vector<ca::usize>> ownerIndex_;  ///< owner → 下标集
     ca::u64                               nextAnnotationId_ = 1;
 
     // 加载绕过 addAnnotation 的单调 id 分配（文件 id 是事实），直塞内部表。

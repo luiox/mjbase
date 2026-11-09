@@ -22,12 +22,15 @@ void AndersenPointsToSolver::clear()
 
 AndersenPointsToSolver::NameId AndersenPointsToSolver::intern(std::string_view name)
 {
-    const auto found = nameIds_.find(std::string(name));
+    const auto found = nameIds_.find(name);
     if (found != nameIds_.end()) return found->second;
-    // deque 节点地址稳定：id → 名字表供诊断出口与分配点驻留复用。
-    nameTable_.push_back(std::string(name));
+    // deque 节点与 Utf8String 缓冲地址稳定：id → 名字表供诊断出口与分配点驻留
+    // 复用；nameIds_ 只存指入视图（KeyPool 同款两表结构，单次物化零副本）。
+    // 字节边界：intern 名来自分析内部键拼装，按原始字节保真驻留。
+    nameTable_.emplace_back(ca::str::Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(name.data()), name.size()));
     const auto id = static_cast<NameId>(nameTable_.size() - 1);
-    nameIds_.emplace(nameTable_.back(), id);
+    nameIds_.emplace(nameTable_.back().ref(), id);
     return id;
 }
 
@@ -68,7 +71,7 @@ AndersenPointsToSolver::ObjectIndex AndersenPointsToSolver::allocationByName(Nam
         return allocationById_[name] - 1;
     }
     const auto index = static_cast<ObjectIndex>(allocationNames_.size());
-    allocationNames_.push_back(nameTable_[name]);
+    allocationNames_.push_back(nameTable_[name].ref());
     if (allocationById_.size() <= name) allocationById_.resize(static_cast<ca::usize>(name) + 1, 0);
     allocationById_[name] = index + 1;
     return index;
@@ -163,18 +166,21 @@ void AndersenPointsToSolver::solve()
     }
 }
 
-std::vector<std::string> AndersenPointsToSolver::pointsTo(std::string_view variable) const
+std::vector<ca::str::Utf8String> AndersenPointsToSolver::pointsTo(std::string_view variable) const
 {
-    const auto found = nameIds_.find(std::string(variable));
+    const auto found = nameIds_.find(variable);
     if (found == nameIds_.end() || found->second >= variableById_.size() ||
         variableById_[found->second] == 0) {
         return {};
     }
-    std::vector<std::string> result;
+    std::vector<ca::str::Utf8String> result;
     const auto&              objects = pointsTo_[variableById_[found->second] - 1];
     result.reserve(objects.size());
     for (const auto object : objects) {
-        result.push_back(allocationNames_[object]);
+        // 诊断出口物化：名字按原始字节保真拷出（结果不别名求解器内部存储）。
+        const std::string_view name = allocationNames_[object];
+        result.push_back(ca::str::Utf8String::from_data_unchecked(
+            reinterpret_cast<const ca::u8*>(name.data()), name.size()));
     }
     std::sort(result.begin(), result.end());
     return result;

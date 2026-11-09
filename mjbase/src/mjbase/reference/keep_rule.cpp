@@ -7,6 +7,8 @@
 
 namespace mjbase::reference {
 
+using ca::str::Utf8String;
+
 const char* to_string(KeepRuleErrorCode code) noexcept
 {
     switch (code) {
@@ -112,13 +114,15 @@ std::string_view trimSpace(std::string_view s)
 }
 
 /// 模式归一化：'.' → '/'（类名/描述符的源码形态直写）。
-std::string normalizePattern(std::string_view raw)
+Utf8String normalizePattern(std::string_view raw)
 {
     std::string out(raw);
     for (char& ch : out) {
         if (ch == '.') ch = '/';
     }
-    return out;
+    // 字节边界：DSL 配置文本按原始字节保真入池（解析 fail-loud 管结构，不校验编码）。
+    return Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(out.data()),
+                                           out.size());
 }
 
 /// 造一条 member 规则（name/desc 恒非空；调用方已校验）。
@@ -130,7 +134,8 @@ KeepRule makeMemberRule(std::string_view owner, std::string_view name, std::stri
     rule.owner   = normalizePattern(owner);
     rule.name    = normalizePattern(name);
     rule.desc    = normalizePattern(desc);
-    rule.source  = std::string(source);
+    rule.source  = Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(source.data()),
+                                                   source.size());
     return rule;
 }
 
@@ -140,7 +145,8 @@ KeepRule makeClassRule(std::string_view owner, std::string_view source)
     KeepRule rule;
     rule.kind   = KeepRuleKind::Class;
     rule.owner  = normalizePattern(owner);
-    rule.source = std::string(source);
+    rule.source = Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(source.data()),
+                                                  source.size());
     return rule;
 }
 
@@ -324,8 +330,9 @@ Result<KeepRuleSet, KeepRuleParseError> KeepRuleSet::parse(std::string_view text
             KeepRule rule;
             rule.kind   = KeepRuleKind::Class;
             rule.owner  = normalizePattern(rest);
-            rule.source = std::string(line);
-            if (rule.owner.empty()) {
+            rule.source = Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(line.data()),
+                                                          line.size());
+            if (rule.owner.is_empty()) {
                 return Err(KeepRuleParseError{lineNo, KeepRuleErrorCode::EmptyPattern});
             }
             set.rules_.push_back(std::move(rule));
@@ -353,7 +360,7 @@ Result<KeepRuleSet, KeepRuleParseError> KeepRuleSet::parse(std::string_view text
         }
         return Err(KeepRuleParseError{lineNo, KeepRuleErrorCode::UnknownKeyword});
     }
-    return Ok(set);
+    return Ok(std::move(set));
 }
 
 Result<void, KeepRuleParseError> KeepRuleSet::addPreset(KeepPreset preset)
@@ -375,7 +382,7 @@ bool KeepRuleSet::matchesClass(std::string_view internalName) const
 {
     for (const KeepRule& rule : rules_) {
         if (rule.kind != KeepRuleKind::Class) continue;
-        if (globMatch(rule.owner, internalName)) return true;
+        if (globMatch(rule.owner.ref(), internalName)) return true;
     }
     return false;
 }
@@ -385,9 +392,9 @@ bool KeepRuleSet::matchesMember(std::string_view owner, std::string_view name,
 {
     for (const KeepRule& rule : rules_) {
         if (rule.kind != KeepRuleKind::Member) continue;
-        if (!globMatch(rule.owner, owner)) continue;
-        if (!globMatch(rule.name, name)) continue;
-        if (!globMatch(rule.desc, desc)) continue;
+        if (!globMatch(rule.owner.ref(), owner)) continue;
+        if (!globMatch(rule.name.ref(), name)) continue;
+        if (!globMatch(rule.desc.ref(), desc)) continue;
         return true;
     }
     return false;

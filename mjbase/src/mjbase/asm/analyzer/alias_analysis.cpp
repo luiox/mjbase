@@ -2432,8 +2432,14 @@ std::vector<std::string> AliasAnalysis::andersenReturnPointsToOf(std::string_vie
                                                                  std::string_view name,
                                                                  std::string_view desc) const
 {
-    return andersen_.pointsTo(std::string(owner) + "\n" + std::string(name) + "\n" +
-                              std::string(desc) + "\nreturn");
+    // 求解器诊断出口物化为 Utf8String；本查询面维持 std::string 逐元素转出。
+    std::vector<std::string> out;
+    for (const auto& item :
+         andersen_.pointsTo(std::string(owner) + "\n" + std::string(name) + "\n" +
+                            std::string(desc) + "\nreturn")) {
+        out.push_back(item.to_std_string());
+    }
+    return out;
 }
 
 std::vector<std::string> AliasAnalysis::andersenParameterPointsToOf(std::string_view owner,
@@ -2441,8 +2447,13 @@ std::vector<std::string> AliasAnalysis::andersenParameterPointsToOf(std::string_
                                                                     std::string_view desc,
                                                                     ca::usize parameter) const
 {
-    return andersen_.pointsTo(std::string(owner) + "\n" + std::string(name) + "\n" +
-                              std::string(desc) + "\nparam:" + std::to_string(parameter));
+    std::vector<std::string> out;
+    for (const auto& item :
+         andersen_.pointsTo(std::string(owner) + "\n" + std::string(name) + "\n" +
+                            std::string(desc) + "\nparam:" + std::to_string(parameter))) {
+        out.push_back(item.to_std_string());
+    }
+    return out;
 }
 
 const AliasMethodSummary* AliasAnalysis::summaryOf(std::string_view owner, std::string_view name,

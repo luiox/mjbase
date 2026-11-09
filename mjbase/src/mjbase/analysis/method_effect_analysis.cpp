@@ -176,8 +176,11 @@ void scanConstantReturn(const jbc::ir::CodeUnit& u, const jbc::core::ConstantPoo
                 return;
             }
             if (ret->op == Op::ARETURN && e.tag == jbc::core::CpTag::String && cp.isUtf8(e.a)) {
-                out.kind        = ConstantReturnKind::String;
-                out.stringValue = std::string(cp.utf8Of(e.a));
+                out.kind = ConstantReturnKind::String;
+                // 字节边界：常量池 Modified UTF-8 字节保真物化（诊断出口）。
+                const std::string_view text = cp.utf8Of(e.a);
+                out.stringValue             = ca::str::Utf8String::from_data_unchecked(
+                    reinterpret_cast<const ca::u8*>(text.data()), text.size());
                 return;
             }
         }
@@ -291,7 +294,7 @@ void MethodEffectModel::build(const mjbase::model::ResourceContainer& container)
     std::unordered_map<MemberKey, ConstantReturnValue, MemberKeyHash> currentConstants;
     for (const auto& method : methods) {
         currentEffects[method.summary.method]  = method.localEffect;
-        currentConstants[method.summary.method] = method.directConstant;
+        currentConstants[method.summary.method] = method.directConstant.clone();
     }
     bool changed = true;
     for (ca::usize round = 0; changed && round < methods.size() + 1; ++round) {
@@ -311,24 +314,26 @@ void MethodEffectModel::build(const mjbase::model::ResourceContainer& container)
             changed = true;
         }
         for (const auto& method : methods) {
-            ConstantReturnValue next = method.directConstant;
+            ConstantReturnValue next = method.directConstant.clone();
             if (!next.isKnown() && currentEffects[method.summary.method] == MethodEffectKind::Pure &&
                 method.constantCall.name != 0) {
                 auto it = currentConstants.find(method.constantCall);
-                if (it != currentConstants.end()) next = it->second;
+                if (it != currentConstants.end()) next = it->second.clone();
             }
             if (!(currentConstants[method.summary.method] == next)) {
-                currentConstants[method.summary.method] = next;
+                currentConstants[method.summary.method] = std::move(next);
                 changed                                 = true;
             }
         }
     }
 
     for (auto& method : methods) {
-        auto summary           = method.summary;
-        summary.kind           = currentEffects[summary.method];
-        summary.constantReturn = currentConstants[summary.method];
-        const auto key         = summary.method;
+        // summary 随 ConstantReturnValue(move-only) 一起搬移；methods 为本地
+        // 扫描产物，每条仅此一读。
+        const auto key         = method.summary.method;
+        auto summary           = std::move(method.summary);
+        summary.kind           = currentEffects[key];
+        summary.constantReturn = currentConstants[key].clone();
         auto       it          = byKey_.find(key);
         if (it != byKey_.end()) {
             summaries_[it->second] = std::move(summary);
@@ -372,7 +377,7 @@ ConstantReturnValue MethodEffectModel::constantReturnOf(std::string_view owner,
                                                         std::string_view desc) const
 {
     const auto* summary = effectOf(owner, name, desc);
-    return summary != nullptr ? summary->constantReturn : ConstantReturnValue{};
+    return summary != nullptr ? summary->constantReturn.clone() : ConstantReturnValue{};
 }
 
 }   // namespace mjbase::analysis

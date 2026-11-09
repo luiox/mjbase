@@ -11,13 +11,13 @@
 #pragma once
 
 #include <deque>
-#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include "libca/core/datatype.hpp"
+#include "libca/str/utf8_string.hpp"
 
 namespace mjbase::analysis {
 
@@ -32,7 +32,7 @@ public:
     NameId intern(std::string_view name);
 
     /// @brief Materialized name for a handle（merge 节点文本重建用）。
-    std::string_view nameOf(NameId id) const { return nameTable_[id]; }
+    std::string_view nameOf(NameId id) const { return nameTable_[id].ref(); }
 
     /// @brief Intern `prefix + num` without materializing the suffix twice.
     NameId internIndexed(std::string_view prefix, ca::i64 num);
@@ -52,8 +52,9 @@ public:
     /// @brief Compute the least fixed point. Safe to call after adding more constraints.
     void solve();
 
-    /// @brief Return stable, sorted allocation identities for a variable (诊断/单测出口).
-    std::vector<std::string> pointsTo(std::string_view variable) const;
+    /// @brief Return stable, sorted allocation identities for a variable (诊断/单测出口，
+    /// 物化为 Utf8String；结果与求解器内部状态互不别名).
+    std::vector<ca::str::Utf8String> pointsTo(std::string_view variable) const;
 
 private:
     using NodeIndex   = ca::u32;
@@ -84,12 +85,14 @@ private:
     void        addCopyEdge(NodeIndex source, NodeIndex target);
     void        enqueue(NodeIndex node);
 
-    std::unordered_map<std::string, NameId>               nameIds_;
-    std::deque<std::string>                               nameTable_;
+    /// 查找表只存指入 nameTable_ 的视图（deque 节点与 Utf8String 缓冲地址稳定，
+    /// KeyPool 同款两表结构）；唯一拥有侧是 nameTable_。
+    std::unordered_map<std::string_view, NameId>          nameIds_;
+    std::deque<ca::str::Utf8String>                       nameTable_;
     std::vector<NodeIndex>                                variableById_;
     std::vector<ObjectIndex>                              allocationById_;
     std::unordered_map<FieldKey, NodeIndex, FieldKeyHash> fieldNodes_;
-    std::deque<std::string>                               allocationNames_;
+    std::deque<std::string_view>                          allocationNames_;
     std::vector<std::unordered_set<ObjectIndex>>          pointsTo_;
     std::vector<std::vector<NodeIndex>>                   copyTargets_;
     std::vector<std::vector<std::pair<NodeIndex, NameId>>> loads_;

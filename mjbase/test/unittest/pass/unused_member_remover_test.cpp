@@ -840,7 +840,7 @@ namespace {
 /// 解析规则文本（失败即致命断言）。
 std::shared_ptr<const mjbase::reference::KeepRuleSet> parseKeepRules(const char* text)
 {
-    const auto parsed = mjbase::reference::KeepRuleSet::parse(text);
+    auto parsed = mjbase::reference::KeepRuleSet::parse(text);
     EXPECT_TRUE(parsed.is_ok()) << "keep rule parse failed: line "
                                 << (parsed.is_err() ? parsed.unwrap_err().line : 0);
     if (parsed.is_err()) return nullptr;
