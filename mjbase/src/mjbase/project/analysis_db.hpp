@@ -463,6 +463,29 @@ struct DbNumberRecord
     ca::str::Utf8String   valueText;
 };
 
+/// @brief 单个方法的方法体数值字面量切片（`replaceConstantFaces` 输入）。
+///
+/// 身份由 @p memberId 携带（须为已登记方法且宿主为所在类的 classId），
+/// 数值行形状同 `DbNumberRecord`。
+struct DbMemberNumberSlices
+{
+    ca::i64                    memberId = 0;
+    std::vector<DbNumberRecord> records;
+};
+
+/// @brief 单个类的常量事实面整库输入（`replaceConstantFaces` 输入）。
+///
+/// 三段对位三个逐切片入口：@p cpStrings 对 `replaceCpStringsFromClass`、
+/// @p cpNumbers 对 `replaceCpNumbersFromClass`（member_id=0 哨兵行）、
+/// @p memberNumbers 对逐方法 `replaceNumbersFromMember`。
+struct DbClassConstantFaces
+{
+    ca::i64                            classId = 0;
+    std::vector<DbStringRecord>         cpStrings;
+    std::vector<DbNumberRecord>         cpNumbers;
+    std::vector<DbMemberNumberSlices>   memberNumbers;
+};
+
 /// @brief 数值字面量候选查询（`searchNumbers` 入参）。
 ///
 /// 值收窄 = `valueText` 字节等值 OR `valueInt` 等值 OR `valueBits` 等值
@@ -1282,6 +1305,27 @@ public:
     /// @return 写入的行数（折叠后）。
     ca::Result<ca::usize, AnalysisDbError> replaceCpNumbersFromClass(
         ca::i64 batchId, ca::i64 classId, std::vector<DbNumberRecord> records);
+
+    /// @brief 原子替换整库常量事实面（单事务整库重建）。
+    ///
+    /// 一次事务内清空 `cp_strings` 与 `number_literals` 两表后按输入写入
+    /// 全部类（cp strings / cp numbers / 逐方法体 numbers 三段对位三个
+    /// 逐切片入口的 INSERT 形状，同形重复行 ON CONFLICT DO NOTHING 折叠、
+    /// String 行 facet 归一 0）；任一身份校验失败整批回滚返错、旧表保持
+    /// 不动。身份纪律同逐切片入口：每个 classId 必须已注册（否则
+    /// `Invalid`），memberNumbers 的每个 memberId 必须存在且 kind=1 方法、
+    /// 宿主类须等于所在切片组的 classId（否则 `Invalid`）。空输入 = 清空
+    /// 两表。适合整库导入的批量重建（逐类/逐方法调用各开一事务，Windows
+    /// 上每事务 fsync 的整库导入悬崖由此消除）；方法体/类头编辑后的增量
+    /// 替换仍走三个逐切片入口。`batchId`：0 = 无批写入；非 0 必须是未收尾
+    /// 的已注册批次（否则 `Invalid`），命中后按逐切片入口同款锚纪律落
+    /// (2, class_id)（每类）与 (3, member_id)（每个出现的方法）作用域行
+    /// ——不加新 scope 种类、零 schema 变更。
+    ///
+    /// @return 写入的总行数（strings + cp numbers + member numbers，按
+    ///         输入记录数计，同逐切片入口口径）。
+    ca::Result<ca::usize, AnalysisDbError> replaceConstantFaces(
+        ca::i64 batchId, std::vector<DbClassConstantFaces> classes);
 
     /// @brief 按内部名查类事实；未登记返回 `std::nullopt`。
     ca::Result<std::optional<DbClassInfo>, AnalysisDbError> findClass(

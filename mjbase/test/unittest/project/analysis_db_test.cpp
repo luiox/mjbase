@@ -4224,6 +4224,318 @@ TEST(MjAnalysisDbTest, ReplacesAndSearchesNumberLiterals)
     }
 }
 
+namespace {
+
+///单类常量面整库输入（replaceConstantFaces 测试拼装用）。
+DbClassConstantFaces classFaces(ca::i64 classId)
+{
+    DbClassConstantFaces faces;
+    faces.classId = classId;
+    return faces;
+}
+
+}   // namespace
+
+///常量面整库单事务入口（replaceConstantFaces）：多类混合整库替换正确性、
+///同类同值 String 不同 facet 折叠、任一身份校验失败整批回滚、空输入清空
+///两表、batchId 锚行 (2,class)/(3,member) 与 batchId=0 无锚、ReadOnly/未开库。
+TEST(MjAnalysisDbTest, ReplaceConstantFacesRebuildsAtomically)
+{
+    const auto path = freshDbPath("replace_constant_faces");
+    auto       db   = openOrDie(path);
+    auto inputId = db.ensureInput(S("lib/app.jar"), refOf(std::string(64, '0')), 4096);
+    ASSERT_TRUE(inputId.is_ok());
+    const ca::i64 jar = inputId.unwrap();
+
+    std::vector<DbEntryInput> entries;
+    entries.push_back(searchEntry("demo/Alpha.class", 'a'));
+    entries.push_back(searchEntry("demo/Beta.class", 'b'));
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(entries)).is_ok());
+    const auto live = searchLiveEntryIds(db, jar);
+
+    std::vector<DbClassInput> classes;
+    {
+        DbClassInput alpha = searchClass("demo/Alpha", live.at("demo/Alpha.class"));
+        alpha.members.push_back(methodInput("run", "()V"));
+        classes.push_back(std::move(alpha));
+    }
+    {
+        DbClassInput beta = searchClass("demo/Beta", live.at("demo/Beta.class"));
+        beta.members.push_back(methodInput("go", "()V"));
+        beta.members.push_back(fieldInput("count", "I"));   // 字段：memberNumbers 拒收
+        classes.push_back(std::move(beta));
+    }
+    ASSERT_TRUE(db.ingestClasses(0, std::move(classes)).is_ok());
+
+    const auto classIdOf = [&db](const char* name) -> ca::i64 {
+        const auto internal = Utf8String::from_cstr(name);
+        auto       found    = db.findClass(internal.ref());
+        EXPECT_TRUE(found.is_ok());
+        return std::move(found).unwrap().value_or(DbClassInfo{}).classId;
+    };
+    const auto methodIdOf = [&db](const char* owner, const char* name) -> ca::i64 {
+        const auto ownerText = Utf8String::from_cstr(owner);
+        const auto nameText  = Utf8String::from_cstr(name);
+        auto       found     = db.findMember(DbMemberKind::Method, ownerText.ref(),
+                                             nameText.ref(), refOf(std::string("()V")));
+        EXPECT_TRUE(found.is_ok());
+        return std::move(found).unwrap().value_or(DbMemberInfo{}).memberId;
+    };
+    const ca::i64 alpha    = classIdOf("demo/Alpha");
+    const ca::i64 beta     = classIdOf("demo/Beta");
+    const ca::i64 alphaRun = methodIdOf("demo/Alpha", "run");
+    const ca::i64 betaGo   = methodIdOf("demo/Beta", "go");
+    ASSERT_GT(alpha, 0);
+    ASSERT_GT(beta, 0);
+    ASSERT_GT(alphaRun, 0);
+    ASSERT_GT(betaGo, 0);
+    const ca::i64 betaCountField = [&] {
+        const auto ownerText = Utf8String::from_cstr("demo/Beta");
+        const auto nameText  = Utf8String::from_cstr("count");
+        auto       field     = db.findMember(DbMemberKind::Field, ownerText.ref(),
+                                             nameText.ref(), refOf(std::string("I")));
+        EXPECT_TRUE(field.is_ok());
+        return std::move(field).unwrap().value_or(DbMemberInfo{}).memberId;
+    }();
+    ASSERT_GT(betaCountField, 0);
+
+    // 先经逐切片入口落一份旧事实——后续整库替换必须把它整体换掉。
+    {
+        std::vector<DbStringRecord> stale;
+        stale.push_back(stringRecord(DbStringKind::Utf8, DbUtf8Facet::Name, "stale-name"));
+        ASSERT_TRUE(db.replaceCpStringsFromClass(0, alpha, std::move(stale)).is_ok());
+        std::vector<DbNumberRecord> staleNumbers;
+        staleNumbers.push_back(
+            numberRecord(0, 16, DbNumberKind::Int, 111, std::nullopt, "111"));
+        ASSERT_TRUE(db.replaceNumbersFromMember(0, alphaRun, std::move(staleNumbers)).is_ok());
+    }
+
+    // 多类混合整库替换：cp strings（String/裸 utf8 facet）+ cp numbers +
+    // member numbers；批次锚挂 batch。
+    DbProducerInput producer;
+    producer.key            = Utf8String::from_cstr("mjt.test");
+    producer.name           = Utf8String::from_cstr("mjt test producer");
+    producer.toolFingerprint = Utf8String::from_cstr("mjt/1.0");
+    auto producerRegistered = db.registerProducer(producer);
+    ASSERT_TRUE(producerRegistered.is_ok());
+    const ca::i64 producerId = producerRegistered.unwrap();
+    auto batchOpened = db.openBatch(producerId, DbBatchKind::FullImport, S("const faces"));
+    ASSERT_TRUE(batchOpened.is_ok());
+    const ca::i64 batchId = batchOpened.unwrap();
+
+    ca::usize replacedCount = 0;
+    {
+        std::vector<DbClassConstantFaces> faces;
+        DbClassConstantFaces alphaFaces = classFaces(alpha);
+        // 折叠语义：同类同值 String 行不同 facet 输入 → 单行（String 行
+        // facet 归一 0，等值行不因 facet 裂行）。
+        alphaFaces.cpStrings.push_back(
+            stringRecord(DbStringKind::String, DbUtf8Facet::Name, "hello world"));
+        alphaFaces.cpStrings.push_back(
+            stringRecord(DbStringKind::String, DbUtf8Facet::Descriptor, "hello world"));
+        alphaFaces.cpStrings.push_back(
+            stringRecord(DbStringKind::Utf8, DbUtf8Facet::ClassRef, "demo/Alpha"));
+        {
+            DbMemberNumberSlices runSlice;
+            runSlice.memberId = alphaRun;
+            runSlice.records.push_back(
+                numberRecord(2, 18, DbNumberKind::Float, 1, 0x3F800000, "1"));
+            alphaFaces.memberNumbers.push_back(std::move(runSlice));
+        }
+        faces.push_back(std::move(alphaFaces));
+
+        DbClassConstantFaces betaFaces = classFaces(beta);
+        betaFaces.cpStrings.push_back(
+            stringRecord(DbStringKind::Utf8, DbUtf8Facet::Name, "Widget"));
+        betaFaces.cpNumbers.push_back(
+            numberRecord(-1, -1, DbNumberKind::Int, 42, std::nullopt, "42"));
+        {
+            DbMemberNumberSlices goSlice;
+            goSlice.memberId = betaGo;
+            goSlice.records.push_back(
+                numberRecord(0, 16, DbNumberKind::Int, 5, std::nullopt, "5"));
+            goSlice.records.push_back(
+                numberRecord(0, 16, DbNumberKind::Int, 5, std::nullopt, "5"));   // 同形折叠
+            betaFaces.memberNumbers.push_back(std::move(goSlice));
+        }
+        faces.push_back(std::move(betaFaces));
+
+        auto replaced = db.replaceConstantFaces(batchId, std::move(faces));
+        ASSERT_TRUE(replaced.is_ok());
+        replacedCount = replaced.unwrap();
+    }
+    // 总行数按输入记录数计（同逐切片入口口径）：3 strings + 1 cp number +
+    // 4 member numbers（alpha 1 + beta 2 含同形重复）= 8（折叠不计减）。
+    EXPECT_EQ(8U, replacedCount);
+
+    // 读回验证：旧事实整体消失（整库替换语义）。
+    {
+        auto page = db.searchStringsPaged(stringQuery("stale", DbTextMatchKind::Contains, false),
+                                          100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(0U, std::move(page).unwrap().total);
+    }
+    // String 折叠：同类同值不同 facet 输入 → 单行。
+    {
+        auto page = db.searchStringsPaged(stringQuery("hello world", DbTextMatchKind::Exact,
+                                                      false),
+                                          100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(1U, result.total);
+        ASSERT_EQ(1U, result.rows.size());
+        EXPECT_EQ("demo/Alpha", result.rows[0].internalName.to_std_string());
+        EXPECT_EQ(DbStringKind::String, result.rows[0].kind);
+    }
+    // 裸 utf8 facet 行入库。
+    {
+        auto page = db.searchStringsPaged(
+            stringQuery("demo/Alpha", DbTextMatchKind::Exact, true), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(1U, result.total);
+        EXPECT_EQ(DbStringKind::Utf8, result.rows[0].kind);
+    }
+    // 数值面：方法体行 + 常量池行各就各位。
+    {
+        DbNumberQuery query;
+        query.needle   = Utf8String::from_cstr("1");
+        query.valueInt = 1;
+        auto searched  = db.searchNumbers(query);
+        ASSERT_TRUE(searched.is_ok());
+        const auto rows = std::move(searched).unwrap();
+        ASSERT_EQ(1U, rows.size());
+        EXPECT_EQ("demo/Alpha", rows[0].internalName.to_std_string());
+        EXPECT_EQ("run", rows[0].memberName.to_std_string());
+        EXPECT_EQ(2, rows[0].insnIndex);
+        EXPECT_EQ(18, rows[0].opcode);
+    }
+    {
+        DbNumberQuery query;
+        query.needle   = Utf8String::from_cstr("42");
+        query.valueInt = 42;
+        auto searched  = db.searchNumbers(query);
+        ASSERT_TRUE(searched.is_ok());
+        const auto rows = std::move(searched).unwrap();
+        ASSERT_EQ(1U, rows.size());
+        EXPECT_EQ("demo/Beta", rows[0].internalName.to_std_string());
+        EXPECT_TRUE(rows[0].memberName.is_empty());   // 常量池行
+        EXPECT_EQ(-1, rows[0].insnIndex);
+    }
+    // 同形折叠：一条方法体行。
+    {
+        DbNumberQuery query;
+        query.needle   = Utf8String::from_cstr("5");
+        query.valueInt = 5;
+        auto searched  = db.searchNumbers(query);
+        ASSERT_TRUE(searched.is_ok());
+        EXPECT_EQ(1U, std::move(searched).unwrap().size());
+    }
+
+    // batchId 锚行：每类 (2, class_id)、每个出现的方法 (3, member_id)。
+    {
+        auto scopes = db.batchScopes(batchId);
+        ASSERT_TRUE(scopes.is_ok());
+        std::vector<std::string> keys;
+        for (const DbBatchScope& scope : std::move(scopes).unwrap()) {
+            keys.push_back(std::to_string(static_cast<int>(scope.kind)) + ":" +
+                           std::to_string(scope.scopeId));
+        }
+        // (kind, scope_id) 升序：class 锚先于 member 锚；两个类 + 两个方法。
+        EXPECT_EQ((std::vector<std::string>{"2:" + std::to_string(alpha),
+                                            "2:" + std::to_string(beta),
+                                            "3:" + std::to_string(alphaRun),
+                                            "3:" + std::to_string(betaGo)}),
+                  keys);
+    }
+
+    // 身份校验失败 → 整批回滚：第 2 类的 memberId 非法（字段成员），先前
+    // DELETE/INSERT 全部不见，两表保持替换后的原状。
+    {
+        std::vector<DbClassConstantFaces> faces;
+        DbClassConstantFaces alphaFaces = classFaces(alpha);
+        alphaFaces.cpStrings.push_back(
+            stringRecord(DbStringKind::String, DbUtf8Facet::Name, "rollback-probe"));
+        faces.push_back(std::move(alphaFaces));
+        DbClassConstantFaces betaFaces = classFaces(beta);
+        DbMemberNumberSlices badSlice;
+        badSlice.memberId = betaCountField;   // 字段：不是方法
+        badSlice.records.push_back(
+            numberRecord(0, 16, DbNumberKind::Int, 9, std::nullopt, "9"));
+        betaFaces.memberNumbers.push_back(std::move(badSlice));
+        faces.push_back(std::move(betaFaces));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.replaceConstantFaces(batchId, std::move(faces))));
+    }
+    {
+        auto page = db.searchStringsPaged(
+            stringQuery("rollback-probe", DbTextMatchKind::Contains, false), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(0U, std::move(page).unwrap().total);
+    }
+    // 未登记类：Invalid，不写库。
+    {
+        std::vector<DbClassConstantFaces> faces;
+        DbClassConstantFaces ghost = classFaces(999999);
+        ghost.cpStrings.push_back(stringRecord(DbStringKind::Utf8, DbUtf8Facet::Name, "x"));
+        faces.push_back(std::move(ghost));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.replaceConstantFaces(0, std::move(faces))));
+    }
+    // 宿主类不符：Beta 的方法挂在 Alpha 切片组 → Invalid。
+    {
+        std::vector<DbClassConstantFaces> faces;
+        DbClassConstantFaces alphaFaces = classFaces(alpha);
+        DbMemberNumberSlices wrongHost;
+        wrongHost.memberId = betaGo;   // 宿主是 Beta
+        wrongHost.records.push_back(
+            numberRecord(0, 16, DbNumberKind::Int, 3, std::nullopt, "3"));
+        alphaFaces.memberNumbers.push_back(std::move(wrongHost));
+        faces.push_back(std::move(alphaFaces));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.replaceConstantFaces(0, std::move(faces))));
+    }
+
+    // 空输入：清空两表，返回 0；batchId=0 不落锚（新开批次验证无新锚行）。
+    {
+        auto emptied = db.replaceConstantFaces(0, std::vector<DbClassConstantFaces>{});
+        ASSERT_TRUE(emptied.is_ok());
+        EXPECT_EQ(0U, emptied.unwrap());
+    }
+    {
+        DbStringSearchQuery anyString;
+        auto strings = db.searchStringsPaged(anyString, 100, 0);
+        ASSERT_TRUE(strings.is_ok());
+        EXPECT_EQ(0U, std::move(strings).unwrap().total);
+        DbNumberQuery anyNumber;
+        anyNumber.needle = Utf8String::from_cstr("42");
+        auto numbers     = db.searchNumbers(anyNumber);
+        ASSERT_TRUE(numbers.is_ok());
+        EXPECT_EQ(0U, std::move(numbers).unwrap().size());
+    }
+    {
+        auto scopes = db.batchScopes(batchId);
+        ASSERT_TRUE(scopes.is_ok());
+        EXPECT_EQ(4U, std::move(scopes).unwrap().size());   // batchId=0 未新增锚
+    }
+
+    ASSERT_TRUE(db.closeBatch(batchId, DbBatchCounts{}).is_ok());
+    ASSERT_TRUE(db.save().is_ok());
+    ASSERT_TRUE(db.close().is_ok());
+
+    // ReadOnly：拒写。close 后未开库：拒一切。
+    {
+        auto readOnly = openOrDie(path, AnalysisDbOpenMode::ReadOnly);
+        std::vector<DbClassConstantFaces> faces;
+        EXPECT_EQ(AnalysisDbErrorKind::ReadOnly,
+                  takeErrorKind(readOnly.replaceConstantFaces(0, std::move(faces))));
+        ASSERT_TRUE(readOnly.close().is_ok());
+        std::vector<DbClassConstantFaces> unopened;
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(readOnly.replaceConstantFaces(0, std::move(unopened))));
+    }
+}
+
 ///v11 旧库开 ReadWrite 原地迁移到 v12（纯新增常量面两表）：存量事实零损失、
 ///新面空库可查可写；ReadOnly 旧库与 v10 旧库 fail-loud。
 TEST(MjAnalysisDbTest, MigratesConstFacesFromV11InPlace)
