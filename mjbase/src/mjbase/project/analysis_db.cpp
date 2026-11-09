@@ -5413,6 +5413,338 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceConstantFaces(
     return ca::Ok(written);
 }
 
+ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceConstantFaceSlices(
+    ca::i64 batchId, const std::vector<DbClassConstantFaces>& classes)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+    if (batchId < 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "batch id must not be negative"));
+    }
+
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
+
+    // 身份校验（事务内，任一失败整批回滚返错）：每个类必须已注册——整库版
+    // 同款探针。
+    auto cls = prepare(impl_->handle, "SELECT internal_name FROM classes WHERE class_id=?1");
+    if (cls.is_err()) return errorOf(std::move(cls));
+    auto clsStatement = std::move(cls).unwrap();
+    for (const DbClassConstantFaces& classFaces : classes) {
+        if (auto result = bindInt(impl_->handle, clsStatement.raw, 1, classFaces.classId);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto hasClass = step(impl_->handle, clsStatement.raw);
+        if (hasClass.is_err()) return errorOf(std::move(hasClass));
+        if (!hasClass.unwrap()) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     "constant face slices class is not registered: " +
+                                         std::to_string(classFaces.classId)));
+        }
+        resetStatement(clsStatement);
+    }
+
+    // memberNumbers 身份（整库版同款）：每个 memberId 必须存在且 kind=1 方法，
+    // 宿主类须等于所在切片组的 classId（数值行 class_id 取宿主类——行不重复
+    // 携带文本源）。
+    auto member = prepare(
+        impl_->handle,
+        "SELECT class_id FROM members WHERE member_id=?1 AND kind=1");
+    if (member.is_err()) return errorOf(std::move(member));
+    auto memberStatement = std::move(member).unwrap();
+    for (const DbClassConstantFaces& classFaces : classes) {
+        for (const DbMemberNumberSlices& slice : classFaces.memberNumbers) {
+            if (auto result = bindInt(impl_->handle, memberStatement.raw, 1, slice.memberId);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            auto hasMember = step(impl_->handle, memberStatement.raw);
+            if (hasMember.is_err()) return errorOf(std::move(hasMember));
+            if (!hasMember.unwrap()) {
+                return ca::Err(makeError(
+                    AnalysisDbErrorKind::Invalid,
+                    "number literal member is not a registered method: " +
+                        std::to_string(slice.memberId)));
+            }
+            const ca::i64 ownerClassId = sqlite3_column_int64(memberStatement.raw, 0);
+            resetStatement(memberStatement);
+            if (ownerClassId != classFaces.classId) {
+                return ca::Err(makeError(
+                    AnalysisDbErrorKind::Invalid,
+                    "constant face slices member does not belong to class: member " +
+                        std::to_string(slice.memberId) + " class " +
+                        std::to_string(ownerClassId) + " expected " +
+                        std::to_string(classFaces.classId)));
+            }
+        }
+    }
+
+    if (batchId != 0) {
+        if (auto result = validateOpenBatchForWrite(impl_->handle, batchId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        // 锚行合批（逐切片入口同款锚纪律——每调用一枚的锚行合成本批一次写）：
+        // 每类组 (2, class_id)、每个出现的切片 (3, member_id)；INSERT OR IGNORE
+        // 集合语义幂等。不加新 scope 种类、零 schema 变更。
+        auto scopeInsert = prepare(impl_->handle, kScopeRowInsertSql);
+        if (scopeInsert.is_err()) return errorOf(std::move(scopeInsert));
+        auto scopeStatement = std::move(scopeInsert).unwrap();
+        for (const DbClassConstantFaces& classFaces : classes) {
+            if (auto result = writeScopeRow(impl_->handle, scopeStatement.raw, batchId,
+                                            DbBatchScopeKind::Class, classFaces.classId);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            for (const DbMemberNumberSlices& slice : classFaces.memberNumbers) {
+                if (auto result = writeScopeRow(impl_->handle, scopeStatement.raw, batchId,
+                                                DbBatchScopeKind::Member, slice.memberId);
+                    result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+            }
+        }
+    }
+
+    // 切片语句预编译一次（组/切片循环 bind/step）：
+    // - 类级两切片 DELETE 与三段 INSERT 形状和逐切片/整库入口逐字节同款；
+    // - 方法体 DELETE 带 member_id != 0 字面量谓词（#214 同款）：number_literals_
+    //   member 是部分索引（WHERE member_id != 0），SQLite 只对能静态蕴含其谓词
+    //   的 WHERE 启用，参数化等值 member_id=?1 蕴含不了 != 0——少了它计划退化
+    //   为全表扫；谓词同时守住语义边界，member 级调用永远清不掉 member_id = 0
+    //   常量池行。
+    auto eraseStrings = prepare(impl_->handle, "DELETE FROM cp_strings WHERE class_id=?1");
+    if (eraseStrings.is_err()) return errorOf(std::move(eraseStrings));
+    auto eraseStringsStatement = std::move(eraseStrings).unwrap();
+
+    auto eraseCpNumbers = prepare(
+        impl_->handle, "DELETE FROM number_literals WHERE class_id=?1 AND member_id=0");
+    if (eraseCpNumbers.is_err()) return errorOf(std::move(eraseCpNumbers));
+    auto eraseCpNumbersStatement = std::move(eraseCpNumbers).unwrap();
+
+    auto eraseMemberNumbers = prepare(
+        impl_->handle,
+        "DELETE FROM number_literals WHERE member_id=?1 AND member_id != 0");
+    if (eraseMemberNumbers.is_err()) return errorOf(std::move(eraseMemberNumbers));
+    auto eraseMemberNumbersStatement = std::move(eraseMemberNumbers).unwrap();
+
+    auto stringInsert = prepare(
+        impl_->handle,
+        "INSERT INTO cp_strings(class_id, kind, facet, value) VALUES(?1, ?2, ?3, ?4) "
+        "ON CONFLICT(class_id, kind, facet, value) DO NOTHING");
+    if (stringInsert.is_err()) return errorOf(std::move(stringInsert));
+    auto stringStatement = std::move(stringInsert).unwrap();
+
+    auto cpNumberInsert = prepare(
+        impl_->handle,
+        "INSERT INTO number_literals(class_id, member_id, insn_index, opcode, kind, "
+        "value_int, value_bits, value_text) VALUES(?1, 0, ?2, NULL, ?3, ?4, ?5, ?6) "
+        "ON CONFLICT(class_id, member_id, insn_index, kind, value_text) DO NOTHING");
+    if (cpNumberInsert.is_err()) return errorOf(std::move(cpNumberInsert));
+    auto cpNumberStatement = std::move(cpNumberInsert).unwrap();
+
+    auto memberNumberInsert = prepare(
+        impl_->handle,
+        "INSERT INTO number_literals(class_id, member_id, insn_index, opcode, kind, "
+        "value_int, value_bits, value_text) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) "
+        "ON CONFLICT(class_id, member_id, insn_index, kind, value_text) DO NOTHING");
+    if (memberNumberInsert.is_err()) return errorOf(std::move(memberNumberInsert));
+    auto memberNumberStatement = std::move(memberNumberInsert).unwrap();
+
+    // 逐组落定：先清后写，组序即调用序——逐切片调用的顺序语义原样合批
+    //（同组多次出现时后组覆盖前组，与连续调用同款）。
+    ca::usize written = 0;
+    for (const DbClassConstantFaces& classFaces : classes) {
+        // 类级切片一：cp_strings 全清 + 写入（空输入组 = 清空，逐切片入口
+        // "空输入即清空"同款）。
+        if (auto result = bindInt(impl_->handle, eraseStringsStatement.raw, 1,
+                                  classFaces.classId);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto stringsErased = step(impl_->handle, eraseStringsStatement.raw);
+        if (stringsErased.is_err()) return errorOf(std::move(stringsErased));
+        resetStatement(eraseStringsStatement);
+        for (const DbStringRecord& record : classFaces.cpStrings) {
+            if (auto result = bindInt(impl_->handle, stringStatement.raw, 1,
+                                      classFaces.classId);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindInt(impl_->handle, stringStatement.raw, 2,
+                                      static_cast<ca::i64>(record.kind));
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindInt(impl_->handle, stringStatement.raw, 3,
+                                      // String 行 facet 归一为 0——防等值
+                                      // String 行因 facet 裂行（逐切片入口
+                                      // 同款）。
+                                      record.kind == DbStringKind::String
+                                          ? 0
+                                          : static_cast<ca::i64>(record.facet));
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindText(impl_->handle, stringStatement.raw, 4,
+                                       record.value.ref());
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            auto stringRow = step(impl_->handle, stringStatement.raw);
+            if (stringRow.is_err()) return errorOf(std::move(stringRow));
+            resetStatement(stringStatement);
+            ++written;
+        }
+
+        // 类级切片二：常量池数值（member_id = 0 哨兵）清 + 写入。
+        if (auto result = bindInt(impl_->handle, eraseCpNumbersStatement.raw, 1,
+                                  classFaces.classId);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto cpNumbersErased = step(impl_->handle, eraseCpNumbersStatement.raw);
+        if (cpNumbersErased.is_err()) return errorOf(std::move(cpNumbersErased));
+        resetStatement(eraseCpNumbersStatement);
+        for (const DbNumberRecord& record : classFaces.cpNumbers) {
+            if (auto result = bindInt(impl_->handle, cpNumberStatement.raw, 1,
+                                      classFaces.classId);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindInt(impl_->handle, cpNumberStatement.raw, 2,
+                                      record.insnIndex);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindInt(impl_->handle, cpNumberStatement.raw, 3,
+                                      static_cast<ca::i64>(record.kind));
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (record.valueInt.has_value()) {
+                if (auto result = bindInt(impl_->handle, cpNumberStatement.raw, 4,
+                                          *record.valueInt);
+                    result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+            }
+            else if (auto result = bindNull(impl_->handle, cpNumberStatement.raw, 4);
+                     result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (record.valueBits.has_value()) {
+                if (auto result = bindInt(impl_->handle, cpNumberStatement.raw, 5,
+                                          *record.valueBits);
+                    result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+            }
+            else if (auto result = bindNull(impl_->handle, cpNumberStatement.raw, 5);
+                     result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindText(impl_->handle, cpNumberStatement.raw, 6,
+                                       record.valueText.ref());
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            auto cpNumberRow = step(impl_->handle, cpNumberStatement.raw);
+            if (cpNumberRow.is_err()) return errorOf(std::move(cpNumberRow));
+            resetStatement(cpNumberStatement);
+            ++written;
+        }
+
+        // 方法体切片：member_id 定向删（!= 0 字面量谓词见上）+ 写入；未列出
+        // 的成员行不被触碰——不能类级 DELETE number_literals 的原因。
+        for (const DbMemberNumberSlices& slice : classFaces.memberNumbers) {
+            if (auto result = bindInt(impl_->handle, eraseMemberNumbersStatement.raw, 1,
+                                      slice.memberId);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            auto memberErased = step(impl_->handle, eraseMemberNumbersStatement.raw);
+            if (memberErased.is_err()) return errorOf(std::move(memberErased));
+            resetStatement(eraseMemberNumbersStatement);
+            for (const DbNumberRecord& record : slice.records) {
+                if (auto result = bindInt(impl_->handle, memberNumberStatement.raw, 1,
+                                          classFaces.classId);
+                    result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+                if (auto result = bindInt(impl_->handle, memberNumberStatement.raw, 2,
+                                          slice.memberId);
+                    result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+                if (auto result = bindInt(impl_->handle, memberNumberStatement.raw, 3,
+                                          record.insnIndex);
+                    result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+                if (record.opcode >= 0) {
+                    if (auto result = bindInt(impl_->handle, memberNumberStatement.raw, 4,
+                                              record.opcode);
+                        result.is_err()) {
+                        return errorOf(std::move(result));
+                    }
+                }
+                else if (auto result = bindNull(impl_->handle, memberNumberStatement.raw, 4);
+                         result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+                if (auto result = bindInt(impl_->handle, memberNumberStatement.raw, 5,
+                                          static_cast<ca::i64>(record.kind));
+                    result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+                if (record.valueInt.has_value()) {
+                    if (auto result = bindInt(impl_->handle, memberNumberStatement.raw, 6,
+                                              *record.valueInt);
+                        result.is_err()) {
+                        return errorOf(std::move(result));
+                    }
+                }
+                else if (auto result = bindNull(impl_->handle, memberNumberStatement.raw, 6);
+                         result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+                if (record.valueBits.has_value()) {
+                    if (auto result = bindInt(impl_->handle, memberNumberStatement.raw, 7,
+                                              *record.valueBits);
+                        result.is_err()) {
+                        return errorOf(std::move(result));
+                    }
+                }
+                else if (auto result = bindNull(impl_->handle, memberNumberStatement.raw, 7);
+                         result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+                if (auto result = bindText(impl_->handle, memberNumberStatement.raw, 8,
+                                           record.valueText.ref());
+                    result.is_err()) {
+                    return errorOf(std::move(result));
+                }
+                auto memberNumberRow = step(impl_->handle, memberNumberStatement.raw);
+                if (memberNumberRow.is_err()) return errorOf(std::move(memberNumberRow));
+                resetStatement(memberNumberStatement);
+                ++written;
+            }
+        }
+    }
+    if (auto result = txn.commit(); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    return ca::Ok(written);
+}
+
 ca::Result<std::optional<DbClassInfo>, AnalysisDbError> AnalysisDb::findClass(
     const ca::str::Utf8StringRef& owner) const
 {
