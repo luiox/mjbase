@@ -63,18 +63,18 @@ public:
         // 名字实体 pack 自持（成员），寿命覆盖注册表存活期（plugin-api 契约）。
         dashoProbeName_ = mjbase::plugin::qualifiedName("dasho", "ProbeGlobal");
         const Result<void, RegistryError> registered = registry.registerGlobalPass(
-            dashoProbeName_, [] { return std::make_unique<ProbeGlobalPass>(); },
+            dashoProbeName_.ref(), [] { return std::make_unique<ProbeGlobalPass>(); },
             "probe pass for pipeline-config interlock test");
         if (registered.is_err()) {
             return mjbase::plugin::Err(mjbase::plugin::makePackError(
-                mjbase::plugin::PackErrorKind::RegistrationFailed, dashoProbeName_));
+                mjbase::plugin::PackErrorKind::RegistrationFailed, dashoProbeName_.ref()));
         }
         return mjbase::plugin::Ok();
     }
 
 private:
     mjbase::plugin::PackManifest manifest_;
-    std::string                  dashoProbeName_;
+    ca::str::Utf8String          dashoProbeName_;
 };
 
 //-- 装载辅助 -------------------------------------------------------------
@@ -201,8 +201,8 @@ TEST(PipelineConfigPluginTest, PackPassReferableAfterInstallPack)
 {
     PassNameRegistry registry;
     ProbePassPack    pack;
-    const auto       installed = mjbase::plugin::installPack(pack, registry);
-    ASSERT_TRUE(installed.is_ok()) << installed.unwrap_err().detail;
+    auto             installed = mjbase::plugin::installPack(pack, registry);
+    ASSERT_TRUE(installed.is_ok()) << std::move(installed).unwrap_err().detail;
 
     const auto loaded =
         loadPipelineConfig(R"json({"version":1,"passes":["dasho.ProbeGlobal"]})json",
@@ -539,8 +539,8 @@ TEST(PipelineConfigApplyTest, DefendsAgainstRegistryMismatch)
 {
     PassNameRegistry registry;
     ProbePassPack    pack;
-    const auto       installed = mjbase::plugin::installPack(pack, registry);
-    ASSERT_TRUE(installed.is_ok()) << installed.unwrap_err().detail;
+    auto             installed = mjbase::plugin::installPack(pack, registry);
+    ASSERT_TRUE(installed.is_ok()) << std::move(installed).unwrap_err().detail;
     const auto loaded =
         loadPipelineConfig(R"json({"version":1,"passes":["dasho.ProbeGlobal"]})json",
                            registry);

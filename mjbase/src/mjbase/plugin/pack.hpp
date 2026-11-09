@@ -6,6 +6,7 @@
 
 #include "libca/core/datatype.hpp"
 #include "libca/core/result.hpp"
+#include "libca/str/utf8_string.hpp"
 
 #include "mjbase/spi/pass_name_registry.hpp"
 
@@ -45,8 +46,8 @@ inline const char* to_string(PackErrorKind kind) noexcept
 
 struct PackError
 {
-    PackErrorKind kind = PackErrorKind::Ok;
-    std::string   detail;   ///< 直述文本（日志/CLI 展示）；pack 边界属外部边界，std::string 允许
+    PackErrorKind     kind = PackErrorKind::Ok;
+    ca::str::Utf8String detail;   ///< 直述文本（日志/CLI 展示）；宿主/pack 内部诊断字面量与注册名（ASCII 域），按字节收进
 };
 
 /// pack 自述；name 同时是该 pack 全部 pass 名字的强制前缀（分仓撞名防线）。
@@ -86,23 +87,26 @@ private:
     IPassPack& operator=(const IPassPack&) = delete;
 };
 
-/// pack 侧便利：构造 "<pack>.<pass>" 限定名。返回值必须转存为 pack 自持
-/// 存储（成员/静态）后再注册，不得以临时体借给注册表。
-inline std::string qualifiedName(std::string_view pack, std::string_view pass)
+/// pack 侧便利：构造 "<pack>.<pass>" 限定名。pack/pass 为注册字面量
+/// （内部名 ASCII 域），本地缓冲拼接后按字节收进。返回值必须转存为
+/// pack 自持存储（成员/静态）后再注册，不得以临时体借给注册表。
+inline ca::str::Utf8String qualifiedName(std::string_view pack, std::string_view pass)
 {
     std::string out;
     out.reserve(pack.size() + 1 + pass.size());
     out.append(pack.data(), pack.size());
     out.push_back('.');
     out.append(pass.data(), pass.size());
-    return out;
+    return ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(out.data()),
+                                                    out.size());
 }
 
 inline PackError makePackError(PackErrorKind kind, std::string_view detail)
 {
     PackError e;
     e.kind   = kind;
-    e.detail.assign(detail.data(), detail.size());
+    e.detail = ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(detail.data()),
+                                                        detail.size());
     return e;
 }
 

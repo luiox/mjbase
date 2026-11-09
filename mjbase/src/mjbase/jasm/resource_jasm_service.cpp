@@ -230,7 +230,7 @@ applyPreservedFrames(const std::vector<ca::u8>& candidate, const PreservedClassF
 
 // 复制容器中全部 Class 资源，目标 URI 的字节换成候选字节——事务预览的工作区。
 model::ResourceContainer candidateContainer(const model::ResourceContainer& container,
-                                            const std::string&              targetUri,
+                                            std::string_view                targetUri,
                                             const std::vector<ca::u8>&      candidateBytes)
 {
     model::ResourceContainer candidate;
@@ -241,8 +241,7 @@ model::ResourceContainer candidateContainer(const model::ResourceContainer& cont
         candidate.addResource(uri,
                               std::make_unique<model::ClassResource>(
                                   view(classResource->getLocation()),
-                                  std::string_view(targetUri) == uri ? candidateBytes
-                                                                     : classResource->get()));
+                                  targetUri == uri ? candidateBytes : classResource->get()));
     });
     return candidate;
 }
@@ -282,15 +281,16 @@ mjbase::hierarchy::ClassHierarchy buildHierarchy(const model::ResourceContainer&
 
 }   // namespace
 
-Result<JvmJasmDisassembly> ResourceJasmService::disassemble(const std::string& uri) const
+Result<JvmJasmDisassembly> ResourceJasmService::disassemble(std::string_view uri) const
 {
     const auto* resource =
         ca::core::tag_cast::dyn_cast<const model::ClassResource>(container_->getResource(uri));
-    if (!resource) return resourceError<JvmJasmDisassembly>("Class resource not found: " + uri);
+    if (!resource)
+        return resourceError<JvmJasmDisassembly>("Class resource not found: " + std::string(uri));
     return jasm_.disassemble(resource->get());
 }
 
-Result<JvmJasmClass> ResourceJasmService::assemble(const std::string&      uri,
+Result<JvmJasmClass> ResourceJasmService::assemble(std::string_view        uri,
                                                    ca::str::Utf16StringRef sourceName,
                                                    ca::str::Utf16StringRef source,
                                                    JvmJasmContext          context,
@@ -298,7 +298,7 @@ Result<JvmJasmClass> ResourceJasmService::assemble(const std::string&      uri,
 {
     model::IResource* rawResource = container_->getResource(uri);
     if (!ca::core::tag_cast::isa<model::ClassResource>(rawResource))
-        return resourceError<JvmJasmClass>("Class resource not found: " + uri);
+        return resourceError<JvmJasmClass>("Class resource not found: " + std::string(uri));
     auto* resource = ca::core::tag_cast::cast<model::ClassResource>(rawResource);
 
     try {
@@ -343,8 +343,9 @@ Result<JvmJasmClass> ResourceJasmService::assemble(const std::string&      uri,
         if (!preliminary.isOk()) return preliminary;
         if (preliminary.value->internalName != expectedName) {
             auto result = resourceError<JvmJasmClass>(
-                "Class name mismatch for " + uri + ": expected " + expectedName.to_std_string() +
-                ", got " + preliminary.value->internalName.to_std_string());
+                "Class name mismatch for " + std::string(uri) + ": expected " +
+                expectedName.to_std_string() + ", got " +
+                preliminary.value->internalName.to_std_string());
             appendDiagnostics(result.diagnostics, std::move(preliminary.diagnostics));
             return result;
         }

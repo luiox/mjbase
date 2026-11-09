@@ -55,9 +55,7 @@ TEST(MjKeysTest, ClassAndMemberKeys)
     EXPECT_EQ(m1, m2);
     EXPECT_NE(m1, other);
 
-    std::string formatted;
-    mjbase::formatMember(pool, m1, formatted);
-    EXPECT_EQ(formatted, "p/T.m ()V");
+    EXPECT_EQ(mjbase::formatMember(pool, m1).ref(), "p/T.m ()V");
 }
 
 TEST(MjKeysTest, MemberKeyUsableInHashContainers)

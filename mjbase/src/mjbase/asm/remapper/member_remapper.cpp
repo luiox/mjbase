@@ -1068,7 +1068,9 @@ bool looksLikeClassName(std::string_view value) noexcept
 }
 
 /// @brief 反射类名 → 内部名：剥 L..; 外壳、点分换斜杠。
-std::string toInternalReflectionName(std::string_view value)
+///
+/// 内部名为反射追踪/改写域内部名（ASCII 域），本地缓冲归一后按字节收进。
+ca::str::Utf8String toInternalReflectionName(std::string_view value)
 {
     std::string internal(value);
     if (internal.size() >= 2 && internal.front() == 'L' && internal.back() == ';') {
@@ -1077,7 +1079,8 @@ std::string toInternalReflectionName(std::string_view value)
     for (auto& c : internal) {
         if (c == '.') c = '/';
     }
-    return internal;
+    return ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(internal.data()),
+                                                    internal.size());
 }
 
 namespace
@@ -1103,9 +1106,9 @@ std::string restoreReflectionNameShape(std::string_view original, std::string_vi
 std::string remapReflectionClassName(const MemberRemapPlan& plan, std::string_view value)
 {
     if (!looksLikeClassName(value)) return std::string(value);
-    const std::string      internal = toInternalReflectionName(value);
-    const std::string_view mapped   = plan.mapInternalName(internal);
-    if (mapped == internal) return std::string(value);
+    const ca::str::Utf8String internal = toInternalReflectionName(value);
+    const std::string_view    mapped   = plan.mapInternalName(internal.ref());
+    if (mapped == internal.ref()) return std::string(value);
     return restoreReflectionNameShape(value, mapped);
 }
 
@@ -1192,7 +1195,7 @@ bool remapReflectionNames(const RemapCtx& ctx, CodeUnit& code, std::string_view 
         if (sem.owner == "java/lang/Class" && sem.name == "forName" &&
             sem.desc == "(Ljava/lang/String;)Ljava/lang/Class;") {
             if (hasLastString && looksLikeClassName(lastString)) {
-                reflectionOwner = toInternalReflectionName(lastString);
+                reflectionOwner = toInternalReflectionName(lastString).to_std_string();
                 hasOwner        = true;
                 const std::string mapped = remapReflectionClassName(ctx.plan, lastString);
                 if (mapped != lastString) {

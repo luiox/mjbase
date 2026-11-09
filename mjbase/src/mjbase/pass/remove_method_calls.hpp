@@ -1,7 +1,8 @@
 #pragma once
 
-#include <string>
 #include <vector>
+
+#include "libca/str/utf8_string.hpp"
 
 #include "mjbase/spi/pass_pipeline.hpp"
 
@@ -14,9 +15,14 @@ namespace mjbase::pass {
 /// 调用点 CP 操作数上的字面比较，不要求目标在容器内声明。
 struct MethodCallSpec
 {
-    std::string owner;   ///< 类内部名（'/' 分隔），精确匹配
-    std::string name;    ///< 方法名，精确匹配
-    std::string desc;    ///< 方法描述符；空 = 任意描述符
+    /// 类内部名（'/' 分隔），精确匹配。三段均为调用点 CP 操作数域的内部名
+    /// （ASCII 域），不可变驻留存储（struct 随之 move-only，构造走 from_cstr/
+    /// from_data_unchecked）。
+    ca::str::Utf8String owner;
+    /// 方法名，精确匹配。
+    ca::str::Utf8String name;
+    /// 方法描述符；空 = 任意描述符。
+    ca::str::Utf8String desc;
 };
 
 /// @brief MethodCallRemover 的配置面（程序化注入点）。

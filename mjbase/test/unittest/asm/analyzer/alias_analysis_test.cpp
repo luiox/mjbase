@@ -770,6 +770,15 @@ std::vector<MethodSpec> bindingFixtureMethods()
     };
 }
 
+/// 诊断出口 Utf8String 列表 → std::string 列表（断言面友好）。
+std::vector<std::string> strs(std::vector<ca::str::Utf8String> names)
+{
+    std::vector<std::string> out;
+    out.reserve(names.size());
+    for (auto& name : names) out.push_back(name.to_std_string());
+    return out;
+}
+
 }   // namespace
 
 // ---------------------------------------------------------------------------
@@ -855,7 +864,8 @@ TEST(MjAnalysisAliasContractTest, IndexesSummaryReturnsInAndersenSolver)
     summary.returnValue = AliasValue::object("new:pkg/A.make:0:pkg/Value");
     analysis.addSummary(summary);
 
-    EXPECT_EQ(analysis.andersenReturnPointsToOf("pkg/A", "make", "()Ljava/lang/Object;"),
+    EXPECT_EQ(strs(analysis.andersenReturnPointsToOf("pkg/A", "make",
+                                                      "()Ljava/lang/Object;")),
               std::vector<std::string>{"new:pkg/A.make:0:pkg/Value"});
 }
 
@@ -900,7 +910,7 @@ TEST(MjAnalysisAliasContractTest, ResolvesArrayReadsAcrossMergedAllocationTarget
     const auto value = analysis.resolvedArrayValueOf(merged, index);
     ASSERT_TRUE(value.has_value());
     EXPECT_EQ(value->kind, AliasValueKind::Unknown);
-    EXPECT_EQ(analysis.possibleTypesOf(*value),
+    EXPECT_EQ(strs(analysis.possibleTypesOf(*value)),
               (std::vector<std::string>{"java/lang/String", "java/lang/StringBuilder"}));
 }
 
@@ -924,7 +934,7 @@ TEST(MjAnalysisAliasContractTest, BuildsParameterReturnSummaryFromClassResource)
     ASSERT_EQ(summary->parameters.size(), 1u);
     EXPECT_EQ(summary->parameters[0], AliasValue::object("param:0"));
     EXPECT_EQ(summary->returnValue, AliasValue::object("param:0"));
-    EXPECT_EQ(analysis.andersenReturnPointsToOf("AliasFixture", "echo", kEchoDesc),
+    EXPECT_EQ(strs(analysis.andersenReturnPointsToOf("AliasFixture", "echo", kEchoDesc)),
               std::vector<std::string>{});
 
     const auto* relay = analysis.summaryOf("AliasFixture", "relay", kEchoDesc);
@@ -1000,8 +1010,9 @@ TEST(MjAnalysisAliasContractTest, BuildsParameterReturnSummaryFromClassResource)
     const auto* helperField = analysis.summaryOf("AliasFixture", "newAndRead", kEchoDesc);
     ASSERT_NE(helperField, nullptr);
     EXPECT_EQ(helperField->returnValue, AliasValue::object("param:0"));
-    const auto receiverPoints = analysis.andersenParameterPointsToOf(
-        "AliasFixture", "writeInstanceField", "(LAliasFixture;Ljava/lang/Object;)V", 0);
+    const std::vector<std::string> receiverPoints = strs(
+        analysis.andersenParameterPointsToOf(
+            "AliasFixture", "writeInstanceField", "(LAliasFixture;Ljava/lang/Object;)V", 0));
     ASSERT_FALSE(receiverPoints.empty());
     bool sawAliasFixtureAllocation = false;
     for (const auto& point : receiverPoints) {
@@ -1014,28 +1025,29 @@ TEST(MjAnalysisAliasContractTest, BuildsParameterReturnSummaryFromClassResource)
     const auto* chained =
         analysis.summaryOf("AliasFixture", "chainedFields", "()Ljava/lang/Object;");
     ASSERT_NE(chained, nullptr);
-    EXPECT_EQ(analysis.possibleTypesOf(chained->returnValue),
+    EXPECT_EQ(strs(analysis.possibleTypesOf(chained->returnValue)),
               std::vector<std::string>{"java/lang/String"});
     const std::vector<std::string> expectedTypes{"java/lang/String", "java/lang/StringBuilder"};
     const auto* mergedFields =
         analysis.summaryOf("AliasFixture", "mergedFieldTargets", "(Z)Ljava/lang/Object;");
     ASSERT_NE(mergedFields, nullptr);
     EXPECT_EQ(mergedFields->returnValue.kind, AliasValueKind::Unknown);
-    EXPECT_EQ(analysis.possibleTypesOf(mergedFields->returnValue), expectedTypes);
+    EXPECT_EQ(strs(analysis.possibleTypesOf(mergedFields->returnValue)), expectedTypes);
     const auto* mergedHelper = analysis.summaryOf(
         "AliasFixture", "mergedHelperField", "(ZLjava/lang/Object;)Ljava/lang/Object;");
     ASSERT_NE(mergedHelper, nullptr);
     EXPECT_EQ(mergedHelper->returnValue, AliasValue::object("param:1"));
-    EXPECT_EQ(analysis.possibleReturnTypesOf("AliasFixture", "deep4", "()Ljava/lang/Object;"),
+    EXPECT_EQ(strs(analysis.possibleReturnTypesOf("AliasFixture", "deep4",
+                                                   "()Ljava/lang/Object;")),
               std::vector<std::string>{"java/lang/String"});
     const auto* multi = analysis.summaryOf("AliasFixture", "multiTarget", "()Ljava/lang/Object;");
     ASSERT_NE(multi, nullptr);
     EXPECT_EQ(multi->returnValue.kind, AliasValueKind::Unknown);
-    EXPECT_EQ(analysis.possibleReturnTypesOf("AliasFixture", "multiTarget",
-                                             "()Ljava/lang/Object;"),
+    EXPECT_EQ(strs(analysis.possibleReturnTypesOf("AliasFixture", "multiTarget",
+                                                   "()Ljava/lang/Object;")),
               expectedTypes);
-    EXPECT_EQ(analysis.possibleReturnTypesOf("AliasFixture", "multiRelay",
-                                             "()Ljava/lang/Object;"),
+    EXPECT_EQ(strs(analysis.possibleReturnTypesOf("AliasFixture", "multiRelay",
+                                                   "()Ljava/lang/Object;")),
               expectedTypes);
     const auto* indexed = analysis.summaryOf(
         "AliasFixture", "indexedArray",
@@ -1097,8 +1109,8 @@ TEST(MjAnalysisAliasContractTest, BuildsParameterReturnSummaryFromClassResource)
                                             "(Z)Ljava/lang/Object;");
     ASSERT_NE(branch, nullptr);
     EXPECT_EQ(branch->returnValue.kind, AliasValueKind::Unknown);
-    EXPECT_EQ(analysis.possibleReturnTypesOf("AliasFixture", "branchTarget",
-                                             "(Z)Ljava/lang/Object;"),
+    EXPECT_EQ(strs(analysis.possibleReturnTypesOf("AliasFixture", "branchTarget",
+                                                   "(Z)Ljava/lang/Object;")),
               expectedTypes);
     const auto* branchLocal = analysis.summaryOf(
         "AliasFixture", "branchLocal",

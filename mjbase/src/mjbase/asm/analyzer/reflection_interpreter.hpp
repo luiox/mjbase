@@ -27,6 +27,7 @@
 #include <unordered_map>
 
 #include "libca/core/datatype.hpp"
+#include "libca/str/utf8_string.hpp"
 
 #include "jbc/analysis/domain.hpp"
 #include "jbc/core/constant_pool.hpp"
@@ -51,7 +52,10 @@ std::string_view normalizeClassName(std::string_view value);
 std::string_view classLiteralTrackingName(std::string_view cpClassName);
 
 /// @brief 类常量追踪名 → 参数描述符形态：OBJECT → `Lname;`；数组 → 描述符原样。
-std::string classLiteralDescriptor(std::string_view trackingName);
+///
+/// 展示/追踪出口：追踪名为 CP Class 名归一化产物（内部名 ASCII 域），
+/// 本地缓冲拼接后按字节收进。
+ca::str::Utf8String classLiteralDescriptor(std::string_view trackingName);
 
 /// @brief 读取 int 常量（iconst_0..5 / bipush / sipush / iconst_m1 可选）。
 ///

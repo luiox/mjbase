@@ -143,7 +143,13 @@ mjbase::spi::PreservedAnalyses RedundantInvokeRemover::run(
     MethodCallRemovalConfig config;
     config.includeCalls.reserve(nominated.size());
     for (const MemberTriple& m : nominated) {
-        config.includeCalls.push_back(MethodCallSpec{m.owner, m.name, m.desc});
+        // 成员三元组为 CP 操作数域内部名（ASCII 域），逐段按字节驻留收进。
+        auto toUtf8 = [](const std::string& v) {
+            return ca::str::Utf8String::from_data_unchecked(
+                reinterpret_cast<const ca::u8*>(v.data()), v.size());
+        };
+        config.includeCalls.push_back(
+            MethodCallSpec{toUtf8(m.owner), toUtf8(m.name), toUtf8(m.desc)});
     }
     MethodCallRemover remover{std::move(config)};
     return remover.run(container, am);

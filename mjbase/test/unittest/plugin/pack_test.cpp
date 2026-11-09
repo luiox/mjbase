@@ -70,10 +70,11 @@ public:
         configText_.assign(config.data(), config.size());
         seenAtRegistration_ = configText_;
         if (Result<void, mjbase::spi::RegistryError> r = registry.registerMethodPass(
-                passName_, [this] { return std::make_unique<ConfigProbePass>(configText_); },
+                passName_.ref(), [this] { return std::make_unique<ConfigProbePass>(configText_); },
                 "sample config probe");
             r.is_err()) {
-            return Err(mjbase::plugin::makePackError(PackErrorKind::RegistrationFailed, passName_));
+            return Err(
+                mjbase::plugin::makePackError(PackErrorKind::RegistrationFailed, passName_.ref()));
         }
         return Ok();
     }
@@ -84,7 +85,7 @@ private:
     PackManifest manifest_;
     std::string  commitStorage_;      ///< manifest_.mjbaseCommit 的实体
     std::string  nameStorage_;        ///< manifest_.name 的实体（借用视图纪律）
-    std::string  passName_;           ///< 注册名实体，寿命覆盖注册表
+    ca::str::Utf8String passName_;    ///< 注册名实体，寿命覆盖注册表
     std::string  configText_;
     std::string  seenAtRegistration_;
 };
@@ -135,7 +136,7 @@ TEST(PackTest, installRegistersQualifiedNames)
     SamplePack       pack;
 
     Result<void, PackError> r = installPack(pack, registry, "{}");
-    ASSERT_TRUE(r.is_ok()) << r.unwrap_err().detail;
+    ASSERT_TRUE(r.is_ok()) << std::move(r).unwrap_err().detail;
 
     ASSERT_TRUE(registry.has("sample.ConfigProbe"));
     const auto entry = registry.find("sample.ConfigProbe");
@@ -175,7 +176,7 @@ TEST(PackTest, buildMismatchRejected)
 
     Result<void, PackError> r = installPack(pack, registry, "{}");
     ASSERT_TRUE(r.is_err());
-    EXPECT_EQ(r.unwrap_err().kind, PackErrorKind::BuildMismatch);
+    EXPECT_EQ(std::move(r).unwrap_err().kind, PackErrorKind::BuildMismatch);
     EXPECT_FALSE(registry.has("sample.ConfigProbe"));
 }
 
@@ -187,7 +188,7 @@ TEST(PackTest, invalidManifestRejected)
         SamplePack       pack(buildCommit(), bad);
         Result<void, PackError> r = installPack(pack, registry, "{}");
         ASSERT_TRUE(r.is_err()) << bad;
-        EXPECT_EQ(r.unwrap_err().kind, PackErrorKind::InvalidManifest) << bad;
+        EXPECT_EQ(std::move(r).unwrap_err().kind, PackErrorKind::InvalidManifest) << bad;
     }
 }
 
@@ -198,7 +199,7 @@ TEST(PackTest, configRejectedPassthrough)
 
     Result<void, PackError> r = installPack(pack, registry, "!");
     ASSERT_TRUE(r.is_err());
-    EXPECT_EQ(r.unwrap_err().kind, PackErrorKind::ConfigRejected);
+    EXPECT_EQ(std::move(r).unwrap_err().kind, PackErrorKind::ConfigRejected);
     EXPECT_FALSE(registry.has("sample.ConfigProbe"));
 }
 
@@ -210,7 +211,7 @@ TEST(PackTest, duplicateInstallRejected)
     ASSERT_TRUE(installPack(pack, registry, "{}").is_ok());
     Result<void, PackError> r = installPack(pack, registry, "{}");
     ASSERT_TRUE(r.is_err());
-    EXPECT_EQ(r.unwrap_err().kind, PackErrorKind::RegistrationFailed);
+    EXPECT_EQ(std::move(r).unwrap_err().kind, PackErrorKind::RegistrationFailed);
 }
 
 TEST(PackTest, namespaceViolationDetected)
@@ -220,8 +221,9 @@ TEST(PackTest, namespaceViolationDetected)
 
     Result<void, PackError> r = installPack(pack, registry, "");
     ASSERT_TRUE(r.is_err());
-    EXPECT_EQ(r.unwrap_err().kind, PackErrorKind::NamespaceViolation);
-    EXPECT_EQ(r.unwrap_err().detail, "RoguePass");
+    const PackError e = std::move(r).unwrap_err();
+    EXPECT_EQ(e.kind, PackErrorKind::NamespaceViolation);
+    EXPECT_EQ(e.detail, "RoguePass");
 }
 
 TEST(PackTest, zeroRegistrationRejected)
@@ -231,7 +233,7 @@ TEST(PackTest, zeroRegistrationRejected)
 
     Result<void, PackError> r = installPack(pack, registry, "");
     ASSERT_TRUE(r.is_err());
-    EXPECT_EQ(r.unwrap_err().kind, PackErrorKind::InvalidManifest);
+    EXPECT_EQ(std::move(r).unwrap_err().kind, PackErrorKind::InvalidManifest);
 }
 
 }   // namespace

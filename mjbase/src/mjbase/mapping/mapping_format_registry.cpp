@@ -69,11 +69,11 @@ void appendEmbeddedSources(Utf8StringBuilder& out, Utf8StringRef target,
 {
     const bool xml = isXmlMappingFormat(target);
     for (const auto& [format, source] : mappings.sourceSnapshots()) {
-        if (format == target.to_std_string()) continue;
+        if (format == target) continue;
         out.append(xml ? "<!-- mjbase-source " : "# mjbase-source ");
-        out.append(Utf8StringRef::from_cstr(format.c_str()));
+        out.append(format.ref());
         out.append("\t");
-        const auto encoded = hexEncode(source);
+        const auto encoded = hexEncode(source.to_std_string());
         out.append(Utf8StringRef::from_cstr(encoded.c_str()));
         out.append(xml ? " -->\n" : "\n");
     }
@@ -1296,8 +1296,7 @@ ca::Result<ca::str::Utf8String, MappingError> MappingFormatRegistry::format(
     Utf8StringRef name, const IntermediateMapping& mappings) const
 {
     if (const auto* source = mappings.unmodifiedSource(name)) {
-        return ca::Ok(
-            ca::str::Utf8String(reinterpret_cast<const ca::u8*>(source->data()), source->size()));
+        return ca::Ok(source->clone());
     }
     auto writer = createFormat(name);
     if (!writer) return ca::Err(MappingError::UnknownFormat);

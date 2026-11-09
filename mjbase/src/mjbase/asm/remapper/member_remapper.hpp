@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "libca/core/result.hpp"
+#include "libca/str/utf8_string.hpp"
 
 #include "jbc/ir/units.hpp"
 
@@ -67,7 +68,25 @@ struct RemapPolicy
     bool manifest      = true;
     bool serviceLoader = true;
     /// 允许按映射文本口径改写的未知资源 URI（默认空：任意业务文本不猜）。
-    std::vector<std::string> authorizedTextResourceUris;
+    std::vector<ca::str::Utf8String> authorizedTextResourceUris;
+
+    /// @brief 显式深拷贝（Utf8String 载荷禁拷贝后的唯一复制通道）。
+    RemapPolicy clone() const
+    {
+        RemapPolicy p;
+        p.bytecode          = bytecode;
+        p.reflectionStrings = reflectionStrings;
+        p.annotations       = annotations;
+        p.signatures        = signatures;
+        p.resources         = resources;
+        p.manifest          = manifest;
+        p.serviceLoader     = serviceLoader;
+        p.authorizedTextResourceUris.reserve(authorizedTextResourceUris.size());
+        for (const ca::str::Utf8String& uri : authorizedTextResourceUris) {
+            p.authorizedTextResourceUris.push_back(uri.clone());
+        }
+        return p;
+    }
 
     static RemapPolicy bytecodeOnly();
     static RemapPolicy bytecodeAndReflectionStrings();
@@ -92,7 +111,9 @@ const char* to_string(RemapError error) noexcept;
 bool looksLikeClassName(std::string_view value) noexcept;
 
 /// @brief 反射类名 → 内部名：剥 L..; 外壳、点分换斜杠。
-std::string toInternalReflectionName(std::string_view value);
+///
+/// 内部名为反射追踪/改写域内部名（ASCII 域），本地缓冲归一后按字节收进。
+ca::str::Utf8String toInternalReflectionName(std::string_view value);
 
 /// @brief 把重映射计划应用到一个类会话。
 ///

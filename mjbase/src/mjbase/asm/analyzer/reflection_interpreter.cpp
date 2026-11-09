@@ -61,6 +61,14 @@ std::string_view classLiteralName(std::string_view cpClassName)
     return normalizeClassName(cpClassName);
 }
 
+/// 追踪名 → 描述符字节拼接（classLiteralDescriptor 的本地缓冲实现体）。
+std::string classLiteralDescriptorBytes(std::string_view trackingName)
+{
+    if (!trackingName.empty() && trackingName.front() == '[') return std::string(trackingName);
+    if (trackingName.empty()) return {};
+    return "L" + std::string(trackingName) + ";";
+}
+
 /// LDC class 常量 / GETSTATIC TYPE → 参数描述符形态（"Lx;" / "[..." / "I"）。
 std::string readReflectionClassArgumentDescriptor(const jbc::ir::Insn&            insn,
                                                   const jbc::core::ConstantPool& cp)
@@ -68,7 +76,7 @@ std::string readReflectionClassArgumentDescriptor(const jbc::ir::Insn&          
     if (insn.op == Op::LDC || insn.op == Op::LDC_W) {
         const std::string_view name = classLiteralName(resolveClassName(cp, insn.cp));
         if (name.empty()) return {};
-        return classLiteralDescriptor(name);
+        return classLiteralDescriptorBytes(name);
     }
     MemberRefSem ref;
     if (insn.op == Op::GETSTATIC && resolveMemberRef(cp, insn.cp, ref)) {
@@ -553,11 +561,12 @@ std::string_view classLiteralTrackingName(std::string_view cpClassName)
     return classLiteralName(cpClassName);
 }
 
-std::string classLiteralDescriptor(std::string_view trackingName)
+ca::str::Utf8String classLiteralDescriptor(std::string_view trackingName)
 {
-    if (!trackingName.empty() && trackingName.front() == '[') return std::string(trackingName);
-    if (trackingName.empty()) return {};
-    return "L" + std::string(trackingName) + ";";
+    // 追踪名为 CP Class 名归一化产物（内部名 ASCII 域），本地缓冲拼接后按字节收进。
+    const std::string desc = classLiteralDescriptorBytes(trackingName);
+    return ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(desc.data()),
+                                                    desc.size());
 }
 
 bool intConstantOf(const jbc::ir::Insn& insn, ca::i32& out, bool allowNegative)

@@ -67,13 +67,16 @@ MemberKey memberKeyOf(KeyPool& pool,
     return MemberKey{owner.id, pool.intern(name), pool.intern(desc)};
 }
 
-void formatMember(const KeyPool& pool, MemberKey key, std::string& out)
+ca::str::Utf8String formatMember(const KeyPool& pool, MemberKey key)
 {
-    out.append(pool.str(key.cls));
+    // 本地缓冲拼接后按字节收进：三段均为 KeyPool 驻留的内部名/描述符（ASCII 域）。
+    std::string out(pool.str(key.cls));
     out.push_back('.');
     out.append(pool.str(key.name));
     out.push_back(' ');
     out.append(pool.str(key.desc));
+    return ca::str::Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(out.data()), out.size());
 }
 
 }   // namespace mjbase

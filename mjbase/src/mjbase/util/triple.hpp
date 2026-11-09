@@ -2,6 +2,7 @@
 
 #include "libca/core/any.hpp"
 #include "libca/log/log_macros.hpp"
+#include "libca/str/utf8_string.hpp"
 #include <cerrno>
 #include <cstring>
 #include <functional>
@@ -49,23 +50,39 @@ struct Triple
 
     bool operator!=(const Triple& other) const { return !(*this == other); }
 
-    std::string toString() const
+    /// @brief 展示/序列化出口："(a,b,c)" 形态。
+    ///
+    /// 返回 Utf8String——本地 std::string 缓冲拼接后按字节收进
+    /// （元素为数值/字面量文本，展示域）。
+    ca::str::Utf8String toString() const
     {
-        return "(" + toStringImpl(first) + "," + toStringImpl(second) + "," + toStringImpl(third) +
-               ")";
+        std::string out;
+        out += '(';
+        out += toStringImpl(first);
+        out += ',';
+        out += toStringImpl(second);
+        out += ',';
+        out += toStringImpl(third);
+        out += ')';
+        return ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(out.data()),
+                                                        out.size());
     }
 
+    /// @brief 格式化展示出口：format 给出 printf 风格模板（三个 %s 槽）。
     template<typename... Args>
-    std::string toString(const std::string& format) const
+    ca::str::Utf8String toString(const std::string_view format) const
     {
+        // string_view 不保证 \0 终止，snprintf 的格式串需先落本地缓冲。
+        const std::string fmt(format);
         char buf[256];
         snprintf(buf,
                  sizeof(buf),
-                 format.c_str(),
+                 fmt.c_str(),
                  toStringImpl(first).c_str(),
                  toStringImpl(second).c_str(),
                  toStringImpl(third).c_str());
-        return buf;
+        return ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(buf),
+                                                        std::strlen(buf));
     }
 
 private:
