@@ -109,15 +109,17 @@ std::string internalNameFromClassUri(std::string_view uri)
     return std::string(path.substr(0, path.size() - kExtension.size()));
 }
 
-std::unordered_map<std::string, ClassFamilyView> buildClassFamilyIndex(
+std::unordered_map<ca::str::Utf8String, ClassFamilyView> buildClassFamilyIndex(
     const IResourceContainer& container)
 {
-    std::unordered_map<std::string, ClassFamilyView> index;
+    std::unordered_map<ca::str::Utf8String, ClassFamilyView> index;
     container.visitResources([&](std::string_view uri, const IResource& resource) {
         if (resource.getType() != ResourceType::Class) return;
         const std::string name = internalNameFromClassUri(uri);
         if (name.empty()) return;
-        ClassFamilyView& family = index[name];
+        // 内部名来源为 URI 推导（ASCII 域），字节保真收进作索引键。
+        ClassFamilyView& family = index[ca::str::Utf8String::from_data_unchecked(
+            reinterpret_cast<const ca::u8*>(name.data()), name.size())];
         const ca::i64    version = multiReleaseVersionOfClassUri(uri);
         if (version < 9) {
             family.baseUri = uri;

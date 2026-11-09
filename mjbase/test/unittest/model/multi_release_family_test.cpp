@@ -22,6 +22,9 @@ using namespace mjbase::test;
 
 namespace {
 
+/// 测试助手：字面量键 → 族索引 key（Utf8String 无 const char* 隐式构造）。
+ca::str::Utf8String U8(const char* s) { return ca::str::Utf8String::from_cstr(s); }
+
 Bytes minimalClass(const std::string& internalName)
 {
     return assembleJasm(R"JASM(
@@ -99,7 +102,7 @@ TEST(MjModelMultiReleaseTest, FamilyIndexGroupsBaseAndVariants)
     const auto index = buildClassFamilyIndex(container);
     ASSERT_EQ(index.size(), 3u);   // app/Main / app/Api / app/Extra
 
-    const auto& api = index.at("app/Api");
+    const auto& api = index.at(U8("app/Api"));
     ASSERT_TRUE(!api.baseUri.empty());
     EXPECT_EQ(api.baseUri, "app/Api.class");
     ASSERT_EQ(api.variants.size(), 2u);
@@ -109,17 +112,17 @@ TEST(MjModelMultiReleaseTest, FamilyIndexGroupsBaseAndVariants)
     EXPECT_EQ(api.variants[1].uri, "META-INF/versions/17/app/Api.class");
 
     // 仅存版本化变体的族原样呈现（base 缺失不升格、不造 base）。
-    const auto& extra = index.at("app/Extra");
+    const auto& extra = index.at(U8("app/Extra"));
     EXPECT_TRUE(extra.baseUri.empty());
     ASSERT_EQ(extra.variants.size(), 1u);
     EXPECT_EQ(extra.variants[0].uri, "META-INF/versions/17/app/Extra.class");
 
-    const auto& main = index.at("app/Main");
+    const auto& main = index.at(U8("app/Main"));
     EXPECT_EQ(main.baseUri, "app/Main.class");
     EXPECT_TRUE(main.variants.empty());
 
     // 非 class 资源不入索引。
-    EXPECT_EQ(index.find("META-INF/MANIFEST.MF"), index.end());
+    EXPECT_EQ(index.find(U8("META-INF/MANIFEST.MF")), index.end());
 }
 
 TEST(MjModelMultiReleaseTest, FamilyIndexIgnoresIllegalVersionSegments)
