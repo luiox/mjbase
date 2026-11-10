@@ -102,6 +102,14 @@ namespace mjbase::project {
 ///        更老的版本与 ReadOnly 旧库仍 fail-loud（临时库重导入即愈）。新迁移
 ///        步按版本序在此追加声明。
 ///
+/// v13：资源串事实面（非 class 条目可打印串的搜索 DB 化前提）——新增
+///        `resources` 表（行 = (entry_id, value)，UNIQUE 折叠与消费方命中行
+///        去重同口径；不存 offset——搜索输出不消费字节位置，折叠口径一致）
+///        纯新增表，存量表零改动；写入面 `replaceResources`（整库单事务
+///        替换，锚行复用 input 作用域词表值），查询面
+///        `searchResourceStringsPaged`。迁移窗随 n-1 政策前移：
+///        v12→v13 原地重放本表 DDL，v11 旧库 fail-loud（v12 落地时的
+///        v10 步同款）。
 /// v12：常量事实面（strings/numbers 搜索 DB 化前提）——新增 `cp_strings`
 ///        （类常量池字符串：String 条目与裸 UTF8，facet 由生产方按形状预分）
 ///        与 `number_literals`（数值字面量：常量池条目 + 方法体指令立即数，
@@ -138,7 +146,7 @@ namespace mjbase::project {
 ///        `classes.entry_id` 外键。v2：classes 增加 super/access/version，
 ///        新增 interfaces 与 refs 表，members 增加 access。v1 未发布，
 ///        版本号仅用于识别本分支早期的临时库。
-inline constexpr ca::u32 kAnalysisDbSchemaVersion = 12;
+inline constexpr ca::u32 kAnalysisDbSchemaVersion = 13;
 
 /// @brief SQLite 数据库头里的应用标识（ASCII "MJDB"）。
 inline constexpr ca::u32 kAnalysisDbApplicationId = 0x4D4A4442u;
@@ -436,6 +444,43 @@ struct DbStringSearchPage
 {
     std::vector<DbStringSearchRow> rows;
     ca::u64                        total = 0; ///< 全量命中数（窗口外行不计入 rows）
+};
+
+/// @brief 一个条目的资源串切片（`replaceResources` 输入；schema v13）。
+///
+/// 资源串事实按条目锚定（非 class 条目内的可打印串 run；抽取口径由生产方
+/// 定，库侧只存值文本）。同条目同值重复行折叠一行（UNIQUE 即消费方命中行
+/// 去重口径，cp_strings 同款）；不携带 offset——搜索输出不消费字节位置，
+/// 折叠口径一致。
+struct DbResourceEntryInput
+{
+    ca::i64 entryId = 0; ///< 资源条目身份（须为已登记条目，墓碑态不限）
+    std::vector<ca::str::Utf8String> values; ///< 该条目的资源串值（按抽取序）
+};
+
+/// @brief 资源串搜索查询（`searchResourceStringsPaged` 入参）。
+///
+/// 文本面与消费方 strings 并集半边逐字节对齐：仅对 `value` 单面匹配。
+/// 资源行无 owner 语义（非 class 条目），无作用域参数。
+struct DbResourceSearchQuery
+{
+    ca::str::Utf8String needle;    ///< 匹配串；空 = 不做文本过滤（全量）
+    DbTextMatchKind     match = DbTextMatchKind::Contains;
+    bool                caseSensitive = false; ///< true = 字节敏感（GLOB/= 路径）
+};
+
+/// @brief 资源串搜索行（查询输出）。
+struct DbResourceSearchRow
+{
+    ca::str::Utf8String entryPath; ///< 资源条目 path（活跃条目，恒非空）
+    ca::str::Utf8String value;
+};
+
+/// @brief 资源串搜索页（查询输出）：窗口行 + 全量命中数。
+struct DbResourceSearchPage
+{
+    std::vector<DbResourceSearchRow> rows;
+    ca::u64                          total = 0; ///< 全量命中数（窗口外行不计入 rows）
 };
 
 /// @brief 数值字面量类别（`number_literals.kind`）。
@@ -1357,6 +1402,23 @@ public:
     ca::Result<ca::usize, AnalysisDbError> replaceConstantFaceSlices(
         ca::i64 batchId, const std::vector<DbClassConstantFaces>& classes);
 
+    /// @brief 原子替换整库资源串事实面（单事务整库重建；schema v13）。
+    ///
+    /// 一次事务内清空 `resources` 全表后按输入写入；身份校验在事务内——
+    /// 每个 @p entryId 必须为已登记条目（否则 `Invalid` 整批回滚、旧表保持
+    /// 不动）。同条目同值重复行 ON CONFLICT DO NOTHING 折叠（消费方命中行
+    /// 去重同口径）；空输入 = 清空全表。资源变更 = 结构变更（条目增删 /
+    /// 换字节），消费方以整库重建追平——无逐条目增量入口。
+    /// `batchId`：0 = 无批写入；非 0 必须是未收尾的已注册批次（否则
+    /// `Invalid`），命中后落 (1, input_id) 作用域锚（每条目归属 input 去重
+    /// 后各一行）——复用 input 词表值、不加新 scope 种类、零 schema 变更
+    /// （整库替换无逐条目写粒度，input 锚已携带本次运行的覆盖区间审计）。
+    ///
+    /// @return 写入的总行数（按输入记录数计，同 `replaceConstantFaces`
+    ///         口径——折叠是库行效果，不改写返回值）。
+    ca::Result<ca::usize, AnalysisDbError> replaceResources(
+        ca::i64 batchId, std::vector<DbResourceEntryInput> entries);
+
     /// @brief 按内部名查类事实；未登记返回 `std::nullopt`。
     ca::Result<std::optional<DbClassInfo>, AnalysisDbError> findClass(
         const ca::str::Utf8StringRef& owner) const;
@@ -1402,6 +1464,17 @@ public:
     /// `searchClassesPaged`（limit/offset 负值 `Invalid`，页附全量 total）。
     ca::Result<DbStringSearchPage, AnalysisDbError> searchStringsPaged(
         const DbStringSearchQuery& query, ca::i64 limit, ca::i64 offset) const;
+
+    /// @brief 资源串文本搜索（分页；schema v13）。
+    ///
+    /// 可见域 = 活跃条目（墓碑除外）的资源串行（`resources` 表）。文本面
+    /// 单面：`value` contains/prefix/exact 三档——不敏感档 `LOWER` 折叠
+    /// （只折 ASCII），敏感档 GLOB/= 字节语义，needle 元字符转义为字面。
+    /// 资源行无 owner 语义，无作用域参数。行序 (entry path, value) BINARY
+    /// 升序（确定序；同条目按 value 收尾）；页结构与窗口契约同
+    /// `searchClassesPaged`（limit/offset 负值 `Invalid`，页附全量 total）。
+    ca::Result<DbResourceSearchPage, AnalysisDbError> searchResourceStringsPaged(
+        const DbResourceSearchQuery& query, ca::i64 limit, ca::i64 offset) const;
 
     /// @brief 数值字面量候选查询（全量行，无窗口）。
     ///

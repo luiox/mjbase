@@ -1845,6 +1845,24 @@ constexpr const char* kConstFacesDdl[] = {
     "  WHERE value_bits IS NOT NULL",
 };
 
+/// @brief 资源串事实面 DDL（schema v13 纯新增，全带 IF NOT EXISTS 幂等）。
+///        单独成组：v12→v13 原地迁移只重放本组（kConstFacesDdl 同款理由：
+///        存量表 DDL 无 IF NOT EXISTS，重放全组会在既有表上报错）；fresh
+///        建库在 kSchemaDdl / kConstFacesDdl 之后照抄执行本组。
+///
+/// resources：非 class 条目的可打印串。行 = (entry_id, value)，UNIQUE 折叠
+/// 与消费方命中行去重同口径（cp_strings 同款）；不存 offset——搜索输出不
+/// 消费字节位置，折叠口径一致。value 搜索走 LIKE/GLOB 扫描（与 cp_strings
+/// 同待遇，无独立索引）。
+constexpr const char* kResourcesDdl[] = {
+    "CREATE TABLE IF NOT EXISTS resources("
+    "  resource_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  entry_id INTEGER NOT NULL REFERENCES entries(entry_id) ON DELETE CASCADE,"
+    "  value TEXT NOT NULL,"
+    "  UNIQUE(entry_id, value)"
+    ")",
+};
+
 /// @brief 全部后代闭包 SQL（allSubclasses / allSubclassesPaged 共用）；
 ///        分页变体在末尾追加 LIMIT/OFFSET 窗口。
 constexpr const char* kAllSubclassesSql =
@@ -2163,6 +2181,11 @@ ca::Result<AnalysisDb, AnalysisDbError> AnalysisDb::open(const ca::str::Utf8Stri
                 return errorOf(std::move(result));
             }
         }
+        for (const char* ddl : kResourcesDdl) {
+            if (auto result = exec(handle, ddl); result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
         if (auto result = exec(handle,
                                "INSERT INTO meta(key, value) VALUES('kind', 'mjbase-analysis-db')");
             result.is_err()) {
@@ -2190,31 +2213,32 @@ ca::Result<AnalysisDb, AnalysisDbError> AnalysisDb::open(const ca::str::Utf8Stri
                                  "not an mjbase analysis database (application_id=" +
                                      std::to_string(appId) + ")"));
     }
-    // v11 → v12 原地迁移（常量事实面）：纯新增 cp_strings / number_literals
-    // 两表与索引（CREATE IF NOT EXISTS 幂等），存量表与行零改动。只收编紧
-    // 邻上一版（版本步进政策见 hpp 的版本常量注；更老版本 fail-loud，临时
-    // 库重导入即愈）；ReadOnly 连接不写库，旧版只读开库维持 fail-loud。
-    // PRAGMA user_version 参与事务（存数据库头），建表与版本号同事务提交。
-    if (version == 11 && static_cast<ca::i64>(kAnalysisDbSchemaVersion) == 12) {
+    // v12 → v13 原地迁移（资源串事实面）：纯新增 resources 一表（CREATE IF
+    // NOT EXISTS 幂等），存量表与行零改动。只收编紧邻上一版（版本步进政策
+    // 见 hpp 的版本常量注；更老版本 fail-loud，临时库重导入即愈——v12 落地
+    // 时按同款政策删除 v10→v11 步，v11 旧库自此 fail-loud）；ReadOnly 连接
+    // 不写库，旧版只读开库维持 fail-loud。PRAGMA user_version 参与事务
+    // （存数据库头），建表与版本号同事务提交。
+    if (version == 12 && static_cast<ca::i64>(kAnalysisDbSchemaVersion) == 13) {
         if (mode == AnalysisDbOpenMode::ReadOnly) {
             return ca::Err(makeError(
                 AnalysisDbErrorKind::Schema,
-                "analysis database schema v11 needs an in-place migration; "
+                "analysis database schema v12 needs an in-place migration; "
                 "reopen read-write to upgrade"));
         }
         auto transaction = Transaction::begin(handle);
         if (transaction.is_err()) return errorOf(std::move(transaction));
         auto txn = std::move(transaction).unwrap();
-        for (const char* ddl : kConstFacesDdl) {
+        for (const char* ddl : kResourcesDdl) {
             if (auto result = exec(handle, ddl); result.is_err()) {
                 return errorOf(std::move(result));
             }
         }
-        if (auto result = exec(handle, "PRAGMA user_version = 12"); result.is_err()) {
+        if (auto result = exec(handle, "PRAGMA user_version = 13"); result.is_err()) {
             return errorOf(std::move(result));
         }
         if (auto result = txn.commit(); result.is_err()) return errorOf(std::move(result));
-        version = 12;
+        version = 13;
     }
     if (version != static_cast<ca::i64>(kAnalysisDbSchemaVersion)) {
         return ca::Err(makeError(AnalysisDbErrorKind::Schema,
@@ -5745,6 +5769,108 @@ ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceConstantFaceSlices(
     return ca::Ok(written);
 }
 
+ca::Result<ca::usize, AnalysisDbError> AnalysisDb::replaceResources(
+    ca::i64 batchId, std::vector<DbResourceEntryInput> entries)
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (isReadOnly()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::ReadOnly,
+                                 "cannot write a read-only analysis database"));
+    }
+    if (batchId < 0) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                 "batch id must not be negative"));
+    }
+
+    auto transaction = Transaction::begin(impl_->handle);
+    if (transaction.is_err()) return errorOf(std::move(transaction));
+    auto txn = std::move(transaction).unwrap();
+
+    // 身份校验（事务内，任一失败整批回滚返错）：每个条目必须已登记——
+    // 顺手取归属 input_id，锚行去重用。
+    auto entryProbe = prepare(impl_->handle,
+                              "SELECT input_id FROM entries WHERE entry_id=?1");
+    if (entryProbe.is_err()) return errorOf(std::move(entryProbe));
+    auto entryStatement = std::move(entryProbe).unwrap();
+    std::set<ca::i64>   inputIds;
+    for (const DbResourceEntryInput& input : entries) {
+        if (auto result = bindInt(impl_->handle, entryStatement.raw, 1, input.entryId);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        auto hasEntry = step(impl_->handle, entryStatement.raw);
+        if (hasEntry.is_err()) return errorOf(std::move(hasEntry));
+        if (!hasEntry.unwrap()) {
+            return ca::Err(makeError(AnalysisDbErrorKind::Invalid,
+                                     "resources entry is not registered: " +
+                                         std::to_string(input.entryId)));
+        }
+        const ca::i64 inputId = sqlite3_column_int64(entryStatement.raw, 0);
+        resetStatement(entryStatement);
+        inputIds.insert(inputId);
+    }
+
+    if (batchId != 0) {
+        if (auto result = validateOpenBatchForWrite(impl_->handle, batchId); result.is_err()) {
+            return errorOf(std::move(result));
+        }
+    }
+
+    // 整库替换：全表清空（replaceConstantFaces 对常量两表的同款做法）；
+    // 空输入 = 清空全表。
+    if (auto result = exec(impl_->handle, "DELETE FROM resources"); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    if (batchId != 0) {
+        // 作用域锚：复用 input 词表值——每条目归属 input 去重后各一行
+        // (1, input_id)，INSERT OR IGNORE 幂等。不加新 scope 种类、零
+        // schema 变更（整库替换无逐条目写粒度，input 锚已携带本次运行的
+        // 覆盖区间审计）。
+        auto scopeInsert = prepare(impl_->handle, kScopeRowInsertSql);
+        if (scopeInsert.is_err()) return errorOf(std::move(scopeInsert));
+        auto scopeStatement = std::move(scopeInsert).unwrap();
+        for (const ca::i64 inputId : inputIds) {
+            if (auto result = writeScopeRow(impl_->handle, scopeStatement.raw, batchId,
+                                            DbBatchScopeKind::Input, inputId);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+    }
+
+    auto valueInsert = prepare(
+        impl_->handle,
+        "INSERT INTO resources(entry_id, value) VALUES(?1, ?2) "
+        "ON CONFLICT(entry_id, value) DO NOTHING");
+    if (valueInsert.is_err()) return errorOf(std::move(valueInsert));
+    auto valueStatement = std::move(valueInsert).unwrap();
+
+    ca::usize written = 0;
+    for (const DbResourceEntryInput& input : entries) {
+        for (const ca::str::Utf8String& value : input.values) {
+            if (auto result = bindInt(impl_->handle, valueStatement.raw, 1, input.entryId);
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            if (auto result = bindText(impl_->handle, valueStatement.raw, 2, value.ref());
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+            auto valueRow = step(impl_->handle, valueStatement.raw);
+            if (valueRow.is_err()) return errorOf(std::move(valueRow));
+            resetStatement(valueStatement);
+            ++written;
+        }
+    }
+    if (auto result = txn.commit(); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+    return ca::Ok(written);
+}
+
 ca::Result<std::optional<DbClassInfo>, AnalysisDbError> AnalysisDb::findClass(
     const ca::str::Utf8StringRef& owner) const
 {
@@ -6274,6 +6400,124 @@ ca::Result<DbStringSearchPage, AnalysisDbError> AnalysisDb::searchStringsPaged(
             row.kind         = static_cast<DbStringKind>(sqlite3_column_int(statement.raw, 2));
             row.facet        = static_cast<DbUtf8Facet>(sqlite3_column_int(statement.raw, 3));
             row.value        = utf8Column(statement.raw, 4);
+            page.rows.push_back(std::move(row));
+        }
+    }
+    return ca::Ok(std::move(page));
+}
+
+ca::Result<DbResourceSearchPage, AnalysisDbError> AnalysisDb::searchResourceStringsPaged(
+    const DbResourceSearchQuery& query, ca::i64 limit, ca::i64 offset) const
+{
+    if (!isOpen()) {
+        return ca::Err(makeError(AnalysisDbErrorKind::Invalid, "database is not open"));
+    }
+    if (auto result = validatePageWindow(limit, offset); result.is_err()) {
+        return errorOf(std::move(result));
+    }
+
+    //谓词与参数按声明序编号（?1..?n），跨 COUNT 与窗口 SELECT 复用。
+    std::vector<std::string> params;
+    std::string              predicate;
+    const auto addParam = [&params](std::string value) {
+        params.push_back(std::move(value));
+        return "?" + std::to_string(params.size());
+    };
+    const auto addPredicate = [&predicate](std::string fragment) {
+        if (predicate.empty()) predicate = std::move(fragment);
+        else predicate += " AND " + fragment;
+    };
+
+    //单文本面（value）——与消费方资源串扫描面同形：只对 value 匹配，资源
+    //行无 owner 语义。三档语义与 searchStringsPaged 的 faceClause 同款。
+    const std::string needle = query.needle.to_std_string();
+    if (!needle.empty()) {
+        std::string clause;
+        const char* face = "r.value";
+        if (query.caseSensitive) {
+            if (query.match == DbTextMatchKind::Exact) {
+                clause = std::string(face) + " = " + addParam(needle);
+            }
+            else {
+                std::string glob = globEscape(needle);
+                glob = query.match == DbTextMatchKind::Contains ? "*" + glob + "*"
+                                                                : glob + "*";
+                clause = std::string(face) + " GLOB " + addParam(std::move(glob));
+            }
+        }
+        else if (query.match == DbTextMatchKind::Exact) {
+            clause = "LOWER(" + std::string(face) + ") = " + addParam(asciiLower(needle));
+        }
+        else {
+            std::string like = likeEscape(asciiLower(needle));
+            like = query.match == DbTextMatchKind::Contains ? "%" + like + "%"
+                                                            : like + "%";
+            clause = "LOWER(" + std::string(face) + ") LIKE " + addParam(std::move(like)) +
+                     " ESCAPE '\\'";
+        }
+        addPredicate(std::move(clause));
+    }
+
+    //可见域：活跃条目（墓碑除外）的资源串行。
+    const std::string from =
+        " FROM resources r"
+        " JOIN entries e ON e.entry_id = r.entry_id AND e.tombstoned = 0";
+    const std::string where = predicate.empty() ? std::string() : " WHERE " + predicate;
+
+    //全量命中数（窗口外行不进 rows）。
+    DbResourceSearchPage page;
+    {
+        const std::string countSql = "SELECT COUNT(*)" + from + where;
+        auto prepared = prepare(impl_->handle, countSql.c_str());
+        if (prepared.is_err()) return errorOf(std::move(prepared));
+        auto statement = std::move(prepared).unwrap();
+        for (ca::usize i = 0; i < params.size(); ++i) {
+            if (auto result = bindText(impl_->handle, statement.raw,
+                                       static_cast<int>(i + 1), refOfText(params[i]));
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+        auto hasRow = step(impl_->handle, statement.raw);
+        if (hasRow.is_err()) return errorOf(std::move(hasRow));
+        if (!hasRow.unwrap()) return ca::Ok(std::move(page));
+        page.total = static_cast<ca::u64>(sqlite3_column_int64(statement.raw, 0));
+    }
+
+    //窗口行：(entry path, value) BINARY 升序 = 消费方资源串命中行的确定序。
+    {
+        const std::string rowsSql =
+            "SELECT e.path, r.value" + from + where +
+            " ORDER BY e.path, r.value LIMIT ?" +
+            std::to_string(params.size() + 1) + " OFFSET ?" +
+            std::to_string(params.size() + 2);
+        auto prepared = prepare(impl_->handle, rowsSql.c_str());
+        if (prepared.is_err()) return errorOf(std::move(prepared));
+        auto statement = std::move(prepared).unwrap();
+        for (ca::usize i = 0; i < params.size(); ++i) {
+            if (auto result = bindText(impl_->handle, statement.raw,
+                                       static_cast<int>(i + 1), refOfText(params[i]));
+                result.is_err()) {
+                return errorOf(std::move(result));
+            }
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw,
+                                  static_cast<int>(params.size() + 1), limit);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        if (auto result = bindInt(impl_->handle, statement.raw,
+                                  static_cast<int>(params.size() + 2), offset);
+            result.is_err()) {
+            return errorOf(std::move(result));
+        }
+        for (;;) {
+            auto hasRow = step(impl_->handle, statement.raw);
+            if (hasRow.is_err()) return errorOf(std::move(hasRow));
+            if (!hasRow.unwrap()) break;
+            DbResourceSearchRow row;
+            row.entryPath = utf8Column(statement.raw, 0);
+            row.value     = utf8Column(statement.raw, 1);
             page.rows.push_back(std::move(row));
         }
     }

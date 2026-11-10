@@ -6,7 +6,8 @@
 ///              字节语义与查询计划回归；v8 方法版本指纹层的记录/查询
 ///              闭环、版本历史与当前指针唯一、批量原子性、指纹字节往返；
 ///              v9 版本门对 v8 库的 fail-loud 拒绝（闭包面单测见
-///              reachability_closure_test.cpp）。
+///              reachability_closure_test.cpp）；v13 资源串事实面的整库
+///              替换/文本搜索与 v12 旧库原地迁移（v11 隔代 fail-loud）。
 #include <gtest/gtest.h>
 
 #include <sqlite3.h>
@@ -4944,9 +4945,60 @@ TEST(MjAnalysisDbTest, ReplaceConstantFaceSlicesReplacesBatchAtomically)
     }
 }
 
-///v11 旧库开 ReadWrite 原地迁移到 v12（纯新增常量面两表）：存量事实零损失、
-///新面空库可查可写；ReadOnly 旧库与 v10 旧库 fail-loud。
-TEST(MjAnalysisDbTest, MigratesConstFacesFromV11InPlace)
+//-- 资源串事实面（resources，schema v13）---------------------------------------
+
+namespace {
+
+DbResourceSearchQuery resourceQuery(const char* needle, DbTextMatchKind match,
+                                    bool caseSensitive)
+{
+    DbResourceSearchQuery query;
+    query.needle        = Utf8String::from_cstr(needle);
+    query.match         = match;
+    query.caseSensitive = caseSensitive;
+    return query;
+}
+
+///命中行压成 `entryPath|value` 键（行序即 (entry path, value) 全序）。
+std::vector<std::string> resourceKeys(const DbResourceSearchPage& page)
+{
+    std::vector<std::string> keys;
+    keys.reserve(page.rows.size());
+    for (const DbResourceSearchRow& row : page.rows) {
+        keys.push_back(row.entryPath.to_std_string() + "|" + row.value.to_std_string());
+    }
+    return keys;
+}
+
+DbEntryInput resourceEntry(const std::string& path, const std::string& kind, char shaSeed)
+{
+    DbEntryInput entry;
+    entry.path =
+        Utf8String::from_data(reinterpret_cast<const ca::u8*>(path.data()), path.size());
+    entry.kind   = Utf8String::from_data(reinterpret_cast<const ca::u8*>(kind.data()),
+                                         kind.size());
+    entry.size   = 64;
+    const std::string sha(64, shaSeed);
+    entry.sha256 = Utf8String::from_data(reinterpret_cast<const ca::u8*>(sha.data()),
+                                         sha.size());
+    entry.regular = true;
+    return entry;
+}
+
+DbResourceEntryInput resourceInput(ca::i64 entryId, std::vector<const char*> values)
+{
+    DbResourceEntryInput input;
+    input.entryId = entryId;
+    for (const char* value : values) input.values.push_back(Utf8String::from_cstr(value));
+    return input;
+}
+
+}   // namespace
+
+///v12 旧库开 ReadWrite 原地迁移到 v13（纯新增资源面一表）：存量事实零损失、
+///新面空库可查可写；ReadOnly 旧库与 v11 旧库 fail-loud（迁移窗随 n-1 政策
+///前移——v12 落地时按同款政策删除 v10→v11 步）。
+TEST(MjAnalysisDbTest, MigratesResourcesFromV12InPlace)
 {
     const auto fabricate = [](const std::filesystem::path& path, int version) {
         {
@@ -4964,7 +5016,7 @@ TEST(MjAnalysisDbTest, MigratesConstFacesFromV11InPlace)
             ASSERT_TRUE(db.save().is_ok());
         }
 
-        // 裸读写连接把库压回旧版：常量面两表整体摘除 + user_version 落指定版。
+        // 裸读写连接把库压回旧版：资源面表整体摘除 + user_version 落指定版。
         sqlite3* rw = nullptr;
         ASSERT_EQ(SQLITE_OK, sqlite3_open_v2(path.string().c_str(), &rw,
                                              SQLITE_OPEN_READWRITE, nullptr));
@@ -4974,65 +5026,60 @@ TEST(MjAnalysisDbTest, MigratesConstFacesFromV11InPlace)
             sqlite3_free(message);
             return rc;
         };
-        ASSERT_EQ(SQLITE_OK, execRaw("DROP TABLE cp_strings"));
-        ASSERT_EQ(SQLITE_OK, execRaw("DROP TABLE number_literals"));
+        ASSERT_EQ(SQLITE_OK, execRaw("DROP TABLE resources"));
         const std::string versionSql = "PRAGMA user_version=" + std::to_string(version);
         ASSERT_EQ(SQLITE_OK, execRaw(versionSql.c_str()));
         sqlite3_close(rw);
     };
 
-    // ReadWrite 重开：原地纯新增迁移，版本落 v12。
+    // ReadWrite 重开：原地纯新增迁移，版本落 v13。
     {
-        const auto path = freshDbPath("const_faces_v11_migrate");
-        fabricate(path, 11);
+        const auto path = freshDbPath("resources_v12_migrate");
+        fabricate(path, 12);
 
         auto db = openOrDie(path);
         EXPECT_EQ(kAnalysisDbSchemaVersion, db.schemaVersion());
-        EXPECT_EQ(12U, kAnalysisDbSchemaVersion);
+        EXPECT_EQ(13U, kAnalysisDbSchemaVersion);
 
-        // 存量事实零损失：类照常可查；新面空库可查（两张表已重建）。
+        // 存量事实零损失：类照常可查；新面空库可查（表已重建）。
         auto classPage = db.searchClassesPaged(
             searchQuery("Mig", DbTextMatchKind::Contains, false), 100, 0);
         ASSERT_TRUE(classPage.is_ok());
         EXPECT_EQ(1U, std::move(classPage).unwrap().total);
-        DbStringSearchQuery strings;
-        auto stringsPage = db.searchStringsPaged(strings, 100, 0);
-        ASSERT_TRUE(stringsPage.is_ok());
-        EXPECT_EQ(0U, std::move(stringsPage).unwrap().total);
-        DbNumberQuery numbers;
-        numbers.needle = Utf8String::from_cstr("1");
-        auto numberRows = db.searchNumbers(numbers);
-        ASSERT_TRUE(numberRows.is_ok());
-        EXPECT_TRUE(std::move(numberRows).unwrap().empty());
+        DbResourceSearchQuery resources;
+        auto resourcesPage = db.searchResourceStringsPaged(resources, 100, 0);
+        ASSERT_TRUE(resourcesPage.is_ok());
+        EXPECT_EQ(0U, std::move(resourcesPage).unwrap().total);
 
-        // 迁移后新面照常可写（写路径走新表无残留态）。
-        const auto migText = Utf8String::from_cstr("demo/Mig");
-        auto       found   = db.findClass(migText.ref());
-        ASSERT_TRUE(found.is_ok());
-        const ca::i64 mig = std::move(found).unwrap().value_or(DbClassInfo{}).classId;
-        ASSERT_GT(mig, 0);
-        std::vector<DbStringRecord> records;
-        records.push_back(stringRecord(DbStringKind::String, DbUtf8Facet::Name, "mig"));
-        ASSERT_TRUE(db.replaceCpStringsFromClass(0, mig, std::move(records)).is_ok());
-        auto after = db.searchStringsPaged(
-            stringQuery("mig", DbTextMatchKind::Contains, false), 100, 0);
+        // 迁移后新面照常可写（写路径走新表无残留态；input 稳定身份复取）。
+        auto inputId = db.ensureInput(S("lib/app.jar"), refOf(std::string(64, '0')), 4096);
+        ASSERT_TRUE(inputId.is_ok());
+        const auto live = searchLiveEntryIds(db, inputId.unwrap());
+        std::vector<DbResourceEntryInput> inputs;
+        DbResourceEntryInput              resourceInput;
+        resourceInput.entryId = live.at("demo/Mig.class");
+        resourceInput.values.push_back(Utf8String::from_cstr("mig resource"));
+        inputs.push_back(std::move(resourceInput));
+        ASSERT_TRUE(db.replaceResources(0, std::move(inputs)).is_ok());
+        auto after = db.searchResourceStringsPaged(
+            resourceQuery("mig", DbTextMatchKind::Contains, false), 100, 0);
         ASSERT_TRUE(after.is_ok());
         EXPECT_EQ(1U, std::move(after).unwrap().total);
     }
 
     // ReadOnly 旧库：不迁移，Schema fail-loud。
     {
-        const auto path = freshDbPath("const_faces_v11_readonly");
-        fabricate(path, 11);
+        const auto path = freshDbPath("resources_v12_readonly");
+        fabricate(path, 12);
         auto result = AnalysisDb::open(refOf(path.string()), AnalysisDbOpenMode::ReadOnly);
         ASSERT_TRUE(result.is_err());
         EXPECT_EQ(AnalysisDbErrorKind::Schema, std::move(result).unwrap_err().kind);
     }
 
-    // v10 旧库（隔代）：n-1 政策之外，fail-loud。
+    // v11 旧库（隔代）：n-1 政策之外，fail-loud。
     {
-        const auto path = freshDbPath("const_faces_v10_fail");
-        fabricate(path, 10);
+        const auto path = freshDbPath("resources_v11_fail");
+        fabricate(path, 11);
         auto result = AnalysisDb::open(refOf(path.string()), AnalysisDbOpenMode::ReadWrite);
         ASSERT_TRUE(result.is_err());
         EXPECT_EQ(AnalysisDbErrorKind::Schema, std::move(result).unwrap_err().kind);
@@ -5103,4 +5150,250 @@ TEST(MjAnalysisDbTest, NumberLiteralQueryPlansProbePartialIndex)
     }
 
     sqlite3_close(raw);
+}
+
+
+///整库单事务替换：同条目同值折叠、空输入清空、未登记条目整批回滚旧表保持、
+///批次锚复用 input 作用域（(1, input_id) 去重各一行）、批身份校验。
+TEST(MjAnalysisDbTest, ReplaceResourcesRebuildsAtomically)
+{
+    const auto path = freshDbPath("resources_replace");
+    auto       db   = openOrDie(path);
+    auto inputId = db.ensureInput(S("lib/app.jar"), refOf(std::string(64, '0')), 4096);
+    ASSERT_TRUE(inputId.is_ok());
+    const ca::i64 jar = inputId.unwrap();
+
+    std::vector<DbEntryInput> entries;
+    entries.push_back(resourceEntry("data/notice.txt", "resource", 'a'));
+    entries.push_back(resourceEntry("data/other.bin", "resource", 'b'));
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(entries)).is_ok());
+    const auto live = searchLiveEntryIds(db, jar);
+    const ca::i64 notice = live.at("data/notice.txt");
+    const ca::i64 other  = live.at("data/other.bin");
+
+    //整库替换 + 同条目同值折叠（重复行 UNIQUE DO NOTHING）。
+    {
+        std::vector<DbResourceEntryInput> inputs;
+        inputs.push_back(resourceInput(notice, {"Hello", "Hello", "World"}));
+        inputs.push_back(resourceInput(other, {"alpha"}));
+        auto replaced = db.replaceResources(0, std::move(inputs));
+        ASSERT_TRUE(replaced.is_ok());
+        EXPECT_EQ(4U, std::move(replaced).unwrap());   // 按输入记录数计
+
+        auto page = db.searchResourceStringsPaged(
+            resourceQuery("", DbTextMatchKind::Contains, true), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(3U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"data/notice.txt|Hello",
+                                            "data/notice.txt|World",
+                                            "data/other.bin|alpha"}),
+                  resourceKeys(result));
+    }
+
+    //重跑整库替换：旧行全部让位（整库语义，非逐条目合并）。
+    {
+        std::vector<DbResourceEntryInput> inputs;
+        inputs.push_back(resourceInput(notice, {"fresh"}));
+        ASSERT_TRUE(db.replaceResources(0, std::move(inputs)).is_ok());
+        auto page = db.searchResourceStringsPaged(
+            resourceQuery("", DbTextMatchKind::Contains, true), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(1U, result.total);
+        EXPECT_EQ(std::vector<std::string>{"data/notice.txt|fresh"}, resourceKeys(result));
+    }
+
+    //空输入 = 清空全表。
+    {
+        ASSERT_TRUE(db.replaceResources(0, {}).is_ok());
+        auto page = db.searchResourceStringsPaged(
+            resourceQuery("", DbTextMatchKind::Contains, true), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(0U, std::move(page).unwrap().total);
+    }
+
+    //未登记条目：Invalid 整批回滚，旧表保持调用前原状。
+    {
+        std::vector<DbResourceEntryInput> inputs;
+        inputs.push_back(resourceInput(notice, {"kept"}));
+        inputs.push_back(resourceInput(999999, {"ghost"}));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.replaceResources(0, std::move(inputs))));
+        auto page = db.searchResourceStringsPaged(
+            resourceQuery("kept", DbTextMatchKind::Contains, true), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(0U, std::move(page).unwrap().total);
+    }
+
+    //批次锚：input 作用域去重各一行；批身份校验（未收尾批次才可写）。
+    {
+        DbProducerInput producerInput;
+        producerInput.key   = Utf8String::from_cstr("test.resources");
+        producerInput.name  = Utf8String::from_cstr("resources test");
+        auto registered     = db.registerProducer(producerInput);
+        ASSERT_TRUE(registered.is_ok());
+        auto batch = db.openBatch(registered.unwrap(), DbBatchKind::FullImport,
+                                  S("lib/app.jar"));
+        ASSERT_TRUE(batch.is_ok());
+        const ca::i64 batchId = batch.unwrap();
+
+        std::vector<DbResourceEntryInput> inputs;
+        inputs.push_back(resourceInput(notice, {"batched"}));
+        inputs.push_back(resourceInput(other, {"batched2"}));
+        ASSERT_TRUE(db.replaceResources(batchId, std::move(inputs)).is_ok());
+
+        auto batches = db.listBatches(std::nullopt);
+        ASSERT_TRUE(batches.is_ok());
+        bool foundBatch = false;
+        for (const DbBatchInfo& info : std::move(batches).unwrap()) {
+            if (info.batchId != batchId) continue;
+            foundBatch = true;
+            EXPECT_EQ(1, info.scopeCount);   // 同 input 两条目去重 → 单锚行
+        }
+        EXPECT_TRUE(foundBatch);
+
+        //已收尾批次拒写（validateOpenBatchForWrite 同款门）。
+        ASSERT_TRUE(db.closeBatch(batchId, DbBatchCounts{}).is_ok());
+        std::vector<DbResourceEntryInput> again;
+        again.push_back(resourceInput(notice, {"late"}));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.replaceResources(batchId, std::move(again))));
+    }
+
+    //负批 id：Invalid。
+    {
+        std::vector<DbResourceEntryInput> inputs;
+        inputs.push_back(resourceInput(notice, {"x"}));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.replaceResources(-1, std::move(inputs))));
+    }
+}
+
+///文本面三档 × 折叠/字节敏感、LIKE/GLOB 元字符转义、墓碑条目不可见、
+///(entry path, value) 全序、窗口拼接与负值。
+TEST(MjAnalysisDbTest, SearchResourceStringsMatchValueAndPage)
+{
+    const auto path = freshDbPath("search_resources_match");
+    auto       db   = openOrDie(path);
+    auto inputId = db.ensureInput(S("lib/app.jar"), refOf(std::string(64, '0')), 4096);
+    ASSERT_TRUE(inputId.is_ok());
+    const ca::i64 jar = inputId.unwrap();
+
+    std::vector<DbEntryInput> entries;
+    entries.push_back(resourceEntry("data/notice.txt", "resource", 'a'));
+    entries.push_back(resourceEntry("data/other.bin", "resource", 'b'));
+    entries.push_back(resourceEntry("data/gone.txt", "resource", 'c'));
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(entries)).is_ok());
+    const auto firstLive = searchLiveEntryIds(db, jar);
+    const ca::i64 goneEntry = firstLive.at("data/gone.txt");
+
+    //重导入去掉 gone.txt（墓碑）。
+    std::vector<DbEntryInput> reduced;
+    reduced.push_back(resourceEntry("data/notice.txt", "resource", 'a'));
+    reduced.push_back(resourceEntry("data/other.bin", "resource", 'b'));
+    ASSERT_TRUE(db.ingestEntries(0, jar, std::move(reduced)).is_ok());
+    const auto live = searchLiveEntryIds(db, jar);
+
+    std::vector<DbResourceEntryInput> inputs;
+    inputs.push_back(resourceInput(live.at("data/notice.txt"),
+                                   {"Hello World", "hello there", "WILDCARD*star",
+                                    "under_score"}));
+    inputs.push_back(resourceInput(live.at("data/other.bin"), {"hello darkness"}));
+    inputs.push_back(resourceInput(goneEntry, {"ghost string"}));   // 墓碑条目：不可见
+    ASSERT_TRUE(db.replaceResources(0, std::move(inputs)).is_ok());
+
+    //contains 不敏感：LOWER 折叠全量命中（墓碑行不可见）。
+    {
+        auto page = db.searchResourceStringsPaged(
+            resourceQuery("HELLO", DbTextMatchKind::Contains, false), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        EXPECT_EQ(3U, result.total);
+        EXPECT_EQ((std::vector<std::string>{"data/notice.txt|Hello World",
+                                            "data/notice.txt|hello there",
+                                            "data/other.bin|hello darkness"}),
+                  resourceKeys(result));
+    }
+    //contains 字节敏感：大写 needle 不折叠。
+    {
+        auto page = db.searchResourceStringsPaged(
+            resourceQuery("HELLO", DbTextMatchKind::Contains, true), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(0U, std::move(page).unwrap().total);
+    }
+    //prefix / exact 两档（折叠路径）。
+    {
+        auto page = db.searchResourceStringsPaged(
+            resourceQuery("hello w", DbTextMatchKind::Prefix, false), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ((std::vector<std::string>{"data/notice.txt|Hello World"}),
+                  resourceKeys(std::move(page).unwrap()));
+    }
+    {
+        auto page = db.searchResourceStringsPaged(
+            resourceQuery("HELLO WORLD", DbTextMatchKind::Exact, false), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ((std::vector<std::string>{"data/notice.txt|Hello World"}),
+                  resourceKeys(std::move(page).unwrap()));
+    }
+    {
+        auto page = db.searchResourceStringsPaged(
+            resourceQuery("hello darkness", DbTextMatchKind::Exact, true), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ((std::vector<std::string>{"data/other.bin|hello darkness"}),
+                  resourceKeys(std::move(page).unwrap()));
+    }
+    //敏感档 GLOB 元字符转义：needle 内 * 字面命中。
+    {
+        auto page = db.searchResourceStringsPaged(
+            resourceQuery("D*star", DbTextMatchKind::Contains, true), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ((std::vector<std::string>{"data/notice.txt|WILDCARD*star"}),
+                  resourceKeys(std::move(page).unwrap()));
+    }
+    //不敏感档 LIKE 元字符转义：_ 字面命中（LOWER 折叠后 _ 仍需转义）。
+    {
+        auto page = db.searchResourceStringsPaged(
+            resourceQuery("R_SC", DbTextMatchKind::Contains, false), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ((std::vector<std::string>{"data/notice.txt|under_score"}),
+                  resourceKeys(std::move(page).unwrap()));
+    }
+    //needle 为空：全量（资源行无作用域参数，空串 = 不做文本过滤）。
+    {
+        auto page = db.searchResourceStringsPaged(
+            resourceQuery("", DbTextMatchKind::Contains, true), 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        EXPECT_EQ(5U, std::move(page).unwrap().total);
+    }
+    //窗口拼接：各页按 offset 升序拼接 = 全量，不重不漏；total 跨页一致。
+    {
+        std::vector<std::string> stitched;
+        for (const ca::i64 offset : {ca::i64{0}, ca::i64{2}, ca::i64{4}}) {
+            auto page = db.searchResourceStringsPaged(
+                resourceQuery("", DbTextMatchKind::Contains, true), 2, offset);
+            ASSERT_TRUE(page.is_ok());
+            const auto result = std::move(page).unwrap();
+            EXPECT_EQ(5U, result.total);
+            for (auto& row : result.rows) {
+                stitched.push_back(row.entryPath.to_std_string() + "|" +
+                                   row.value.to_std_string());
+            }
+        }
+        EXPECT_EQ((std::vector<std::string>{"data/notice.txt|Hello World",
+                                            "data/notice.txt|WILDCARD*star",
+                                            "data/notice.txt|hello there",
+                                            "data/notice.txt|under_score",
+                                            "data/other.bin|hello darkness"}),
+                  stitched);
+    }
+    //负窗口：Invalid。
+    {
+        DbResourceSearchQuery query;
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.searchResourceStringsPaged(query, -1, 0)));
+        EXPECT_EQ(AnalysisDbErrorKind::Invalid,
+                  takeErrorKind(db.searchResourceStringsPaged(query, 10, -1)));
+    }
 }
