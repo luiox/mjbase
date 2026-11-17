@@ -2,8 +2,10 @@
 /// @brief classfile 适配器，见 doc:semantic-ast-jvm。
 #pragma once
 
+#include <array>
 #include <functional>
 #include <string_view>
+#include <unordered_set>
 
 #include "jbc/ir/units.hpp"
 #include "libca/core/result.hpp"
@@ -49,6 +51,18 @@ bool replaceJvmLocalReadWithConstant(jbc::ir::ClassSession& session, jbc::ir::Co
 /// Replace a proven not-taken integer condition with equivalent stack consumption.
 /// The caller proves the branch outcome. Source handles and producer evaluations are preserved.
 bool replaceJvmIntBranchWithFallthrough(jbc::ir::CodeUnit& code, jbc::ir::InsnId site);
+
+/// Fold a consecutive integer producer, producer, binary-operation window.
+/// The caller supplies the proven result. The head retains its source PC and labels.
+/// Interior labels, stale handles or incompatible operations reject the edit.
+bool foldJvmIntBinary(jbc::ir::ClassSession& session, jbc::ir::CodeUnit& code,
+                       const std::array<jbc::ir::InsnId, 3>& window, ca::i32 result,
+                       const std::unordered_set<ca::u32>& protectedPcs);
+
+/// Source PCs referenced by supported Code metadata. A missing result rejects
+/// structural folding because an attached attribute cannot be safely relocated.
+std::optional<std::unordered_set<ca::u32>>
+jvmConstantFoldProtectedPcs(jbc::ir::ClassSession& session, jbc::ir::CodeUnit& code);
 
 /// 修改单个常量节点。返回空值保留旧值。替换值须属于同一种字面量。
 using LiteralRewriter = std::function<std::optional<Literal>(

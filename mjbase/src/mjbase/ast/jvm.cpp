@@ -1,8 +1,10 @@
 #include "jvm.hpp"
 
+#include <algorithm>
 #include <utility>
 
 #include "jbc/core/writer.hpp"
+#include "jbc/ir/code_editor.hpp"
 #include "jbc/type/descriptor.hpp"
 #include "jstr/conversion.hpp"
 #include "mjbase/asm/cfg/control_flow_graph.hpp"
@@ -658,6 +660,41 @@ bool replaceJvmIntBranchWithFallthrough(jbc::ir::CodeUnit& code, InsnId site)
     else return false;
     replacement.srcPc = in.srcPc;
     in = std::move(replacement);
+    return true;
+}
+
+bool foldJvmIntBinary(ClassSession& session, jbc::ir::CodeUnit& code,
+                       const std::array<InsnId, 3>& window, ca::i32 result,
+                       const std::unordered_set<ca::u32>& protectedPcs)
+{
+    auto& dom = code.dom;
+    const auto& order = dom.order();
+    auto first = std::find(order.begin(), order.end(), window[0]);
+    if (first == order.end() || order.end() - first < 3
+        || first[1] != window[1] || first[2] != window[2]) return false;
+    const auto* binary = dom.peek(window[2]);
+    if (!binary || !binaryOp(binary->op)) return false;
+    for (ca::usize i = 0; i < 2; ++i) {
+        const auto* producer = dom.peek(window[i]);
+        if (!producer) return false;
+        if (asm_sem::explicitLocalOp(producer->op) == Op::ILOAD
+            || (producer->op >= Op::ICONST_M1 && producer->op <= Op::ICONST_5)
+            || producer->op == Op::BIPUSH || producer->op == Op::SIPUSH) continue;
+        ClassSession::ConstSem constant;
+        if (!session.constOf(*producer, constant)
+            || constant.kind != ClassSession::ConstSem::Kind::Int) return false;
+    }
+    for (ca::usize i = 1; i < window.size(); ++i) {
+        if (!dom.labelsAt(window[i]).empty()
+            || protectedPcs.count(dom.peek(window[i])->srcPc) != 0) return false;
+    }
+    auto head = dom.get(window[0]);
+    if (head.is_err()) return false;
+    Insn replacement = *head.unwrap();
+    if (!encodeLiteral(session, replacement, Literal{result})) return false;
+    jbc::ir::CodeEditor editor(code);
+    if (editor.eraseBatch({window[1], window[2]}).is_err()) return false;
+    *head.unwrap() = std::move(replacement);
     return true;
 }
 

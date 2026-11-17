@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <string>
 #include <vector>
 
 #include "jbc/core/opcode.hpp"
@@ -42,6 +43,30 @@ std::vector<const jbc::ir::Insn*> allInsns(const Inspection& ins)
         out.push_back(in);
     }
     return out;
+}
+
+Bytes saturatedPoolIincMethod(bool includeResult)
+{
+    // A wide literal keeps this method on the legacy instruction route.
+    const auto bytes = oneMethod("()I", R"JASM(
+      lconst_0
+      pop2
+      sipush 32767
+      istore_0
+      iinc 0 1
+      iload_0
+      ireturn
+)JASM");
+    auto loaded = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
+    EXPECT_TRUE(loaded.is_ok());
+    if (loaded.is_err()) return {};
+    const auto session = std::move(loaded).unwrap();
+    if (includeResult) session->internInteger(32768);
+    auto& cp = session->backing().cp;
+    while (cp.size() < 0xFFFFu) cp.addUtf8("pool_padding_" + std::to_string(cp.size()));
+    auto written = jbc::core::writeClass(session->backing());
+    EXPECT_TRUE(written.is_ok());
+    return written.is_ok() ? std::move(written).unwrap() : Bytes{};
 }
 
 }   // namespace
@@ -170,6 +195,36 @@ TEST(LocalConstantPropagationTest, iincWrapsAroundIntMax)
     ca::i32 v = 0;
     ASSERT_TRUE(mjbase::pass::method_rewrite_util::intValueOf(*ins.session, *all[3], v));
     EXPECT_EQ(v, 32768);
+}
+
+TEST(MjLocalConstantPropagationTest, KeepsIincLoadWhenThePoolCannotAppendItsValue)
+{
+    const auto input = saturatedPoolIincMethod(false);
+    ASSERT_FALSE(input.empty());
+    const auto result = runMethodPass(input, mjbase::pass::LocalConstantPropagation{});
+    EXPECT_TRUE(result.pa.areAllPreserved());
+    EXPECT_EQ(result.out, input);
+    EXPECT_EQ(result.session->backing().cp.size(), 0xFFFFu);
+    const auto inspected = inspect(result.out);
+    const auto insns = allInsns(inspected);
+    ASSERT_EQ(insns.size(), 7u);
+    EXPECT_EQ(insns[5]->op, Op::ILOAD_0);
+}
+
+TEST(MjLocalConstantPropagationTest, ReusesAnIntegerAtPoolCapacity)
+{
+    const auto input = saturatedPoolIincMethod(true);
+    ASSERT_FALSE(input.empty());
+    const auto result = runMethodPass(input, mjbase::pass::LocalConstantPropagation{});
+    EXPECT_TRUE(result.pa.changed());
+    EXPECT_EQ(result.session->backing().cp.size(), 0xFFFFu);
+    const auto inspected = inspect(result.out);
+    const auto insns = allInsns(inspected);
+    ASSERT_EQ(insns.size(), 7u);
+    ca::i32 value = 0;
+    ASSERT_TRUE(mjbase::pass::method_rewrite_util::intValueOf(*inspected.session, *insns[5], value));
+    EXPECT_EQ(value, 32768);
+    expectValidateOk(result.out);
 }
 
 // ── 引用槽：ACONST_NULL;ASTORE_0 后 ALOAD_0 → ACONST_NULL ──
