@@ -110,6 +110,22 @@ bool sameConstant(const KnownConstant& left, const KnownConstant& right)
     return true;
 }
 
+Constant commonConstant(const KnownConstant& left, const KnownConstant& right)
+{
+    if (sameConstant(left, right)) return left;
+    const auto* integer = std::get_if<ca::i32>(&left);
+    const auto* bits = std::get_if<Bits32>(&right);
+    if (!integer || !bits) {
+        integer = std::get_if<ca::i32>(&right);
+        bits = std::get_if<Bits32>(&left);
+    }
+    if (integer && bits && static_cast<ca::u32>(*integer) == bits->bits) {
+        // Retain the untyped representation until the consumer establishes int semantics.
+        return *bits;
+    }
+    return std::nullopt;
+}
+
 bool mergeInto(std::optional<Entry>& entry, const LocalConstants& locals,
                const ConstantFacts& parameters)
 {
@@ -121,19 +137,28 @@ bool mergeInto(std::optional<Entry>& entry, const LocalConstants& locals,
     bool changed = false;
     for (auto it = entry->locals.begin(); it != entry->locals.end();) {
         const auto incoming = locals.find(it->first);
-        if (incoming == locals.end() || !sameConstant(it->second, incoming->second)) {
+        const auto common = incoming == locals.end()
+            ? std::nullopt : commonConstant(it->second, incoming->second);
+        if (!common) {
             it = entry->locals.erase(it);
             changed = true;
         } else {
+            if (!sameConstant(it->second, *common)) {
+                it->second = *common;
+                changed = true;
+            }
             ++it;
         }
     }
     for (ca::usize i = 0; i < parameters.size(); ++i) {
         auto& old = entry->parameters[i];
         const auto& next = parameters[i];
-        if (old && (!next || !sameConstant(*old, *next))) {
-            old.reset();
-            changed = true;
+        if (old) {
+            const auto common = next ? commonConstant(*old, *next) : std::nullopt;
+            if (!common || !sameConstant(*old, *common)) {
+                old = common;
+                changed = true;
+            }
         }
     }
     return changed;

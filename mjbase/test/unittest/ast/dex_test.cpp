@@ -338,9 +338,10 @@ TEST(MjAstDexTest, SharesIntegerDataflowAndDominanceAcrossAJoin)
     .registers 2
     if-eqz p0, :alt
     const/4 v0, 0x2
+    add-int/lit8 v0, v0, 0x3
     goto :join
   :alt
-    const/4 v0, 0x2
+    const/4 v0, 0x5
   :join
     add-int/lit8 v0, v0, 0x3
     return v0
@@ -359,9 +360,11 @@ TEST(MjAstDexTest, SharesIntegerDataflowAndDominanceAcrossAJoin)
         iload_0
         ifeq Lalt
         iconst_2
+        iconst_3
+        iadd
         goto Ljoin
       Lalt:
-        iconst_2
+        iconst_5
       Ljoin:
         iconst_3
         iadd
@@ -384,7 +387,7 @@ TEST(MjAstDexTest, SharesIntegerDataflowAndDominanceAcrossAJoin)
         ASSERT_TRUE(ret.value);
         const auto facts = analyzeIntFlow(*body);
         ASSERT_TRUE(facts);
-        EXPECT_EQ(facts->values[3][ret.value->index], std::optional<ca::i32>{5});
+        EXPECT_EQ(facts->values[3][ret.value->index], std::optional<ca::i32>{8});
         const auto graph = ControlFlowGraph::build(*body);
         ASSERT_TRUE(graph.is_ok());
         const DominatorTree dominators(graph.unwrap());

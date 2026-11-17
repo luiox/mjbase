@@ -65,6 +65,7 @@ target("mjbase")
     -- 按 mjt 与 mjt-py 的实际消费面追加，每批独立构建 + 独立测试。
     add_files("src/mjbase/keys.cpp", "src/mjbase/util.cpp")
     add_files("src/mjbase/ast/method_body.cpp", "src/mjbase/ast/jvm.cpp")
+    add_files("src/mjbase/ast/jvm_metadata.cpp")
     add_files("src/mjbase/ast/constant_facts.cpp", "src/mjbase/ast/effects.cpp")
     add_files("src/mjbase/ast/control_flow.cpp", "src/mjbase/ast/int_flow.cpp")
     add_files("src/mjbase/expr/**.cpp")

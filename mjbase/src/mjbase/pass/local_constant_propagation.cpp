@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "jbc/core/constant_pool.hpp"
 #include "jbc/core/opcode.hpp"
 #include "jbc/ir/code_dom.hpp"
 #include "jbc/ir/code_editor.hpp"
@@ -183,11 +184,27 @@ bool constProducerOf(const jbc::ir::ClassSession& session, const Insn& prev, Op 
 }
 
 /// 把装载指令原位改写为按值物化的常量生产者（srcPc 影线保持原位）。
-void rewriteToConst(jbc::ir::ClassSession& session, Insn* in, const Track& t)
+bool rewriteToConst(jbc::ir::ClassSession& session, Insn* in, const Track& t)
 {
     Insn next;
     switch (t.kind) {
-    case TrackKind::Int: next = method_rewrite_util::materializeIntConst(session, t.i); break;
+    case TrackKind::Int: {
+        // IINC can produce a value absent from the original constant pool.
+        const auto& cp = session.backing().cp;
+        if ((t.i < -32768 || t.i > 32767) && cp.size() >= 0xFFFFu) {
+            bool reusable = false;
+            for (ca::u32 index = 1; index < 0xFFFFu; ++index) {
+                if (cp.valid(index) && cp.tagOf(index) == jbc::core::CpTag::Integer
+                    && cp.at(index).ival == t.i) {
+                    reusable = true;
+                    break;
+                }
+            }
+            if (!reusable) return false;
+        }
+        next = method_rewrite_util::materializeIntConst(session, t.i);
+        break;
+    }
     case TrackKind::Long: next = method_rewrite_util::materializeLongConst(session, t.l); break;
     case TrackKind::Float:
         next = method_rewrite_util::materializeFloatConst(session, t.f);
@@ -200,6 +217,7 @@ void rewriteToConst(jbc::ir::ClassSession& session, Insn* in, const Track& t)
     const ca::u32 srcPc = in->srcPc;
     *in                 = next;
     in->srcPc           = srcPc;
+    return true;
 }
 
 }   // namespace
@@ -274,8 +292,7 @@ mjbase::spi::PreservedAnalyses LocalConstantPropagation::run(
         if (it == tracked.end() || it->second.kind != kind) continue;
         auto got = dom.get(ids[i]);
         if (got.is_err()) continue;
-        rewriteToConst(session, std::move(got).unwrap(), it->second);
-        modified = true;
+        modified = rewriteToConst(session, std::move(got).unwrap(), it->second) || modified;
     }
 
     return modified ? mjbase::spi::PreservedAnalyses::none()

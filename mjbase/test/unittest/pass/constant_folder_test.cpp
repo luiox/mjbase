@@ -1,4 +1,4 @@
-// ConstantFolder：操作数栈常量链折叠。op 族全覆盖 + 回绕/除零/MIN/-1 红线 +
+// ConstantFolder：操作数栈常量链折叠。op 族全覆盖 + 回绕/除零/MIN/-1 语义 +
 // 负操作数矩阵 + 链识别边界（链长 1 / 类型混用 / 标签守卫）+ 幂等 + PA 纪律。
 //
 // 夹具纪律：类骨架与方法体一律 jasm 文本装配（JvmJasmService）；窄常量
@@ -423,17 +423,21 @@ TEST(ConstantFolderTest, longSubWrapsAtLongMin)
     expectLongFold(r, (std::numeric_limits<ca::i64>::max)());
 }
 
-// ── 红线：INT_MIN / -1 的 idiv/irem 保留不折 ──
-TEST(ConstantFolderTest, intDivMinMinusOneNotFolded)
+// ── INT_MIN / -1 = INT_MIN，INT_MIN % -1 = 0 ──
+TEST(ConstantFolderTest, intDivMinMinusOneWraps)
 {
     const Bytes in = oneMethod("ldc -2147483648\niconst_m1\nidiv\nreturn\n");
-    expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
+    const auto result = runMethodPass(in, mjbase::pass::ConstantFolder{});
+    EXPECT_TRUE(result.pa.changed());
+    expectIntFold(result, (std::numeric_limits<ca::i32>::min)());
 }
 
-TEST(ConstantFolderTest, intRemMinMinusOneNotFolded)
+TEST(ConstantFolderTest, intRemMinMinusOneIsZero)
 {
     const Bytes in = oneMethod("ldc -2147483648\niconst_m1\nirem\nreturn\n");
-    expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
+    const auto result = runMethodPass(in, mjbase::pass::ConstantFolder{});
+    EXPECT_TRUE(result.pa.changed());
+    expectIntFold(result, 0);
 }
 
 // ── 红线：除数 0 保留 ArithmeticException（不折）──
@@ -657,6 +661,132 @@ TEST(ConstantFolderTest, secondRunIsNoOp)
     EXPECT_EQ(second.out, first.out);
 }
 
+TEST(MjConstantFolderTest, KeepsLineNumberAtAChainHeadAwayFromMethodEntry)
+{
+    const auto input = assembleMethodClass("m", "()I", R"JASM(
+      nop
+      line 42
+      iconst_1
+      iconst_2
+      iadd
+      ireturn
+)JASM");
+    ASSERT_FALSE(input.empty());
+    const auto result = runMethodPass(input, mjbase::pass::ConstantFolder{});
+    EXPECT_TRUE(result.pa.changed());
+    const auto output = inspect(result.out);
+    const auto ops = opsOf(output);
+    ASSERT_EQ(ops.size(), 3u);
+    EXPECT_EQ(ops[0], Op::NOP);
+    EXPECT_EQ(ops[1], Op::ICONST_3);
+    EXPECT_EQ(ops[2], Op::IRETURN);
+
+    auto& file = output.session->backing();
+    auto decodedCode = file.decodeCode(file.methods[0]);
+    ASSERT_TRUE(decodedCode.is_ok());
+    auto* code = decodedCode.unwrap();
+    ASSERT_NE(code, nullptr);
+    bool found = false;
+    for (auto& attribute : code->attrs) {
+        if (!file.cp.utf8Equals(attribute.nameCp, "LineNumberTable")) continue;
+        auto decoded = file.decodeAttr(attribute);
+        ASSERT_TRUE(decoded.is_ok());
+        ASSERT_EQ(decoded.unwrap()->kind(), jbc::core::AttrKind::LineNumberTable);
+        const auto* lines = static_cast<const jbc::core::LineNumberTableAttr*>(decoded.unwrap());
+        ASSERT_EQ(lines->rows.size(), 1u);
+        EXPECT_EQ(lines->rows.front().startPc, 1u);
+        EXPECT_EQ(lines->rows.front().line, 42u);
+        found = true;
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(MjConstantFolderTest, FoldsLongChainDerivedFromKnownLocal)
+{
+    std::string body = "iconst_1\nistore_0\niload_0\n";
+    constexpr ca::i32 additions = 128;
+    for (ca::i32 i = 0; i < additions; ++i) body += "iconst_1\niadd\n";
+    body += "ireturn\n";
+    const auto input = assembleMethodClass("m", "()I", body);
+    ASSERT_FALSE(input.empty());
+    const auto result = runMethodPass(input, mjbase::pass::ConstantFolder{});
+    EXPECT_TRUE(result.pa.changed());
+    const auto output = inspect(result.out);
+    const auto& order = output.cu->dom.order();
+    ASSERT_EQ(order.size(), 4u);
+    ca::i32 value = 0;
+    ASSERT_TRUE(mjbase::pass::method_rewrite_util::intValueOf(
+        *output.session, *output.cu->dom.peek(order[2]), value));
+    EXPECT_EQ(value, additions + 1);
+    EXPECT_EQ(output.cu->dom.peek(order.back())->op, Op::IRETURN);
+}
+
+TEST(MjConstantFolderTest, FoldsKnownLocalInRightSubtreeThenParent)
+{
+    const auto input = assembleMethodClass("m", "()I", R"JASM(
+      iconst_1
+      istore_0
+      iload_0
+      iload_0
+      iconst_2
+      iadd
+      imul
+      ireturn
+)JASM");
+    ASSERT_FALSE(input.empty());
+    const auto result = runMethodPass(input, mjbase::pass::ConstantFolder{});
+    EXPECT_TRUE(result.pa.changed());
+    const auto output = inspect(result.out);
+    const auto& order = output.cu->dom.order();
+    ASSERT_EQ(order.size(), 4u);
+    ca::i32 value = 0;
+    ASSERT_TRUE(mjbase::pass::method_rewrite_util::intValueOf(
+        *output.session, *output.cu->dom.peek(order[2]), value));
+    EXPECT_EQ(value, 3);
+    EXPECT_EQ(output.cu->dom.peek(order.back())->op, Op::IRETURN);
+}
+
+TEST(MjConstantFolderTest, ReusesExistingConstantAtPoolCapacity)
+{
+    using ConstantKind = jbc::ir::ClassSession::ConstSem::Kind;
+    struct Case
+    {
+        const char* body;
+        ConstantKind kind;
+        ca::i64 number;
+        ca::u64 bits;
+    };
+    const Case cases[] = {
+        {"ldc 65536\niconst_0\niadd\nreturn\n", ConstantKind::Int, 65536, 0},
+        {"ldc 2L\nlconst_0\nladd\nreturn\n", ConstantKind::Long, 2, 0},
+        {"ldc 3.0f\nfconst_0\nfadd\nreturn\n", ConstantKind::Float, 0, f32Bits(3.0f)},
+        {"ldc 2.0D\ndconst_0\ndadd\nreturn\n", ConstantKind::Double, 0, f64Bits(2.0)},
+    };
+    for (const auto& test : cases) {
+        SCOPED_TRACE(test.body);
+        const auto assembled = oneMethod(test.body);
+        ASSERT_FALSE(assembled.empty());
+        auto loaded = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(assembled));
+        ASSERT_TRUE(loaded.is_ok());
+        auto session = std::move(loaded).unwrap();
+        while (session->backing().cp.size() < 0xFFFFu) {
+            session->backing().cp.addInteger(0);
+        }
+        auto written = jbc::core::writeClass(session->backing());
+        ASSERT_TRUE(written.is_ok());
+        const auto result = runMethodPass(std::move(written).unwrap(), mjbase::pass::ConstantFolder{});
+        EXPECT_TRUE(result.pa.changed());
+        const auto output = inspect(result.out);
+        ASSERT_EQ(opsOf(output).size(), 2u);
+        EXPECT_EQ(output.session->backing().cp.size(), 0xFFFFu);
+        jbc::ir::ClassSession::ConstSem value;
+        ASSERT_TRUE(output.session->constOf(*firstInsn(output), value));
+        EXPECT_EQ(value.kind, test.kind);
+        EXPECT_EQ(value.num, test.number);
+        EXPECT_EQ(value.bits, test.bits);
+    }
+}
+
 // ── maxStack 不升（折叠只降不升；管线未注入 resolver 时不重算）──
 TEST(ConstantFolderTest, maxStackNotRaised)
 {
@@ -752,18 +882,29 @@ TEST(ConstantFolderTest, longChainIntPushNotFollowedByShiftStops)
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
-// ── long 红线：除 0 与 MIN/-1 保留不折 ──
+// ── long 除 0 保留异常，MIN/-1 按补码回绕 ──
 TEST(ConstantFolderTest, longDivZeroNotFolded)
 {
     const Bytes in = oneMethod("ldc 1L\nlconst_0\nldiv\nreturn\n");
     expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
 }
 
-TEST(ConstantFolderTest, longDivMinMinusOneNotFolded)
+TEST(ConstantFolderTest, longDivMinMinusOneWraps)
 {
     const Bytes in =
         oneMethod("ldc -9223372036854775808L\nldc -1L\nldiv\nreturn\n");
-    expectUnchanged(in, runMethodPass(in, mjbase::pass::ConstantFolder{}));
+    const auto result = runMethodPass(in, mjbase::pass::ConstantFolder{});
+    EXPECT_TRUE(result.pa.changed());
+    expectLongFold(result, (std::numeric_limits<ca::i64>::min)());
+}
+
+TEST(MjConstantFolderTest, LongRemMinMinusOneIsZero)
+{
+    const Bytes in =
+        oneMethod("ldc -9223372036854775808L\nldc -1L\nlrem\nreturn\n");
+    const auto result = runMethodPass(in, mjbase::pass::ConstantFolder{});
+    EXPECT_TRUE(result.pa.changed());
+    expectLongFold(result, 0);
 }
 
 // ── long 回绕：LONG_MAX + 1 → LONG_MIN ──
