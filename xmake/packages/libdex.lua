@@ -1,0 +1,15 @@
+-- Match the libdex revision used by mjt until the package repository carries it.
+package("libdex")
+    set_homepage("https://github.com/luiox/libdex")
+    set_description("DEX reader, editor and smali assembler")
+    set_license("MIT")
+    add_urls("https://github.com/luiox/libdex.git")
+    add_versions("0.0.1", "a5fae5a3c788d8d85bf32bd21633a84a9525927a")
+    add_deps("libca " .. LUIOX_LIBCA_VERSION, {configs = {modules = LUIOX_LIBCA_MODULES}})
+    add_deps("libjstr 0.0.4", "zlib")
+    add_links("libsmali", "libdex")
+
+    on_install("windows", "linux", "macosx", function (package)
+        import("package.tools.xmake").install(package, {with_tests = false})
+    end)
+package_end()

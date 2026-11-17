@@ -106,8 +106,8 @@ jobs:
           restore-keys: |
             mjbase-xrepo-linux-x64-xmake309-
 
-      - name: Configure (with tests)
-        run: xmake f -p linux --with_tests=y -y
+      - name: Configure (with tests and DEX adapter)
+        run: xmake f -p linux --with_tests=y --with_dex=y -y
 
       - name: Build library
         run: xmake -y
