@@ -65,6 +65,7 @@ target("mjbase")
     -- 按 mjt 与 mjt-py 的实际消费面追加，每批独立构建 + 独立测试。
     add_files("src/mjbase/keys.cpp", "src/mjbase/util.cpp")
     add_files("src/mjbase/ast/method_body.cpp", "src/mjbase/ast/jvm.cpp")
+    add_files("src/mjbase/ast/jvm_annotations.cpp")
     add_files("src/mjbase/expr/**.cpp")
     add_files("src/mjbase/jar/**.cpp")
     add_files("src/mjbase/mapping/**.cpp")
@@ -102,7 +103,7 @@ target("mjbase")
     -- 导出捕获含 mjbase/ 前缀（src/(mjbase/**)）：安装根下保留 mjbase/ 子树，
     -- 消费方 #include "mjbase/keys.hpp" 等伞头/模块头统一解析（同 libjbytecode
     -- src/(jbytecode/*.hpp) 口径）。
-    add_headerfiles("src/(mjbase/**.hpp)|mjbase/ast/dex.hpp")
+    add_headerfiles("src/(mjbase/**.hpp)|mjbase/ast/dex.hpp|mjbase/ast/dex_annotations.hpp")
     add_includedirs("src", {public = true})
     set_languages("cxx17")
 
@@ -117,7 +118,8 @@ target("mjbase_dex")
     add_deps("mjbase")
     add_packages("libdex", {public = true})
     add_files("src/mjbase/ast/dex.cpp")
-    add_headerfiles("src/(mjbase/ast/dex.hpp)")
+    add_files("src/mjbase/ast/dex_annotations.cpp")
+    add_headerfiles("src/(mjbase/ast/dex.hpp)", "src/(mjbase/ast/dex_annotations.hpp)")
     add_includedirs("src", {public = true})
     if is_plat("windows") then
         add_cxflags("/utf-8", {tools = "cl"})
@@ -144,6 +146,7 @@ target("mjbase_unittest")
         add_deps("mjbase_dex")
         add_packages("libdex")
         add_files("test/unittest/ast/dex_test.cpp")
+        add_files("test/unittest/ast/dex_annotations_test.cpp")
         dex_links = {"mjbase_dex", "libsmali", "libdex"}
     end
     local links = table.join(dex_links, {"mjbase", "libjhasm", "libjbc", "test_helper",
@@ -154,6 +157,7 @@ target("mjbase_unittest")
     add_packages("gtest")
     add_files("test/unittest/main.cpp")
     add_files("test/unittest/ast/jvm_test.cpp")
+    add_files("test/unittest/ast/jvm_annotations_test.cpp")
     -- 迁移期按切片收编：与上面 src 的同批次模块一一对应（忌整库 glob）。
     add_files("test/unittest/expr/*_test.cpp")
     add_files("test/unittest/jar/*_test.cpp")
