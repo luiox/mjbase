@@ -21,9 +21,11 @@ namespace mjbase::pass {
 ///   - 其余指令（非常量、类型混用、op 不支持）→ 链结束。
 /// 虚拟栈深回到 1 且已至少消费一个运算时，记该位置为可折叠点 foldEnd；
 /// 扫描继续向前扩展（贪心取极大链）。链尾 [i..foldEnd] 整体折叠为一条
-/// 常量装载，插在首成员之前；首成员锚定的标签迁移到替换头；其余成员
-/// 删除。单趟扫描即达不动点（折叠不产生新的可折叠相邻对——替换头是单条
-/// 装载，其后是被跳过的区间）。
+/// 常量装载，保留首成员的句柄、标签和来源 PC，删除其余成员。
+///
+/// 常量链扫描后，共享 AST 的整数流事实可继续折叠已知局部读取参与的相邻
+/// 二元表达式。后端检查源指令与标签边界；折叠后更新结果的源指令锚点，
+/// 使依赖它的链在同一次 AST 遍历中继续折叠。
 ///
 /// 折叠保持栈效应守恒：链作为整体恰好压入一个与替换头同类型的值，链内
 /// 任何被消费的运算都要求栈深 ≥ 2，故 maxStack 不升、maxLocals 不变。
@@ -43,10 +45,8 @@ namespace mjbase::pass {
 ///   数为 0 不抛异常（IEEE 产生 ±Inf/NaN），照常折叠。
 /// - idiv/irem 除数为常量 0 → 不折叠（保留运行期
 ///   ArithmeticException，JVMS §6.5 *idiv/irem*「除数不能为 0」）。
-/// - int/long 的 MIN / -1 除法取模 → 不折叠。任务书红线要求保留不折；
-///   按字节码实际语义注明：idiv 对 INT_MIN/-1 结果为 INT_MIN、irem 为 0
-///   （evaluator.cpp divI/remI 同款回落）， HotSpot 不抛异常——此处按
-///   红线保守不折，语义差异留档供团队后续决策。
+/// - int/long 的 MIN / -1 结果为 MIN，MIN % -1 结果为 0，显式处理以
+///   避免宿主 C++ 的有符号除法溢出。
 ///
 /// @par 输入边界（常量装载准入集）
 ///
@@ -65,31 +65,32 @@ namespace mjbase::pass {
 /// - 任一操作数非常量、类型混用（链内出现异类型值）；
 /// - op 不在支持集（含 long 移位的 int 操作数非常量——general 路径拒绝
 ///   LSHL/LSHR/LUSHR，只认「int 常量 push + long 移位」成对形态）；
-/// - div/rem 除数为常量 0；int/long 的 MIN/-1；
+/// - div/rem 除数为常量 0；
 /// - 链中段成员（i+1..foldEnd）前置边界有标签锚定（分支目标/异常表边界
 ///   ——LabelNode 阻断语义的 CodeDom 等价，见
 ///   method_rewrite_util::labelsAnchorAt 头注）；
+/// - 链中段成员的来源 PC 被行号表、局部变量表或栈帧表引用；无法识别的
+///   嵌套 Code 属性使本 pass 保留整个方法；
 /// - CP 容量预检失败（cp.size() + 待追加槽数 > 0xFFFF）或 CP 物化失败；
-/// - 插入/删除编辑失败（带恢复：回迁标签、删除已插替换头，本链跳过）。
+/// - 删除链尾失败时保留原首成员，本链跳过。
 ///
 /// @par 物化策略（输出形态）
 ///
 /// - int：-1..5 → ICONST；-128..127 → BIPUSH；-32768..32767 → SIPUSH；
 ///   其余 → LDC(internInteger，去重)。
-/// - long：0/1 → LCONST_0/1；其余 → LDC2_W(cp.addLong，只追加不去重)。
+/// - long：0/1 → LCONST_0/1；其余 → LDC2_W(internLong)。
 /// - float：+0.0（signbit 检查，负零走 LDC）→ FCONST_0；1.0 → FCONST_1；
-///   2.0 → FCONST_2；其余 → LDC(cp.addFloatBits)。
-/// - double：+0.0 → DCONST_0；1.0 → DCONST_1；其余 → LDC2_W(cp.addDoubleBits)。
+///   2.0 → FCONST_2；其余 → LDC(internFloatBits)。
+/// - double：+0.0 → DCONST_0；1.0 → DCONST_1；其余 → LDC2_W(internDoubleBits)。
 /// LDC/LDC_W 由 CodeEditor::loadConst 按索引宽度选型。CP 只追加契约：
-/// 索引永不重编号；internInteger 先去重，addLong/addFloatBits/
-/// addDoubleBits 直接追加（ClassSession 无对应 intern 面，见挂账）。
+/// 索引永不重编号；已有常量按位复用，即使 CP 已满也能完成折叠。
 ///
 /// @par 失败语义
 ///
-/// 本 pass 不吞异常；编辑失败走恢复路径跳过本链，扫描继续。CP 物化在
+/// 本 pass 不吞异常；编辑失败跳过本链，扫描继续。CP 物化在
 /// 容量预检之后进行，失败（抛异常）归管线容错档位处置。异常表边界引用
 /// 成员指令表现为 Boundary 标签锚定，由链中段标签守卫拦截；首成员的
-/// 边界标签随标签迁移保居链首位置，异常区间语义不变。
+/// 边界标签保居链首位置，异常区间语义不变。
 ///
 /// @par PreservedAnalyses
 ///
