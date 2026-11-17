@@ -1,6 +1,8 @@
 #include "mjbase/pass/constant_propagator.hpp"
 
-#include <vector>
+#include <optional>
+#include <unordered_map>
+#include <utility>
 
 #include "jbc/core/opcode.hpp"
 #include "jbc/ir/code_dom.hpp"
@@ -8,6 +10,8 @@
 #include "jbc/ir/units.hpp"
 
 #include "mjbase/asm/analyzer/def_use.hpp"
+#include "mjbase/ast/int_flow.hpp"
+#include "mjbase/ast/jvm.hpp"
 #include "mjbase/hierarchy/summary.hpp"
 #include "mjbase/pass/method_rewrite_util.hpp"
 
@@ -121,14 +125,63 @@ void rewriteToConst(jbc::ir::ClassSession& session, Insn* in, LocalKind kind, ca
     in->srcPc           = srcPc;
 }
 
-}   // namespace
-
-mjbase::spi::PreservedAnalyses ConstantPropagator::run(mjbase::spi::MethodScope& scope,
-                                                       mjbase::spi::MethodAnalysisManager& mam)
+struct AstPropagation
 {
-    (void)mam;
+    bool modified = false;
+    bool needsLegacy = false;
+};
+
+std::optional<AstPropagation> propagateWithAst(mjbase::spi::MethodScope& scope)
+{
+    const auto* method = scope.session.unit().method(scope.method);
+    if (!method || method->code.get() != &scope.code) return std::nullopt;
+    KeyPool keys;
+    auto lifted = ast::liftJvmMethodWithSources(scope.session, scope.method, keys);
+    if (lifted.is_err()) return std::nullopt;
+    const auto projected = std::move(lifted).unwrap();
+    const auto facts = ast::analyzeIntFlow(projected.body);
+    if (!facts) return std::nullopt;
+
+    AstPropagation result;
+    bool hasOtherReads = false;
+    for (ca::usize b = 0; b < projected.body.blocks.size(); ++b) {
+        const auto& statements = projected.body.blocks[b].statements;
+        for (ca::usize i = 0; i < statements.size(); ++i) {
+            const InsnId source = projected.sources[b].statements[i];
+            if (source == jbc::ir::kNoInsn) continue;
+            const auto* let = std::get_if<ast::Let>(&statements[i]);
+            const auto* read = let ? std::get_if<ast::ReadLocal>(&let->expression) : nullptr;
+            if (!read) continue;
+            if (read->kind != ast::LocalKind::Int) {
+                hasOtherReads = true;
+                continue;
+            }
+            const auto value = facts->values[b][i];
+            if (value && ast::replaceJvmLocalReadWithConstant(scope.session, scope.code, source,
+                                                             ast::Literal{*value})) {
+                result.modified = true;
+            }
+        }
+    }
+    // The def-use path can still propagate non-integer types in a mixed method.
+    // Without a matching family of stores there can be no such replacement.
+    if (hasOtherReads) {
+        const auto& dom = scope.code.dom;
+        for (const InsnId id : dom.order()) {
+            const auto* in = dom.peek(id);
+            LocalKind kind = LocalKind::Int;
+            if (in && storeKindOf(*in, kind) && kind != LocalKind::Int) {
+                result.needsLegacy = true;
+                break;
+            }
+        }
+    }
+    return result;
+}
+
+bool propagateWithDefUse(mjbase::spi::MethodScope& scope, bool includeInts)
+{
     jbc::ir::CodeDom& dom = scope.code.dom;
-    if (dom.order().empty()) return mjbase::spi::PreservedAnalyses::all();
 
     // 签名播种与负向结论纪律同 def_use 契约：截断集合上的「唯一定义」
     // 不可靠，整件跳过。
@@ -136,7 +189,7 @@ mjbase::spi::PreservedAnalyses ConstantPropagator::run(mjbase::spi::MethodScope&
         (scope.access & mjbase::hierarchy::kAccStatic) != 0, scope.desc};
     const MethodDefUse du =
         mjbase::asm_analyzer::analyzeDefUse(scope.session.backing().cp, scope.code, sig);
-    if (!du.ok() || du.truncated()) return mjbase::spi::PreservedAnalyses::all();
+    if (!du.ok() || du.truncated()) return false;
 
     // 常量生产者缓存：def 标号 →（已验证的物化形态）。同一 store 的多个
     // 读点共享一次验证。
@@ -157,6 +210,12 @@ mjbase::spi::PreservedAnalyses ConstantPropagator::run(mjbase::spi::MethodScope&
         if (access.defs.truncated() || access.defs.size() != 1) continue;
         const DefId def = access.defs.at(0);
         if (def.kind != DefId::Kind::Instruction) continue;   // 入参定义非常量
+        const Insn* load = dom.peek(access.insn);
+        ca::u32 slot = 0;
+        LocalKind kind = LocalKind::Int;
+        if (!load || !classifyLoad(*load, slot, kind) || (!includeInts && kind == LocalKind::Int)) {
+            continue;
+        }
 
         // 定义侧核验（缓存）：store 槽族 + 弹值定义唯一且为常量生产者。
         auto prodIt = prodCache.find(def.id);
@@ -192,14 +251,7 @@ mjbase::spi::PreservedAnalyses ConstantPropagator::run(mjbase::spi::MethodScope&
             }
             prodIt = prodCache.emplace(def.id, p).first;
         }
-        if (!prodIt->second.valid) continue;
-
-        // 装载侧：槽族严格匹配（load 的 base 槽即 access.local）。
-        const Insn* load = dom.peek(access.insn);
-        if (load == nullptr) continue;
-        ca::u32   slot = 0;
-        LocalKind kind = LocalKind::Int;
-        if (!classifyLoad(*load, slot, kind) || kind != prodIt->second.kind) continue;
+        if (!prodIt->second.valid || kind != prodIt->second.kind) continue;
 
         auto got = dom.get(access.insn);
         if (got.is_err()) continue;
@@ -208,7 +260,21 @@ mjbase::spi::PreservedAnalyses ConstantPropagator::run(mjbase::spi::MethodScope&
                        prodIt->second.dv);
         modified = true;
     }
+    return modified;
+}
 
+}   // namespace
+
+mjbase::spi::PreservedAnalyses ConstantPropagator::run(mjbase::spi::MethodScope& scope,
+                                                     mjbase::spi::MethodAnalysisManager& mam)
+{
+    (void)mam;
+    if (scope.code.dom.order().empty()) return mjbase::spi::PreservedAnalyses::all();
+    const auto projected = propagateWithAst(scope);
+    bool modified = projected && projected->modified;
+    if (!projected || projected->needsLegacy) {
+        modified = propagateWithDefUse(scope, !projected) || modified;
+    }
     return modified ? mjbase::spi::PreservedAnalyses::none()
                     : mjbase::spi::PreservedAnalyses::all();
 }

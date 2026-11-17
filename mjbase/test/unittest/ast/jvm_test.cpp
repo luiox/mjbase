@@ -4,6 +4,8 @@
 #include <iterator>
 
 #include "jdk_fixture.hpp"
+#include "mjbase/ast/control_flow.hpp"
+#include "mjbase/ast/int_flow.hpp"
 #include "mjbase/ast/jvm.hpp"
 #include "shared/jasm_fixture.hpp"
 
@@ -101,7 +103,7 @@ TEST(MjAstJvmTest, RewritesLiteralAndRelocatesBranch)
     EXPECT_EQ(std::get<ca::i32>(std::get<Literal>(expression)), 123456);
 }
 
-TEST(MjAstJvmTest, RejectsStackAcrossBlocksWithoutRunningEdit)
+TEST(MjAstJvmTest, PreservesStackArgumentsAtADiamondJoin)
 {
     const auto bytes = assembleClass("AstExample", "java/lang/Object", R"JASM(
     .method public static select (I)I {
@@ -118,14 +120,120 @@ TEST(MjAstJvmTest, RejectsStackAcrossBlocksWithoutRunningEdit)
     }
 )JASM");
     ASSERT_FALSE(bytes.empty());
-    auto rewritten = rewriteJvmLiterals(ByteView(bytes), "select", "(I)I",
-        [](const MethodBody&, const KeyPool&, BlockId, ValueId, const Literal&)
-            -> std::optional<Literal> {
-            ADD_FAILURE() << "callback ran for an unsupported method";
-            return std::nullopt;
-        });
-    ASSERT_TRUE(rewritten.is_err());
-    EXPECT_EQ(rewritten.unwrap_err().kind, ErrorKind::Unsupported);
+    auto loaded = jbc::ir::makeSessionFromBytes(ByteView(bytes));
+    ASSERT_TRUE(loaded.is_ok());
+    auto session = std::move(loaded).unwrap();
+    KeyPool keys;
+    const auto method = session->unit().findMethodId("select", "(I)I");
+    auto lifted = liftJvmMethodWithSources(*session, method, keys);
+    ASSERT_TRUE(lifted.is_ok());
+    const auto result = std::move(lifted).unwrap();
+    const auto& blocks = result.body.blocks;
+    ASSERT_EQ(blocks.size(), 4u);
+    EXPECT_EQ(blocks[3].parameters, (std::vector<LocalKind>{LocalKind::Int}));
+    const auto& ret = std::get<Return>(blocks[3].terminator);
+    ASSERT_TRUE(ret.value);
+    const auto& expression = std::get<Let>(blocks[3].statements.at(ret.value->index)).expression;
+    EXPECT_EQ(std::get<BlockParameter>(expression).index, 0u);
+    EXPECT_EQ(result.sources[3].statements.at(ret.value->index), jbc::ir::kNoInsn);
+    for (const auto arm : {1u, 2u}) {
+        EXPECT_EQ(std::get<Jump>(blocks[arm].terminator).target.index, 3u);
+        ASSERT_EQ(blocks[arm].outgoingArguments.size(), 1u);
+    }
+    const auto facts = analyzeIntFlow(result.body);
+    ASSERT_TRUE(facts);
+    EXPECT_FALSE(facts->values[3][ret.value->index]);
+}
+
+TEST(MjAstJvmTest, StackCopiesReferToOneEffectfulEvaluation)
+{
+    const auto bytes = assembleClass("AstCopy", "java/lang/Object", R"JASM(
+    .method public static twice ()I {
+      code: {
+        invokestatic AstCopy.produce ()I
+        dup
+        iadd
+        ireturn
+      }
+    }
+    .method public static produce ()I {
+      code: {
+        iconst_1
+        ireturn
+      }
+    }
+)JASM");
+    auto loaded = jbc::ir::makeSessionFromBytes(ByteView(bytes));
+    ASSERT_TRUE(loaded.is_ok());
+    auto session = std::move(loaded).unwrap();
+    KeyPool keys;
+    auto lifted = liftJvmMethod(*session, session->unit().findMethodId("twice", "()I"), keys);
+    ASSERT_TRUE(lifted.is_ok());
+    const auto body = std::move(lifted).unwrap();
+    ASSERT_EQ(body.blocks.size(), 1u);
+    const auto calls = directCalls(body);
+    ASSERT_EQ(calls.size(), 1u);
+    const auto& statements = body.blocks.front().statements;
+    ASSERT_EQ(statements.size(), 2u);
+    const auto& binary = std::get<IntBinary>(std::get<Let>(statements[1]).expression);
+    EXPECT_EQ(binary.left.index, calls.front().statement);
+    EXPECT_EQ(binary.right.index, calls.front().statement);
+}
+
+TEST(MjAstJvmTest, PreservesOrderedHandlersAndAnalyzesExceptionalReachability)
+{
+    const auto bytes = assembleClass("AstProtected", "java/lang/Object", R"JASM(
+    .method public static divide (I)I {
+      exceptions: {
+        { Lstart, Lend, Larithmetic, Ljava/lang/ArithmeticException; },
+        { Lstart, Lend, Lall, * }
+      },
+      code: {
+      Lstart:
+        bipush 6
+        iload_0
+        idiv
+      Lend:
+        ireturn
+      Larithmetic:
+        astore_1
+        iconst_m1
+        ireturn
+      Lall:
+        astore_1
+        iconst_0
+        ireturn
+      }
+    }
+)JASM");
+    auto loaded = jbc::ir::makeSessionFromBytes(ByteView(bytes));
+    ASSERT_TRUE(loaded.is_ok());
+    auto session = std::move(loaded).unwrap();
+    KeyPool keys;
+    auto lifted = liftJvmMethod(*session, session->unit().findMethodId("divide", "(I)I"), keys);
+    ASSERT_TRUE(lifted.is_ok());
+    const auto body = std::move(lifted).unwrap();
+    ASSERT_EQ(body.blocks.size(), 4u);
+    const auto& entry = body.blocks.front();
+    ASSERT_EQ(entry.handlers.size(), 2u);
+    ASSERT_TRUE(entry.handlers[0].type);
+    EXPECT_EQ(keys.str(entry.handlers[0].type->id), "java/lang/ArithmeticException");
+    EXPECT_EQ(entry.handlers[0].target.index, 2u);
+    EXPECT_FALSE(entry.handlers[1].type);
+    EXPECT_EQ(entry.handlers[1].target.index, 3u);
+    for (const auto& handler : entry.handlers) {
+        EXPECT_EQ(body.blocks[handler.target.index].parameters,
+                  (std::vector<LocalKind>{LocalKind::Reference}));
+    }
+    EXPECT_EQ(body.blocks[1].parameters, (std::vector<LocalKind>{LocalKind::Int}));
+    const auto graph = ControlFlowGraph::build(body);
+    ASSERT_TRUE(graph.is_ok());
+    const DominatorTree dominators(graph.unwrap());
+    for (const auto& handler : entry.handlers) {
+        EXPECT_TRUE(dominators.isReachable(handler.target));
+        EXPECT_TRUE(dominators.dominates(BlockId{0}, handler.target));
+    }
+    EXPECT_FALSE(analyzeIntFlow(body));
 }
 
 TEST(MjAstJvmTest, RewrittenClassPassesJvmVerificationAndPreservesJavaStringCodeUnits)

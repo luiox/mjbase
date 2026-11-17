@@ -28,6 +28,8 @@ using Literal = std::variant<ca::i32, std::u16string, Null, Bits32>;
 /// The kind comes from the operation that reads the local, when the format supplies it.
 enum class LocalKind : ca::u8 { Unknown, Int, Long, Float, Double, Reference };
 struct ReadLocal { LocalId local; LocalKind kind = LocalKind::Unknown; };
+/// Value passed to this block by a normal edge or supplied by the exception handler edge.
+struct BlockParameter { ca::usize index; };
 enum class IntOp : ca::u8 { Add, Subtract, Multiply, Divide, Remainder, And, Or, Xor,
                             ShiftLeft, ShiftRight, UnsignedShiftRight };
 struct IntBinary { IntOp op; ValueId left; ValueId right; };
@@ -45,7 +47,7 @@ struct Call
     std::vector<ValueId> arguments;
 };
 
-using Expression = std::variant<Literal, ReadLocal, IntBinary, FieldRead, Call>;
+using Expression = std::variant<Literal, ReadLocal, BlockParameter, IntBinary, FieldRead, Call>;
 /// 求值恰好一次，结果可由本块后续语句和终结符引用。
 struct Let { Expression expression; };
 struct Assign
@@ -68,15 +70,30 @@ struct Branch
     ValueId right;
     BlockId whenTrue;
     BlockId whenFalse;
+    LocalKind kind = LocalKind::Unknown;
 };
 struct Return { std::optional<ValueId> value; };
 struct Throw { ValueId exception; };
 using Terminator = std::variant<Jump, Branch, Return, Throw>;
 
+struct ExceptionHandler
+{
+    BlockId target;
+    /// Empty for a catch-all entry.
+    std::optional<ClassKey> type;
+};
+
 struct Block
 {
     std::vector<Statement> statements;
     Terminator terminator;
+    /// Incoming operand values, in stack order from bottom to top for JVM.
+    std::vector<LocalKind> parameters{};
+    /// Values passed to every normal successor at the terminator.
+    std::vector<ValueId> outgoingArguments{};
+    /// Ordered handlers protecting this block. Exceptional edges pass the caught exception
+    /// as the sole parameter of the handler and retain the locals at the throw site.
+    std::vector<ExceptionHandler> handlers{};
 };
 
 /// AST 自持。符号身份由调用者提供的 KeyPool 解析。

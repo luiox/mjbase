@@ -66,6 +66,7 @@ target("mjbase")
     add_files("src/mjbase/keys.cpp", "src/mjbase/util.cpp")
     add_files("src/mjbase/ast/method_body.cpp", "src/mjbase/ast/jvm.cpp")
     add_files("src/mjbase/ast/constant_facts.cpp", "src/mjbase/ast/effects.cpp")
+    add_files("src/mjbase/ast/control_flow.cpp", "src/mjbase/ast/int_flow.cpp")
     add_files("src/mjbase/expr/**.cpp")
     add_files("src/mjbase/jar/**.cpp")
     add_files("src/mjbase/mapping/**.cpp")
@@ -145,6 +146,7 @@ target("mjbase_unittest")
         add_deps("mjbase_dex")
         add_packages("libdex")
         add_files("test/unittest/ast/dex_test.cpp")
+        add_files("test/unittest/ast/dex_exception_test.cpp")
         dex_links = {"mjbase_dex", "libsmali", "libdex"}
     end
     local links = table.join(dex_links, {"mjbase", "libjhasm", "libjbc", "test_helper",
@@ -156,6 +158,7 @@ target("mjbase_unittest")
     add_files("test/unittest/main.cpp")
     add_files("test/unittest/ast/jvm_test.cpp")
     add_files("test/unittest/ast/constant_facts_test.cpp")
+    add_files("test/unittest/ast/control_flow_test.cpp", "test/unittest/ast/int_flow_test.cpp")
     -- 迁移期按切片收编：与上面 src 的同批次模块一一对应（忌整库 glob）。
     add_files("test/unittest/expr/*_test.cpp")
     add_files("test/unittest/jar/*_test.cpp")

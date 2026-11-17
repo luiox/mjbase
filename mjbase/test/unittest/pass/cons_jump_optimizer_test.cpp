@@ -15,6 +15,7 @@
 #include "mjbase/pass/redundant_load_val_eliminator.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
 
+#include "jdk_fixture.hpp"
 #include "method_pass_test_util.hpp"
 #include "shared/jasm_fixture.hpp"
 
@@ -32,6 +33,70 @@ Bytes oneMethodI(std::string_view desc, std::string_view codeBody)
 }
 
 }   // namespace
+
+TEST(MjConsJumpOptimizerTest, PreservesOperandEvaluationWhenAJoinedConditionIsFalse)
+{
+    const auto input = assembleJasm(R"JASM(.super java/lang/Object
+.class public super BranchAstGate {
+  .field public static count I
+  .method public static compute (I)I {
+    code: {
+      iload_0
+      ifeq Lalt
+      iconst_4
+      iconst_1
+      iadd
+      istore_1
+      goto Ljoin
+    Lalt:
+      iconst_5
+      istore_1
+    Ljoin:
+      invokestatic BranchAstGate.observe ()V
+      iload_1
+      ifeq Lzero
+      getstatic BranchAstGate.count I
+      ireturn
+    Lzero:
+      iconst_m1
+      ireturn
+    }
+  }
+  .method public static observe ()V {
+    code: {
+      getstatic BranchAstGate.count I
+      iconst_1
+      iadd
+      putstatic BranchAstGate.count I
+      return
+    }
+  }
+}
+)JASM", 52);
+    ASSERT_FALSE(input.empty());
+    const auto output = runMethodPass(input, mjbase::pass::ConsJumpOptimizer{});
+    EXPECT_TRUE(output.pa.changed());
+    const auto ops = opsOf(inspect(output.out));
+    ASSERT_EQ(ops.size(), 16u);
+    EXPECT_EQ(ops[1], Op::IFEQ);
+    EXPECT_EQ(ops[9], Op::INVOKESTATIC);
+    EXPECT_EQ(ops[10], Op::ILOAD_1);
+    EXPECT_EQ(ops[11], Op::POP);
+
+    const auto jdk = test::jdk::probeJdk();
+    if (!jdk.available) GTEST_SKIP() << jdk.reason;
+    test::jdk::RunnerSpec runner;
+    runner.runnerBody = "System.out.println(BranchAstGate.compute(1));\n"
+                        "System.out.println(BranchAstGate.compute(0));";
+    runner.classes = {{"BranchAstGate", input}};
+    const auto before = test::jdk::runWithRunnerOutcome(jdk, runner);
+    ASSERT_TRUE(before.ok()) << before.output;
+    runner.classes = {{"BranchAstGate", output.out}};
+    const auto after = test::jdk::runWithRunnerOutcome(jdk, runner);
+    ASSERT_TRUE(after.ok()) << after.output;
+    EXPECT_EQ(before.output, "1\n2\n");
+    EXPECT_EQ(after.output, before.output);
+}
 
 // ── 单槽恒真：[ICONST_0; IFEQ] → 头改 GOTO（复用原目标），条件跳删除 ──
 TEST(ConsJumpOptimizerTest, oneSlotTakenRewritesHeadToGoto)
