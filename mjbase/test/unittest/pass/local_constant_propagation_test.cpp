@@ -17,6 +17,7 @@
 #include "mjbase/pass/method_rewrite_util.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
 
+#include "jdk_fixture_gtest.hpp"
 #include "method_pass_test_util.hpp"
 #include "shared/jasm_fixture.hpp"
 
@@ -309,6 +310,50 @@ TEST(LocalConstantPropagationTest, chainedSegmentsConverge)
     const MethodPassRun r2 =
         runMethodPass(r.out, mjbase::pass::LocalConstantPropagation{});
     EXPECT_TRUE(r2.pa.areAllPreserved());
+}
+
+TEST(MjLocalConstantPropagationTest, PropagatesComputedIntegerInBranchTargetBlock)
+{
+    const auto input = oneMethod(
+        "(I)I",
+        R"JASM(      iload_0
+      ifeq Lcompute
+      iconst_1
+      ireturn
+      Lcompute:
+      iconst_4
+      iconst_3
+      imul
+      istore_1
+      iload_1
+      ireturn
+)JASM");
+    const auto result = runMethodPass(input, mjbase::pass::LocalConstantPropagation{});
+    EXPECT_TRUE(result.pa.changed());
+    const auto output = inspect(result.out);
+    const auto insns = allInsns(output);
+    ASSERT_EQ(insns.size(), 10u);
+    EXPECT_EQ(insns[1]->op, Op::IFEQ);
+    EXPECT_EQ(insns[6]->op, Op::IMUL);
+    EXPECT_EQ(insns[7]->op, Op::ISTORE_1);
+    EXPECT_EQ(insns[8]->op, Op::BIPUSH);
+    EXPECT_EQ(insns[8]->a, 12);
+    expectValidateOk(result.out);
+
+    const auto repeated = runMethodPass(result.out, mjbase::pass::LocalConstantPropagation{});
+    EXPECT_TRUE(repeated.pa.areAllPreserved());
+    EXPECT_EQ(repeated.out, result.out);
+
+    ::test::jdk::RunnerSpec runner;
+    runner.classes = {{"t/C", input}};
+    runner.runnerBody = "System.out.println(t.C.m(0)); System.out.println(t.C.m(1));";
+    std::string before;
+    if (!::test::jdk::runRunnerChecked(runner, &before)) return;
+    runner.classes = {{"t/C", result.out}};
+    std::string after;
+    if (!::test::jdk::runRunnerChecked(runner, &after)) return;
+    EXPECT_EQ(before, "12\n1\n");
+    EXPECT_EQ(after, before);
 }
 
 // ── 注册面：名字可查、scope=Method ──

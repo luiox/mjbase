@@ -206,10 +206,16 @@ struct DexBlock
         return id;
     }
 
-    ValueId read(ca::usize reg) { return let(ReadLocal{locals[reg]}); }
-    void assign(ca::usize reg, ValueId value)
+    ValueId read(ca::usize reg, LocalKind kind = LocalKind::Unknown)
     {
-        block.statements.emplace_back(Assign{locals[reg], value});
+        return let(ReadLocal{locals[reg], kind});
+    }
+
+    void assign(ca::usize reg, ValueId value, ca::usize width = 1)
+    {
+        const auto clobbered = width == 2 ? std::optional<LocalId>{locals[reg + 1]}
+                                         : std::nullopt;
+        block.statements.emplace_back(Assign{locals[reg], value, clobbered});
     }
 
     std::optional<ErrorKind> call(const Insn& in, Dispatch dispatch, const Insn* moveResult)
@@ -227,7 +233,7 @@ struct DexBlock
         }
         if (dispatch != Dispatch::Static) {
             if (in.registerCount == 0 || !valid(argReg(0))) return ErrorKind::InvalidCode;
-            invoke.receiver = read(argReg(word++));
+            invoke.receiver = read(argReg(word++), LocalKind::Reference);
         }
         for (const auto param : target->params) {
             const ca::usize width = param == Category::Wide ? 2 : 1;
@@ -236,7 +242,8 @@ struct DexBlock
             if (!valid(reg, width) || (width == 2 && argReg(word + 1) != reg + 1)) {
                 return ErrorKind::InvalidCode;
             }
-            invoke.arguments.push_back(read(reg));
+            invoke.arguments.push_back(read(reg, param == Category::Reference
+                ? LocalKind::Reference : LocalKind::Unknown));
             word += width;
         }
         if (word != in.registerCount) return ErrorKind::InvalidCode;
@@ -251,7 +258,7 @@ struct DexBlock
             || !valid(reg, target->result == Category::Wide ? 2 : 1)) {
             return ErrorKind::InvalidCode;
         }
-        assign(reg, let(std::move(invoke)));
+        assign(reg, let(std::move(invoke)), target->result == Category::Wide ? 2 : 1);
         return std::nullopt;
     }
 
@@ -267,8 +274,9 @@ struct DexBlock
         if (!valid(dest) || !valid(leftReg) || (rightReg && !valid(*rightReg))) {
             return ErrorKind::InvalidCode;
         }
-        auto left = read(leftReg);
-        auto right = rightReg ? read(*rightReg) : let(Literal{static_cast<ca::i32>(in.literal)});
+        auto left = read(leftReg, LocalKind::Int);
+        auto right = rightReg ? read(*rightReg, LocalKind::Int)
+                              : let(Literal{static_cast<ca::i32>(in.literal)});
         // rsub-int and rsub-int/lit8 subtract the register operand from the literal.
         if (!rightReg && operation == 1) std::swap(left, right);
         assign(dest, let(IntBinary{operations[operation], left, right}));
@@ -307,11 +315,16 @@ struct DexBlock
         std::optional<ValueId> receiver;
         if (!isStatic) {
             if (!valid(in.registers[1])) return ErrorKind::InvalidCode;
-            receiver = read(in.registers[1]);
+            receiver = read(in.registers[1], LocalKind::Reference);
         }
         const auto key = memberKeyOf(keys, classKeyOf(keys, internalName), memberName, descriptor);
-        if (store) block.statements.emplace_back(FieldWrite{key, receiver, read(reg)});
-        else assign(reg, let(FieldRead{key, receiver}));
+        if (store) {
+            const auto kind = family == Category::Reference ? LocalKind::Reference
+                                                            : LocalKind::Unknown;
+            block.statements.emplace_back(FieldWrite{key, receiver, read(reg, kind)});
+        } else {
+            assign(reg, let(FieldRead{key, receiver}), family == Category::Wide ? 2 : 1);
+        }
         return std::nullopt;
     }
 
@@ -324,7 +337,8 @@ struct DexBlock
         if (op >= kMove && op <= kMoveObject16) {
             const ca::usize width = op >= kMoveWide && op < kMoveWide + 3 ? 2 : 1;
             if (!valid(dest, width) || !valid(src, width)) return ErrorKind::InvalidCode;
-            assign(dest, read(src));
+            const auto kind = op > kMoveWide + 2 ? LocalKind::Reference : LocalKind::Unknown;
+            assign(dest, read(src, kind), width);
         } else if (op >= kConst4 && op <= kConstHigh16) {
             if (!valid(dest)) return ErrorKind::InvalidCode;
             assign(dest, let(Literal{Bits32{static_cast<ca::u32>(in.literal)}}));
@@ -363,13 +377,15 @@ struct DexBlock
                 const auto expected = result == Category::Wide ? kReturnWide
                     : result == Category::Reference ? kReturnObject : kReturn;
                 if (op != expected || !valid(reg, result == Category::Wide ? 2 : 1)) return false;
-                block.terminator = Return{read(reg)};
+                const auto kind = result == Category::Reference ? LocalKind::Reference
+                                                                : LocalKind::Unknown;
+                block.terminator = Return{read(reg, kind)};
             }
             return true;
         }
         if (op == kThrow) {
             if (!valid(reg)) return false;
-            block.terminator = Throw{read(reg)};
+            block.terminator = Throw{read(reg, LocalKind::Reference)};
             return true;
         }
         const auto fallthrough = layout.at(in.address + in.width);

@@ -1,12 +1,16 @@
 #include "mjbase/pass/local_constant_propagation.hpp"
 
+#include <optional>
 #include <unordered_map>
+#include <utility>
 
 #include "jbc/core/opcode.hpp"
 #include "jbc/ir/code_dom.hpp"
 #include "jbc/ir/code_editor.hpp"
 #include "jbc/ir/units.hpp"
 
+#include "mjbase/ast/constant_facts.hpp"
+#include "mjbase/ast/jvm.hpp"
 #include "mjbase/pass/method_rewrite_util.hpp"
 
 namespace mjbase::pass {
@@ -16,6 +20,53 @@ namespace {
 using jbc::core::Op;
 using jbc::ir::Insn;
 using jbc::ir::InsnId;
+
+/// 块入口重新开始收集事实。块内锚定标签仍按原指令路径切断传播。
+std::optional<bool> propagateAstLoads(mjbase::spi::MethodScope& scope)
+{
+    const auto* method = scope.session.unit().method(scope.method);
+    if (!method || method->code.get() != &scope.code) return std::nullopt;
+
+    KeyPool keys;
+    auto lifted = ast::liftJvmMethodWithSources(scope.session, scope.method, keys);
+    if (lifted.is_err()) return std::nullopt;
+    const auto methodAst = std::move(lifted).unwrap();
+
+    const auto& dom = scope.code.dom;
+    ca::usize nextBlock = 0;
+    for (const InsnId id : dom.order()) {
+        if (nextBlock < methodAst.sources.size() && methodAst.sources[nextBlock].entry == id) {
+            ++nextBlock;
+        } else if (method_rewrite_util::labelsAnchorAt(dom, id)) {
+            return std::nullopt;
+        }
+    }
+
+    bool modified = false;
+    for (ca::usize b = 0; b < methodAst.body.blocks.size(); ++b) {
+        const auto& block = methodAst.body.blocks[b];
+        const auto& sources = methodAst.sources[b].statements;
+        const auto facts = ast::analyzeBlockConstants(block);
+        for (ca::usize i = 0; i < block.statements.size(); ++i) {
+            const auto* let = std::get_if<ast::Let>(&block.statements[i]);
+            if (!facts[i] || !let || !std::holds_alternative<ast::ReadLocal>(let->expression)
+                || sources[i] == jbc::ir::kNoInsn) {
+                continue;
+            }
+            std::optional<ast::Literal> literal;
+            if (const auto* number = std::get_if<ca::i32>(&*facts[i])) {
+                literal = *number;
+            } else if (std::holds_alternative<ast::Null>(*facts[i])) {
+                literal = ast::Null{};
+            }
+            if (literal && ast::replaceJvmLocalReadWithConstant(
+                               scope.session, scope.code, sources[i], *literal)) {
+                modified = true;
+            }
+        }
+    }
+    return modified;
+}
 
 /// 追踪槽的常量类别（槽族严格匹配的依据）。
 enum class TrackKind : ca::u8
@@ -157,6 +208,11 @@ mjbase::spi::PreservedAnalyses LocalConstantPropagation::run(
     mjbase::spi::MethodScope& scope, mjbase::spi::MethodAnalysisManager& mam)
 {
     (void)mam;
+    if (const auto changed = propagateAstLoads(scope)) {
+        return *changed ? mjbase::spi::PreservedAnalyses::none()
+                        : mjbase::spi::PreservedAnalyses::all();
+    }
+
     jbc::ir::ClassSession& session = scope.session;
     jbc::ir::CodeDom&      dom     = scope.code.dom;
 

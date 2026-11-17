@@ -39,6 +39,18 @@ ca::usize width(Family type)
     return type == Family::Long || type == Family::Double ? 2 : 1;
 }
 
+LocalKind localKindOf(Family type)
+{
+    switch (type) {
+    case Family::Int: return LocalKind::Int;
+    case Family::Long: return LocalKind::Long;
+    case Family::Float: return LocalKind::Float;
+    case Family::Double: return LocalKind::Double;
+    case Family::Ref: return LocalKind::Reference;
+    }
+    return LocalKind::Unknown;
+}
+
 std::optional<IntOp> binaryOp(Op op)
 {
     switch (op) {
@@ -67,13 +79,6 @@ std::optional<Dispatch> dispatchOf(Op op)
     default: return std::nullopt;
     }
 }
-
-struct LiteralSite
-{
-    BlockId block;
-    ValueId value;
-    InsnId instruction;
-};
 
 /// Order all evaluations, including local reads and ignored call results.
 struct BlockLift
@@ -146,9 +151,11 @@ struct BlockLift
         if (store) {
             auto value = pop(type);
             if (!value) return stackError();
-            block.statements.emplace_back(Assign{locals[slot], *value});
+            const auto clobbered = width(type) == 2 ? std::optional<LocalId>{locals[slot + 1]}
+                                                    : std::nullopt;
+            block.statements.emplace_back(Assign{locals[slot], *value, clobbered});
         } else {
-            push(ReadLocal{locals[slot]}, type);
+            push(ReadLocal{locals[slot], localKindOf(type)}, type);
         }
         return std::nullopt;
     }
@@ -236,7 +243,7 @@ struct BlockLift
         case Op::IINC: {
             const auto slot = asm_sem::localOperandSlot(in);
             if (slot >= locals.size()) return ErrorKind::InvalidCode;
-            const auto left = let(ReadLocal{locals[slot]});
+            const auto left = let(ReadLocal{locals[slot], LocalKind::Int});
             const auto right = let(Literal{in.b});
             const auto sum = let(IntBinary{IntOp::Add, left, right});
             block.statements.emplace_back(Assign{locals[slot], sum});
@@ -321,12 +328,12 @@ std::optional<ErrorKind> terminate(BlockLift& lift, Op op,
     return std::nullopt;
 }
 
-Result<MethodBody, Error> lift(ClassSession& session, jbc::ir::MethodId id, KeyPool& keys,
-                               std::vector<LiteralSite>* sites)
+Result<MethodBody, Error> lift(ClassSession& session, ca::usize methodIndex, KeyPool& keys,
+                               std::vector<JvmBlockSources>* sources)
 {
     const auto& cls = session.unit();
-    const auto* method = cls.method(id);
-    if (!method) return Err(Error{ErrorKind::MissingMethod});
+    if (methodIndex >= cls.methods.size()) return Err(Error{ErrorKind::MissingMethod});
+    const auto* method = &cls.methods[methodIndex];
     const auto desc = cls.symbols().str(method->desc);
     auto parsed = jbc::type::parseMethodDescriptor(desc);
     if (parsed.is_err()) return Err(Error{ErrorKind::InvalidCode});
@@ -334,12 +341,19 @@ Result<MethodBody, Error> lift(ClassSession& session, jbc::ir::MethodId id, KeyP
 
     auto* unit = method->code.get();
     if (!unit) {
-        if (!jbc::ir::hasCode(session, cls.indexOf(id))) return Err(Error{ErrorKind::NoCode});
-        auto promoted = jbc::ir::promoteMethod(session, id);
+        if (!jbc::ir::hasCode(session, methodIndex)) return Err(Error{ErrorKind::NoCode});
+        auto promoted = jbc::ir::promoteMethod(session, methodIndex);
         if (promoted.is_err()) return Err(Error{ErrorKind::InvalidCode});
         unit = &*promoted.unwrap();
     }
     if (!unit->exc.empty()) return Err(Error{ErrorKind::Unsupported});
+    // Reject switch before constructing a graph with a potentially large case table.
+    const auto& order = unit->dom.order();
+    for (ca::usize i = 0; i < order.size(); ++i) {
+        const auto* in = unit->dom.peek(order[i]);
+        if (!in) return Err(Error{ErrorKind::InvalidCode, i});
+        if (asm_insn::isSwitch(in->op)) return Err(Error{ErrorKind::Unsupported, i});
+    }
     auto cfgResult = asm_cfg::ControlFlowGraph::build(*unit);
     if (cfgResult.is_err()) return Err(Error{ErrorKind::InvalidCode});
     const auto cfg = std::move(cfgResult).unwrap();
@@ -373,9 +387,12 @@ Result<MethodBody, Error> lift(ClassSession& session, jbc::ir::MethodId id, KeyP
     const auto returnType = signature.ret_void ? std::nullopt
                                                : std::optional<Family>{familyOf(signature.ret)};
     body.blocks.resize(cfg.blockCount());
+    if (sources) sources->resize(cfg.blockCount());
     ca::usize position = 0;
     for (const auto& source : cfg.blocks()) {
         Block& block = body.blocks[source.id.index];
+        auto* anchors = sources ? &(*sources)[source.id.index] : nullptr;
+        if (anchors) anchors->entry = source.entry;
         BlockLift liftBlock{session, keys, locals, block, source.id.index == 0, {}};
         for (const InsnId insn : source.insns) {
             const Insn& in = *unit->dom.peek(insn);
@@ -383,26 +400,43 @@ Result<MethodBody, Error> lift(ClassSession& session, jbc::ir::MethodId id, KeyP
             const bool control = asm_sem::isControlTransfer(in.op) && in.op != Op::JSR
                 && in.op != Op::JSR_W && in.op != Op::RET;
             if (!last || !control) {
-                const ValueId start{block.statements.size()};
+                const auto start = block.statements.size();
                 if (auto error = liftBlock.step(in)) {
                     return Err(Error{*error, position});
                 }
-                if (sites && block.statements.size() == start.index + 1) {
-                    const auto* let = std::get_if<Let>(&block.statements.back());
-                    if (let && std::holds_alternative<Literal>(let->expression)) {
-                        sites->push_back({BlockId{source.id.index}, start, insn});
-                    }
+                if (anchors && block.statements.size() != start) {
+                    // IINC expands into synthetic values followed by its source assignment.
+                    anchors->statements.resize(block.statements.size(), jbc::ir::kNoInsn);
+                    anchors->statements.back() = insn;
                 }
             }
             if (last) {
                 if (auto error = terminate(liftBlock, in.op, cfg.succEdgesOf(source.id), returnType)) {
                     return Err(Error{*error, position});
                 }
+                if (anchors) {
+                    anchors->statements.resize(block.statements.size(), jbc::ir::kNoInsn);
+                    if (control) anchors->terminator = insn;
+                }
             }
             ++position;
         }
     }
     return Ok(std::move(body));
+}
+
+/// Reuse an existing integer at CP capacity without calling an appending intern.
+ca::u32 internEncodableInt(ClassSession& session, ca::i32 number)
+{
+    const auto& cp = session.backing().cp;
+    if (cp.size() < 65535u) return session.internInteger(number);
+    for (ca::u32 index = 1; index < 65535u; ++index) {
+        if (cp.valid(index) && cp.tagOf(index) == jbc::core::CpTag::Integer
+            && cp.at(index).ival == number) {
+            return index;
+        }
+    }
+    return 0;
 }
 
 bool encodeLiteral(ClassSession& session, Insn& in, const Literal& literal)
@@ -419,7 +453,7 @@ bool encodeLiteral(ClassSession& session, Insn& in, const Literal& literal)
             replacement.op = Op::SIPUSH;
             replacement.a = *number;
         } else {
-            replacement.cp = session.internInteger(*number);
+            replacement.cp = internEncodableInt(session, *number);
             if (replacement.cp == 0 || replacement.cp >= 65535u) return false;
             replacement.op = replacement.cp <= 255u ? Op::LDC : Op::LDC_W;
         }
@@ -434,7 +468,12 @@ bool encodeLiteral(ClassSession& session, Insn& in, const Literal& literal)
         return bytes.size() <= 65535u && session.setString(in, bytes)
             && in.cp != 0 && in.cp < 65535u;
     }
-    return std::holds_alternative<Null>(literal);
+    if (!std::holds_alternative<Null>(literal)) return false;
+    Insn replacement;
+    replacement.op = Op::ACONST_NULL;
+    replacement.srcPc = in.srcPc;
+    in = std::move(replacement);
+    return true;
 }
 
 bool sameLiteral(const Literal& before, const Literal& after)
@@ -451,7 +490,37 @@ bool sameLiteral(const Literal& before, const Literal& after)
 ca::core::Result<MethodBody, Error>
 liftJvmMethod(ClassSession& session, jbc::ir::MethodId method, KeyPool& keys)
 {
-    return lift(session, method, keys, nullptr);
+    return liftJvmMethod(session, session.unit().indexOf(method), keys);
+}
+
+Result<MethodBody, Error>
+liftJvmMethod(ClassSession& session, ca::usize methodIndex, KeyPool& keys)
+{
+    return lift(session, methodIndex, keys, nullptr);
+}
+
+Result<JvmMethodAst, Error>
+liftJvmMethodWithSources(ClassSession& session, jbc::ir::MethodId method, KeyPool& keys)
+{
+    JvmMethodAst result;
+    auto body = lift(session, session.unit().indexOf(method), keys, &result.sources);
+    if (body.is_err()) return Err(body.unwrap_err());
+    result.body = std::move(body).unwrap();
+    return Ok(std::move(result));
+}
+
+bool replaceJvmLocalReadWithConstant(ClassSession& session, jbc::ir::CodeUnit& code,
+                                     InsnId site, const Literal& value)
+{
+    auto dest = code.dom.get(site);
+    if (dest.is_err()) return false;
+    auto& in = *dest.unwrap();
+    const auto op = asm_sem::explicitLocalOp(in.op);
+    if ((op == Op::ILOAD && std::holds_alternative<ca::i32>(value))
+        || (op == Op::ALOAD && std::holds_alternative<Null>(value))) {
+        return encodeLiteral(session, in, value);
+    }
+    return false;
 }
 
 ca::core::Result<std::vector<ca::u8>, Error>
@@ -464,26 +533,32 @@ rewriteJvmLiterals(jbc::core::ByteView bytes, std::string_view name, std::string
     auto& session = *sessionOwner;
     const auto method = session.unit().findMethodId(name, descriptor);
     KeyPool keys;
-    std::vector<LiteralSite> sites;
-    auto lifted = lift(session, method, keys, &sites);
+    auto lifted = liftJvmMethodWithSources(session, method, keys);
     if (lifted.is_err()) return Err(lifted.unwrap_err());
     if (!rewrite) return Err(Error{ErrorKind::InvalidLiteralEdit});
 
-    const auto body = std::move(lifted).unwrap();
+    const auto projection = std::move(lifted).unwrap();
+    const auto& body = projection.body;
     auto& dom = session.unit().method(method)->code->dom;
     bool changed = false;
-    for (const auto& site : sites) {
-        const auto& statement = body.blocks[site.block.index].statements[site.value.index];
-        const auto& old = std::get<Literal>(std::get<Let>(statement).expression);
-        auto replacement = rewrite(body, keys, site.block, site.value, old);
-        if (!replacement) continue;
-        if (replacement->index() != old.index()) return Err(Error{ErrorKind::InvalidLiteralEdit});
-        if (sameLiteral(old, *replacement)) continue;
-        auto dest = dom.get(site.instruction);
-        if (dest.is_err() || !encodeLiteral(session, *dest.unwrap(), *replacement)) {
-            return Err(Error{ErrorKind::InvalidLiteralEdit});
+    for (ca::usize b = 0; b < body.blocks.size(); ++b) {
+        const auto& statements = body.blocks[b].statements;
+        for (ca::usize i = 0; i < statements.size(); ++i) {
+            const auto site = projection.sources[b].statements[i];
+            if (site == jbc::ir::kNoInsn) continue;
+            const auto* let = std::get_if<Let>(&statements[i]);
+            const auto* old = let ? std::get_if<Literal>(&let->expression) : nullptr;
+            if (!old) continue;
+            auto replacement = rewrite(body, keys, BlockId{b}, ValueId{i}, *old);
+            if (!replacement) continue;
+            if (replacement->index() != old->index()) return Err(Error{ErrorKind::InvalidLiteralEdit});
+            if (sameLiteral(*old, *replacement)) continue;
+            auto dest = dom.get(site);
+            if (dest.is_err() || !encodeLiteral(session, *dest.unwrap(), *replacement)) {
+                return Err(Error{ErrorKind::InvalidLiteralEdit});
+            }
+            changed = true;
         }
-        changed = true;
     }
     if (!changed) return Ok(std::vector<ca::u8>(bytes.data(), bytes.data() + bytes.size()));
     if (jbc::ir::lowerMethod(session, method).is_err()) return Err(Error{ErrorKind::Write});
