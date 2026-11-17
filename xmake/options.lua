@@ -14,6 +14,11 @@ option("with_tests")
     set_showmenu(true)
     set_description("Enable the mjt_mcp_unittest target (pulls gtest via xrepo).")
 
+option("with_dex")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Build the optional mjbase_dex semantic AST adapter.")
+
 
 -- AddressSanitizer。MSVC 下 /fsanitize=address 会改变 STL 的 ABI
 -- （annotate_vector 等注解），因此**必须在全局作用域开启**，让所有 target

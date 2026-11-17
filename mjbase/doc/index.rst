@@ -16,6 +16,7 @@ mjbase 设计规格
    refs-id-design
    producer-registry-design
    semantic-fp-spec
+   semantic-ast
    library-identification
    member-census-design
    analysis-project-schema-v2

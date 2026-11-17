@@ -127,6 +127,11 @@ add_requireconfs("libjhasm.libca",                       {version = LUIOX_LIBCA_
 -- libjhasm 后端分支 dep（on_load 动态加挂）显式钉定：与顶层同一 (版本, 配置)
 -- 归并单实例，且防沙箱内解析漂移到内联定义外的版本。
 add_requireconfs("libjhasm.libjbc",                      {version = "0.4.22"})
+if has_config("with_dex") then
+    includes("xmake/packages/libdex.lua")
+    add_requires("libdex 0.0.1")
+    add_requireconfs("libdex.libjstr.libca", {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
+end
 -- i18n/resources 构建规则内嵌（.lang add_files 规则，包安装产物不带规则）。
 includes("xmake/libca_rules.lua")
 

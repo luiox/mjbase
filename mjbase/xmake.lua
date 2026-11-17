@@ -64,6 +64,7 @@ target("mjbase")
     -- 后续批次（asm/hierarchy → reference/spi/pass/workspace → air/sir/jasm/cli）
     -- 按 mjt 与 mjt-py 的实际消费面追加，每批独立构建 + 独立测试。
     add_files("src/mjbase/keys.cpp", "src/mjbase/util.cpp")
+    add_files("src/mjbase/ast/method_body.cpp", "src/mjbase/ast/jvm.cpp")
     add_files("src/mjbase/expr/**.cpp")
     add_files("src/mjbase/jar/**.cpp")
     add_files("src/mjbase/mapping/**.cpp")
@@ -101,7 +102,7 @@ target("mjbase")
     -- 导出捕获含 mjbase/ 前缀（src/(mjbase/**)）：安装根下保留 mjbase/ 子树，
     -- 消费方 #include "mjbase/keys.hpp" 等伞头/模块头统一解析（同 libjbytecode
     -- src/(jbytecode/*.hpp) 口径）。
-    add_headerfiles("src/(mjbase/**.hpp)")
+    add_headerfiles("src/(mjbase/**.hpp)|mjbase/ast/dex.hpp")
     add_includedirs("src", {public = true})
     set_languages("cxx17")
 
@@ -109,6 +110,19 @@ target("mjbase")
         add_cxflags("/utf-8", {tools = "cl"})
         add_links("bcrypt")
     end
+
+if has_config("with_dex") then
+target("mjbase_dex")
+    set_kind("static")
+    add_deps("mjbase")
+    add_packages("libdex", {public = true})
+    add_files("src/mjbase/ast/dex.cpp")
+    add_headerfiles("src/(mjbase/ast/dex.hpp)")
+    add_includedirs("src", {public = true})
+    if is_plat("windows") then
+        add_cxflags("/utf-8", {tools = "cl"})
+    end
+end
 
 -- gtest 面随 with_tests 门控：默认配置不定义本 target、不拉 gtest。
 if has_config("with_tests") then
@@ -125,12 +139,21 @@ target("mjbase_unittest")
     -- libjhasm 0.3.0 后端换 libjbc：libjblw 出链；libjbytecode 五段闭包与
     -- 其独占传递的 libgarena 已随 relaxed_verifier 换道 libjbc 摘除
     -- （B8 8.7，garena 无人 include、无符号消费）。
-    mjbase_binary_link_closure("mjbase", "libjhasm", "libjbc", "test_helper",
-                               "libjdk_finder", "libjzip",
-                               "libjclassfile", "libjstr", "sqlite3")
+    local dex_links = {}
+    if has_config("with_dex") then
+        add_deps("mjbase_dex")
+        add_packages("libdex")
+        add_files("test/unittest/ast/dex_test.cpp")
+        dex_links = {"mjbase_dex", "libsmali", "libdex"}
+    end
+    local links = table.join(dex_links, {"mjbase", "libjhasm", "libjbc", "test_helper",
+                                        "libjdk_finder", "libjzip", "libjclassfile",
+                                        "libjstr", "sqlite3"})
+    mjbase_binary_link_closure((table.unpack or unpack)(links))
     -- 注：libjstd / libca_i18n 为 headeronly，无链接产物，不进闭包。
     add_packages("gtest")
     add_files("test/unittest/main.cpp")
+    add_files("test/unittest/ast/jvm_test.cpp")
     -- 迁移期按切片收编：与上面 src 的同批次模块一一对应（忌整库 glob）。
     add_files("test/unittest/expr/*_test.cpp")
     add_files("test/unittest/jar/*_test.cpp")
