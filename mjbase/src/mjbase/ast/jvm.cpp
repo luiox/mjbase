@@ -117,6 +117,37 @@ struct BlockLift
         return value;
     }
 
+    std::optional<ca::usize> groupStart(ca::usize end, ca::usize slots) const
+    {
+        while (slots != 0) {
+            if (end == 0) return std::nullopt;
+            const auto size = width(stack[--end].family);
+            if (size > slots) return std::nullopt;
+            slots -= size;
+        }
+        return end;
+    }
+
+    std::optional<ErrorKind> discard(ca::usize slots)
+    {
+        const auto first = groupStart(stack.size(), slots);
+        if (!first) return stackError();
+        stack.resize(*first);
+        return std::nullopt;
+    }
+
+    std::optional<ErrorKind> duplicate(ca::usize slots, ca::usize beneath)
+    {
+        const auto first = groupStart(stack.size(), slots);
+        if (!first) return stackError();
+        const auto insert = groupStart(*first, beneath);
+        if (!insert) return stackError();
+        // Copy the bindings. Duplicating the producing expressions can repeat side effects.
+        const std::vector<Operand> copies(stack.begin() + *first, stack.end());
+        stack.insert(stack.begin() + *insert, copies.begin(), copies.end());
+        return std::nullopt;
+    }
+
     std::optional<ErrorKind> call(const Insn& in, Dispatch dispatch)
     {
         ClassSession::MemberSem member;
@@ -249,9 +280,18 @@ struct BlockLift
             block.statements.emplace_back(Assign{locals[slot], sum});
             return std::nullopt;
         }
-        case Op::POP:
-            if (stack.empty() || width(stack.back().family) != 1) return stackError();
-            stack.pop_back();
+        case Op::POP: return discard(1);
+        case Op::POP2: return discard(2);
+        case Op::DUP: return duplicate(1, 0);
+        case Op::DUP_X1: return duplicate(1, 1);
+        case Op::DUP_X2: return duplicate(1, 2);
+        case Op::DUP2: return duplicate(2, 0);
+        case Op::DUP2_X1: return duplicate(2, 1);
+        case Op::DUP2_X2: return duplicate(2, 2);
+        case Op::SWAP:
+            if (stack.size() < 2 || width(stack.back().family) != 1
+                || width(stack[stack.size() - 2].family) != 1) return stackError();
+            std::swap(stack[stack.size() - 2], stack.back());
             return std::nullopt;
         case Op::NOP: return std::nullopt;
         default: return ErrorKind::Unsupported;
@@ -281,7 +321,7 @@ std::optional<Branch> conditional(BlockLift& lift, Op op, BlockId taken, BlockId
     const Comparison comparison = reference
         ? (op == Op::IFNULL || op == Op::IF_ACMPEQ ? Comparison::Equal : Comparison::NotEqual)
         : comparisons[static_cast<ca::u8>(op) - static_cast<ca::u8>(base)];
-    return Branch{comparison, *left, *right, taken, fallthrough};
+    return Branch{comparison, *left, *right, taken, fallthrough, localKindOf(family)};
 }
 
 std::optional<ErrorKind> terminate(BlockLift& lift, Op op,
@@ -295,6 +335,7 @@ std::optional<ErrorKind> terminate(BlockLift& lift, Op op,
         case asm_cfg::EdgeKind::FallThrough: fallthrough = BlockId{edge.target.index}; break;
         case asm_cfg::EdgeKind::Branch:
         case asm_cfg::EdgeKind::Condition: taken = BlockId{edge.target.index}; break;
+        case asm_cfg::EdgeKind::Exception: break;
         default: return ErrorKind::Unsupported;
         }
     }
@@ -324,7 +365,120 @@ std::optional<ErrorKind> terminate(BlockLift& lift, Op op,
         if (!target) return ErrorKind::InvalidCode;
         lift.block.terminator = Jump{*target};
     }
-    if (!lift.stack.empty()) return ErrorKind::Unsupported;
+    if ((std::holds_alternative<Return>(lift.block.terminator)
+         || std::holds_alternative<Throw>(lift.block.terminator)) && !lift.stack.empty()) {
+        return ErrorKind::Unsupported;
+    }
+    return std::nullopt;
+}
+
+std::optional<Error> liftBlocks(ClassSession& session, jbc::ir::CodeUnit& unit, KeyPool& keys,
+                               const asm_cfg::ControlFlowGraph& cfg,
+                               const std::vector<LocalId>& locals, std::optional<Family> returnType,
+                               MethodBody& body, std::vector<JvmBlockSources>* sources)
+{
+    const auto count = cfg.blockCount();
+    body.blocks.resize(count);
+    if (sources) sources->resize(count);
+    std::vector<ca::usize> positions(count);
+    std::vector<std::optional<std::vector<Family>>> entries(count);
+    std::vector<ca::usize> queue;
+    ca::usize totalParameters = 0;
+    const auto observe = [&](ca::usize index, const std::vector<Family>& stack)
+        -> std::optional<ErrorKind> {
+        auto& known = entries[index];
+        if (known) {
+            if (*known != stack) return ErrorKind::InvalidCode;
+        } else {
+            // Each incoming value materializes a parameter and a statement.
+            constexpr ca::usize kParameterBudget = 1u << 20;
+            if (stack.size() > kParameterBudget - totalParameters) return ErrorKind::Unsupported;
+            totalParameters += stack.size();
+            known = stack;
+            queue.push_back(index);
+        }
+        return std::nullopt;
+    };
+    (void)observe(0, {});
+    ca::usize position = 0;
+    for (const auto& source : cfg.blocks()) {
+        auto& block = body.blocks[source.id.index];
+        positions[source.id.index] = position;
+        position += source.insns.size();
+        for (const auto& edge : cfg.succEdgesOf(source.id)) {
+            if (edge.kind != asm_cfg::EdgeKind::Exception) continue;
+            const auto& entry = unit.exc[edge.excIndex];
+            std::optional<ClassKey> type;
+            if (entry.catchCp != 0) {
+                const auto name = session.backing().className(entry.catchCp);
+                if (name.empty()) return Error{ErrorKind::InvalidCode, positions[source.id.index]};
+                type = classKeyOf(keys, name);
+            }
+            block.handlers.push_back({BlockId{edge.target.index}, type});
+            if (auto error = observe(edge.target.index, {Family::Ref})) {
+                return Error{*error};
+            }
+        }
+    }
+
+    ca::usize cursor = 0;
+    for (ca::usize root = 0; root < count; ++root) {
+        // Preserve unreachable blocks for structural analyses. A disconnected
+        // component may lift from an empty stack or return an unsupported shape.
+        if (!entries[root]) (void)observe(root, {});
+        while (cursor < queue.size()) {
+            const auto index = queue[cursor++];
+            const auto& source = cfg.blocks()[index];
+            const auto& successors = cfg.succEdgesOf(source.id);
+            Block& block = body.blocks[index];
+            auto* anchors = sources ? &(*sources)[index] : nullptr;
+            if (anchors) anchors->entry = source.entry;
+            BlockLift liftBlock{session, keys, locals, block, index == 0, {}};
+            for (const auto family : *entries[index]) {
+                const auto param = block.parameters.size();
+                block.parameters.push_back(localKindOf(family));
+                liftBlock.push(BlockParameter{param}, family);
+            }
+
+            position = positions[index];
+            for (const InsnId insn : source.insns) {
+                const Insn& in = *unit.dom.peek(insn);
+                const bool last = insn == source.insns.back();
+                const bool control = asm_sem::isControlTransfer(in.op) && in.op != Op::JSR
+                    && in.op != Op::JSR_W && in.op != Op::RET;
+                if (!last || !control) {
+                    const auto start = block.statements.size();
+                    if (auto error = liftBlock.step(in)) return Error{*error, position};
+                    if (anchors && block.statements.size() != start) {
+                        // IINC expands to synthetic values and a source assignment.
+                        anchors->statements.resize(block.statements.size(), jbc::ir::kNoInsn);
+                        anchors->statements.back() = insn;
+                    }
+                }
+                if (last) {
+                    if (auto error = terminate(liftBlock, in.op, successors, returnType)) {
+                        return Error{*error, position};
+                    }
+                    if (anchors) {
+                        anchors->statements.resize(block.statements.size(), jbc::ir::kNoInsn);
+                        if (control) anchors->terminator = insn;
+                    }
+                }
+                ++position;
+            }
+            std::vector<Family> outgoing;
+            for (const auto& operand : liftBlock.stack) {
+                outgoing.push_back(operand.family);
+                block.outgoingArguments.push_back(operand.value);
+            }
+            for (const auto& edge : successors) {
+                if (edge.kind == asm_cfg::EdgeKind::Exception) continue;
+                if (auto error = observe(edge.target.index, outgoing)) {
+                    return Error{*error, position - 1};
+                }
+            }
+        }
+    }
     return std::nullopt;
 }
 
@@ -346,9 +500,12 @@ Result<MethodBody, Error> lift(ClassSession& session, ca::usize methodIndex, Key
         if (promoted.is_err()) return Err(Error{ErrorKind::InvalidCode});
         unit = &*promoted.unwrap();
     }
-    if (!unit->exc.empty()) return Err(Error{ErrorKind::Unsupported});
     // Reject switch before constructing a graph with a potentially large case table.
     const auto& order = unit->dom.order();
+    constexpr ca::usize kHandlerWorkBudget = 1u << 22;
+    if (!unit->exc.empty() && order.size() > kHandlerWorkBudget / unit->exc.size()) {
+        return Err(Error{ErrorKind::Unsupported});
+    }
     for (ca::usize i = 0; i < order.size(); ++i) {
         const auto* in = unit->dom.peek(order[i]);
         if (!in) return Err(Error{ErrorKind::InvalidCode, i});
@@ -386,41 +543,8 @@ Result<MethodBody, Error> lift(ClassSession& session, ca::usize methodIndex, Key
 
     const auto returnType = signature.ret_void ? std::nullopt
                                                : std::optional<Family>{familyOf(signature.ret)};
-    body.blocks.resize(cfg.blockCount());
-    if (sources) sources->resize(cfg.blockCount());
-    ca::usize position = 0;
-    for (const auto& source : cfg.blocks()) {
-        Block& block = body.blocks[source.id.index];
-        auto* anchors = sources ? &(*sources)[source.id.index] : nullptr;
-        if (anchors) anchors->entry = source.entry;
-        BlockLift liftBlock{session, keys, locals, block, source.id.index == 0, {}};
-        for (const InsnId insn : source.insns) {
-            const Insn& in = *unit->dom.peek(insn);
-            const bool last = insn == source.insns.back();
-            const bool control = asm_sem::isControlTransfer(in.op) && in.op != Op::JSR
-                && in.op != Op::JSR_W && in.op != Op::RET;
-            if (!last || !control) {
-                const auto start = block.statements.size();
-                if (auto error = liftBlock.step(in)) {
-                    return Err(Error{*error, position});
-                }
-                if (anchors && block.statements.size() != start) {
-                    // IINC expands into synthetic values followed by its source assignment.
-                    anchors->statements.resize(block.statements.size(), jbc::ir::kNoInsn);
-                    anchors->statements.back() = insn;
-                }
-            }
-            if (last) {
-                if (auto error = terminate(liftBlock, in.op, cfg.succEdgesOf(source.id), returnType)) {
-                    return Err(Error{*error, position});
-                }
-                if (anchors) {
-                    anchors->statements.resize(block.statements.size(), jbc::ir::kNoInsn);
-                    if (control) anchors->terminator = insn;
-                }
-            }
-            ++position;
-        }
+    if (auto error = liftBlocks(session, *unit, keys, cfg, locals, returnType, body, sources)) {
+        return Err(*error);
     }
     return Ok(std::move(body));
 }
@@ -521,6 +645,20 @@ bool replaceJvmLocalReadWithConstant(ClassSession& session, jbc::ir::CodeUnit& c
         return encodeLiteral(session, in, value);
     }
     return false;
+}
+
+bool replaceJvmIntBranchWithFallthrough(jbc::ir::CodeUnit& code, InsnId site)
+{
+    auto dest = code.dom.get(site);
+    if (dest.is_err()) return false;
+    auto& in = *dest.unwrap();
+    Insn replacement;
+    if (in.op >= Op::IFEQ && in.op <= Op::IFLE) replacement.op = Op::POP;
+    else if (in.op >= Op::IF_ICMPEQ && in.op <= Op::IF_ICMPLE) replacement.op = Op::POP2;
+    else return false;
+    replacement.srcPc = in.srcPc;
+    in = std::move(replacement);
+    return true;
 }
 
 ca::core::Result<std::vector<ca::u8>, Error>

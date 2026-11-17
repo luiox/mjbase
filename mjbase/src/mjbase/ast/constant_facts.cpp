@@ -1,14 +1,12 @@
 #include "constant_facts.hpp"
 
-#include <unordered_map>
-
 #include "jstd/arith.hpp"
 
 namespace mjbase::ast {
 namespace {
 
 using Constant = std::optional<KnownConstant>;
-using Facts = std::vector<Constant>;
+using Facts = detail::ConstantFacts;
 namespace arithmetic = jstd::arith;
 
 Constant factOf(const Facts& facts, ValueId value)
@@ -84,11 +82,11 @@ Constant binaryFact(const Facts& facts, const IntBinary& binary)
 
 }   // namespace
 
-std::vector<std::optional<KnownConstant>> analyzeBlockConstants(const Block& block)
+detail::ConstantFacts detail::transferBlockConstants(const Block& block, LocalConstants& locals,
+                                                    const ConstantFacts& parameters)
 {
     Facts facts;
     facts.reserve(block.statements.size());
-    std::unordered_map<ca::usize, KnownConstant> locals;
     for (const auto& statement : block.statements) {
         Constant fact;
         if (const auto* let = std::get_if<Let>(&statement)) {
@@ -97,6 +95,11 @@ std::vector<std::optional<KnownConstant>> analyzeBlockConstants(const Block& blo
             } else if (const auto* read = std::get_if<ReadLocal>(&let->expression)) {
                 const auto local = locals.find(read->local.index);
                 if (local != locals.end()) fact = typedFact(local->second, read->kind);
+            } else if (const auto* param = std::get_if<BlockParameter>(&let->expression)) {
+                if (param->index < parameters.size() && param->index < block.parameters.size()) {
+                    const auto& input = parameters[param->index];
+                    if (input) fact = typedFact(*input, block.parameters[param->index]);
+                }
             } else if (const auto* binary = std::get_if<IntBinary>(&let->expression)) {
                 fact = binaryFact(facts, *binary);
             }
@@ -113,6 +116,12 @@ std::vector<std::optional<KnownConstant>> analyzeBlockConstants(const Block& blo
         facts.push_back(fact);
     }
     return facts;
+}
+
+std::vector<std::optional<KnownConstant>> analyzeBlockConstants(const Block& block)
+{
+    detail::LocalConstants locals;
+    return detail::transferBlockConstants(block, locals, {});
 }
 
 }   // namespace mjbase::ast
