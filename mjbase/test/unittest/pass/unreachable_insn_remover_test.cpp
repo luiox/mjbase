@@ -10,6 +10,8 @@
 
 #include "jbc/core/opcode.hpp"
 
+#include "mjbase/ast/control_flow.hpp"
+#include "mjbase/ast/jvm.hpp"
 #include "mjbase/pass/flattening_reverser.hpp"
 #include "mjbase/pass/unreachable_insn_remover.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
@@ -77,6 +79,13 @@ TEST(UnreachableInsnRemoverTest, removesDeadIslandAfterGoto)
         b.pop();
         b.vreturn();
     });
+    mjbase::KeyPool keys;
+    const auto method = fx.session->unit().methods[0].id;
+    auto lifted = mjbase::ast::liftJvmMethod(*fx.session, method, keys);
+    ASSERT_TRUE(lifted.is_ok());
+    auto graph = mjbase::ast::ControlFlowGraph::build(std::move(lifted).unwrap());
+    ASSERT_TRUE(graph.is_ok());
+    EXPECT_EQ(mjbase::ast::CfgTraversal(graph.unwrap()).preorder().size(), 2u);
     const auto pa = fx.run(mjbase::pass::UnreachableInsnRemover{});
     EXPECT_TRUE(pa.changed());
     // 死岛四条全删，剩 goto + iconst_0/pop/vreturn。
