@@ -9,8 +9,10 @@
 #include "smali/assemble.hpp"
 
 #include "mjbase/ast/constant_facts.hpp"
+#include "mjbase/ast/control_flow.hpp"
 #include "mjbase/ast/dex.hpp"
 #include "mjbase/ast/effects.hpp"
+#include "mjbase/ast/int_flow.hpp"
 #include "mjbase/ast/jvm.hpp"
 #include "shared/jasm_fixture.hpp"
 
@@ -325,6 +327,75 @@ TEST(MjAstDexTest, SharesConstantAndEffectAnalysesWithJvm)
     ASSERT_EQ(dexEffects.callees.size(), 1u);
     EXPECT_EQ(dexEffects.callees, jvmEffects.callees);
     EXPECT_EQ(keys.str(dexEffects.callees.front().name), "observe");
+}
+
+TEST(MjAstDexTest, SharesIntegerDataflowAndDominanceAcrossAJoin)
+{
+    auto file = assembleDex(R"SMALI(
+.class public LAstJoin;
+.super Ljava/lang/Object;
+.method public static compute(I)I
+    .registers 2
+    if-eqz p0, :alt
+    const/4 v0, 0x2
+    goto :join
+  :alt
+    const/4 v0, 0x2
+  :join
+    add-int/lit8 v0, v0, 0x3
+    return v0
+.end method
+)SMALI");
+    ASSERT_TRUE(file);
+    const auto* method = staticMethod(*file, "compute");
+    ASSERT_NE(method, nullptr);
+    mjbase::KeyPool keys;
+    auto dex = liftDexMethod(*file, *method, keys);
+    ASSERT_TRUE(dex.is_ok());
+
+    const auto bytes = mjbase::test::assembleClass("AstJoin", "java/lang/Object", R"JASM(
+    .method public static compute (I)I {
+      code: {
+        iload_0
+        ifeq Lalt
+        iconst_2
+        goto Ljoin
+      Lalt:
+        iconst_2
+      Ljoin:
+        iconst_3
+        iadd
+        ireturn
+      }
+    }
+)JASM");
+    auto loaded = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
+    ASSERT_TRUE(loaded.is_ok());
+    auto session = std::move(loaded).unwrap();
+    auto jvm = liftJvmMethod(*session, session->unit().findMethodId("compute", "(I)I"), keys);
+    ASSERT_TRUE(jvm.is_ok());
+
+    const auto dexBody = std::move(dex).unwrap();
+    const auto jvmBody = std::move(jvm).unwrap();
+    EXPECT_EQ(dexBody.method, jvmBody.method);
+    for (const auto* body : {&dexBody, &jvmBody}) {
+        ASSERT_EQ(body->blocks.size(), 4u);
+        const auto& ret = std::get<Return>(body->blocks[3].terminator);
+        ASSERT_TRUE(ret.value);
+        const auto facts = analyzeIntFlow(*body);
+        ASSERT_TRUE(facts);
+        EXPECT_EQ(facts->values[3][ret.value->index], std::optional<ca::i32>{5});
+        const auto graph = ControlFlowGraph::build(*body);
+        ASSERT_TRUE(graph.is_ok());
+        const DominatorTree dominators(graph.unwrap());
+        ASSERT_TRUE(dominators.idom(BlockId{3}));
+        EXPECT_EQ(dominators.idom(BlockId{3})->index, 0u);
+        for (const auto arm : {BlockId{1}, BlockId{2}}) {
+            const auto& frontier = dominators.frontier(arm);
+            ASSERT_EQ(frontier.size(), 1u);
+            EXPECT_EQ(frontier.front().index, 3u);
+        }
+    }
 }
 
 }   // namespace

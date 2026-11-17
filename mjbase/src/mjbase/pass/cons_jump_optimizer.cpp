@@ -7,6 +7,8 @@
 #include "jbc/ir/code_editor.hpp"
 #include "jbc/ir/units.hpp"
 
+#include "mjbase/ast/int_flow.hpp"
+#include "mjbase/ast/jvm.hpp"
 #include "mjbase/pass/method_rewrite_util.hpp"
 
 namespace mjbase::pass {
@@ -64,6 +66,27 @@ bool anyInteriorAnchored(jbc::ir::CodeDom& dom, const InsnId* interior, ca::usiz
         if (!dom.labelsAt(interior[k]).empty()) return true;
     }
     return false;
+}
+
+bool foldProvenFallthroughs(spi::MethodScope& scope)
+{
+    const auto* method = scope.session.unit().method(scope.method);
+    if (!method || method->code.get() != &scope.code) return false;
+    KeyPool keys;
+    auto lifted = ast::liftJvmMethodWithSources(scope.session, scope.method, keys);
+    if (lifted.is_err()) return false;
+    const auto projection = std::move(lifted).unwrap();
+    const auto facts = ast::analyzeIntFlow(projection.body);
+    if (!facts) return false;
+    // Keep operand evaluations, including calls and throws, and the original fallthrough.
+    bool changed = false;
+    for (ca::usize b = 0; b < facts->branches.size(); ++b) {
+        if (facts->branches[b] == false
+            && ast::replaceJvmIntBranchWithFallthrough(scope.code, projection.sources[b].terminator)) {
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 }   // namespace
@@ -161,6 +184,7 @@ mjbase::spi::PreservedAnalyses ConsJumpOptimizer::run(mjbase::spi::MethodScope& 
             break;   // 重开一轮：折叠暴露的新相邻窗口由下一轮快照接续
         }
     }
+    modified = foldProvenFallthroughs(scope) || modified;
     return modified ? mjbase::spi::PreservedAnalyses::none()
                     : mjbase::spi::PreservedAnalyses::all();
 }

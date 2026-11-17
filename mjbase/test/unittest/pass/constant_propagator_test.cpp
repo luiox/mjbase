@@ -16,6 +16,7 @@
 #include "mjbase/pass/method_rewrite_util.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
 
+#include "jdk_fixture_gtest.hpp"
 #include "method_pass_test_util.hpp"
 #include "shared/jasm_fixture.hpp"
 
@@ -87,6 +88,90 @@ TEST(ConstantPropagatorTest, mergeOfTwoStoresKept)
 )JASM"),
                       mjbase::pass::ConstantPropagator{});
     EXPECT_TRUE(r.pa.areAllPreserved());
+}
+
+TEST(ConstantPropagatorTest, propagatesAgreeingIntDefinitionsAndKeepsNullPath)
+{
+    const auto input = oneMethod("(I)I",
+        R"JASM(      aconst_null
+      astore_2
+      iload_0
+      ifeq Lcompute
+      iconst_5
+      istore_1
+      goto Ljoin
+      Lcompute:
+      iconst_2
+      iconst_3
+      iadd
+      istore_1
+      Ljoin:
+      aload_2
+      pop
+      iload_1
+      ireturn
+)JASM");
+    const auto result = runMethodPass(input, mjbase::pass::ConstantPropagator{});
+    EXPECT_TRUE(result.pa.changed());
+    const auto ops = opsOf(inspect(result.out));
+    ASSERT_EQ(ops.size(), 15u);
+    EXPECT_EQ(ops[2], Op::ILOAD_0);
+    EXPECT_EQ(ops[3], Op::IFEQ);
+    EXPECT_EQ(ops[9], Op::IADD);
+    EXPECT_EQ(ops[11], Op::ACONST_NULL);
+    EXPECT_EQ(ops[13], Op::ICONST_5);
+    expectValidateOk(result.out);
+
+    const auto repeat = runMethodPass(result.out, mjbase::pass::ConstantPropagator{});
+    EXPECT_TRUE(repeat.pa.areAllPreserved());
+    EXPECT_EQ(repeat.out, result.out);
+
+    ::test::jdk::RunnerSpec runner;
+    runner.classes = {{"t/Fx", input}};
+    runner.runnerBody = "System.out.println(t.Fx.m(0)); System.out.println(t.Fx.m(1));";
+    std::string before;
+    if (!::test::jdk::runRunnerChecked(runner, &before)) return;
+    runner.classes = {{"t/Fx", result.out}};
+    std::string after;
+    if (!::test::jdk::runRunnerChecked(runner, &after)) return;
+    EXPECT_EQ(before, "5\n5\n");
+    EXPECT_EQ(after, before);
+}
+
+TEST(ConstantPropagatorTest, propagatesValueCarriedOnStackIntoJoinStore)
+{
+    const auto input = assembleMethodClass("m", "(I)I",
+        R"JASM(      iload_0
+      ifeq Lcompute
+      iconst_5
+      goto Lstore
+      Lcompute:
+      iconst_2
+      iconst_3
+      iadd
+      Lstore:
+      istore_1
+      iload_1
+      ireturn
+)JASM", "t/FxStackJoin", 52);
+    expectValidateOk(input);
+    const auto result = runMethodPass(input, mjbase::pass::ConstantPropagator{});
+    EXPECT_TRUE(result.pa.changed());
+    const auto ops = opsOf(inspect(result.out));
+    ASSERT_EQ(ops.size(), 10u);
+    EXPECT_EQ(ops[1], Op::IFEQ);
+    EXPECT_EQ(ops[6], Op::IADD);
+    EXPECT_EQ(ops[7], Op::ISTORE_1);
+    EXPECT_EQ(ops[8], Op::ICONST_5);
+    expectValidateOk(result.out);
+
+    ::test::jdk::RunnerSpec runner;
+    runner.classes = {{"t/FxStackJoin", result.out}};
+    runner.runnerBody = "System.out.println(t.FxStackJoin.m(0));"
+                        "System.out.println(t.FxStackJoin.m(1));";
+    std::string output;
+    if (!::test::jdk::runRunnerChecked(runner, &output)) return;
+    EXPECT_EQ(output, "5\n5\n");
 }
 
 // ── store 前装载不误折（旧栈 ConsLocalVarOptimizer 的正确性修正）──

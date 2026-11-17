@@ -84,6 +84,7 @@ constexpr ca::u8 kMoveObject16 = 0x09;
 constexpr ca::u8 kMoveResult = 0x0a;
 constexpr ca::u8 kMoveResultWide = 0x0b;
 constexpr ca::u8 kMoveResultObject = 0x0c;
+constexpr ca::u8 kMoveException = 0x0d;
 constexpr ca::u8 kReturnVoid = 0x0e;
 constexpr ca::u8 kReturn = 0x0f;
 constexpr ca::u8 kReturnWide = 0x10;
@@ -153,11 +154,45 @@ struct BlockLayout
     }
 };
 
+constexpr ca::usize kHandlerWorkBudget = 1u << 22;
+
+std::optional<Error> addTryLeaders(const dex::core::CodeItem& code,
+                                   std::unordered_set<ca::u32>& leaders)
+{
+    ca::u32 previousEnd = 0;
+    ca::usize handlerWork = 0;
+    for (const auto& region : code.tryBlocks) {
+        const auto start = region.startAddress;
+        if (start < previousEnd || start >= code.insnsSize || region.insnCount == 0
+            || region.insnCount > code.insnsSize - start
+            || region.handlerIndex >= code.catchHandlers.size()) {
+            return Error{ErrorKind::InvalidCode, start};
+        }
+        const auto end = start + region.insnCount;
+        previousEnd = end;
+        leaders.insert(start);
+        if (end != code.insnsSize) leaders.insert(end);
+
+        const auto& handler = code.catchHandlers[region.handlerIndex];
+        const auto count = handler.typed.size() + static_cast<ca::usize>(handler.hasCatchAll);
+        if (count == 0) return Error{ErrorKind::InvalidCode, start};
+        if (count > kHandlerWorkBudget - handlerWork) {
+            return Error{ErrorKind::Unsupported, start};
+        }
+        handlerWork += count;
+        for (const auto& item : handler.typed) leaders.insert(item.address);
+        if (handler.hasCatchAll) leaders.insert(handler.catchAllAddress);
+    }
+    return std::nullopt;
+}
+
 /// Split the supported instruction stream at transfer targets and their successors.
-Result<BlockLayout, Error> blockLayout(const std::vector<Insn>& insns)
+Result<BlockLayout, Error> blockLayout(const std::vector<Insn>& insns,
+                                      const dex::core::CodeItem& code)
 {
     if (insns.empty()) return Err(Error{ErrorKind::InvalidCode});
     std::unordered_set<ca::u32> leaders{0};
+    if (const auto error = addTryLeaders(code, leaders)) return Err(*error);
     for (ca::usize i = 0; i < insns.size(); ++i) {
         const auto& insn = insns[i];
         if (insn.isPayload() || (insn.isBranch() && !isJump(insn.opcode)
@@ -185,6 +220,55 @@ Result<BlockLayout, Error> blockLayout(const std::vector<Insn>& insns)
     if (layout.starts.size() != leaders.size()) return Err(Error{ErrorKind::InvalidCode});
     layout.starts.push_back(insns.size());
     return Ok(std::move(layout));
+}
+
+std::optional<Error> attachHandlers(DexFile& file, KeyPool& keys, const dex::core::CodeItem& code,
+                                    const BlockLayout& layout, MethodBody& body)
+{
+    ca::usize handlerWork = 0;
+    for (const auto& region : code.tryBlocks) {
+        const auto start = region.startAddress;
+        const auto end = start + region.insnCount;
+        // Range and handler addresses were validated as block boundaries by blockLayout.
+        const auto first = layout.at(start)->index;
+        const auto limit = end == code.insnsSize ? body.blocks.size() : layout.at(end)->index;
+        const auto& source = code.catchHandlers[region.handlerIndex];
+        const auto count = source.typed.size() + static_cast<ca::usize>(source.hasCatchAll);
+        if (limit - first > (kHandlerWorkBudget - handlerWork) / count) {
+            return Error{ErrorKind::Unsupported, start};
+        }
+        handlerWork += (limit - first) * count;
+
+        std::vector<ExceptionHandler> handlers;
+        handlers.reserve(count);
+        for (const auto& item : source.typed) {
+            const auto type = file.typeDescriptor(item.typeIdx);
+            if (type.is_err()) return Error{ErrorKind::InvalidCode, item.address};
+            const auto descriptor = type.unwrap().as_std_view();
+            const auto name = util::descriptorToInternalName(descriptor);
+            if (name.empty() || jbc::type::parseFieldType(descriptor).is_err()) {
+                return Error{ErrorKind::InvalidCode, item.address};
+            }
+            handlers.push_back({*layout.at(item.address), classKeyOf(keys, name)});
+        }
+        if (source.hasCatchAll) handlers.push_back({*layout.at(source.catchAllAddress), std::nullopt});
+        for (const auto& handler : handlers) {
+            auto& parameters = body.blocks[handler.target.index].parameters;
+            if (parameters.empty()) parameters.push_back(LocalKind::Reference);
+        }
+        for (ca::usize block = first; block < limit; ++block) body.blocks[block].handlers = handlers;
+    }
+    return std::nullopt;
+}
+
+bool entersHandler(const Terminator& terminator, const std::vector<Block>& blocks)
+{
+    const auto isHandler = [&](BlockId target) { return !blocks[target.index].parameters.empty(); };
+    if (const auto* jump = std::get_if<Jump>(&terminator)) return isHandler(jump->target);
+    if (const auto* branch = std::get_if<Branch>(&terminator)) {
+        return isHandler(branch->whenTrue) || isHandler(branch->whenFalse);
+    }
+    return false;
 }
 
 struct DexBlock
@@ -407,7 +491,10 @@ struct DexBlock
             const auto left = read(reg);
             const auto right = againstZero ? let(Literal{Bits32{0}}) : read(second);
             block.terminator = Branch{comparisons[op - (againstZero ? kIfEqz : kIfEq)],
-                                      left, right, *target, *fallthrough};
+                                      left, right, *target, *fallthrough,
+                                      op == kIfEq || op == kIfEq + 1
+                                          || op == kIfEqz || op == kIfEqz + 1
+                                          ? LocalKind::Unknown : LocalKind::Int};
             return true;
         }
         if (!fallthrough) return false;
@@ -427,12 +514,11 @@ liftDexMethod(DexFile& file, const dex::core::EncodedMethod& method, KeyPool& ke
     const auto loaded = file.codeItem(method.codeOff);
     if (loaded.is_err() || !loaded.unwrap()) return Err(Error{ErrorKind::Read});
     const auto& code = *loaded.unwrap();
-    if (!code.tryBlocks.empty()) return Err(Error{ErrorKind::Unsupported});
     auto decoded = dex::core::decodeInsns(dex::core::subOrEmpty(
         file.source(), code.insns.offset, code.insns.length));
     if (decoded.is_err()) return Err(Error{ErrorKind::InvalidCode});
     const auto insns = std::move(decoded).unwrap();
-    auto split = blockLayout(insns);
+    auto split = blockLayout(insns, code);
     if (split.is_err()) return Err(split.unwrap_err());
     const auto layout = std::move(split).unwrap();
 
@@ -462,12 +548,26 @@ liftDexMethod(DexFile& file, const dex::core::EncodedMethod& method, KeyPool& ke
     }
 
     body.blocks.resize(layout.blocks.size());
+    if (const auto error = attachHandlers(file, keys, code, layout, body)) return Err(*error);
+    if (!body.blocks.front().parameters.empty()) return Err(Error{ErrorKind::Unsupported, 0});
     for (ca::usize b = 0; b < body.blocks.size(); ++b) {
         DexBlock block{file, keys, locals, body.blocks[b]};
+        const auto start = layout.starts[b];
         const auto end = layout.starts[b + 1];
-        for (ca::usize i = layout.starts[b]; i < end; ++i) {
+        for (ca::usize i = start; i < end; ++i) {
             const auto& in = insns[i];
             if (in.isBranch() || isReturn(in.opcode) || in.opcode == kThrow) continue;
+            if (in.opcode == kMoveException) {
+                if (i != start || block.block.parameters.empty() || !block.valid(in.registers[0])) {
+                    return Err(Error{ErrorKind::InvalidCode, in.address});
+                }
+                block.assign(in.registers[0], block.let(BlockParameter{0}));
+                continue;
+            }
+            // A try boundary may split an otherwise valid invoke/move-result pair.
+            if (i == start && i > 0 && isMoveResult(in.opcode) && dispatchOf(insns[i - 1].opcode)) {
+                return Err(Error{ErrorKind::Unsupported, in.address});
+            }
             if (auto dispatch = dispatchOf(in.opcode)) {
                 const Insn* moveResult = i + 1 < end && isMoveResult(insns[i + 1].opcode)
                     ? &insns[i + 1] : nullptr;
@@ -482,6 +582,9 @@ liftDexMethod(DexFile& file, const dex::core::EncodedMethod& method, KeyPool& ke
         const auto& last = insns[end - 1];
         if (!block.terminate(last, layout, signature->result)) {
             return Err(Error{ErrorKind::InvalidCode, last.address});
+        }
+        if (entersHandler(block.block.terminator, body.blocks)) {
+            return Err(Error{ErrorKind::Unsupported, last.address});
         }
     }
     return Ok(std::move(body));

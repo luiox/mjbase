@@ -1,19 +1,54 @@
 #include "mjbase/pass/unreachable_insn_remover.hpp"
 
 #include <algorithm>
+#include <optional>
+#include <utility>
 #include <vector>
 
 #include "jbc/analysis/frame.hpp"
-#include "jbc/core/opcode.hpp"
 #include "jbc/ir/code_editor.hpp"
 #include "jbc/ir/units.hpp"
+
+#include "mjbase/ast/control_flow.hpp"
+#include "mjbase/ast/jvm.hpp"
 
 namespace mjbase::pass {
 namespace {
 
-using jbc::core::Op;
 using jbc::ir::InsnId;
 using jbc::ir::LabelId;
+
+std::optional<std::vector<ca::u8>> astReachability(spi::MethodScope& scope,
+                                                const std::vector<InsnId>& order)
+{
+    // FrameEngine seeds every handler, even when its protected range is unreachable.
+    if (order.empty() || !scope.code.exc.empty()) return std::nullopt;
+    const auto* method = scope.session.unit().method(scope.method);
+    if (!method || method->code.get() != &scope.code) return std::nullopt;
+    KeyPool keys;
+    auto lifted = ast::liftJvmMethodWithSources(scope.session, scope.method, keys);
+    if (lifted.is_err()) return std::nullopt;
+    const auto projection = std::move(lifted).unwrap();
+    auto graph = ast::ControlFlowGraph::build(projection.body);
+    if (graph.is_err() || projection.sources.empty()
+        || projection.sources.front().entry != order.front()) {
+        return std::nullopt;
+    }
+
+    const ast::CfgTraversal traversal(std::move(graph).unwrap());
+    std::vector<ca::u8> reachable;
+    reachable.reserve(order.size());
+    ca::usize block = 0;
+    for (InsnId insn : order) {
+        if (block + 1 < projection.sources.size()
+            && projection.sources[block + 1].entry == insn) {
+            ++block;
+        }
+        reachable.push_back(traversal.isReachable(ast::BlockId{block}));
+    }
+    if (block + 1 != projection.sources.size()) return std::nullopt;
+    return reachable;
+}
 
 }   // namespace
 
@@ -27,11 +62,25 @@ mjbase::spi::PreservedAnalyses UnreachableInsnRemover::run(mjbase::spi::MethodSc
     const ca::usize           n     = order.size();
     if (n == 0) return mjbase::spi::PreservedAnalyses::all();
 
-    // 帧可达性一次：失败即全方法放弃（fail closed）。
+    auto reachable = astReachability(scope, order);
+    if (reachable && std::all_of(reachable->begin(), reachable->end(), [](ca::u8 live) {
+            return live != 0;
+        })) {
+        return mjbase::spi::PreservedAnalyses::all();
+    }
+
+    // 发生实际删除时仍检查 JVM 帧。提升失败、异常方法或两种可达结果不一致时
+    // 使用原有帧可达性。
     jbc::analysis::FrameEngine          engine(scope.session.backing().cp);
     std::vector<jbc::analysis::FrameAt> frames;
     const jbc::analysis::FrameSummary   summary = engine.compute(cu, frames);
     if (!summary.ok || frames.size() != n) return mjbase::spi::PreservedAnalyses::all();
+    if (reachable && !std::equal(reachable->begin(), reachable->end(), frames.begin(),
+                                 [](ca::u8 live, const jbc::analysis::FrameAt& frame) {
+                                     return (live != 0) == frame.reachable;
+                                 })) {
+        reachable.reset();
+    }
 
     // 异常表标签全集（start/end/handler 任一身份都算）：锚到待删指令即保守
     // 保留该指令，不做边界重锚；死保护区连同表项的清理归异常面清理批次。
@@ -64,7 +113,7 @@ mjbase::spi::PreservedAnalyses UnreachableInsnRemover::run(mjbase::spi::MethodSc
     {
         std::vector<InsnId> candidates;
         for (ca::usize i = 0; i < n; ++i) {
-            if (frames[i].reachable) continue;
+            if (reachable ? (*reachable)[i] != 0 : frames[i].reachable) continue;
             const InsnId id = order[i];
             bool         excAnchored = false;
             for (const LabelId l : cu.dom.labelsAt(id)) {

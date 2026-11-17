@@ -46,6 +46,10 @@ liftJvmMethodWithSources(jbc::ir::ClassSession& session, jbc::ir::MethodId metho
 bool replaceJvmLocalReadWithConstant(jbc::ir::ClassSession& session, jbc::ir::CodeUnit& code,
                                      jbc::ir::InsnId site, const Literal& value);
 
+/// Replace a proven not-taken integer condition with equivalent stack consumption.
+/// The caller proves the branch outcome. Source handles and producer evaluations are preserved.
+bool replaceJvmIntBranchWithFallthrough(jbc::ir::CodeUnit& code, jbc::ir::InsnId site);
+
 /// 修改单个常量节点。返回空值保留旧值。替换值须属于同一种字面量。
 using LiteralRewriter = std::function<std::optional<Literal>(
     const MethodBody&, const KeyPool&, BlockId, ValueId, const Literal&)>;
