@@ -1,7 +1,10 @@
 #include "mjbase/pass/constant_folder.hpp"
 
+#include <array>
 #include <cstring>
 #include <limits>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "jbc/core/opcode.hpp"
@@ -10,6 +13,8 @@
 #include "jbc/ir/units.hpp"
 
 #include "mjbase/asm/insn/insn_factory.hpp"
+#include "mjbase/ast/int_flow.hpp"
+#include "mjbase/ast/jvm.hpp"
 #include "mjbase/pass/method_rewrite_util.hpp"
 
 namespace mjbase::pass {
@@ -21,14 +26,12 @@ using jbc::ir::Insn;
 using jbc::ir::InsnId;
 
 // ---------------------------------------------------------------------------
-// Java 数值语义核心。与 mjbase/asm/evaluator/evaluator.cpp 的 in-house 实现
-// 同构（该文件是 CodeDom 域 JVM 算术的既有先例）：
+// Java 数值语义核心：
 //   - 整数加减乘与移位一律经无符号域计算后按位读回——C++ 有符号溢出是 UB，
-//     JVMS 语义是回绕（evaluator.cpp:27-54 同款）；
+//     JVMS 语义是回绕；
 //   - ishr 对负值用显式符号扩展公式——右移负数是实现定义行为；
-//   - div/rem 的守卫（除数非 0、非 MIN/-1）由 applyInt/applyLong 内完成，
-//     失败返回 false = 不折叠；守卫之后 C++ 的 / 与 % 即 JLS §15.17.2/§15.17.3
-//     语义（向零截断、余数符号跟随被除数），无 UB；
+//   - div/rem 除数 0 保留运行期异常；MIN/-1 显式给出 JVM 回绕结果。
+//     其余 C++ / 与 % 按向零截断和被除数符号求值；
 //   - float/double 用 C++ 基本运算：x64 SSE 的 IEEE-754 单/双精度结果与
 //     JVM 逐位一致（实证前提：编译目标 x64、未开 fast-math；项目
 //     set_languages("cxx17") 无快速数学开关）。
@@ -51,7 +54,7 @@ bool isShiftArith(Arith ar) noexcept
     return ar == Arith::Shl || ar == Arith::Shr || ar == Arith::Ushr;
 }
 
-/// int 运算（JVMS §6.5 对应指令）。div/rem 的除数 0 与 MIN/-1 返回 false。
+/// int 运算（JVMS §6.5 对应指令）。div/rem 的除数 0 返回 false。
 bool applyInt(Arith ar, ca::i32 a, ca::i32 b, ca::i32& out) noexcept
 {
     switch (ar) {
@@ -66,12 +69,18 @@ bool applyInt(Arith ar, ca::i32 a, ca::i32 b, ca::i32& out) noexcept
         return true;
     case Arith::Div:
         if (b == 0) return false;
-        if (a == (std::numeric_limits<ca::i32>::min)() && b == -1) return false;
+        if (a == (std::numeric_limits<ca::i32>::min)() && b == -1) {
+            out = a;
+            return true;
+        }
         out = a / b;
         return true;
     case Arith::Rem:
         if (b == 0) return false;
-        if (a == (std::numeric_limits<ca::i32>::min)() && b == -1) return false;
+        if (a == (std::numeric_limits<ca::i32>::min)() && b == -1) {
+            out = 0;
+            return true;
+        }
         out = a % b;
         return true;
     case Arith::And:
@@ -120,12 +129,18 @@ bool applyLong(Arith ar, ca::i64 a, ca::i64 b, ca::i64& out) noexcept
         return true;
     case Arith::Div:
         if (b == 0) return false;
-        if (a == (std::numeric_limits<ca::i64>::min)() && b == -1) return false;
+        if (a == (std::numeric_limits<ca::i64>::min)() && b == -1) {
+            out = a;
+            return true;
+        }
         out = a / b;
         return true;
     case Arith::Rem:
         if (b == 0) return false;
-        if (a == (std::numeric_limits<ca::i64>::min)() && b == -1) return false;
+        if (a == (std::numeric_limits<ca::i64>::min)() && b == -1) {
+            out = 0;
+            return true;
+        }
         out = a % b;
         return true;
     case Arith::And:
@@ -320,6 +335,32 @@ bool applyBinOp(const BinOp& op, const ConstVal& a, const ConstVal& b, ConstVal&
 // 任何 addXxx 之前。
 // ---------------------------------------------------------------------------
 
+ca::u32 existingConstant(const jbc::core::ConstantPool& cp, const ConstVal& value)
+{
+    using jbc::core::CpTag;
+    for (ca::u32 index = 1; index < cp.size() && index < 0xFFFFu; ++index) {
+        if (!cp.valid(index)) continue;
+        const auto& entry = cp.at(index);
+        switch (value.kind) {
+        case Kind::Int:
+            if (entry.tag == CpTag::Integer && entry.ival == value.i) return index;
+            break;
+        case Kind::Long:
+            if (entry.tag == CpTag::Long && entry.lval == value.l) return index;
+            break;
+        case Kind::Float:
+            if (entry.tag == CpTag::Float
+                && static_cast<ca::u32>(entry.ival) == bitCast<ca::u32>(value.f)) return index;
+            break;
+        case Kind::Double:
+            if (entry.tag == CpTag::Double
+                && static_cast<ca::u64>(entry.lval) == bitCast<ca::u64>(value.d)) return index;
+            break;
+        }
+    }
+    return 0;
+}
+
 bool buildHeadInsn(jbc::ir::ClassSession& session, const ConstVal& v, Insn& out)
 {
     jbc::core::ClassFile& cf = session.backing();
@@ -330,45 +371,76 @@ bool buildHeadInsn(jbc::ir::ClassSession& session, const ConstVal& v, Insn& out)
             out = r.unwrap();
             return true;
         }
-        if (cf.cp.size() + 1 > 0xFFFFu) return false;
-        out = jbc::ir::CodeEditor::loadConst(session.internInteger(v.i));
-        return true;
+        break;
     case Kind::Long:
         if (const auto r = mjbase::asm_insn::longConstInsn(v.l); r.is_ok()) {
             out = r.unwrap();
             return true;
         }
-        if (cf.cp.size() + 2 > 0xFFFFu) return false;
-        out.op = Op::LDC2_W;
-        out.cp = cf.cp.addLong(v.l);
-        return true;
+        break;
     case Kind::Float:
         if (const auto r = mjbase::asm_insn::floatConstInsn(v.f); r.is_ok()) {
             out = r.unwrap();
             return true;
         }
-        if (cf.cp.size() + 1 > 0xFFFFu) return false;
-        {
-            ca::u32 bits = 0;
-            std::memcpy(&bits, &v.f, sizeof(bits));
-            out = jbc::ir::CodeEditor::loadConst(cf.cp.addFloatBits(bits));
-        }
-        return true;
+        break;
     case Kind::Double:
         if (const auto r = mjbase::asm_insn::doubleConstInsn(v.d); r.is_ok()) {
             out = r.unwrap();
             return true;
         }
-        if (cf.cp.size() + 2 > 0xFFFFu) return false;
-        {
-            ca::u64 bits = 0;
-            std::memcpy(&bits, &v.d, sizeof(bits));
-            out.op = Op::LDC2_W;
-            out.cp = cf.cp.addDoubleBits(bits);
-        }
-        return true;
+        break;
     }
-    return false;
+    ca::u32 index = 0;
+    const bool wide = v.kind == Kind::Long || v.kind == Kind::Double;
+    if (cf.cp.size() + (wide ? 2u : 1u) > 0xFFFFu) {
+        index = existingConstant(cf.cp, v);
+        if (index == 0) return false;
+    } else {
+        switch (v.kind) {
+        case Kind::Int: index = session.internInteger(v.i); break;
+        case Kind::Long: index = session.internLong(v.l); break;
+        case Kind::Float: index = session.internFloatBits(bitCast<ca::u32>(v.f)); break;
+        case Kind::Double: index = session.internDoubleBits(bitCast<ca::u64>(v.d)); break;
+        }
+    }
+    out = wide ? jbc::ir::CodeEditor::cpInsn(Op::LDC2_W, index)
+               : jbc::ir::CodeEditor::loadConst(index);
+    return true;
+}
+
+bool foldAstIntegers(mjbase::spi::MethodScope& scope,
+                     const std::unordered_set<ca::u32>& protectedPcs)
+{
+    const auto* method = scope.session.unit().method(scope.method);
+    if (!method || method->code.get() != &scope.code) return false;
+    KeyPool keys;
+    auto lifted = ast::liftJvmMethodWithSources(scope.session, scope.method, keys);
+    if (lifted.is_err()) return false;
+    const auto projection = std::move(lifted).unwrap();
+    const auto facts = ast::analyzeIntFlow(projection.body);
+    if (!facts) return false;
+    bool modified = false;
+    for (ca::usize b = 0; b < projection.body.blocks.size(); ++b) {
+        const auto& block = projection.body.blocks[b];
+        auto sources = projection.sources[b].statements;
+        for (ca::usize i = 0; i < block.statements.size(); ++i) {
+            const auto* let = std::get_if<ast::Let>(&block.statements[i]);
+            const auto* binary = let ? std::get_if<ast::IntBinary>(&let->expression) : nullptr;
+            const auto value = facts->values[b][i];
+            if (!binary || !value) continue;
+            const std::array<InsnId, 3> window{
+                sources[binary->left.index], sources[binary->right.index], sources[i]};
+            if (ast::foldJvmIntBinary(scope.session, scope.code, window, *value, protectedPcs)) {
+                // The value is unchanged, but its producer is now the retained head.
+                // Definitions precede uses, so dependent chains can use this anchor
+                // during the same traversal without lifting and analyzing again.
+                sources[i] = window[0];
+                modified = true;
+            }
+        }
+    }
+    return modified;
 }
 
 }   // namespace
@@ -379,6 +451,8 @@ mjbase::spi::PreservedAnalyses ConstantFolder::run(mjbase::spi::MethodScope&    
     (void)mam;
     jbc::ir::ClassSession& session = scope.session;
     CodeDom&                dom     = scope.code.dom;
+    const auto protectedPcs = ast::jvmConstantFoldProtectedPcs(session, scope.code);
+    if (!protectedPcs) return mjbase::spi::PreservedAnalyses::all();
     jbc::ir::CodeEditor     editor(scope.code);
 
     // 快照扫描：本轮内的插入/删除只发生在游标之前的窗口，快照句柄全程有效
@@ -459,10 +533,12 @@ mjbase::spi::PreservedAnalyses ConstantFolder::run(mjbase::spi::MethodScope&    
             continue;
         }
 
-        // ---- 守卫：链中段成员前置边界有标签锚定（分支目标/异常表边界）→ 整链不动 ----
+        // ---- 守卫：保留标签边界和嵌套 Code 属性引用的来源 PC ----
         bool guarded = false;
         for (ca::usize k = i + 1; k <= foldEnd; ++k) {
-            if (method_rewrite_util::labelsAnchorAt(dom, ids[k])) {
+            const Insn* member = dom.peek(ids[k]);
+            if (method_rewrite_util::labelsAnchorAt(dom, ids[k])
+                || (member && protectedPcs->count(member->srcPc) != 0)) {
                 guarded = true;
                 break;
             }
@@ -478,40 +554,24 @@ mjbase::spi::PreservedAnalyses ConstantFolder::run(mjbase::spi::MethodScope&    
             ++i;   // CP 容量预检失败：整链不动（池无半截追加）
             continue;
         }
-        auto headId = editor.insertBefore(ids[i], head);
-        if (headId.is_err()) {
+        auto dest = dom.get(ids[i]);
+        if (dest.is_err()) {
             ++i;
             continue;
         }
-        // 首成员锚定的标签迁移到替换头（分支/异常边界居链首的落点语义；
-        // char_arr_to_str_simplifier.cpp:146-148 同款）。
-        bool labelFailed = false;
-        for (const auto label : dom.labelsAt(ids[i])) {
-            if (editor.bindLabel(label, headId.unwrap()).is_err()) {
-                labelFailed = true;
-                break;
-            }
-        }
-
-        // 删除整链成员。守卫 + 迁移之后成员均无锚定标签、无引用，批删不
-        // 应失败；labelFailed 或批删失败都走恢复（回迁标签、删替换头），
-        // 本链跳过，方法体回到折叠前状态。
-        const std::vector<InsnId> members(ids.begin() + static_cast<std::ptrdiff_t>(i),
+        // 保留首成员的句柄、标签和来源 PC，让嵌套 Code 属性仍可精确重定位。
+        head.srcPc = dest.unwrap()->srcPc;
+        const std::vector<InsnId> members(ids.begin() + static_cast<std::ptrdiff_t>(i + 1),
                                           ids.begin() + static_cast<std::ptrdiff_t>(foldEnd) + 1);
-        const bool erased =
-            !labelFailed
-            && editor.eraseBatch(members, jbc::ir::CodeEditor::ErasePolicy::kRejectIfUsed).is_ok();
-        if (!erased) {
-            for (const auto label : dom.labelsAt(headId.unwrap())) {
-                (void)editor.bindLabel(label, ids[i]);
-            }
-            (void)editor.erase(headId.unwrap(), jbc::ir::CodeEditor::ErasePolicy::kRejectIfUsed);
+        if (editor.eraseBatch(members, jbc::ir::CodeEditor::ErasePolicy::kRejectIfUsed).is_err()) {
             ++i;
             continue;
         }
+        *dest.unwrap() = std::move(head);
         modified = true;
         i        = foldEnd + 1;   // 快照推进：跳过整条被消费的链
     }
+    modified = foldAstIntegers(scope, *protectedPcs) || modified;
     return modified ? mjbase::spi::PreservedAnalyses::none()
                     : mjbase::spi::PreservedAnalyses::all();
 }

@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <utility>
+
 #include "mjbase/ast/int_flow.hpp"
 
 namespace {
@@ -117,6 +119,46 @@ TEST(MjAstIntFlowTest, InterpretsRawDexBitsAtIntegerUses)
     const auto untyped = analyzeIntFlow(body);
     ASSERT_TRUE(untyped.has_value());
     EXPECT_FALSE(untyped->branches[0]);
+}
+
+TEST(MjAstIntFlowTest, MergesMatchingRawAndIntegerValuesBeforeTypedUses)
+{
+    const LocalId local{0};
+    MethodBody body;
+    body.localCount = 2;
+    body.blocks = {
+        {{Let{ReadLocal{LocalId{1}, LocalKind::Int}}, Let{Literal{ca::i32{0}}}},
+         Branch{Comparison::Equal, ValueId{0}, ValueId{1}, BlockId{1}, BlockId{2},
+                LocalKind::Int}},
+        {{Let{Literal{Bits32{0xffffffffu}}}, Assign{local, ValueId{0}}}, Jump{BlockId{3}}},
+        {{Let{Literal{ca::i32{-1}}}, Assign{local, ValueId{0}}}, Jump{BlockId{3}}},
+        {{Let{ReadLocal{local}}, Let{ReadLocal{local, LocalKind::Int}}, Let{BlockParameter{0}},
+          Let{Literal{ca::i32{1}}}, Let{IntBinary{IntOp::Add, ValueId{1}, ValueId{3}}},
+          Let{IntBinary{IntOp::Add, ValueId{2}, ValueId{3}}}},
+         Return{ValueId{4}}}
+    };
+    body.blocks[1].outgoingArguments = {ValueId{0}};
+    body.blocks[2].outgoingArguments = {ValueId{0}};
+    body.blocks[3].parameters = {LocalKind::Int};
+
+    const auto verify = [&](const MethodBody& candidate) {
+        const auto flow = analyzeIntFlow(candidate);
+        ASSERT_TRUE(flow.has_value());
+        EXPECT_FALSE(flow->values[3][0]);
+        EXPECT_EQ(flow->values[3][1], -1);
+        EXPECT_EQ(flow->values[3][2], -1);
+        EXPECT_EQ(flow->values[3][4], 0);
+        EXPECT_EQ(flow->values[3][5], 0);
+    };
+    verify(body);
+    std::swap(body.blocks[1], body.blocks[2]);
+    verify(body);
+
+    body.blocks[1].statements[0] = Let{Literal{ca::i32{-2}}};
+    const auto disagree = analyzeIntFlow(body);
+    ASSERT_TRUE(disagree.has_value());
+    EXPECT_FALSE(disagree->values[3][1]);
+    EXPECT_FALSE(disagree->values[3][2]);
 }
 
 TEST(MjAstIntFlowTest, RejectsInvalidTargetsArgumentsAndExceptionEdges)

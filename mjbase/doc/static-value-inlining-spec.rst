@@ -131,9 +131,8 @@ NOP，PUTSTATIC（owner==本类），RETURN}，且异常表为空。走廊外的
 值读取：折叠后的 clinit 内，PUTSTATIC 的顺序前驱必须恰为一条匹配族常量装载。求值
 不做自研算术——收集件在 scratch 会话（重解析字节，不回传容器）上跑既有
 ConstantFolder，把走廊内常量算术链折叠为单条装载后按「装载 + PUTSTATIC」对读取；
-除零 / int·long 的 MIN÷-1 红线、NaN 位图、移位掩宽等算术语义全部继承
-ConstantFolder，本批零重复实现。折叠未发生的对（红线保守停）读不到常量装载，字段
-自然落拒。
+整数除零保留、int/long 的 MIN÷-1 回绕与 MIN%-1 为零、NaN 位图、移位掩宽等
+算术语义全部继承 ConstantFolder。折叠未发生的对读不到常量装载，相应字段不发布。
 
 族表（两件共用同一张表，``static_value_family_kind`` 单源）：I/B/C/S/Z → Int（栈
 面 int）、J → Long、F → Float、D → Double、``Ljava/lang/String;`` → Str。值按位图
