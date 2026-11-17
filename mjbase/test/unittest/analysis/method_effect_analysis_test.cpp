@@ -9,8 +9,10 @@
 
 #include "class_bytes_builder.hpp"
 #include "mjbase/analysis/method_effect_analysis.hpp"
+#include "mjbase/ast/jvm.hpp"
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_model.hpp"
+#include "shared/jasm_fixture.hpp"
 
 using jbc::core::Op;
 using mjbase::analysis::ConstantReturnKind;
@@ -193,4 +195,50 @@ TEST(MjAnalysisMethodEffectTest, UsesTinyJdkWhitelistAndKeepsUnknownExternalCall
                                  "(Ljava/lang/String;)I"),
               MethodEffectKind::Unknown);
     EXPECT_STREQ(mjbase::analysis::methodEffectKindName(MethodEffectKind::ReadOnly), "ReadOnly");
+}
+
+TEST(MjAnalysisMethodEffectTest, PreservesCalleeEffectsAcrossAstAndBytecodeBodies)
+{
+    const auto bytes = mjbase::test::assembleClass("EffectPaths", "java/lang/Object", R"JASM(
+    .field public static counter I
+    .method public static readCounter ()I {
+      code: {
+        getstatic EffectPaths.counter I
+        ireturn
+      }
+    }
+    .method public static readViaAst ()I {
+      code: {
+        invokestatic EffectPaths.readCounter ()I
+        ireturn
+      }
+    }
+    .method public static readViaBytecode ()I {
+      code: {
+        invokestatic EffectPaths.readCounter ()I
+        i2b
+        ireturn
+      }
+    }
+)JASM");
+    ASSERT_FALSE(bytes.empty());
+    auto session = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
+    ASSERT_TRUE(session.is_ok());
+    auto& source = *session.unwrap();
+    mjbase::KeyPool keys;
+    const auto astMethod = source.unit().findMethodId("readViaAst", "()I");
+    ASSERT_TRUE(mjbase::ast::liftJvmMethod(source, astMethod, keys).is_ok());
+    const auto bytecodeMethod = source.unit().findMethodId("readViaBytecode", "()I");
+    const auto unsupported = mjbase::ast::liftJvmMethod(source, bytecodeMethod, keys);
+    ASSERT_TRUE(unsupported.is_err());
+    ASSERT_EQ(unsupported.unwrap_err().kind, mjbase::ast::ErrorKind::Unsupported);
+
+    mjbase::model::ResourceContainer container;
+    container.addResource("EffectPaths.class", std::make_unique<mjbase::model::ClassResource>(
+        "EffectPaths.class", bytes));
+    MethodEffectModel model;
+    model.build(container);
+    EXPECT_EQ(model.effectKindOf("EffectPaths", "readViaAst", "()I"), MethodEffectKind::ReadOnly);
+    EXPECT_EQ(model.effectKindOf("EffectPaths", "readViaBytecode", "()I"),
+              MethodEffectKind::ReadOnly);
 }

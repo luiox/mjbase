@@ -17,6 +17,7 @@ mjbase 设计规格
    producer-registry-design
    semantic-fp-spec
    semantic-ast
+   ast-pass-validation
    library-identification
    member-census-design
    analysis-project-schema-v2

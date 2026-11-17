@@ -2,8 +2,9 @@
 /// @brief       方法副作用模型：局部字节码效应分类 + 直接调用边不动点传播
 ///              + 纯函数常量返回摘要。
 ///
-/// 类字节经 libjbc 会话升格后按 CodeDom 程序序做局部
-/// 分类——常量/局部读写/算术/分支/转换/返回为 Pure；字段读与 arraylength
+/// 类字节经 libjbc 会话升格后，支持的方法使用共享方法体 AST 提取局部效应
+/// 与符号调用边。无法提升的方法沿用 CodeDom 扫描。局部分类中常量、局部读写、
+/// 算术、分支、转换及返回为 Pure。字段读与 arraylength
 /// 升 ReadOnly；堆写/数组存储/分配/显式抛出/监视器/invokedynamic 为 Impure；
 /// native/abstract/构造器/类初始化器/解析缺失为 Unknown。局部分类后沿直接
 /// 调用图做不动点；容器外调用回退到 JDK 小白名单（java/lang/Math、

@@ -8,7 +8,9 @@
 #include "dex/reader.hpp"
 #include "smali/assemble.hpp"
 
+#include "mjbase/ast/constant_facts.hpp"
 #include "mjbase/ast/dex.hpp"
+#include "mjbase/ast/effects.hpp"
 #include "mjbase/ast/jvm.hpp"
 #include "shared/jasm_fixture.hpp"
 
@@ -245,6 +247,84 @@ TEST(MjAstDexTest, LiftsSymbolicFieldsAndPreservesReverseSubtractOrder)
     ASSERT_TRUE(jvmWrite->receiver);
     const auto& receiver = std::get<Let>(jvmStatements[jvmWrite->receiver->index]).expression;
     EXPECT_EQ(std::get<ReadLocal>(receiver).local.index, jvmBody.parameters[0].index);
+}
+
+TEST(MjAstDexTest, SharesConstantAndEffectAnalysesWithJvm)
+{
+    auto file = assembleDex(R"SMALI(
+.class public LAstAnalysis;
+.super Ljava/lang/Object;
+.field public static inbox:I
+.method public static compute()I
+    .registers 2
+    sget v0, LAstAnalysis;->inbox:I
+    const/4 v0, 0x5
+    invoke-static {}, LAstAnalysis;->observe()V
+    add-int/lit8 v1, v0, 0x7
+    return v1
+.end method
+.method public static observe()V
+    .registers 0
+    return-void
+.end method
+)SMALI");
+    ASSERT_TRUE(file);
+    const auto* method = staticMethod(*file, "compute");
+    ASSERT_NE(method, nullptr);
+    mjbase::KeyPool keys;
+    auto dex = liftDexMethod(*file, *method, keys);
+    ASSERT_TRUE(dex.is_ok());
+
+    const auto bytes = mjbase::test::assembleClass("AstAnalysis", "java/lang/Object", R"JASM(
+    .field public static inbox I
+    .method public static compute ()I {
+      code: {
+        getstatic AstAnalysis.inbox I
+        pop
+        iconst_5
+        istore_0
+        invokestatic AstAnalysis.observe ()V
+        iload_0
+        bipush 7
+        iadd
+        istore_1
+        iload_1
+        ireturn
+      }
+    }
+    .method public static observe ()V {
+      code: {
+        return
+      }
+    }
+)JASM");
+    auto session = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
+    ASSERT_TRUE(session.is_ok());
+    auto& source = *session.unwrap();
+    const auto id = source.unit().findMethodId("compute", "()I");
+    auto jvm = liftJvmMethod(source, id, keys);
+    ASSERT_TRUE(jvm.is_ok());
+
+    const auto dexBody = std::move(dex).unwrap();
+    const auto jvmBody = std::move(jvm).unwrap();
+    EXPECT_EQ(dexBody.method, jvmBody.method);
+    for (const MethodBody* body : {&dexBody, &jvmBody}) {
+        ASSERT_EQ(body->blocks.size(), 1u);
+        const auto& block = body->blocks.front();
+        const auto* ret = std::get_if<Return>(&block.terminator);
+        ASSERT_TRUE(ret && ret->value);
+        const auto facts = analyzeBlockConstants(block);
+        const auto& value = facts.at(ret->value->index);
+        ASSERT_TRUE(value && std::holds_alternative<ca::i32>(*value));
+        EXPECT_EQ(std::get<ca::i32>(*value), 12);
+    }
+    const auto dexEffects = summarizeEffects(dexBody);
+    const auto jvmEffects = summarizeEffects(jvmBody);
+    EXPECT_EQ(dexEffects.local, LocalEffect::ReadOnly);
+    EXPECT_EQ(dexEffects.local, jvmEffects.local);
+    ASSERT_EQ(dexEffects.callees.size(), 1u);
+    EXPECT_EQ(dexEffects.callees, jvmEffects.callees);
+    EXPECT_EQ(keys.str(dexEffects.callees.front().name), "observe");
 }
 
 }   // namespace

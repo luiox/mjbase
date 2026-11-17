@@ -25,7 +25,9 @@ struct Bits32 { ca::u32 bits; };
 /// Java 字符串用 UTF-16 码元表示，保留 NUL 和未配对代理码元。
 using Literal = std::variant<ca::i32, std::u16string, Null, Bits32>;
 
-struct ReadLocal { LocalId local; };
+/// The kind comes from the operation that reads the local, when the format supplies it.
+enum class LocalKind : ca::u8 { Unknown, Int, Long, Float, Double, Reference };
+struct ReadLocal { LocalId local; LocalKind kind = LocalKind::Unknown; };
 enum class IntOp : ca::u8 { Add, Subtract, Multiply, Divide, Remainder, And, Or, Xor,
                             ShiftLeft, ShiftRight, UnsignedShiftRight };
 struct IntBinary { IntOp op; ValueId left; ValueId right; };
@@ -46,7 +48,13 @@ struct Call
 using Expression = std::variant<Literal, ReadLocal, IntBinary, FieldRead, Call>;
 /// 求值恰好一次，结果可由本块后续语句和终结符引用。
 struct Let { Expression expression; };
-struct Assign { LocalId local; ValueId value; };
+struct Assign
+{
+    LocalId local;
+    ValueId value;
+    /// A wide write also invalidates the previous value of its second logical local.
+    std::optional<LocalId> clobbered = std::nullopt;
+};
 /// 忽略调用结果，保留副作用和异常。
 struct CallStatement { Call call; };
 using Statement = std::variant<Let, Assign, FieldWrite, CallStatement>;

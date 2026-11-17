@@ -9,6 +9,8 @@
 
 #include "class_scan.hpp"
 #include "cp_refs.hpp"
+#include "mjbase/ast/effects.hpp"
+#include "mjbase/ast/jvm.hpp"
 #include "mjbase/hierarchy/summary.hpp"
 
 namespace mjbase::analysis {
@@ -99,6 +101,41 @@ struct ScannedMethod
     MemberKey                 constantCall{};   ///< 纯零参静态调用（常量返回包装候选）
     ConstantReturnValue       directConstant;
 };
+
+MethodEffectKind methodEffectOf(ast::LocalEffect local)
+{
+    switch (local) {
+    case ast::LocalEffect::Pure: return MethodEffectKind::Pure;
+    case ast::LocalEffect::ReadOnly: return MethodEffectKind::ReadOnly;
+    case ast::LocalEffect::Impure: return MethodEffectKind::Impure;
+    }
+    return MethodEffectKind::Unknown;
+}
+
+/// 保留 AST 尚不能表示的方法体的字节码扫描口径。
+void scanBytecodeEffects(const jbc::ir::CodeUnit& unit, const jbc::core::ConstantPool& cp,
+                         KeyPool& pool, ScannedMethod& scanned)
+{
+    for (const auto& id : unit.dom.order()) {
+        const auto* in = unit.dom.peek(id);
+        if (!in) continue;
+        if (in->op == Op::INVOKEVIRTUAL || in->op == Op::INVOKESPECIAL ||
+            in->op == Op::INVOKESTATIC || in->op == Op::INVOKEINTERFACE) {
+            MemberRefSem ref;
+            if (resolveMemberRef(cp, in->cp, ref)) {
+                scanned.calls.push_back(methodKeyOf(pool, ref.owner, ref.name, ref.desc));
+            }
+            continue;
+        }
+        if (in->op == Op::INVOKEDYNAMIC || isFieldWrite(in->op) || isArrayStore(in->op) ||
+            isAllocation(in->op) || in->op == Op::ATHROW || in->op == Op::MONITORENTER ||
+            in->op == Op::MONITOREXIT) {
+            scanned.localEffect = mergeEffect(scanned.localEffect, MethodEffectKind::Impure);
+        } else if (isFieldRead(in->op) || in->op == Op::ARRAYLENGTH) {
+            scanned.localEffect = mergeEffect(scanned.localEffect, MethodEffectKind::ReadOnly);
+        }
+    }
+}
 
 /// 常量返回形状：恰好两条可执行指令（producer + return），无异常表。
 void scanConstantReturn(const jbc::ir::CodeUnit& u, const jbc::core::ConstantPool& cp,
@@ -231,14 +268,14 @@ void MethodEffectModel::build(const mjbase::model::ResourceContainer& container)
         // 扫描前就地升格（scanClassResources 只建会话不升格）。
         (void)jbc::ir::collectCodeUnits(session);
         const jbc::ir::ClassUnit& unit = session.unit();
-        for (const auto& m : unit.methods) {
+        for (ca::usize methodIndex = 0; methodIndex < unit.methods.size(); ++methodIndex) {
+            const auto& m = unit.methods[methodIndex];
             const std::string_view owner = unit.symbols().str(unit.thisClass);
             const std::string_view name  = unit.symbols().str(m.name);
             const std::string_view desc  = unit.symbols().str(m.desc);
             ScannedMethod scanned;
             scanned.summary.method  = methodKeyOf(pool_, owner, name, desc);
             scanned.summary.declared = true;
-            const bool isStatic      = (m.access & mjbase::hierarchy::kAccStatic) != 0;
             const bool hasBody       = (m.access & (mjbase::hierarchy::kAccAbstract |
                                                     kAccNative)) == 0;
             scanned.summary.hasBody  = hasBody;
@@ -257,32 +294,14 @@ void MethodEffectModel::build(const mjbase::model::ResourceContainer& container)
             }
             const jbc::ir::CodeUnit& u = *m.code;
 
-            MethodEffectKind local = MethodEffectKind::Pure;
-            for (const auto& id : u.dom.order()) {
-                const jbc::ir::Insn* in = u.dom.peek(id);
-                if (in == nullptr) continue;
-                if (in->op == Op::INVOKEVIRTUAL || in->op == Op::INVOKESPECIAL ||
-                    in->op == Op::INVOKESTATIC || in->op == Op::INVOKEINTERFACE) {
-                    MemberRefSem ref;
-                    if (resolveMemberRef(session.backing().cp, in->cp, ref)) {
-                        scanned.calls.push_back(methodKeyOf(pool_, ref.owner, ref.name, ref.desc));
-                    }
-                    continue;
-                }
-                if (in->op == Op::INVOKEDYNAMIC) {
-                    local = mergeEffect(local, MethodEffectKind::Impure);
-                    continue;
-                }
-                if (isFieldWrite(in->op) || isArrayStore(in->op) || isAllocation(in->op) ||
-                    in->op == Op::ATHROW || in->op == Op::MONITORENTER ||
-                    in->op == Op::MONITOREXIT) {
-                    local = mergeEffect(local, MethodEffectKind::Impure);
-                }
-                else if (isFieldRead(in->op) || in->op == Op::ARRAYLENGTH) {
-                    local = mergeEffect(local, MethodEffectKind::ReadOnly);
-                }
+            auto lifted = ast::liftJvmMethod(session, methodIndex, pool_);
+            if (lifted.is_ok()) {
+                auto effects = ast::summarizeEffects(std::move(lifted).unwrap());
+                scanned.localEffect = methodEffectOf(effects.local);
+                scanned.calls = std::move(effects.callees);
+            } else {
+                scanBytecodeEffects(u, session.backing().cp, pool_, scanned);
             }
-            scanned.localEffect = local;
             scanConstantReturn(u, session.backing().cp, pool_, scanned);
             methods.push_back(std::move(scanned));
         }
