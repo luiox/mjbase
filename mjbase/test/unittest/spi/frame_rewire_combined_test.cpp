@@ -751,4 +751,141 @@ TEST(FrameRewireCombined, JvmVerifySingleAndCombined)
     }
 }
 
+// ── 链基回归：same 形首帧 + 栅栏增强路径不得 chop 掉初始帧 locals ──
+
+/// 夹具方法体：条件尾入口形态（cff 反摊平产物同构，grunt CffCondTailJvm
+/// 最小复现）：首分支目标帧 locals == 初始帧（params [int,int]）→ smt_build
+/// 选 same 形；方法尾 ireturn 后跟一条不可达 goto（cff 擦除残块）→ 线性
+/// 栅栏位触发增强路径。expandChain 曾以空表为链基把首目标帧展成空 locals，
+/// 重编码落成 chop_frame——JVM VerifyError Bad local variable type。
+TEST(FrameRewireCombined, FenceAugmentedChainKeepsInitialLocals)
+{
+    jbc::ir::NewClassSeed seed;
+    seed.thisName  = "T";
+    seed.superName = "java/lang/Object";
+    auto made = jbc::ir::makeSession(seed);
+    ASSERT_TRUE(made.is_ok());
+    auto session = std::move(made).unwrap();
+
+    // flat(II)I：IF_ICMPGE Lbig；GOTO Lfall（钉）；Lbig: LDC 100; ISTORE 0;
+    // GOTO Lb2；Lfall: ILOAD 0; ILOAD 1; IADD; ISTORE 0（fall-through Lb2）；
+    // Lb2: ILOAD 1; ICONST_2; IMUL; ILOAD 0; IADD; ISTORE 0；GOTO Lr；
+    // Lr: ILOAD 0; IRETURN；死块 GOTO Lfall。
+    // 值域：flat(3,4) 落空臂 = (3+4) 路径 → 4*2+7 = 15；flat(9,4) 真臂
+    // Lbig = 100 → 4*2+100 = 108。
+    {
+        auto added =
+            session->addMethod({"flat", "(II)I", 0x0009, true, 3, 2});
+        ASSERT_TRUE(added.is_ok());
+        const ca::usize idx = session->unit().methods.size() - 1;
+        auto promoted = jbc::ir::promoteMethod(*session, idx);
+        ASSERT_TRUE(promoted.is_ok());
+        auto code = std::move(promoted).unwrap();
+
+        code->dom.beginDeferredTargets();
+        CodeEditor ed(*code);
+        const LabelId lbig  = ed.createLabel().unwrap();
+        const LabelId lfall = ed.createLabel().unwrap();
+        const LabelId lb2   = ed.createLabel().unwrap();
+        const LabelId lr    = ed.createLabel().unwrap();
+        (void)ed.append(CodeEditor::local(Op::ILOAD, 0)).unwrap();
+        (void)ed.append(CodeEditor::local(Op::ILOAD, 1)).unwrap();
+        (void)ed.append(CodeEditor::branch(Op::IF_ICMPGE, lbig)).unwrap();
+        const InsnId pin = ed.append(CodeEditor::branch(Op::GOTO, lfall)).unwrap();
+        ASSERT_TRUE(ed.bindLabel(lbig, pin).is_ok());
+        // Lbig 体：LDC 100; ISTORE 0; GOTO Lb2
+        const InsnId bigHead =
+            ed.append(CodeEditor::loadConst(session->internInteger(100))).unwrap();
+        ASSERT_TRUE(ed.bindLabel(lbig, bigHead).is_ok());
+        (void)ed.append(CodeEditor::local(Op::ISTORE, 0)).unwrap();
+        (void)ed.append(CodeEditor::branch(Op::GOTO, lb2)).unwrap();
+        const InsnId fallHead = ed.append(CodeEditor::local(Op::ILOAD, 0)).unwrap();
+        ASSERT_TRUE(ed.bindLabel(lfall, fallHead).is_ok());
+        // Lfall 体（续）：ILOAD 1; IADD; ISTORE 0（落穿 Lb2）
+        (void)ed.append(CodeEditor::local(Op::ILOAD, 1)).unwrap();
+        (void)ed.append(CodeEditor::simple(Op::IADD)).unwrap();
+        (void)ed.append(CodeEditor::local(Op::ISTORE, 0)).unwrap();
+        const InsnId b2Head = ed.append(CodeEditor::local(Op::ILOAD, 1)).unwrap();
+        ASSERT_TRUE(ed.bindLabel(lb2, b2Head).is_ok());
+        (void)ed.append(CodeEditor::simple(Op::ICONST_2)).unwrap();
+        (void)ed.append(CodeEditor::simple(Op::IMUL)).unwrap();
+        (void)ed.append(CodeEditor::local(Op::ILOAD, 0)).unwrap();
+        (void)ed.append(CodeEditor::simple(Op::IADD)).unwrap();
+        (void)ed.append(CodeEditor::local(Op::ISTORE, 0)).unwrap();
+        (void)ed.append(CodeEditor::branch(Op::GOTO, lr)).unwrap();
+        const InsnId rHead = ed.append(CodeEditor::local(Op::ILOAD, 0)).unwrap();
+        ASSERT_TRUE(ed.bindLabel(lr, rHead).is_ok());
+        (void)ed.append(CodeEditor::simple(Op::IRETURN)).unwrap();
+        // 死块（不可达）：ireturn 后一条 GOTO Lfall——线性栅栏位的来源。
+        (void)ed.append(CodeEditor::branch(Op::GOTO, lfall)).unwrap();
+        auto closed = code->dom.endDeferredTargets();
+        ASSERT_TRUE(closed.is_ok());
+
+        // mutateMethodWithFrames 尾链同构：prepare → lower → rewire。
+        (void)mjbase::spi::frame_rewire::prepareNestedAttrsForLayout(*session,
+                                                                     *code);
+        ASSERT_TRUE(jbc::ir::lowerMethod(*session, idx).is_ok());
+        mjbase::KeyPool                   pool;
+        mjbase::hierarchy::ClassHierarchy hierarchy(pool);
+        mjbase::spi::CommonSuperClassResolver  superResolver(hierarchy);
+        mjbase::spi::StrictTypeResolverAdapter resolver(superResolver);
+        const auto&       unit = session->unit();
+        const auto&       mu   = unit.methods[idx];
+        const mjbase::ClassKey ownerKey =
+            mjbase::classKeyOf(pool, unit.symbols().str(unit.thisClass));
+        const mjbase::MemberKey key = mjbase::memberKeyOf(
+            pool, ownerKey, unit.symbols().str(mu.name), unit.symbols().str(mu.desc));
+        mjbase::spi::MethodScope scope{
+            mjbase::spi::MethodTarget{key, mu.id, unit.symbols().str(mu.name),
+                                      unit.symbols().str(mu.desc), mu.access,
+                                      *session},
+            *code};
+        mjbase::spi::frame_rewire::rewireFramesAfterLower(*session, scope, resolver);
+    }
+
+    // 终产物：SMT 不含 chop 形（回归签名），JVM 实跑两臂值域。
+    auto written = jbc::core::writeClass(session->backing());
+    ASSERT_TRUE(written.is_ok());
+    const Bytes out = std::move(written).unwrap();
+
+    {
+        auto read = jbc::core::readClass(jbc::core::ByteView{out});
+        ASSERT_TRUE(read.is_ok());
+        auto cf = std::move(read).unwrap();
+        ASSERT_EQ(cf.file->methods.size(), 1u);
+        auto codeR = cf.file->decodeCode(cf.file->methods[0]);
+        ASSERT_TRUE(codeR.is_ok());
+        jbc::core::CodeAttr* code = codeR.unwrap();
+        bool sawSmt = false;
+        for (jbc::core::AttrSlot& slot : code->attrs) {
+            if (!cf.file->cp.utf8Equals(slot.nameCp, "StackMapTable")) continue;
+            sawSmt = true;
+            auto body = cf.file->decodeAttr(slot);
+            ASSERT_TRUE(body.is_ok());
+            const auto& smt =
+                *static_cast<const jbc::core::StackMapTableAttr*>(body.unwrap());
+            ASSERT_FALSE(smt.frames.empty());
+            using SmtFrame = jbc::core::StackMapTableAttr::Frame;
+            for (const auto& f : smt.frames) {
+                EXPECT_FALSE(f.type >= SmtFrame::kChopMax && f.type <= SmtFrame::kChopMin)
+                    << "chop 形帧 = 初始帧 locals 被展空（回归签名）type="
+                    << static_cast<int>(f.type);
+            }
+        }
+        EXPECT_TRUE(sawSmt) << "SMT 属性缺席（rewire 未挂回）";
+    }
+
+    auto tc = test::jdk::probeJdk();
+    if (!tc.available) {
+        GTEST_SKIP() << "JDK 不可用: " << tc.reason;
+    }
+    test::jdk::RunnerSpec spec;
+    spec.classes.emplace_back("T", out);
+    spec.runnerBody =
+        "if (T.flat(3, 4) != 15) throw new AssertionError(\"flat(3,4)=\" + T.flat(3, 4)); "
+        "if (T.flat(9, 4) != 108) throw new AssertionError(\"flat(9,4)=\" + T.flat(9, 4));";
+    const test::jdk::JvmRunOutcome r = test::jdk::runWithRunnerOutcome(tc, spec);
+    EXPECT_EQ(r.status, test::jdk::JvmRunStatus::Ok) << r.output;
+}
+
 }   // namespace

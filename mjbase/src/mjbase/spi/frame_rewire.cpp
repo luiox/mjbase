@@ -108,14 +108,21 @@ struct ChainEntry
     std::vector<jbc::core::StackMapTableAttr::VType> stack;
 };
 
-/// 属性模型帧链 → 等效全帧条目列（升序）。非法形态标签（保留域 128..246）
-/// 返回空——只可能来自越权字节，调用方跳过增强保持现状。
-std::vector<ChainEntry> expandChain(const jbc::core::StackMapTableAttr& smt)
+/// 属性模型帧链 → 等效全帧条目列（升序）。@p initLocals 是链基（隐式初始
+/// 帧，与引擎播种同源）：same/same1/sameExt/chop 形的隐式 locals 是「前一帧
+/// 的 locals」，链上首帧的前一帧 = 初始帧——基座空表会把首目标帧展成空
+/// locals，再编码落成 chop 参数（cff 条件尾语料 CffCondTailJvm 实证：
+/// 首目标 same 形 + 死块栅栏位触发增强路径，首帧 locals [int,int] 被 chop
+/// 成空，JVM VerifyError Bad local variable type）。非法形态标签（保留域
+/// 128..246）返回空——只可能来自越权字节，调用方跳过增强保持现状。
+std::vector<ChainEntry> expandChain(
+    const jbc::core::StackMapTableAttr&                                 smt,
+    const std::vector<jbc::core::StackMapTableAttr::VType>&             initLocals)
 {
     using SmtFrame = jbc::core::StackMapTableAttr::Frame;
     std::vector<ChainEntry> out;
     out.reserve(smt.frames.size());
-    std::vector<jbc::core::StackMapTableAttr::VType> prev;
+    std::vector<jbc::core::StackMapTableAttr::VType> prev = initLocals;
     ca::u32 prevAbs = 0;
     for (ca::usize i = 0; i < smt.frames.size(); ++i) {
         const SmtFrame& f = smt.frames[i];
@@ -457,23 +464,27 @@ void rewireFramesAfterLower(jbc::ir::ClassSession& session, const MethodScope& s
     }
     auto result = std::move(built).unwrap();
 
+    // 链基（隐式初始帧）先于链展开：expandChain 的 same/chop 形隐式 locals
+    // 回填需要它（链上首帧的前一帧 = 初始帧；基座空表 = 首目标帧被展空，
+    // 再编码 chop 掉参数——CffCondTailJvm 根因，见 expandChain 注）。
+    std::vector<jbc::core::StackMapTableAttr::VType> initLocals;
+    {
+        auto initR = ja::smt_detail::smtEntriesOf(session, frames[0].locals);
+        if (initR.is_err()) {
+            throw std::runtime_error(
+                std::string("frame_rewire: initial frame encoding failed (")
+                + ja::to_string(initR.unwrap_err()) + ") for method '"
+                + std::string(unit.symbols().str(mu->name)) + "'");
+        }
+        initLocals = std::move(initR).unwrap();
+    }
+
     std::vector<ChainEntry> chain;
-    if (result.needed) chain = expandChain(*result.attr);
+    if (result.needed) chain = expandChain(*result.attr, initLocals);
     const std::vector<FenceInfo> fences = fencePcsOf(cu, chain);
     if (!result.needed && fences.empty()) {
         return;
     }
-
-    // 栅栏内容 = 链中下一个条目的等效全帧；无后续条目（栅栏在末帧之后）
-    // 借初始帧 locals + 空栈（链的起点与引擎播种同源）。
-    std::vector<jbc::core::StackMapTableAttr::VType> initLocals;
-    auto initR = ja::smt_detail::smtEntriesOf(session, frames[0].locals);
-    if (initR.is_err()) {
-        throw std::runtime_error(std::string("frame_rewire: initial frame encoding failed (")
-                                 + ja::to_string(initR.unwrap_err()) + ") for method '"
-                                 + std::string(unit.symbols().str(mu->name)) + "'");
-    }
-    initLocals = std::move(initR).unwrap();
 
     ca::usize fenceNeed = 0;
     if (!fences.empty()) {
